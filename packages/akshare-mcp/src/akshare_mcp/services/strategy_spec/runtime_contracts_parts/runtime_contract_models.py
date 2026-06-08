@@ -206,11 +206,22 @@ def _default_runtime_playbook(
             position_policy["max_position_pct"] = round(min(float(position_policy["max_position_pct"]), 0.22), 4)
         position_policy["base_budget_pct"] = round(min(max(float(position_policy.get("base_budget_pct") or 0.04), 0.04), 0.06), 4)
 
+    metrics = dict(backtest_metrics or {})
+    observed_trade_count = max(
+        _safe_float(metrics.get("trade_count"), 0.0),
+        _safe_float(metrics.get("trades_count"), 0.0),
+        _safe_float(metrics.get("total_trades"), 0.0),
+    )
+    max_days = max(8, _safe_int(holding.get("max_days"), time_stop_days) or time_stop_days or 20)
+    expected_trade_count = observed_trade_count if observed_trade_count > 0 else max(4.0, min(12.0, 252.0 / float(max_days)))
+    warmup_target_signals = max(4, min(8, int(round(expected_trade_count / 2.5)) or 4))
+    warmup_soft_timeout_days = max(5, min(18, int(round(max(5, warmup_target_signals * 2.0)))))
+    warmup_hard_timeout_days = max(20, min(45, int(round(max(20, warmup_target_signals * 5.0)))))
     incubation_policy = {
-        "warmup_target_signals": 20,
-        "warmup_soft_timeout_days": 5,
-        "warmup_hard_timeout_days": 20,
-        "warmup_max_days": 30,
+        "warmup_target_signals": warmup_target_signals,
+        "warmup_soft_timeout_days": warmup_soft_timeout_days,
+        "warmup_hard_timeout_days": warmup_hard_timeout_days,
+        "warmup_max_days": max(30, min(60, int(round(max(warmup_hard_timeout_days + 10, warmup_soft_timeout_days + 15))))),
     }
     if family == "trend":
         incubation_policy = _trend_runtime_warmup_policy(

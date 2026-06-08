@@ -214,7 +214,7 @@
                 budget_tier = (
                     "micro"
                     if wide_intake_admitted or execution_semantic_gap or proxy_runtime_used or diagnostic_only
-                    else "standard" if validation_grade in {"A", "B"} else "micro"
+                    else "standard" if _validation_grade_at_least(validation_grade, "A") else "micro"
                 )
             return {
                 "runtime_bootstrap_eligible": runtime_bootstrap_eligible,
@@ -301,7 +301,7 @@
             if bool(normalized_gate.get("provisional_pass")):
                 return False
             validation_grade = cls._normalized_validation_grade(normalized_gate)
-            return validation_grade in {"A", "B"}
+            return _validation_grade_at_least(validation_grade, "A")
 
         @classmethod
         def _allow_observe_trade_audit_bootstrap(

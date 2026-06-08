@@ -85,6 +85,32 @@ def _derive_trade_aware_validation_grade(
     return "C", f"trade_aware_validation_grade_upgrade:{strategy_type}:score={evidence_score:.2f}"
 
 
+def _minimum_grade_for_admission(admission_level: str) -> str:
+    if str(admission_level or "").strip().lower() == "research":
+        return ""
+    try:
+        from strategy_factory.application._runtime_toggles import strategy_factory_min_validation_grade
+
+        return strategy_factory_min_validation_grade()
+    except Exception:
+        return "S"
+
+
+def _validation_grade_meets_minimum(grade: str, minimum: str) -> bool:
+    if not minimum:
+        return True
+    try:
+        from strategy_factory.application._runtime_toggles import validation_grade_at_least
+
+        return validation_grade_at_least(grade, minimum)
+    except Exception:
+        order = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4, "SS": 5, "SSS": 6}
+        min_grade = str(minimum or "").strip().upper()
+        if min_grade not in order:
+            return True
+        return order.get(str(grade or "").strip().upper(), -1) >= order[min_grade]
+
+
 def _resolve_admission_review_context(
     strategy: dict,
     *,
@@ -192,6 +218,16 @@ def _review_stage_blockers(
 
     if validation_grade in _NON_PROMOTABLE_VALIDATION_GRADES:
         blockers.append(f"validation_grade_{validation_grade.lower()}_not_allowed_for_{admission_level}")
+    minimum_validation_grade = _minimum_grade_for_admission(admission_level)
+    context["minimum_validation_grade"] = minimum_validation_grade or None
+    context["minimum_validation_grade_met"] = _validation_grade_meets_minimum(
+        validation_grade,
+        minimum_validation_grade,
+    )
+    if minimum_validation_grade and not context["minimum_validation_grade_met"]:
+        blockers.append(
+            f"validation_grade_{validation_grade.lower() or 'unknown'}_below_minimum_{minimum_validation_grade.lower()}_for_{admission_level}"
+        )
     if committee_decision in _NON_PROMOTABLE_REVIEW_DECISIONS or committee_decision in _NON_PROMOTABLE_REVIEW_RECOMMENDATIONS:
         blockers.append(f"committee_review_{committee_decision}_not_allowed_for_{admission_level}")
     if committee_final_score is not None and committee_final_score < thresholds["committee_final_score_min"]:

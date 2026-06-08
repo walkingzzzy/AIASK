@@ -14,6 +14,17 @@ import os
 from typing import FrozenSet
 
 
+GRADE_RANKS: dict[str, int] = {
+    "D": 0,
+    "C": 1,
+    "B": 2,
+    "A": 3,
+    "S": 4,
+    "SS": 5,
+    "SSS": 6,
+}
+
+
 def _env_bool(name: str, default: bool) -> bool:
     """解析 1/true/yes/on (大小写不敏感) 为 True,其它为 False。
 
@@ -33,6 +44,36 @@ def _env_set(name: str, default: str = "") -> FrozenSet[str]:
     if not value:
         return frozenset()
     return frozenset(item.strip() for item in value.split(",") if item.strip())
+
+
+def normalize_validation_grade(value: object) -> str:
+    return str(value or "").strip().upper()
+
+
+def validation_grade_rank(value: object) -> int:
+    return GRADE_RANKS.get(normalize_validation_grade(value), -1)
+
+
+def validation_grade_at_least(value: object, minimum: object) -> bool:
+    min_grade = normalize_validation_grade(minimum)
+    if not min_grade:
+        return True
+    min_rank = validation_grade_rank(min_grade)
+    if min_rank < 0:
+        return True
+    return validation_grade_rank(value) >= min_rank
+
+
+def validation_grade_weight(value: object) -> float:
+    grade = normalize_validation_grade(value)
+    return {
+        "SSS": 1.25,
+        "SS": 1.18,
+        "S": 1.10,
+        "A": 1.0,
+        "B": 0.85,
+        "C": 0.7,
+    }.get(grade, 0.55)
 
 
 # === DEV-V1 P0: 允许 D 级 + Gate passed 候选走 observe lane ===
@@ -163,7 +204,18 @@ def strategy_trade_prediction_factor_decay_enabled() -> bool:
     return _env_bool("STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED", default=False)
 
 
+def strategy_factory_min_validation_grade() -> str:
+    raw = os.getenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "S")
+    grade = normalize_validation_grade(raw)
+    return grade if grade in GRADE_RANKS else "S"
+
+
 __all__ = [
+    "GRADE_RANKS",
+    "normalize_validation_grade",
+    "validation_grade_rank",
+    "validation_grade_at_least",
+    "validation_grade_weight",
     "observe_d_grade_enabled",
     "observe_first_enabled",
     "wide_intake_observe_enabled",
@@ -182,4 +234,5 @@ __all__ = [
     "strategy_trade_prediction_promotion_gate_enabled",
     "strategy_trade_prediction_budget_feedback_enabled",
     "strategy_trade_prediction_factor_decay_enabled",
+    "strategy_factory_min_validation_grade",
 ]

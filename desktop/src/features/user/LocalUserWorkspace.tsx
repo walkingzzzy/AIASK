@@ -1,7 +1,7 @@
 import { RefreshCw, Save, Search, UserRound } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { LocalProfile, RecentSessionSummary } from "../../types";
 
@@ -29,6 +29,7 @@ export function LocalUserWorkspace({
   const [messages, setMessages] = useState<Array<Record<string, unknown>>>([]);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<Record<string, unknown>>>([]);
+  const [memoryStatus, setMemoryStatus] = useState<unknown>(null);
   const [memoryResults, setMemoryResults] = useState<unknown>(null);
   const [message, setMessage] = useState("NOT_LOADED");
   const [busy, setBusy] = useState(false);
@@ -41,6 +42,11 @@ export function LocalUserWorkspace({
       setDraftUserId(loadedProfile.user_id || "local");
       setDraftProfileName(loadedProfile.profile_name || "本地操作者");
       onProfileChange(loadedProfile);
+      try {
+        setMemoryStatus(await api.memoryStatus());
+      } catch (error) {
+        setMemoryStatus({ status: "degraded", error: formatApiError(error) });
+      }
       try {
         const sessionPayload = await api.sessionsList(loadedProfile.user_id, 50);
         setSessions(sessionPayload.data || []);
@@ -109,6 +115,8 @@ export function LocalUserWorkspace({
     refresh().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [endpoint, apiToken, controlToken]);
+
+  const memoryStatusRecord = memoryStatus && typeof memoryStatus === "object" ? (memoryStatus as Record<string, unknown>) : {};
 
   return (
     <section className="capabilities-workspace">
@@ -250,9 +258,30 @@ export function LocalUserWorkspace({
             </section>
           </section>
 
+          <section className="capability-section">
+            <div className="section-header">
+              <div>
+                <span>Agent memory</span>
+                <h3>记忆状态</h3>
+              </div>
+              <StatusBadge status={String(memoryStatusRecord.status || (memoryStatus ? "ready" : "not_loaded"))} />
+            </div>
+            <div className="kv-grid">
+              <span>Provider</span>
+              <strong>{compact(memoryStatusRecord.provider || memoryStatusRecord.default_provider)}</strong>
+              <span>路径</span>
+              <strong>{compact(memoryStatusRecord.path || memoryStatusRecord.database_path)}</strong>
+              <span>状态</span>
+              <strong>{compact(memoryStatusRecord.status || "-")}</strong>
+              <span>错误</span>
+              <strong>{compact(memoryStatusRecord.error || "-")}</strong>
+            </div>
+            <RawEvidencePanel title="记忆状态 JSON" value={memoryStatus || { status: "not_loaded" }} />
+          </section>
+
           <details className="raw-details">
             <summary>原始本地画像数据</summary>
-            <JsonPanel value={{ profile, sessions, messages, searchResults, memoryResults }} />
+            <JsonPanel value={{ profile, sessions, messages, searchResults, memoryStatus, memoryResults }} />
           </details>
         </div>
       </div>

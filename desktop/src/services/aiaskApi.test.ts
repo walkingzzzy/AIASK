@@ -29,6 +29,9 @@ function mockFetch() {
     if (url.includes("/v1/desktop/data/sync-plan")) {
       return jsonResponse({ object: "aiask.desktop_data_sync_plan", status: "ready", intent_request: { action: "data_sync.sync", params: {} } });
     }
+    if (url.includes("/v1/tools/agent_quant_data_gate")) {
+      return jsonResponse({ success: true, data: { status: "passed", missing: [], stale: [] }, error: null });
+    }
     if (url.includes("/v1/desktop/users/local-profile")) {
       return jsonResponse({ object: "aiask.local_profile", user_id: "local", profile_name: "本地操作者" });
     }
@@ -76,7 +79,10 @@ describe("AiaskApi desktop contract", () => {
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767/", apiToken: "api-token", controlToken: "control-token" });
 
     await api.settingsStatus();
+    await api.modelProviderStatus();
+    await api.memoryStatus();
     await api.dataStatus({ codes: ["600519", "000001"], max_stale_days: 3 });
+    await api.dataGate({ codes: ["600519"], max_stale_days: 3 });
     await api.dataSyncPlan({ codes: ["600519"], task_type: "kline" });
     await api.localProfileGet();
     await api.localProfileSave({ user_id: "local", profile_name: "本地操作者" });
@@ -85,7 +91,10 @@ describe("AiaskApi desktop contract", () => {
 
     expect(calls.map((call) => call.url)).toEqual([
       "http://127.0.0.1:8767/v1/desktop/settings/status",
+      "http://127.0.0.1:8767/v1/desktop/settings/status",
+      "http://127.0.0.1:8767/v1/desktop/settings/status",
       "http://127.0.0.1:8767/v1/desktop/data/status?codes=600519%2C000001&max_stale_days=3",
+      "http://127.0.0.1:8767/v1/tools/agent_quant_data_gate",
       "http://127.0.0.1:8767/v1/desktop/data/sync-plan",
       "http://127.0.0.1:8767/v1/desktop/users/local-profile",
       "http://127.0.0.1:8767/v1/desktop/users/local-profile",
@@ -93,11 +102,16 @@ describe("AiaskApi desktop contract", () => {
       "http://127.0.0.1:8767/v1/connectors/summary"
     ]);
     expect(calls[0].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
-    expect(calls[1].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
-    expect(calls[2].init.method).toBe("POST");
-    expect(requestBody(calls[2])).toEqual({ codes: ["600519"], task_type: "kline" });
-    expect(calls[4].init.method).toBe("PATCH");
-    expect(calls[6].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
+    expect(calls[1].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
+    expect(calls[2].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
+    expect(calls[3].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(calls[4].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(calls[4].init.method).toBe("POST");
+    expect(requestBody(calls[4])).toEqual({ codes: ["600519"], max_stale_days: 3 });
+    expect(calls[5].init.method).toBe("POST");
+    expect(requestBody(calls[5])).toEqual({ codes: ["600519"], task_type: "kline" });
+    expect(calls[7].init.method).toBe("PATCH");
+    expect(calls[9].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer control-token" }));
   });
 
   it("uses readonly desktop trade prediction endpoints", async () => {

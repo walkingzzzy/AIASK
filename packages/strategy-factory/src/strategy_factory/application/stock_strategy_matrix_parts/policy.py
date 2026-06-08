@@ -450,7 +450,7 @@
             profile_load_error_type = type(exc).__name__
 
         lightweight_profile_generated_count = 0
-        if router_enabled and not router_strict:
+        if router_enabled:
             for row in candidate_rows:
                 if self._ensure_lightweight_profile_summary(row):
                     lightweight_profile_generated_count += 1

@@ -16,6 +16,7 @@ export function ModelsWorkspace({
 }) {
   const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [apiToken, controlToken, endpoint]);
   const [settings, setSettings] = useState<DesktopSettingsStatus | null>(null);
+  const [providerStatus, setProviderStatus] = useState<unknown>(null);
   const [models, setModels] = useState<unknown>(null);
   const [message, setMessage] = useState("NOT_LOADED");
   const [busy, setBusy] = useState(false);
@@ -23,8 +24,13 @@ export function ModelsWorkspace({
   async function refresh() {
     setBusy(true);
     try {
-      const [settingsPayload, modelsPayload] = await Promise.all([api.settingsStatus(), api.aiModels()]);
+      const [settingsPayload, providerPayload, modelsPayload] = await Promise.all([
+        api.settingsStatus(),
+        api.modelProviderStatus(),
+        api.aiModels()
+      ]);
       setSettings(settingsPayload);
+      setProviderStatus(providerPayload);
       setModels(modelsPayload);
       setMessage("MODEL_STATUS_LOADED");
     } catch (error) {
@@ -40,7 +46,12 @@ export function ModelsWorkspace({
   }, [endpoint, apiToken, controlToken]);
 
   const ai = settings?.llm.ai_status;
-  const providersRecord = settings?.llm.providers && typeof settings.llm.providers === "object" ? (settings.llm.providers as Record<string, unknown>) : {};
+  const providersRecord =
+    providerStatus && typeof providerStatus === "object"
+      ? (providerStatus as Record<string, unknown>)
+      : settings?.llm.providers && typeof settings.llm.providers === "object"
+        ? (settings.llm.providers as Record<string, unknown>)
+        : {};
   const providers = Array.isArray(providersRecord.providers) ? providersRecord.providers as Array<Record<string, unknown>> : [];
 
   return (
@@ -112,7 +123,7 @@ export function ModelsWorkspace({
 
           <details className="raw-details">
             <summary>原始模型配置</summary>
-            <JsonPanel value={{ settings, models }} />
+            <JsonPanel value={{ settings, providerStatus, models }} />
           </details>
         </div>
       </div>

@@ -33,6 +33,7 @@ export function DataSyncWorkspace({
   const [taskType, setTaskType] = useState("kline");
   const [period, setPeriod] = useState("daily");
   const [dataStatus, setDataStatus] = useState<DesktopDataStatus | null>(null);
+  const [dataGateEnvelope, setDataGateEnvelope] = useState<ToolEnvelope | null>(null);
   const [plan, setPlan] = useState<DesktopDataSyncPlan | null>(null);
   const [intentEnvelope, setIntentEnvelope] = useState<ToolEnvelope | null>(null);
   const [syncIntents, setSyncIntents] = useState<Array<Record<string, unknown>>>([]);
@@ -42,8 +43,19 @@ export function DataSyncWorkspace({
   async function refresh() {
     setBusy(true);
     try {
-      const payload = await api.dataStatus({ codes: splitList(codes), max_stale_days: Number(maxStaleDays || 5) });
+      const statusRequest = { codes: splitList(codes), max_stale_days: Number(maxStaleDays || 5) };
+      const payload = await api.dataStatus(statusRequest);
       setDataStatus(payload);
+      try {
+        setDataGateEnvelope(await api.dataGate({ ...statusRequest, task_type: taskType, period }));
+      } catch (error) {
+        setDataGateEnvelope({
+          success: false,
+          data: { request: statusRequest },
+          error: formatApiError(error),
+          error_code: "DATA_GATE_UNAVAILABLE"
+        });
+      }
       try {
         const intents = await api.intentsList(undefined, 30);
         setSyncIntents((intents.data || []).filter((item) => String(item.action || "").startsWith("data_sync.")));
@@ -105,6 +117,13 @@ export function DataSyncWorkspace({
   const database = dataStatus?.database || {};
   const freshnessRecord =
     dataStatus?.freshness && typeof dataStatus.freshness === "object" ? (dataStatus.freshness as Record<string, unknown>) : {};
+  const dataGateRecord =
+    dataGateEnvelope?.data && typeof dataGateEnvelope.data === "object" ? (dataGateEnvelope.data as Record<string, unknown>) : {};
+  const dataGateStatus = dataGateEnvelope
+    ? dataGateEnvelope.success
+      ? String(dataGateRecord.status || "ready")
+      : "failed"
+    : "not_loaded";
   const intentId = intentIdFromEnvelope(intentEnvelope);
 
   return (
@@ -210,6 +229,27 @@ export function DataSyncWorkspace({
               <StatusBadge status={dataStatus?.quality_gate?.success ? "ready" : "partial"} />
             </div>
             <RawEvidencePanel title="质量闸门证据 JSON" value={freshnessRecord || dataStatus?.quality_gate || { status: "not_loaded" }} />
+          </section>
+
+          <section className="capability-section">
+            <div className="section-header">
+              <div>
+                <span>Agent read-only tool</span>
+                <h3>数据闸门复核</h3>
+              </div>
+              <ShieldCheck size={18} />
+            </div>
+            <div className="kv-grid">
+              <span>工具</span>
+              <strong>agent_quant_data_gate</strong>
+              <span>状态</span>
+              <strong>{compact(dataGateRecord.status || dataGateEnvelope?.error || dataGateStatus)}</strong>
+              <span>缺失</span>
+              <strong>{compact(dataGateRecord.missing)}</strong>
+              <span>过期</span>
+              <strong>{compact(dataGateRecord.stale)}</strong>
+            </div>
+            <RawEvidencePanel title="数据闸门工具 JSON" value={dataGateEnvelope || { status: "not_loaded" }} />
           </section>
         </section>
 

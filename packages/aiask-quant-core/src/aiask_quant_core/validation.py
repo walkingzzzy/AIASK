@@ -705,7 +705,13 @@ class FactorValidationPipeline:
 
         total = sum(scores.values())
 
-        if total >= 70:
+        if total >= 90:
+            grade = "SSS"
+        elif total >= 85:
+            grade = "SS"
+        elif total >= 80:
+            grade = "S"
+        elif total >= 70:
             grade = "A"
         elif total >= 55:
             grade = "B"
@@ -719,7 +725,7 @@ class FactorValidationPipeline:
             "total_score": float(total),
             "scores": {k: float(v) for k, v in scores.items()},
             "recommendation": (
-                "Strong — 因子样本外表现稳健" if grade in ("A", "B")
+                "Strong — 因子样本外表现稳健" if grade in ("SSS", "SS", "S", "A", "B")
                 else "Weak — 因子泛化能力不足，建议审慎使用"
             ),
         }

@@ -63,6 +63,7 @@ from .._runtime_toggles import (
     diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
     observe_first_enabled as _observe_first_enabled,
     observe_d_grade_enabled as _observe_d_grade_enabled,
+    validation_grade_at_least as _validation_grade_at_least,
     wide_intake_observe_enabled as _wide_intake_observe_enabled,
 )
 from ...domain.constants import (

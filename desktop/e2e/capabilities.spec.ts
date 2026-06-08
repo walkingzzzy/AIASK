@@ -2040,14 +2040,14 @@ test("Strategy Factory panel renders success envelopes and structured degraded r
   await expect(page.getByRole("heading", { name: "工厂状态" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "最近运行" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "评审快照" })).toBeVisible();
-  await expect(page.getByText("implemented").first()).toBeVisible();
+  await expect(page.getByText("已实现").first()).toBeVisible();
 
   await page.unroute(`${API_ORIGIN}/**`);
   await setupApiMocks(page, { factoryMode: "degraded" });
   await page.getByRole("button", { name: controlLabel("Refresh") }).click();
   await expect(page.getByText("数据库已配置，但 strategy manager 返回错误。", { exact: false }).first()).toBeVisible();
   await expect(page.getByText("STRATEGY_FACTORY_UNAVAILABLE").first()).toBeVisible();
-  await expect(page.getByText("partial").first()).toBeVisible();
+  await expect(page.getByText("部分就绪").first()).toBeVisible();
 });
 
 test("Hermes capability tables expose v0.14 tool, platform, and feature parity with search and status filters", async ({ page }) => {

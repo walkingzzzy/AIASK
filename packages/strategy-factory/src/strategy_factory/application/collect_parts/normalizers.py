@@ -295,6 +295,15 @@
             report = dict(quality_report or {})
             summary = dict(report.get("summary") or {})
             validation_grade = str(summary.get("validation_grade") or "").strip().upper()
+            grade_weights = {
+                "SSS": 1.25,
+                "SS": 1.18,
+                "S": 1.10,
+                "A": 1.0,
+                "B": 0.85,
+                "C": 0.7,
+            }
+            qualifying_grades = set(grade_weights)
             total_signals = self._safe_int(dict(signal_stats or {}).get("total_signals"), 0)
             observed_forward_days = self._observed_forward_days(signal_stats)
             quality_passed = bool(report.get("passed"))
@@ -302,18 +311,18 @@
                 quality_passed
                 and total_signals >= 10
                 and {1, 5, 10, 20}.issubset(set(observed_forward_days))
-                and validation_grade in {"A", "B", "C"}
+                and validation_grade in qualifying_grades
             )
             oos_passed = (
                 quality_passed
                 and total_signals >= 10
-                and validation_grade in {"A", "B", "C"}
+                and validation_grade in qualifying_grades
                 and bool({5, 10, 20} & set(observed_forward_days))
             )
             if not oos_passed:
                 continue
             sampling_weight = round(
-                {"A": 1.0, "B": 0.85, "C": 0.7}.get(validation_grade, 0.5)
+                grade_weights.get(validation_grade, 0.5)
                 + min(total_signals / 20.0, 1.0) * 0.3
                 + min(len(observed_forward_days) / 4.0, 1.0) * 0.25
                 + (0.15 if promotion_ready else 0.0),

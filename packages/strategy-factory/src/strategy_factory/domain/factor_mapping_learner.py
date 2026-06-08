@@ -71,7 +71,14 @@ async def compute_factor_mapping_from_history(
             continue
         # Gate 通过权重：A=1.0, B=0.7, C=0.3, 其他 0
         validation_grade = str((strategy.get("validation_grade") or "")).strip().upper()
-        weight = {"A": 1.0, "B": 0.7, "C": 0.3}.get(validation_grade, 0.0)
+        weight = {
+            "SSS": 1.25,
+            "SS": 1.18,
+            "S": 1.10,
+            "A": 1.0,
+            "B": 0.7,
+            "C": 0.3,
+        }.get(validation_grade, 0.0)
         if weight <= 0:
             continue
         bucket = factor_to_type_score.setdefault(source_factor, {})

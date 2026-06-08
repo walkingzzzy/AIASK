@@ -27,6 +27,7 @@ def _clear_env(monkeypatch):
         "STRATEGY_TRADE_PREDICTION_PROMOTION_GATE_ENABLED",
         "STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED",
         "STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED",
+        "STRATEGY_FACTORY_MIN_VALIDATION_GRADE",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -261,3 +262,11 @@ def test_trade_prediction_p4_toggles_enable_via_env(monkeypatch):
     assert toggles.strategy_trade_prediction_promotion_gate_enabled() is True
     assert toggles.strategy_trade_prediction_budget_feedback_enabled() is True
     assert toggles.strategy_trade_prediction_factor_decay_enabled() is True
+
+
+def test_min_validation_grade_defaults_to_s(monkeypatch):
+    assert toggles.strategy_factory_min_validation_grade() == "S"
+    assert toggles.validation_grade_at_least("SS", "S") is True
+    assert toggles.validation_grade_at_least("B", "S") is False
+    monkeypatch.setenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "A")
+    assert toggles.strategy_factory_min_validation_grade() == "A"

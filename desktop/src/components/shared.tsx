@@ -48,8 +48,9 @@ export function localizeBlockedReason(reason?: unknown): string {
 export function confirmAction(actionLabel: string, detail?: string): boolean {
   const message = [actionLabel, detail, "此操作会改变当前任务、运行或集成状态，请确认后继续。"].filter(Boolean).join("\n\n");
   if (typeof window === "undefined" || typeof window.confirm !== "function") return true;
-  const confirmSource = String(window.confirm);
-  if (window.navigator?.userAgent?.toLowerCase().includes("jsdom") && confirmSource.includes("notImplemented")) return true;
+  const maybeMock = window.confirm as unknown as { _isMockFunction?: boolean; mock?: unknown };
+  const mockedConfirm = Boolean(maybeMock._isMockFunction || maybeMock.mock);
+  if (window.navigator?.userAgent?.toLowerCase().includes("jsdom") && !mockedConfirm) return true;
   try {
     return window.confirm(message) !== false;
   } catch {

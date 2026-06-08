@@ -18,7 +18,15 @@ class ParameterDistributionRegistry:
 
     MIN_SAMPLE_COUNT = 3
     MIN_TOTAL_SIGNALS = 10
-    QUALIFYING_GRADES = frozenset({"A", "B", "C"})
+    QUALIFYING_GRADES = frozenset({"SSS", "SS", "S", "A", "B", "C"})
+    GRADE_WEIGHTS = {
+        "SSS": 1.25,
+        "SS": 1.18,
+        "S": 1.10,
+        "A": 1.0,
+        "B": 0.85,
+        "C": 0.7,
+    }
     BASELINE_FORWARD_DAYS = frozenset({5, 10, 20})
 
     def __init__(self, samples: Optional[Iterable[Mapping[str, Any]]] = None):
@@ -99,7 +107,7 @@ class ParameterDistributionRegistry:
 
         weight = cls._safe_float(raw.get("sampling_weight"), 0.0)
         if weight <= 0.0:
-            grade_score = {"A": 1.0, "B": 0.85, "C": 0.7}.get(validation_grade, 0.55)
+            grade_score = cls.GRADE_WEIGHTS.get(validation_grade, 0.55)
             coverage_score = min(len(observed_forward_days & cls.BASELINE_FORWARD_DAYS) / 3.0, 1.0)
             signal_score = min(total_signals / 20.0, 1.0)
             weight = round(

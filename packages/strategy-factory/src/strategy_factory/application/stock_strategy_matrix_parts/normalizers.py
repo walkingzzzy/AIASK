@@ -706,6 +706,23 @@
         pe_ratio = cls._safe_float(row.get("pe_ratio"))
         pb_ratio = cls._safe_float(row.get("pb_ratio"))
         market_cap = cls._safe_float(row.get("market_cap"))
+        turnover_rate = cls._safe_float(
+            row.get("turnover_rate")
+            or row.get("turnover")
+            or row.get("turnover_ratio")
+        )
+        volume_ratio = cls._safe_float(
+            row.get("volume_ratio_5_20")
+            or row.get("volume_ratio")
+            or row.get("volume_ratio_20")
+        )
+        pct_chg = cls._safe_float(
+            row.get("pct_chg")
+            or row.get("change_pct")
+            or row.get("daily_return")
+            or row.get("return_1d")
+        )
+        amount = cls._safe_float(row.get("amount") or row.get("turnover_amount"))
         valuation_score = 0.0
         if 0 < pe_ratio <= 30:
             valuation_score = max(valuation_score, (30.0 - pe_ratio) / 30.0)
@@ -717,8 +734,45 @@
                 quality_score = max(0.0, min(math.log10(market_cap / 1e8 + 1.0) / 3.0, 1.0))
             except Exception:
                 quality_score = 0.0
+        if amount >= 5e8:
+            quality_score = max(quality_score, 0.45)
+        elif amount >= 1e8:
+            quality_score = max(quality_score, 0.30)
+        trend_score = 0.0
+        if volume_ratio >= 1.2:
+            trend_score += min((volume_ratio - 1.0) / 2.0, 0.35)
+        if pct_chg > 0:
+            trend_score += min(pct_chg / 8.0, 0.35)
+        if turnover_rate >= 1.0:
+            trend_score += min(turnover_rate / 12.0, 0.20)
+        trend_score = max(0.0, min(trend_score, 1.0))
+        reversal_score = 0.0
+        if pct_chg < 0:
+            reversal_score += min(abs(pct_chg) / 8.0, 0.35)
+        if 0.0 < volume_ratio <= 0.85:
+            reversal_score += min((0.85 - volume_ratio) / 0.85, 0.25)
+        reversal_score = max(0.0, min(reversal_score, 1.0))
+        growth_score = 0.0
+        if trend_score >= 0.35 and quality_score >= 0.35:
+            growth_score = min(0.65, trend_score * 0.7 + quality_score * 0.3)
+        trend_regime = "unknown"
+        if trend_score >= 0.35:
+            trend_regime = "trend_up"
+        elif reversal_score >= 0.30:
+            trend_regime = "range"
+        vol_regime = "unknown"
+        if volume_ratio >= 1.5 or turnover_rate >= 5.0:
+            vol_regime = "high_vol"
+        elif 0.0 < volume_ratio <= 0.8:
+            vol_regime = "low_vol"
+        elif volume_ratio > 0.0:
+            vol_regime = "normal_vol"
         recommended = ["multi_factor"]
-        if valuation_score >= 0.35 and quality_score >= 0.25:
+        if trend_score >= 0.35:
+            recommended = ["momentum", "ma_cross", "multi_factor"]
+        elif reversal_score >= 0.35:
+            recommended = ["mean_reversion_short", "rsi", "multi_factor"]
+        elif valuation_score >= 0.35 and quality_score >= 0.25:
             recommended = ["value_factor", "quality_factor", "multi_factor"]
         elif quality_score >= 0.55:
             recommended = ["quality_factor", "multi_factor"]
@@ -728,19 +782,19 @@
             "primary_archetype": "lightweight_unknown",
             "secondary_archetypes": [],
             "regime": {
-                "trend_regime": "unknown",
-                "vol_regime": "unknown",
+                "trend_regime": trend_regime,
+                "vol_regime": vol_regime,
                 "sentiment_regime": "unknown",
             },
             "factor_dimension_scores": {
-                "trend": 0.0,
-                "reversal": 0.0,
+                "trend": round(trend_score, 4),
+                "reversal": round(reversal_score, 4),
                 "valuation": round(max(0.0, min(valuation_score, 1.0)), 4),
                 "quality": round(max(0.0, min(quality_score, 1.0)), 4),
-                "growth": 0.0,
+                "growth": round(max(0.0, min(growth_score, 1.0)), 4),
             },
             "feature_coverage": {
-                "technical_price_volume": "missing",
+                "technical_price_volume": "partial" if trend_score > 0.0 or reversal_score > 0.0 else "missing",
                 "valuation_financial": "partial" if valuation_score > 0.0 or quality_score > 0.0 else "missing",
                 "alternative_sentiment_capital_flow": "missing",
                 "event_news_notice_research_theme": "missing",

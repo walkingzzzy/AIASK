@@ -708,6 +708,21 @@
             }
 
         @staticmethod
+        def _default_runtime_incubation_policy(holding_horizon: dict[str, Any]) -> dict[str, Any]:
+            max_days = max(8, int(dict(holding_horizon or {}).get("max_days") or 20))
+            expected_trade_count = max(4.0, min(12.0, 252.0 / float(max_days)))
+            warmup_target_signals = max(4, min(8, int(round(expected_trade_count / 2.5)) or 4))
+            warmup_soft_timeout_days = max(5, min(18, int(round(max(5, warmup_target_signals * 2.0)))))
+            warmup_hard_timeout_days = max(20, min(45, int(round(max(20, warmup_target_signals * 5.0)))))
+            warmup_max_days = max(30, min(60, int(round(max(warmup_hard_timeout_days + 10, warmup_soft_timeout_days + 15)))))
+            return {
+                "warmup_target_signals": warmup_target_signals,
+                "warmup_soft_timeout_days": warmup_soft_timeout_days,
+                "warmup_hard_timeout_days": warmup_hard_timeout_days,
+                "warmup_max_days": warmup_max_days,
+            }
+
+        @staticmethod
         def _default_runtime_execution_assumptions() -> dict[str, Any]:
             return {
                 "commission_rate": 0.00025,
@@ -839,12 +854,7 @@
                         "mode": "reduce_then_exit" if family == "slow_factor" else "take_profit_or_trailing",
                     },
                 },
-                "incubation_policy": {
-                    "warmup_target_signals": 20,
-                    "warmup_soft_timeout_days": 5,
-                    "warmup_hard_timeout_days": 20,
-                    "warmup_max_days": 30,
-                },
+                "incubation_policy": cls._default_runtime_incubation_policy(holding_horizon),
             }
             return playbook
 

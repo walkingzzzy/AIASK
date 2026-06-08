@@ -57,6 +57,48 @@ def test_admission_uses_authoritative_backtest_expectancy():
     assert result["metric_source_audit"]["expectancy"] == "event_window_metrics"
 
 
+def test_incubation_admission_requires_configured_s_grade(monkeypatch):
+    from strategy_factory.application.submission_gate import runner
+
+    monkeypatch.setenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "S")
+    strong_gate = {
+        "passed": True,
+        "profile": "trade_rule_validation",
+        "validation_focus": "target_plus_representative",
+        "post_cost_sharpe": 1.1,
+        "sharpe_ratio": 1.1,
+        "total_return": 0.24,
+        "target_layer_oos_return": 0.18,
+        "max_drawdown": 0.08,
+        "trade_count": 24,
+        "trades_count": 24,
+        "avg_holding_days": 12,
+        "trade_density": 0.4,
+        "win_rate": 0.62,
+        "profit_factor": 2.1,
+        "expectancy": 123.45,
+        "parameter_perturbation_trade_stability": 0.85,
+    }
+    blocked = runner._attach_admission_evaluations(
+        _semantic_ready_strategy("ma_cross"),
+        {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+        strong_gate,
+        validation_report={"rating": {"grade": "B", "total_score": 58.0}},
+    )
+    passed = runner._attach_admission_evaluations(
+        _semantic_ready_strategy("ma_cross"),
+        {"profile": "trade_rule_validation", "validation_focus": "target_plus_representative"},
+        strong_gate,
+        validation_report={"rating": {"grade": "S", "total_score": 81.0}},
+    )
+
+    assert blocked["research_candidate_ready"] is True
+    assert blocked["incubation_candidate_ready"] is False
+    assert "validation_grade_b_below_minimum_s_for_incubation" in blocked["admission_block_reasons"]
+    assert passed["incubation_candidate_ready"] is True
+    assert passed["strict_incubation_ready"] is True
+
+
 def test_statistical_admission_distinguishes_missing_from_zero():
     """P1 update (R5.1, audit P1-prep): explicit 0.0 is now classified
     as ``missing`` rather than ``weak``. The audit observed that

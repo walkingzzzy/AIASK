@@ -93,6 +93,7 @@ def _sqlite_type(definition: str) -> str:
     ]
     for pattern, repl in replacements:
         text = re.sub(pattern, repl, text, flags=re.I)
+    text = re.sub(r"\bDATE\b", "TEXT", text, flags=re.I)
     text = re.sub(r"DEFAULT\s+'(\{.*?\}|\[.*?\])'\s*::\s*TEXT", r"DEFAULT '\1'", text, flags=re.I)
     text = re.sub(r"DEFAULT\s+NOW\s*\(\s*\)", "DEFAULT CURRENT_TIMESTAMP", text, flags=re.I)
     text = re.sub(r"\bNOW\s*\(\s*\)", "CURRENT_TIMESTAMP", text, flags=re.I)
