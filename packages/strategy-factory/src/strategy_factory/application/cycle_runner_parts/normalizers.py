@@ -1109,8 +1109,24 @@
                 "gate_3_input": submit_result.get("gate_3_input", len(unique)),
                 "gate_3_passed": submit_result.get("gate_3_passed", 0),
                 "gate_3_failed": submit_result.get("gate_3_failed", 0),
+                "gate_3_recorded": submit_result.get("gate_3_recorded", 0),
+                "gate3_quality_recorded": submit_result.get("gate3_quality_recorded", 0),
+                "gate3_record_quality_qualified_count": submit_result.get(
+                    "gate3_record_quality_qualified_count",
+                    0,
+                ),
+                "gate3_record_diagnostic_only_count": submit_result.get(
+                    "gate3_record_diagnostic_only_count",
+                    0,
+                ),
                 "gate_3_failure_topn": list(submit_result.get("gate_3_failure_reason_topn") or [])[:5],
                 "validation_grade_counts": dict(results["summary"].get("validation_grade_counts") or {}),
+                "qualified_validation_grade_counts": dict(
+                    results["summary"].get("qualified_validation_grade_counts") or {}
+                ),
+                "diagnostic_validation_grade_counts": dict(
+                    results["summary"].get("diagnostic_validation_grade_counts") or {}
+                ),
             }
 
             logger.info(

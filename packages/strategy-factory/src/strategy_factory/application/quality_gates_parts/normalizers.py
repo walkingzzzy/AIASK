@@ -126,6 +126,13 @@ def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = 
             "failed_count": counts["failed_count"],
             "pending_count": 0,
             "provisional_passed_count": counts["provisional_passed_count"],
+            "recorded_count": int(payload.get("gate_3_recorded") or 0),
+            "quality_recorded_count": int(
+                payload.get("gate3_quality_recorded")
+                or payload.get("gate3_record_quality_qualified_count")
+                or 0
+            ),
+            "diagnostic_recorded_count": int(payload.get("gate3_record_diagnostic_only_count") or 0),
             "failure_reason_topn": list(payload.get("gate_3_failure_reason_topn") or []),
             "gate3_audit_failed_count": int(payload.get("gate3_audit_failed_count") or counts["failed_count"]),
             "observe_admitted_count": int(payload.get("observe_admitted_count") or 0),
@@ -143,6 +150,13 @@ def build_completed_gate_3_report(submission_result: Optional[Dict[str, Any]] = 
             "passed_count": counts["passed_count"],
             "failed_count": counts["failed_count"],
             "provisional_passed_count": counts["provisional_passed_count"],
+            "recorded_count": int(payload.get("gate_3_recorded") or 0),
+            "quality_recorded_count": int(
+                payload.get("gate3_quality_recorded")
+                or payload.get("gate3_record_quality_qualified_count")
+                or 0
+            ),
+            "diagnostic_recorded_count": int(payload.get("gate3_record_diagnostic_only_count") or 0),
             "gate3_audit_failed_count": int(payload.get("gate3_audit_failed_count") or counts["failed_count"]),
             "observe_admitted_count": int(payload.get("observe_admitted_count") or 0),
             "pre_observe_hard_reject_count": int(payload.get("pre_observe_hard_reject_count") or 0),

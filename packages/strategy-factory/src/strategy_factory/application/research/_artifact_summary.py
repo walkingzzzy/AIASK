@@ -63,6 +63,8 @@ def build_factor_research_summary(
     stock_family_allocation_summary: dict[str, Any],
     lifecycle_feedback_input: dict[str, Any],
     budget_feedback_summary: dict[str, Any],
+    paper_observation_backlog: dict[str, Any],
+    incubation_factory_health: dict[str, Any],
     search_route_action_counts: dict[str, int],
     degraded: bool,
     freshness_days: int | None,
@@ -161,6 +163,24 @@ def build_factor_research_summary(
         "top_candidate_lineage": top_candidate_lineage,
         "model_registry_lineage_available": bool(model_registry_lineage.get("available")),
         "model_registry_lineage_summary": model_lineage_summary,
+        "paper_observation_backlog_count": int(
+            paper_observation_backlog.get("paper_observation_backlog_count") or 0
+        ),
+        "paper_observation_backlog_status": (
+            paper_observation_backlog.get("paper_observation_backlog_status") or "empty"
+        ),
+        "paper_observation_last_recognized_at": paper_observation_backlog.get(
+            "paper_observation_last_recognized_at"
+        ),
+        "paper_observation_latest_bound_at": paper_observation_backlog.get(
+            "paper_observation_latest_bound_at"
+        ),
+        "incubation_factory_health": incubation_factory_health,
+        "paper_observation_intake_stale": bool(
+            int(paper_observation_backlog.get("paper_observation_backlog_count") or 0) > 0
+            and incubation_factory_health
+            and not bool(incubation_factory_health.get("healthy", True))
+        ),
         "governed_risk_counts": {
             "lookahead": dict(governed_registry_summary.get("lookahead_risk_counts") or {}),
             "multiple_testing": dict(

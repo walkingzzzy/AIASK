@@ -28,6 +28,10 @@ def _clear_env(monkeypatch):
         "STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED",
         "STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED",
         "STRATEGY_FACTORY_MIN_VALIDATION_GRADE",
+        "STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -264,9 +268,29 @@ def test_trade_prediction_p4_toggles_enable_via_env(monkeypatch):
     assert toggles.strategy_trade_prediction_factor_decay_enabled() is True
 
 
-def test_min_validation_grade_defaults_to_s(monkeypatch):
-    assert toggles.strategy_factory_min_validation_grade() == "S"
-    assert toggles.validation_grade_at_least("SS", "S") is True
-    assert toggles.validation_grade_at_least("B", "S") is False
+def test_min_validation_grade_defaults_to_c(monkeypatch):
+    assert toggles.strategy_factory_min_validation_grade() == "C"
+    assert toggles.validation_grade_at_least("B", "C") is True
+    assert toggles.validation_grade_at_least("D", "C") is False
     monkeypatch.setenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "A")
     assert toggles.strategy_factory_min_validation_grade() == "A"
+
+
+def test_gate3_record_only_defaults_disabled(monkeypatch):
+    assert toggles.strategy_factory_gate3_record_only_enabled() is False
+    monkeypatch.setenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", "1")
+    assert toggles.strategy_factory_gate3_record_only_enabled() is True
+
+
+def test_gate3_record_only_intake_defaults_disabled(monkeypatch):
+    assert toggles.gate3_record_only_intake_enabled() is False
+    assert toggles.gate3_record_only_intake_batch_limit() == 100
+    assert toggles.gate3_record_only_intake_min_grade() == "C"
+
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "999")
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "SS")
+
+    assert toggles.gate3_record_only_intake_enabled() is True
+    assert toggles.gate3_record_only_intake_batch_limit() == 500
+    assert toggles.gate3_record_only_intake_min_grade() == "SS"

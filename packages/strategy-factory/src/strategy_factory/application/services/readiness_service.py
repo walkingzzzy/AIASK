@@ -308,6 +308,25 @@ class ReadinessService:
             factor_summary.get("budget_feedback_evidence_debt_ratio"),
             default=0.0,
         )
+        paper_observation_backlog_count = int(
+            factor_summary.get("paper_observation_backlog_count")
+            or factor_summary.get("paper_observation_active_count")
+            or 0
+        )
+        paper_observation_backlog_status = (
+            str(factor_summary.get("paper_observation_backlog_status") or "").strip().lower()
+            or ("empty" if paper_observation_backlog_count <= 0 else "queued")
+        )
+        paper_observation_intake_stale = bool(
+            factor_summary.get("paper_observation_intake_stale")
+            or paper_observation_backlog_status in {"stale", "handoff_failed", "intake_stale"}
+        )
+        paper_observation_last_recognized_at = factor_summary.get("paper_observation_last_recognized_at")
+        incubation_factory_health = dict(factor_summary.get("incubation_factory_health") or {})
+        if paper_observation_backlog_count > 0 and incubation_factory_health:
+            paper_observation_intake_stale = paper_observation_intake_stale or not bool(
+                incubation_factory_health.get("healthy", True)
+            )
         feedback_generator_mode_control_mode_counts = dict(
             factor_summary.get("feedback_generator_mode_control_mode_counts") or {}
         )
@@ -536,6 +555,17 @@ class ReadinessService:
         elif budget_feedback_evidence_debt_ratio >= 0.45 and budget_feedback_strategy_count >= 3:
             warnings.append("incubating_evidence_debt_elevated")
             score -= 0.05
+        if paper_observation_backlog_count >= 50:
+            warnings.append("paper_observation_backlog_high")
+            score -= 0.08
+        elif paper_observation_backlog_count >= 10:
+            warnings.append("paper_observation_backlog_elevated")
+            score -= 0.04
+        if paper_observation_backlog_count > 0 and paper_observation_intake_stale:
+            warnings.append("paper_observation_intake_stale")
+            if hard_block:
+                blockers.append("paper_observation_intake_stale")
+            score -= 0.12
         if governed_pool_missing_after_scheduler_success:
             warnings.append("factor_scheduler_recent_success_without_governed_pool")
             if governed_supply_hard_block:
@@ -660,6 +690,11 @@ class ReadinessService:
             "budget_feedback_promotion_review_coverage_ratio": budget_feedback_promotion_review_coverage_ratio,
             "budget_feedback_evidence_debt_strategy_count": budget_feedback_evidence_debt_strategy_count,
             "budget_feedback_evidence_debt_ratio": budget_feedback_evidence_debt_ratio,
+            "paper_observation_backlog_count": paper_observation_backlog_count,
+            "paper_observation_backlog_status": paper_observation_backlog_status,
+            "paper_observation_intake_stale": paper_observation_intake_stale,
+            "paper_observation_last_recognized_at": paper_observation_last_recognized_at,
+            "incubation_factory_health": incubation_factory_health,
             "feedback_generator_mode_control_mode_counts": feedback_generator_mode_control_mode_counts,
             "suppressed_generator_modes": suppressed_generator_modes,
             "external_llm_provider_control_mode": external_llm_provider_control_mode,

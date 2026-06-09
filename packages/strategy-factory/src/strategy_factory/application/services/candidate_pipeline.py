@@ -114,8 +114,14 @@ class CandidatePipeline:
             )
 
             if observe_first_mode and candidates:
-                passed = []
-                observe_candidates = self._mark_observe_first_candidates(candidates)
+                passed = await backtest_filter.filter(candidates, db)
+                backtest_report = self._extract_backtest_report(
+                    {},
+                    backtest_filter,
+                    candidates,
+                    passed,
+                )
+                observe_candidates = self._mark_observe_first_candidates(passed)
                 unique = await deduplicator.deduplicate(observe_candidates, db)
                 submit_result = await submitter.submit(
                     unique,
@@ -123,7 +129,6 @@ class CandidatePipeline:
                     db,
                     read_only=read_only,
                 )
-                backtest_report = self._build_observe_first_backtest_report(candidates)
                 quality_gate_report = self._build_observe_first_evidence_report(
                     candidates,
                     observe_candidates,
@@ -138,13 +143,14 @@ class CandidatePipeline:
                     "observe_intake_count": len(observe_candidates),
                     "deduped_observe_intake_count": len(unique),
                     "pre_observe_hard_reject_count": 0,
-                    "gate3_pre_observe_block_count": 0,
-                    "mode": "no_legacy_gate",
+                    "pre_observe_evidence_reject_count": max(len(candidates) - len(passed), 0),
+                    "gate3_pre_observe_block_count": max(len(candidates) - len(passed), 0),
+                    "mode": "backtest_evidence_screen",
                     "pre_observe_gate_removed": True,
                     "legacy_gate_executed": False,
                     "legacy_funnel_executed": False,
                     "legacy_gate_report_mode": "not_executed",
-                    "evidence_scoring_mode": "observe_first_no_legacy_gate",
+                    "evidence_scoring_mode": "observe_first_backtest_evidence_screen",
                     "execution_mode": str(resolved_execution_mode or ""),
                 }
                 quality_gate_report = compact_quality_gate_report(quality_gate_report)
@@ -351,16 +357,19 @@ class CandidatePipeline:
             "contract_version": "strategy_factory.observe_first_evidence_report.v1",
             "legacy_gate_executed": False,
             "legacy_funnel_executed": False,
-            "evidence_scoring_mode": "observe_first_no_legacy_gate",
+            "evidence_scoring_mode": "observe_first_backtest_evidence_screen",
             "pre_observe_gate_removed": True,
             "execution_mode": str(execution_mode or ""),
             "evidence_scoring": {
-                "mode": "observe_first_no_legacy_gate",
+                "mode": "observe_first_backtest_evidence_screen",
                 "input_count": len(candidates),
                 "scored_count": len(candidates),
+                "evidence_passed_count": len(observe_candidates),
+                "pre_observe_evidence_reject_count": max(len(candidates) - len(observe_candidates), 0),
                 "observe_intake_count": len(observe_candidates),
                 "deduped_observe_intake_count": len(unique),
                 "pre_observe_hard_reject_count": 0,
+                "gate3_pre_observe_block_count": max(len(candidates) - len(observe_candidates), 0),
                 "legacy_gate_executed": False,
                 "legacy_funnel_executed": False,
                 "candidate_source_counts": cls._candidate_source_counts(candidates),
@@ -372,13 +381,13 @@ class CandidatePipeline:
                 "input_count": gate_3_input,
                 "passed_count": gate_3_passed,
                 "failed_count": gate_3_failed,
-                "pre_observe_blocking": False,
+                "pre_observe_blocking": max(len(candidates) - len(observe_candidates), 0) > 0,
             },
             "final_decision": {
                 "stage": "observe_intake",
                 "passed_count": len(unique),
                 "legacy_gate_executed": False,
-                "pre_observe_blocking": False,
+                "pre_observe_blocking": max(len(candidates) - len(observe_candidates), 0) > 0,
             },
         }
 

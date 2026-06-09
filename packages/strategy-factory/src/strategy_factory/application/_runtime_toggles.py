@@ -128,6 +128,24 @@ def paper_intake_batch_limit() -> int:
     return max(1, min(value, 500))
 
 
+def gate3_record_only_intake_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", default=False)
+
+
+def gate3_record_only_intake_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "100")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 100
+    return max(1, min(value, 500))
+
+
+def gate3_record_only_intake_min_grade() -> str:
+    grade = normalize_validation_grade(os.getenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "C"))
+    return grade if grade in GRADE_RANKS else "C"
+
+
 # === DEV-V2: Gate-3 failed but diagnostically useful candidates ===
 def diagnostic_observation_enabled() -> bool:
     return _env_bool("STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED", default=False)
@@ -205,9 +223,13 @@ def strategy_trade_prediction_factor_decay_enabled() -> bool:
 
 
 def strategy_factory_min_validation_grade() -> str:
-    raw = os.getenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "S")
+    raw = os.getenv("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "C")
     grade = normalize_validation_grade(raw)
-    return grade if grade in GRADE_RANKS else "S"
+    return grade if grade in GRADE_RANKS else "C"
+
+
+def strategy_factory_gate3_record_only_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", default=False)
 
 
 __all__ = [
@@ -222,6 +244,9 @@ __all__ = [
     "trade_aware_extra_families",
     "paper_intake_enabled",
     "paper_intake_batch_limit",
+    "gate3_record_only_intake_enabled",
+    "gate3_record_only_intake_batch_limit",
+    "gate3_record_only_intake_min_grade",
     "diagnostic_observation_enabled",
     "diagnostic_observation_batch_limit",
     "diagnostic_observation_ttl_days",
@@ -235,4 +260,5 @@ __all__ = [
     "strategy_trade_prediction_budget_feedback_enabled",
     "strategy_trade_prediction_factor_decay_enabled",
     "strategy_factory_min_validation_grade",
+    "strategy_factory_gate3_record_only_enabled",
 ]

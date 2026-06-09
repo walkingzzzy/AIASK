@@ -45,9 +45,30 @@ def diagnostic_intake_batch_limit() -> int:
     return max(1, min(value, 50))
 
 
+def gate3_record_only_intake_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", default=False)
+
+
+def gate3_record_only_intake_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "100")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 100
+    return max(1, min(value, 500))
+
+
+def gate3_record_only_intake_min_grade() -> str:
+    grade = str(os.getenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "C") or "").strip().upper()
+    return grade if grade in {"D", "C", "B", "A", "S", "SS", "SSS"} else "C"
+
+
 __all__ = [
     "paper_intake_enabled",
     "paper_intake_batch_limit",
     "diagnostic_intake_enabled",
     "diagnostic_intake_batch_limit",
+    "gate3_record_only_intake_enabled",
+    "gate3_record_only_intake_batch_limit",
+    "gate3_record_only_intake_min_grade",
 ]

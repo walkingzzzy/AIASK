@@ -430,3 +430,91 @@ def test_scheduler_run_once_blocks_orphaned_predecessor_task(tmp_path):
     assert new_after is not None
     assert new_after["status"] == "completed"
     assert isinstance(new_after["payload"].get("owner_pid"), int)
+
+
+def test_full_market_topn_record_only_skips_strategy_entity(monkeypatch):
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+    monkeypatch.setenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", "1")
+
+    class _DB:
+        def __init__(self):
+            self.saved_strategies = []
+            self.snapshots = []
+
+        async def save_strategy(self, payload):
+            self.saved_strategies.append(dict(payload))
+            return payload
+
+        async def save_strategy_factory_topn_snapshot(self, payload):
+            row = {"snapshot_id": "snap-1", **dict(payload)}
+            self.snapshots.append(row)
+            return row
+
+    scheduler = StrategyFactoryScheduler()
+    db = _DB()
+    failures = []
+    results = {
+        "run_id": "factory_run_topn_record_only",
+        "trace_id": "trace-topn",
+        "summary": {},
+        "full_market_topn": {
+            "available": True,
+            "as_of_date": "2026-06-08",
+            "topn_n": 1,
+            "universe_count": 1,
+            "eligible_count": 1,
+            "constituents": [
+                {"code": "600000", "name": "浦发银行", "score": 91.0},
+            ],
+        },
+    }
+
+    asyncio.run(
+        scheduler._persist_full_market_topn(
+            db,
+            results,
+            persistence_failures=failures,
+        )
+    )
+
+    assert db.saved_strategies == []
+    assert db.snapshots
+    assert db.snapshots[0]["portfolio_candidate_id"] == "factory_topn_factory_run_topn_record_only"
+    assert results["full_market_topn"]["snapshot_id"] == "snap-1"
+
+
+def test_full_market_topn_can_persist_strategy_when_record_only_disabled(monkeypatch):
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+
+    monkeypatch.setenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", "0")
+
+    class _DB:
+        def __init__(self):
+            self.saved_strategies = []
+
+        async def save_strategy(self, payload):
+            self.saved_strategies.append(dict(payload))
+            return payload
+
+    scheduler = StrategyFactoryScheduler()
+    db = _DB()
+    results = {
+        "run_id": "factory_run_topn_live_entity",
+        "full_market_topn": {
+            "available": True,
+            "as_of_date": "2026-06-08",
+            "topn_n": 1,
+            "constituents": [{"code": "600000", "score": 91.0}],
+        },
+    }
+
+    asyncio.run(
+        scheduler._persist_full_market_topn(
+            db,
+            results,
+            persistence_failures=[],
+        )
+    )
+
+    assert db.saved_strategies[0]["id"] == "factory_topn_factory_run_topn_live_entity"

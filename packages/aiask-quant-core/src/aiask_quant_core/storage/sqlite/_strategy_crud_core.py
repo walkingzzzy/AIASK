@@ -139,6 +139,47 @@ class _StrategyCrudCoreMixin:
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
 
+        async def get_paper_observation_backlog_status(self, limit: int = 500) -> dict:
+            """Return submitted + active stage=paper backlog and latest intake event."""
+            _ = limit
+            async with self.acquire() as conn:
+                backlog = await conn.fetchrow(
+                    """
+                    SELECT COUNT(*) AS backlog_count,
+                           MAX(datetime(a.bound_at)) AS latest_bound_at
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    WHERE s.status = 'submitted'
+                      AND a.stage = 'paper'
+                      AND a.status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM strategy_incubation_accounts a2
+                          WHERE a2.strategy_id = s.id
+                            AND a2.stage IN ('candidate', 'listed')
+                            AND a2.status = 'active'
+                      )
+                    """,
+                )
+                latest_recognized = await conn.fetchrow(
+                    """
+                    SELECT event_type, created_at
+                    FROM strategy_domain_events
+                    WHERE event_type = 'incubation_factory.paper_observation_recognized'
+                    ORDER BY datetime(created_at) DESC
+                    LIMIT 1
+                    """
+                )
+            backlog_count = int(dict(backlog or {}).get("backlog_count") or 0)
+            latest_bound_at = dict(backlog or {}).get("latest_bound_at")
+            latest_recognized_at = dict(latest_recognized or {}).get("created_at")
+            return {
+                "paper_observation_backlog_count": backlog_count,
+                "paper_observation_backlog_status": "empty" if backlog_count <= 0 else "queued",
+                "paper_observation_latest_bound_at": str(latest_bound_at) if latest_bound_at else None,
+                "paper_observation_last_recognized_at": str(latest_recognized_at) if latest_recognized_at else None,
+                "paper_observation_latest_event_type": dict(latest_recognized or {}).get("event_type"),
+            }
+
         async def list_diagnostic_observation_strategies(self, limit: int = 5) -> List[dict]:
             async with self.acquire() as conn:
                 rows = await conn.fetch(
@@ -221,6 +262,7 @@ class _StrategyCrudCoreMixin:
             event_types = [
                 "incubation_factory.heartbeat",
                 "incubation_factory.hit_rate_report_generated",
+                "incubation_factory.paper_observation_recognized",
                 "incubation_factory.diagnostic_observation_processed",
                 "incubation.metric_recorded",
             ]

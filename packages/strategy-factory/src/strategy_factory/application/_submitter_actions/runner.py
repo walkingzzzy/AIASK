@@ -63,6 +63,8 @@ from .._runtime_toggles import (
     diagnostic_observation_ttl_days as _diagnostic_observation_ttl_days,
     observe_first_enabled as _observe_first_enabled,
     observe_d_grade_enabled as _observe_d_grade_enabled,
+    strategy_factory_gate3_record_only_enabled as _gate3_record_only_enabled,
+    strategy_factory_min_validation_grade as _strategy_factory_min_validation_grade,
     validation_grade_at_least as _validation_grade_at_least,
     wide_intake_observe_enabled as _wide_intake_observe_enabled,
 )
@@ -98,6 +100,45 @@ def _compact_unique(values: Any, *, limit: int = 12) -> list[str]:
         if len(items) >= max(1, int(limit or 12)):
             break
     return items
+
+def _quality_summary_validation_grade(quality_summary: dict[str, Any], gate: dict[str, Any] | None = None) -> str:
+    payload = dict(quality_summary or {})
+    gate_payload = dict(gate or {})
+    return str(
+        payload.get("effective_validation_grade")
+        or payload.get("validation_grade")
+        or payload.get("raw_validation_grade")
+        or gate_payload.get("effective_validation_grade")
+        or gate_payload.get("validation_grade")
+        or gate_payload.get("raw_validation_grade")
+        or ""
+    ).strip().upper()
+
+
+def _build_gate3_quality_record_contract(
+    *,
+    gate: dict[str, Any] | None,
+    quality_summary: dict[str, Any] | None,
+    read_only: bool,
+    gate3_record_only: bool,
+) -> dict[str, Any]:
+    min_grade = _strategy_factory_min_validation_grade()
+    grade = _quality_summary_validation_grade(dict(quality_summary or {}), gate)
+    grade_meets_minimum = bool(grade and _validation_grade_at_least(grade, min_grade))
+    gate_passed = bool(dict(gate or {}).get("passed"))
+    recorded = bool(not read_only and gate3_record_only)
+    qualified = bool(recorded and gate_passed and grade_meets_minimum)
+    return {
+        "gate3_record_only_min_grade": min_grade,
+        "gate3_record_grade": grade or None,
+        "gate3_record_gate_passed": gate_passed,
+        "gate3_record_grade_meets_minimum": grade_meets_minimum,
+        "gate3_record_quality_qualified": qualified,
+        "gate3_quality_recorded": qualified,
+        "production_quality_recorded": qualified,
+        "gate3_record_diagnostic_only": bool(recorded and not qualified),
+    }
+
 
 
 def _candidate_trace_ids(candidate: dict[str, Any]) -> list[str]:

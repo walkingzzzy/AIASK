@@ -95,6 +95,9 @@ from ._autonomy_task_executor import (
     AutonomyTaskExecutionContext as _AutonomyTaskExecutionContext,
     execute_autonomy_task as _execute_autonomy_task_payload,
 )
+from ._runtime_toggles import (
+    strategy_factory_gate3_record_only_enabled as _gate3_record_only_enabled,
+)
 from ._autonomy_stage_artifacts import (
     attach_autonomy_stage_artifacts as _attach_autonomy_stage_artifacts_payload,
 )
@@ -370,6 +373,10 @@ def _scheduler_feedback_family_observations(
         submit.get("created_audit_only"),
         _scheduler_feedback_safe_int(summary.get("created_audit_only")),
     )
+    total_recorded = _scheduler_feedback_safe_int(
+        submit.get("gate_3_recorded"),
+        _scheduler_feedback_safe_int(summary.get("gate_3_recorded")),
+    )
     observations: dict[str, dict[str, Any]] = {}
 
     for raw_item in list(submit.get("strategies") or []):
@@ -388,6 +395,7 @@ def _scheduler_feedback_family_observations(
             or item.get("diagnostic_only")
             or status in {"diagnostic", "rejected"}
         )
+        recorded = bool(item.get("gate_3_recorded") or item.get("gate3_record_only") or item.get("record_only"))
         reasons = _scheduler_feedback_submission_reasons(item)
         bucket = observations.setdefault(
             family,
@@ -395,6 +403,7 @@ def _scheduler_feedback_family_observations(
                 "gate_3_input_count": 0,
                 "gate_3_passed_count": 0,
                 "submitted_count": 0,
+                "gate_3_recorded_count": 0,
                 "gate_3_failed_count": 0,
                 "created_audit_only_count": 0,
                 "weak_stat_failure_count": 0,
@@ -408,6 +417,8 @@ def _scheduler_feedback_family_observations(
             bucket["gate_3_failed_count"] += 1
         if submitted:
             bucket["submitted_count"] += 1
+        if recorded:
+            bucket["gate_3_recorded_count"] += 1
         if audit_only:
             bucket["created_audit_only_count"] += 1
         if not passed and any(_scheduler_feedback_is_weak_stat_reason(reason) for reason in reasons):
@@ -418,6 +429,7 @@ def _scheduler_feedback_family_observations(
         family_total = sum(max(0, _scheduler_feedback_safe_int(value)) for value in family_counts.values())
         pass_ratio = (float(total_passed) / float(total_input)) if total_input > 0 else 0.0
         submitted_ratio = (float(total_submitted) / float(total_input)) if total_input > 0 else 0.0
+        recorded_ratio = (float(total_recorded) / float(total_input)) if total_input > 0 else 0.0
         audit_ratio = (float(total_audit_only) / float(total_input)) if total_input > 0 else 0.0
         weak_topn_total = sum(
             int(item.get("count") or 0)
@@ -432,11 +444,13 @@ def _scheduler_feedback_family_observations(
                 continue
             passed_count = min(input_count, int(round(input_count * pass_ratio)))
             submitted_count = min(input_count, int(round(input_count * submitted_ratio)))
+            recorded_count = min(input_count, int(round(input_count * recorded_ratio)))
             failed_count = max(input_count - passed_count, 0)
             observations[token] = {
                 "gate_3_input_count": input_count,
                 "gate_3_passed_count": passed_count,
                 "submitted_count": submitted_count,
+                "gate_3_recorded_count": recorded_count,
                 "gate_3_failed_count": failed_count,
                 "created_audit_only_count": min(input_count, int(round(input_count * audit_ratio))),
                 "weak_stat_failure_count": min(failed_count, int(round(failed_count * weak_ratio))),
@@ -454,6 +468,7 @@ def _scheduler_feedback_family_observations(
         "gate_3_passed": total_passed,
         "gate_3_failed": total_failed,
         "submitted": total_submitted,
+        "gate_3_recorded": total_recorded,
         "created_audit_only": total_audit_only,
         "gate_3_failure_reason_topn": topn,
         "weak_stat_failure_count": sum(
@@ -489,6 +504,7 @@ def update_scheduler_family_gate_feedback(
         input_count = max(0, _scheduler_feedback_safe_int(obs.get("gate_3_input_count")))
         passed_count = max(0, _scheduler_feedback_safe_int(obs.get("gate_3_passed_count")))
         submitted_count = max(0, _scheduler_feedback_safe_int(obs.get("submitted_count")))
+        recorded_count = max(0, _scheduler_feedback_safe_int(obs.get("gate_3_recorded_count")))
         failed_count = max(0, _scheduler_feedback_safe_int(obs.get("gate_3_failed_count")))
         audit_only_count = max(0, _scheduler_feedback_safe_int(obs.get("created_audit_only_count")))
         weak_count = max(0, _scheduler_feedback_safe_int(obs.get("weak_stat_failure_count")))
@@ -527,6 +543,7 @@ def update_scheduler_family_gate_feedback(
             "gate_3_input_count": input_count,
             "gate_3_passed_count": passed_count,
             "submitted_count": submitted_count,
+            "gate_3_recorded_count": recorded_count,
             "gate_3_failed_count": failed_count,
             "created_audit_only_count": audit_only_count,
             "weak_stat_failure_count": weak_count,

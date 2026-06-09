@@ -8,16 +8,60 @@ from strategy_factory.application.services.candidate_pipeline import CandidatePi
 class FakeBacktestFilter:
     def __init__(self) -> None:
         self._kline_cache = {}
+        self._last_report = {
+            "summary": {
+                "input_count": 0,
+                "passed_count": 0,
+                "failed_count": 0,
+                "failed_reason_counts": {},
+            },
+            "passed": [],
+            "failed": [],
+        }
 
     def get_last_report(self) -> dict:
-        return {
+        return self._last_report
+
+    async def filter(self, candidates, db):
+        passed = []
+        failed = []
+        for item in list(candidates or []):
+            candidate = dict(item or {})
+            if candidate.get("backtest_pass") is False:
+                failed.append(
+                    {
+                        **candidate,
+                        "backtest_outcome": {
+                            "passed": False,
+                            "reason_code": "adaptive_gate_2_failed",
+                        },
+                    }
+                )
+                continue
+            passed.append(
+                {
+                    **candidate,
+                    "backtest_metrics": {
+                        "trade_count": 8,
+                        "trades_count": 8,
+                        "sharpe_ratio": 0.9,
+                        "max_drawdown": 0.08,
+                        "parameter_perturbation_trade_stability": 0.82,
+                    },
+                    "backtest_outcome": {"passed": True, "reason_code": "passed"},
+                }
+            )
+        self._last_report = {
             "summary": {
-                "input_count": 2,
-                "passed_count": 1,
-                "failed_count": 1,
-                "failed_reason_counts": {"weak_score": 1},
-            }
+                "input_count": len(list(candidates or [])),
+                "passed_count": len(passed),
+                "failed_count": len(failed),
+                "failed_reason_counts": {"adaptive_gate_2_failed": len(failed)} if failed else {},
+            },
+            "passed": passed,
+            "failed": failed,
         }
+        return passed
 
 
 class FakeDeduplicator:
@@ -104,12 +148,12 @@ class FakeDb:
         return []
 
 
-def test_observe_first_pipeline_skips_legacy_gate_and_intakes_all_candidates(monkeypatch) -> None:
+def test_observe_first_pipeline_screens_evidence_before_gate3_record(monkeypatch) -> None:
     monkeypatch.setenv("STRATEGY_FACTORY_OBSERVE_FIRST_ENABLED", "1")
     scheduler = FakeScheduler()
     candidates = [
         {"candidate_id": "c1", "params": {"family": "trend"}},
-        {"candidate_id": "c2", "params": {"family": "quality"}},
+        {"candidate_id": "c2", "params": {"family": "quality"}, "backtest_pass": False},
     ]
 
     pkg = FakePkg()
@@ -123,28 +167,31 @@ def test_observe_first_pipeline_skips_legacy_gate_and_intakes_all_candidates(mon
 
     observe_first = result.quality_gate_report["observe_first"]
     assert observe_first["enabled"] is True
-    assert observe_first["mode"] == "no_legacy_gate"
+    assert observe_first["mode"] == "backtest_evidence_screen"
     assert observe_first["pre_observe_gate_removed"] is True
     assert observe_first["legacy_gate_executed"] is False
     assert observe_first["legacy_funnel_executed"] is False
-    assert observe_first["evidence_scoring_mode"] == "observe_first_no_legacy_gate"
-    assert observe_first["gate_passed_count"] == 0
-    assert observe_first["observe_intake_count"] == 2
-    assert observe_first["deduped_observe_intake_count"] == 2
+    assert observe_first["evidence_scoring_mode"] == "observe_first_backtest_evidence_screen"
+    assert observe_first["gate_passed_count"] == 1
+    assert observe_first["observe_intake_count"] == 1
+    assert observe_first["deduped_observe_intake_count"] == 1
     assert observe_first["pre_observe_hard_reject_count"] == 0
+    assert observe_first["pre_observe_evidence_reject_count"] == 1
+    assert observe_first["gate3_pre_observe_block_count"] == 1
     assert result.quality_gate_report["legacy_gate_executed"] is False
     assert result.quality_gate_report["legacy_funnel_executed"] is False
-    assert result.quality_gate_report["evidence_scoring_mode"] == "observe_first_no_legacy_gate"
-    assert result.backtest_report["summary"]["mode"] == "not_run_pre_observe"
-    assert result.backtest_report["summary"]["pre_observe_backtest_skipped"] is True
+    assert result.quality_gate_report["evidence_scoring_mode"] == "observe_first_backtest_evidence_screen"
+    assert result.backtest_report["summary"]["passed_count"] == 1
+    assert result.backtest_report["summary"]["failed_count"] == 1
     assert result.gate_artifact["legacy_gate_executed"] is False
     assert result.gate_artifact["legacy_funnel_executed"] is False
-    assert result.gate_artifact["evidence_scoring_mode"] == "observe_first_no_legacy_gate"
+    assert result.gate_artifact["evidence_scoring_mode"] == "observe_first_backtest_evidence_screen"
     assert pkg.gated_filter_calls == 0
     assert all(candidate["observe_first_intake"] for candidate in scheduler.submitter.seen)
     assert {
         candidate["incubation_budget"]["track"] for candidate in scheduler.submitter.seen
     } == {"observe_incubation"}
+    assert [candidate["candidate_id"] for candidate in scheduler.submitter.seen] == ["c1"]
 
 
 def test_stock_first_execution_mode_enables_observe_first_without_env(monkeypatch) -> None:

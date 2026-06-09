@@ -185,6 +185,45 @@ def _normalize_text(value: Any) -> str:
     return str(value or "").strip().lower()
 
 
+def _is_trade_prediction_contract_observation_gap(
+    *,
+    status: str,
+    reject_reasons: list[str],
+    contract: Optional[dict[str, Any]] = None,
+) -> bool:
+    """Return True when a derived prediction contract is simply too sparse for admission.
+
+    Explicit malformed contracts remain hard rejects. Derived contracts often have
+    no direction/confidence yet; those should enter paper observation and gather
+    forward evidence instead of blocking G3.
+    """
+
+    normalized_status = str(status or "").strip().lower()
+    contract_payload = dict(contract or {})
+    if normalized_status == "ready":
+        return False
+    if normalized_status in {"", "missing"} or not contract_payload:
+        return False
+    normalized_reasons = [str(item or "").strip().lower() for item in (reject_reasons or []) if str(item or "").strip()]
+    if not normalized_reasons:
+        return False
+    source = str(contract_payload.get("contract_source") or "").strip().lower()
+    if source == "explicit":
+        return False
+    invalid_reasons = [reason for reason in normalized_reasons if reason.startswith("invalid:")]
+    derived_missing_invalid = {"invalid:direction", "invalid:confidence"}
+    if any(reason not in derived_missing_invalid for reason in invalid_reasons):
+        return False
+    derived_missing_fields = {"missing:direction", "missing:confidence"}
+    missing_reasons = [reason for reason in normalized_reasons if reason.startswith("missing:")]
+    if any(reason not in derived_missing_fields for reason in missing_reasons):
+        return False
+    return bool(
+        any(reason in derived_missing_fields for reason in normalized_reasons)
+        or any(reason in derived_missing_invalid for reason in normalized_reasons)
+    )
+
+
 def _normalize_symbol_list(*values: Any, limit: int = 12) -> list[str]:
     ordered: list[str] = []
     seen: set[str] = set()
@@ -390,9 +429,15 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
         _strategy_payload_value(payload, "trade_prediction_contract_reject_reasons", []),
         limit=32,
     )
+    trade_prediction_contract = dict(_strategy_payload_value(payload, "trade_prediction_contract", {}) or {})
     trade_prediction_contract_hash = str(
         _strategy_payload_value(payload, "trade_prediction_contract_hash") or ""
     ).strip()
+    trade_prediction_contract_observation_gap = _is_trade_prediction_contract_observation_gap(
+        status=trade_prediction_contract_status or "missing",
+        reject_reasons=trade_prediction_contract_reject_reasons,
+        contract=trade_prediction_contract,
+    )
     semantic_contract_missing_fields: list[str] = []
     if strategy_type in (_TREND_EXECUTABLE_DSL_TYPES | _PROXY_RUNTIME_FACTOR_TYPES):
         if not evidence_chain:
@@ -458,7 +503,7 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
         hard_fail_reasons.append("runtime_family_semantic_mismatch")
     if bool(dict(gate or {}).get("execution_semantic_gap")):
         hard_fail_reasons.append("execution_semantic_gap")
-    if trade_prediction_contract_status != "ready":
+    if trade_prediction_contract_status != "ready" and not trade_prediction_contract_observation_gap:
         hard_fail_reasons.append("trade_prediction_contract_not_ready")
     return {
         "semantic_contract_missing_fields": semantic_contract_missing_fields,
@@ -473,6 +518,7 @@ def _resolve_semantic_runtime_context(strategy: dict, gate: Optional[dict[str, A
         "trade_prediction_contract_status": trade_prediction_contract_status or "missing",
         "trade_prediction_contract_missing_fields": trade_prediction_contract_missing_fields,
         "trade_prediction_contract_reject_reasons": trade_prediction_contract_reject_reasons,
+        "trade_prediction_contract_observation_gap": trade_prediction_contract_observation_gap,
         "trade_prediction_contract_hash": trade_prediction_contract_hash or None,
         "hard_fail_reasons": list(dict.fromkeys(hard_fail_reasons)),
     }

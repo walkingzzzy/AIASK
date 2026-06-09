@@ -308,9 +308,29 @@ async def load_research_runtime_context(
             )
         return await builder_cls._load_budget_feedback(db, snapshot)
 
-    model_registry_lineage, budget_feedback_payload = await _asyncio_perf.gather(
+    async def _resolve_paper_observation_backlog():
+        method = getattr(db, "get_paper_observation_backlog_status", None)
+        if not callable(method):
+            return {}
+        try:
+            return dict(await method() or {})
+        except Exception:
+            return {"paper_observation_backlog_status": "unknown"}
+
+    async def _resolve_incubation_factory_health():
+        method = getattr(db, "get_incubation_factory_health", None)
+        if not callable(method):
+            return {}
+        try:
+            return dict(await method(max_age_hours=24) or {})
+        except Exception:
+            return {"healthy": False, "stale_reason": "health_check_failed"}
+
+    model_registry_lineage, budget_feedback_payload, paper_observation_backlog, incubation_factory_health = await _asyncio_perf.gather(
         _resolve_model_lineage(),
         _resolve_budget_feedback(),
+        _resolve_paper_observation_backlog(),
+        _resolve_incubation_factory_health(),
     )
     model_lineage_summary = dict(model_registry_lineage.get("summary") or {})
     model_lineage_by_validation_id = dict(model_registry_lineage.get("by_validation_artifact_id") or {})
@@ -480,6 +500,8 @@ async def load_research_runtime_context(
         "lifecycle_feedback_input": lifecycle_feedback_input,
         "budget_feedback_root": budget_feedback_root,
         "budget_feedback_summary": budget_feedback_summary,
+        "paper_observation_backlog": paper_observation_backlog,
+        "incubation_factory_health": incubation_factory_health,
         "governed_source_candidate_count": governed_source_candidate_count,
         "governed_active_registry_candidate_count": governed_active_registry_candidate_count,
         "governed_blocked_candidate_count": governed_blocked_candidate_count,

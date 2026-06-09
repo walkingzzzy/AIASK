@@ -36,6 +36,30 @@ ORDER BY datetime(a.bound_at) DESC
 LIMIT ?
 """
 
+_SQL_PAPER_BACKLOG = """
+SELECT COUNT(*) AS backlog_count,
+       MAX(datetime(a.bound_at)) AS latest_bound_at
+FROM strategies s
+JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+WHERE s.status = 'submitted'
+  AND a.stage = 'paper'
+  AND a.status = 'active'
+  AND NOT EXISTS (
+      SELECT 1 FROM strategy_incubation_accounts a2
+      WHERE a2.strategy_id = s.id
+        AND a2.stage IN ('candidate', 'listed')
+        AND a2.status = 'active'
+  )
+"""
+
+_SQL_LATEST_PAPER_RECOGNIZED = """
+SELECT event_type, created_at
+FROM strategy_domain_events
+WHERE event_type = 'incubation_factory.paper_observation_recognized'
+ORDER BY datetime(created_at) DESC
+LIMIT 1
+"""
+
 
 @pytest.fixture
 def temp_db():
@@ -64,6 +88,11 @@ def temp_db():
             metadata TEXT,
             bound_at TEXT,
             updated_at TEXT
+        );
+        CREATE TABLE strategy_domain_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_type TEXT,
+            created_at TEXT
         );
         """
     )
@@ -196,3 +225,35 @@ def test_strategy_with_no_account_excluded(temp_db):
     # 没有 incubation_account 关联,JOIN 后空
     rows = _run(con)
     assert rows == []
+
+
+def test_paper_observation_backlog_status_counts_submitted_active_paper_only(temp_db):
+    con, _ = temp_db
+    con.executescript(
+        """
+        INSERT INTO strategies VALUES ('s1', 'n1', 'volatility_breakout', 'submitted', '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'submitted', '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s3', 'n3', 'sector_rotation',     'submitted', '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s4', 'n4', 'ma_cross',            'rejected',  '{}', '{}', '', '');
+        INSERT INTO strategy_incubation_accounts VALUES
+            (NULL, 's1', 'acc1', 'paper',     'active', '', '{}', '2026-05-26 10:00:00', ''),
+            (NULL, 's2', 'acc2', 'paper',     'active', '', '{}', '2026-05-26 14:00:00', ''),
+            (NULL, 's2', 'acc2c','candidate', 'active', '', '{}', '2026-05-26 15:00:00', ''),
+            (NULL, 's3', 'acc3', 'paper',     'inactive', '', '{}', '2026-05-26 16:00:00', ''),
+            (NULL, 's4', 'acc4', 'paper',     'active', '', '{}', '2026-05-26 17:00:00', '');
+        INSERT INTO strategy_domain_events(event_type, created_at) VALUES
+            ('incubation_factory.paper_observation_recognized', '2026-05-26 09:00:00'),
+            ('incubation_factory.paper_observation_recognized', '2026-05-26 18:00:00'),
+            ('incubation_factory.heartbeat', '2026-05-26 19:00:00');
+        """
+    )
+
+    backlog = dict(zip(["backlog_count", "latest_bound_at"], con.execute(_SQL_PAPER_BACKLOG).fetchone()))
+    recognized = dict(
+        zip(["event_type", "created_at"], con.execute(_SQL_LATEST_PAPER_RECOGNIZED).fetchone())
+    )
+
+    assert backlog["backlog_count"] == 1
+    assert backlog["latest_bound_at"] == "2026-05-26 10:00:00"
+    assert recognized["event_type"] == "incubation_factory.paper_observation_recognized"
+    assert recognized["created_at"] == "2026-05-26 18:00:00"

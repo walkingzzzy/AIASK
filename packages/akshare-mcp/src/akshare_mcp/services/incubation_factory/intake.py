@@ -11,6 +11,16 @@ from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+_GRADE_RANKS: dict[str, int] = {
+    "D": 0,
+    "C": 1,
+    "B": 2,
+    "A": 3,
+    "S": 4,
+    "SS": 5,
+    "SSS": 6,
+}
+
 
 class IncubationIntake:
     """自动识别和接纳策略工厂产出的新策略。"""
@@ -65,6 +75,10 @@ class IncubationIntake:
                 "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
             }
             result["diagnostic_observation_intake"] = await self._recognize_diagnostic_observation(
+                db,
+                no_incubating=True,
+            )
+            result["gate3_record_only_audit"] = await self._recognize_gate3_record_only_candidates(
                 db,
                 no_incubating=True,
             )
@@ -171,6 +185,7 @@ class IncubationIntake:
             "strategy_ids": [str(s.get("id") or "") for s in paper_candidates],
         }
         result["diagnostic_observation_intake"] = await self._recognize_diagnostic_observation(db)
+        result["gate3_record_only_audit"] = await self._recognize_gate3_record_only_candidates(db)
         if paper_candidates:
             logger.info(
                 "IncubationIntake: paper observation recognized %d/%d candidates",
@@ -271,6 +286,179 @@ class IncubationIntake:
             "recognized": diagnostic_recognized,
             "strategy_ids": [str(s.get("id") or "") for s in diagnostic_candidates],
         }
+
+    async def _list_gate3_record_only_candidates(self, db: Any) -> list[dict[str, Any]]:
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                gate3_record_only_intake_batch_limit,
+                gate3_record_only_intake_enabled,
+                gate3_record_only_intake_min_grade,
+            )
+        except Exception:
+            return []
+        if not gate3_record_only_intake_enabled():
+            return []
+        if not hasattr(db, "list_factory_task_evidence"):
+            return []
+        min_grade = gate3_record_only_intake_min_grade()
+        min_rank = _GRADE_RANKS.get(min_grade, _GRADE_RANKS["S"])
+        try:
+            rows = await db.list_factory_task_evidence(
+                evidence_type="gate3_record_only_audit",
+                limit=gate3_record_only_intake_batch_limit(),
+            )
+        except Exception as exc:
+            logger.warning(
+                "IncubationIntake: list_factory_task_evidence failed: %s", exc,
+            )
+            return []
+
+        candidates: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for row in rows:
+            item = dict(row or {})
+            if str(item.get("evidence_type") or "").strip() != "gate3_record_only_audit":
+                continue
+            payload = dict(item.get("evidence_payload") or {})
+            candidate_id = str(
+                payload.get("candidate_id")
+                or payload.get("strategy_id")
+                or payload.get("generated_strategy_id")
+                or item.get("task_key")
+                or ""
+            ).strip()
+            if not candidate_id or candidate_id in seen:
+                continue
+            grade = str(payload.get("validation_grade") or "").strip().upper()
+            if _GRADE_RANKS.get(grade, -1) < min_rank:
+                continue
+            if payload.get("strategy_created") is not False:
+                continue
+            if payload.get("lifecycle_action_executed") is not False:
+                continue
+            seen.add(candidate_id)
+            candidates.append(
+                {
+                    "candidate_id": candidate_id,
+                    "task_key": item.get("task_key"),
+                    "event_id": item.get("event_id"),
+                    "theme_code": item.get("theme_code"),
+                    "symbol": item.get("symbol"),
+                    "evidence_id": item.get("id"),
+                    "evidence_created_at": item.get("created_at"),
+                    "validation_grade": grade,
+                    "validation_total_score": payload.get("validation_total_score"),
+                    "factory_run_id": payload.get("factory_run_id"),
+                    "experiment_id": payload.get("experiment_id"),
+                    "planned_submission_lane": payload.get("planned_submission_lane"),
+                    "planned_final_status": payload.get("planned_final_status"),
+                    "quality_summary": dict(payload.get("quality_summary") or {}),
+                    "backtest_metrics": dict(payload.get("backtest_metrics") or {}),
+                }
+            )
+        return candidates
+
+    async def _recognize_gate3_record_only_candidates(
+        self,
+        db: Any,
+        *,
+        no_incubating: bool = False,
+    ) -> dict[str, Any]:
+        candidates = await self._list_gate3_record_only_candidates(db)
+        recognized = 0
+        skipped_existing = 0
+        for candidate in candidates:
+            candidate_id = str(candidate.get("candidate_id") or "").strip()
+            if not candidate_id:
+                continue
+            try:
+                if await self._has_gate3_record_only_intake_event(db, candidate_id):
+                    skipped_existing += 1
+                    continue
+                await self._record_gate3_record_only_intake_event(db, candidate)
+                recognized += 1
+            except Exception as exc:
+                logger.warning(
+                    "IncubationIntake: gate3 record-only intake event failed for %s: %s",
+                    candidate_id,
+                    exc,
+                )
+        if candidates:
+            suffix = " (no incubating)" if no_incubating else ""
+            logger.info(
+                "IncubationIntake: gate3 record-only recognized %d/%d candidates%s",
+                recognized,
+                len(candidates),
+                suffix,
+            )
+        return {
+            "scanned": len(candidates),
+            "recognized": recognized,
+            "skipped_existing": skipped_existing,
+            "candidate_ids": [str(s.get("candidate_id") or "") for s in candidates],
+        }
+
+    async def _has_gate3_record_only_intake_event(self, db: Any, candidate_id: str) -> bool:
+        if not hasattr(db, "list_strategy_domain_events"):
+            return False
+        try:
+            events = await db.list_strategy_domain_events(
+                aggregate_type="incubation_factory",
+                aggregate_id=candidate_id,
+                event_type="incubation_factory.gate3_record_only_candidate_recognized",
+                limit=1,
+            )
+        except Exception:
+            return False
+        token = str(candidate_id or "").strip()
+        for event in events or []:
+            if str(event.get("aggregate_id") or "").strip() == token:
+                return True
+            payload = dict(event.get("payload") or {})
+            if str(payload.get("candidate_id") or "").strip() == token:
+                return True
+        return False
+
+    async def _record_gate3_record_only_intake_event(
+        self,
+        db: Any,
+        candidate: dict[str, Any],
+    ) -> None:
+        if not hasattr(db, "save_strategy_domain_event"):
+            return
+        candidate_id = str(candidate.get("candidate_id") or "").strip()
+        if not candidate_id:
+            return
+        try:
+            await db.save_strategy_domain_event({
+                "strategy_id": None,
+                "aggregate_type": "incubation_factory",
+                "aggregate_id": candidate_id,
+                "event_type": "incubation_factory.gate3_record_only_candidate_recognized",
+                "source": "incubation_factory_intake_gate3_record_only",
+                "severity": "info",
+                "payload": {
+                    "candidate_id": candidate_id,
+                    "stage": "record_only_intake",
+                    "record_only": True,
+                    "action_boundary": "no_strategy_or_account_created",
+                    "validation_grade": candidate.get("validation_grade"),
+                    "validation_total_score": candidate.get("validation_total_score"),
+                    "factory_run_id": candidate.get("factory_run_id"),
+                    "experiment_id": candidate.get("experiment_id"),
+                    "task_key": candidate.get("task_key"),
+                    "evidence_id": candidate.get("evidence_id"),
+                    "evidence_created_at": candidate.get("evidence_created_at"),
+                    "symbol": candidate.get("symbol"),
+                    "theme_code": candidate.get("theme_code"),
+                    "planned_submission_lane": candidate.get("planned_submission_lane"),
+                    "planned_final_status": candidate.get("planned_final_status"),
+                    "quality_summary": candidate.get("quality_summary") or {},
+                    "backtest_metrics": candidate.get("backtest_metrics") or {},
+                },
+            })
+        except Exception as exc:
+            logger.debug("IncubationIntake: gate3 record-only domain event save failed: %s", exc)
 
     async def _record_paper_intake_event(
         self,

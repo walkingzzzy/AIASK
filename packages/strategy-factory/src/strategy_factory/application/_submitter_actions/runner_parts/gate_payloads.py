@@ -18,6 +18,10 @@
             gate_3_passed = 0
             gate_3_failed = 0
             gate_3_provisional_passed = 0
+            gate_3_recorded = 0
+            gate3_quality_recorded = 0
+            gate3_record_quality_qualified_count = 0
+            gate3_record_diagnostic_only_count = 0
             gate_3_failure_codes: Counter[str] = Counter()
             submission_lane_counts: Counter[str] = Counter()
             submission_action_type_counts: Counter[str] = Counter()
@@ -79,6 +83,13 @@
                     refreshed += 1
                 if result.get("submitted"):
                     submitted += 1
+                if result.get("gate_3_recorded"):
+                    gate_3_recorded += 1
+                if result.get("gate3_quality_recorded") or result.get("gate3_record_quality_qualified"):
+                    gate3_quality_recorded += 1
+                    gate3_record_quality_qualified_count += 1
+                if result.get("gate3_record_diagnostic_only"):
+                    gate3_record_diagnostic_only_count += 1
                 if result.get("passed"):
                     passed += 1
                 gate_3 = dict(result.get("gate_3") or {})
@@ -124,6 +135,10 @@
                     "submitted": submitted,
                     "gate_3_passed": gate_3_passed,
                     "gate_3_failed": gate_3_failed,
+                    "gate_3_recorded": gate_3_recorded,
+                    "gate3_quality_recorded": gate3_quality_recorded,
+                    "gate3_record_quality_qualified_count": gate3_record_quality_qualified_count,
+                    "gate3_record_diagnostic_only_count": gate3_record_diagnostic_only_count,
                     "gate3_audit_failed_count": gate3_audit_failed_count,
                     "gate_3_provisional_passed": gate_3_provisional_passed,
                     "gate_3_failure_reason_topn": [
@@ -158,6 +173,10 @@
                 "passed_quality_gate": passed,
                 "gate_3_passed": gate_3_passed,
                 "gate_3_failed": gate_3_failed,
+                "gate_3_recorded": gate_3_recorded,
+                "gate3_quality_recorded": gate3_quality_recorded,
+                "gate3_record_quality_qualified_count": gate3_record_quality_qualified_count,
+                "gate3_record_diagnostic_only_count": gate3_record_diagnostic_only_count,
                 "gate3_audit_failed_count": gate3_audit_failed_count,
                 "gate_3_provisional_passed": gate_3_provisional_passed,
                 "gate_3_failure_reason_topn": gate_report["gate_3"]["failure_reason_topn"],

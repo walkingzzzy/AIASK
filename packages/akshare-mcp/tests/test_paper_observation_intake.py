@@ -21,6 +21,9 @@ def _clear_env(monkeypatch):
         "INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT",
         "INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED",
         "INCUBATION_FACTORY_DIAGNOSTIC_BATCH_LIMIT",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT",
+        "INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -165,3 +168,166 @@ async def test_record_diagnostic_intake_event_writes_domain_event(intake):
     assert payload["source"] == "incubation_factory_intake_diagnostic"
     assert payload["payload"]["stage"] == "diagnostic"
     assert payload["payload"]["diagnostic_observation"] is True
+
+
+@pytest.mark.asyncio
+async def test_gate3_record_only_intake_disabled_by_default(intake):
+    db = MagicMock()
+    db.list_factory_task_evidence = AsyncMock(return_value=[
+        {"evidence_type": "gate3_record_only_audit"},
+    ])
+
+    result = await intake._list_gate3_record_only_candidates(db)
+
+    assert result == []
+    db.list_factory_task_evidence.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gate3_record_only_audit_filters_s_plus_records(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "10")
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "S")
+    db = MagicMock()
+    db.list_factory_task_evidence = AsyncMock(return_value=[
+        {
+            "id": 1,
+            "task_key": "candidate-s",
+            "symbol": "600000",
+            "evidence_type": "gate3_record_only_audit",
+            "created_at": "2026-06-08 05:18:38",
+            "evidence_payload": {
+                "candidate_id": "candidate-s",
+                "validation_grade": "S",
+                "validation_total_score": 80.5,
+                "strategy_created": False,
+                "lifecycle_action_executed": False,
+                "factory_run_id": "run-1",
+            },
+        },
+        {
+            "id": 2,
+            "task_key": "candidate-b",
+            "evidence_type": "gate3_record_only_audit",
+            "evidence_payload": {
+                "candidate_id": "candidate-b",
+                "validation_grade": "B",
+                "strategy_created": False,
+                "lifecycle_action_executed": False,
+            },
+        },
+        {
+            "id": 3,
+            "task_key": "candidate-created",
+            "evidence_type": "gate3_record_only_audit",
+            "evidence_payload": {
+                "candidate_id": "candidate-created",
+                "validation_grade": "SS",
+                "strategy_created": True,
+                "lifecycle_action_executed": False,
+            },
+        },
+        {
+            "id": 4,
+            "task_key": "other",
+            "evidence_type": "other_evidence",
+            "evidence_payload": {"candidate_id": "other", "validation_grade": "SSS"},
+        },
+    ])
+
+    result = await intake._list_gate3_record_only_candidates(db)
+
+    assert [item["candidate_id"] for item in result] == ["candidate-s"]
+    assert result[0]["validation_grade"] == "S"
+    assert result[0]["validation_total_score"] == 80.5
+    assert result[0]["factory_run_id"] == "run-1"
+    db.list_factory_task_evidence.assert_called_once_with(
+        evidence_type="gate3_record_only_audit",
+        limit=10,
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate3_record_only_audit_recognizes_without_strategy_actions(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", "1")
+    db = MagicMock()
+    db.list_factory_task_evidence = AsyncMock(return_value=[
+        {
+            "id": 7,
+            "task_key": "candidate-ss",
+            "symbol": "600000",
+            "theme_code": "",
+            "evidence_type": "gate3_record_only_audit",
+            "created_at": "2026-06-08 05:18:58",
+            "evidence_payload": {
+                "candidate_id": "candidate-ss",
+                "validation_grade": "SS",
+                "validation_total_score": 85.8,
+                "strategy_created": False,
+                "lifecycle_action_executed": False,
+                "factory_run_id": "run-2",
+                "experiment_id": "exp-2",
+                "quality_summary": {"validation_grade": "SS"},
+                "backtest_metrics": {"total_return": 0.12},
+            },
+        }
+    ])
+    db.list_strategy_domain_events = AsyncMock(return_value=[])
+    db.save_strategy_domain_event = AsyncMock()
+    db.save_strategy_incubation_account = AsyncMock()
+    db.save_strategy = AsyncMock()
+
+    result = await intake._recognize_gate3_record_only_candidates(db)
+
+    assert result["scanned"] == 1
+    assert result["recognized"] == 1
+    db.save_strategy_incubation_account.assert_not_called()
+    db.save_strategy.assert_not_called()
+    db.save_strategy_domain_event.assert_called_once()
+    event = db.save_strategy_domain_event.call_args[0][0]
+    assert event["strategy_id"] is None
+    assert event["aggregate_id"] == "candidate-ss"
+    assert event["event_type"] == "incubation_factory.gate3_record_only_candidate_recognized"
+    assert event["source"] == "incubation_factory_intake_gate3_record_only"
+    assert event["payload"]["stage"] == "record_only_intake"
+    assert event["payload"]["record_only"] is True
+    assert event["payload"]["action_boundary"] == "no_strategy_or_account_created"
+    assert event["payload"]["validation_grade"] == "SS"
+    db.list_strategy_domain_events.assert_called_once_with(
+        aggregate_type="incubation_factory",
+        aggregate_id="candidate-ss",
+        event_type="incubation_factory.gate3_record_only_candidate_recognized",
+        limit=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_gate3_record_only_audit_skips_existing_event(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", "1")
+    db = MagicMock()
+    db.list_factory_task_evidence = AsyncMock(return_value=[
+        {
+            "id": 8,
+            "task_key": "candidate-s",
+            "evidence_type": "gate3_record_only_audit",
+            "evidence_payload": {
+                "candidate_id": "candidate-s",
+                "validation_grade": "S",
+                "strategy_created": False,
+                "lifecycle_action_executed": False,
+            },
+        }
+    ])
+    db.list_strategy_domain_events = AsyncMock(return_value=[
+        {
+            "aggregate_id": "candidate-s",
+            "payload": {"candidate_id": "candidate-s"},
+        }
+    ])
+    db.save_strategy_domain_event = AsyncMock()
+
+    result = await intake._recognize_gate3_record_only_candidates(db)
+
+    assert result["recognized"] == 0
+    assert result["skipped_existing"] == 1
+    db.save_strategy_domain_event.assert_not_called()

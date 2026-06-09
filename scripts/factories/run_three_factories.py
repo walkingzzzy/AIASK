@@ -210,20 +210,24 @@ def _child_env() -> dict[str, str]:
     env.setdefault("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
     env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
     env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "300")
+    env["INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED"] = "0"
+    env.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "300")
+    env.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "C")
     env.setdefault("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "1")
     env.setdefault("STRATEGY_FACTORY_EVENT_RUNTIME_MODE", "refresh")
     env["STRATEGY_FACTORY_EXECUTION_MODE"] = "stock_first_observe_primary"
     env["STRATEGY_FACTORY_OBSERVE_FIRST_ENABLED"] = "1"
     env["STRATEGY_FACTORY_WIDE_INTAKE_OBSERVE_ENABLED"] = "1"
-    env.setdefault("STRATEGY_TRADE_PREDICTION_PROMOTION_GATE_ENABLED", "1")
+    env.setdefault("STRATEGY_TRADE_PREDICTION_PROMOTION_GATE_ENABLED", "0")
     env.setdefault("STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED", "1")
     env.setdefault("STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED", "1")
-    env.setdefault("STRATEGY_FACTORY_MIN_VALIDATION_GRADE", "S")
-    env.setdefault("LIVE_TRADING_ENABLED", "0")
-    env.setdefault("LIVE_TRADING_ALLOW_WRITE", "0")
-    env.setdefault("BROKER_ALLOW_WRITE", "0")
-    env.setdefault("LIVE_TRADING_READ_ONLY", "1")
-    env.setdefault("BROKER_READ_ONLY", "1")
+    env["STRATEGY_FACTORY_MIN_VALIDATION_GRADE"] = "C"
+    env["STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED"] = "0"
+    env["LIVE_TRADING_ENABLED"] = "0"
+    env["LIVE_TRADING_ALLOW_WRITE"] = "0"
+    env["BROKER_ALLOW_WRITE"] = "0"
+    env["LIVE_TRADING_READ_ONLY"] = "1"
+    env["BROKER_READ_ONLY"] = "1"
     return env
 
 
@@ -634,6 +638,17 @@ async def _run(args: argparse.Namespace) -> int:
         f"promotion={env.get('STRATEGY_TRADE_PREDICTION_PROMOTION_GATE_ENABLED')} "
         f"budget={env.get('STRATEGY_TRADE_PREDICTION_BUDGET_FEEDBACK_ENABLED')} "
         f"factor_decay={env.get('STRATEGY_TRADE_PREDICTION_FACTOR_DECAY_ENABLED')}"
+    )
+    print(
+        f"{_timestamp()} gate3: "
+        f"record_only={env.get('STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED')} "
+        f"min_validation_grade={env.get('STRATEGY_FACTORY_MIN_VALIDATION_GRADE')}"
+    )
+    print(
+        f"{_timestamp()} incubation_gate3_record_only_audit_mirror: "
+        f"enabled={env.get('INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED')} "
+        f"min_grade={env.get('INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE')} "
+        f"batch_limit={env.get('INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT')}"
     )
     print(
         f"{_timestamp()} live_trading_writes: "

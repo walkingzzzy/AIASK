@@ -52,6 +52,47 @@
             trade_prediction_contract = dict(
                 candidate_contract_value(payload, "trade_prediction_contract", {}) or {}
             )
+            trade_prediction_contract_reject_reasons = [
+                str(item or "").strip().lower()
+                for item in list(
+                    candidate_contract_value(payload, "trade_prediction_contract_reject_reasons", []) or []
+                )
+                if str(item or "").strip()
+            ]
+            trade_prediction_contract_observation_gap = False
+            if trade_prediction_contract_status != "ready":
+                source = str(
+                    trade_prediction_contract.get("contract_source") or ""
+                ).strip().lower()
+                invalid_reasons = [
+                    reason
+                    for reason in trade_prediction_contract_reject_reasons
+                    if reason.startswith("invalid:")
+                ]
+                derived_gap_reasons = {"invalid:direction", "invalid:confidence"}
+                missing_gap_reasons = {"missing:direction", "missing:confidence"}
+                missing_reasons = [
+                    reason
+                    for reason in trade_prediction_contract_reject_reasons
+                    if reason.startswith("missing:")
+                ]
+                trade_prediction_contract_observation_gap = bool(
+                    source != "explicit"
+                    and trade_prediction_contract_reject_reasons
+                    and not any(reason not in derived_gap_reasons for reason in invalid_reasons)
+                    and not any(reason not in missing_gap_reasons for reason in missing_reasons)
+                    and (
+                        any(
+                            reason in missing_gap_reasons
+                            for reason in trade_prediction_contract_reject_reasons
+                        )
+                        or any(reason in derived_gap_reasons for reason in trade_prediction_contract_reject_reasons)
+                    )
+                )
+            if trade_prediction_contract_observation_gap:
+                diagnostic_only = True
+                if not execution_readiness_tier or execution_readiness_tier == "formal_runtime_ready":
+                    execution_readiness_tier = "observe_diagnostic_only"
             semantic_hard_fail = bool(
                 list(
                     dict(payload.get("evidence_alignment_audit") or {}).get("hard_fail_reasons") or []
@@ -158,7 +199,7 @@
                 and bool(trade_prediction_contract_hash)
                 and bool(trade_prediction_contract)
             )
-            if not trade_prediction_ready:
+            if not trade_prediction_ready and not trade_prediction_contract_observation_gap:
                 pre_observe_hard_reasons.append("trade_prediction_contract_not_ready")
             pre_observe_hard_reasons = list(dict.fromkeys(pre_observe_hard_reasons))
             semantic_hard_fail = bool(semantic_hard_fail or pre_observe_hard_reasons)
@@ -227,6 +268,7 @@
                 "pre_observe_hard_reject_reasons": pre_observe_hard_reasons,
                 "trade_prediction_contract_status": trade_prediction_contract_status or "missing",
                 "trade_prediction_contract_hash": trade_prediction_contract_hash or None,
+                "trade_prediction_contract_observation_gap": trade_prediction_contract_observation_gap,
                 "strategy_type_registered": strategy_type_registered,
                 "execution_semantic_mode": execution_semantic_mode,
                 "execution_semantic_gap": execution_semantic_gap,
@@ -381,6 +423,9 @@
                 "paper_lane_ready",
                 "paper_account_id",
                 "paper_account_status",
+                "incubation_factory_required",
+                "paper_observation_backlog_status",
+                "paper_observation_handoff_warning",
                 "diagnostic_observation",
                 "diagnostic_lane_ready",
                 "diagnostic_account_id",
@@ -450,6 +495,7 @@
         ) -> dict:
             paper_account_id = None
             paper_account_status = None
+            handoff_warning = None
             incubation_gateway = self._get_incubation_gateway()
 
             try:
@@ -460,8 +506,12 @@
                     stage="paper",
                 )
                 paper_account_id = (
-                    ((binding or {}).get("account") or {}).get("id")
+                    (binding or {}).get("account_id")
+                    or (binding or {}).get("id")
+                    or ((binding or {}).get("account") or {}).get("id")
+                    or ((binding or {}).get("account") or {}).get("account_id")
                     or ((binding or {}).get("binding") or {}).get("account_id")
+                    or ((binding or {}).get("binding") or {}).get("id")
                 )
                 if paper_account_id:
                     updated = await self._call_optional_db_method(
@@ -474,12 +524,19 @@
                     )
                     paper_account_status = (updated or {}).get("status") if isinstance(updated, dict) else "active"
             except Exception as exc:
+                handoff_warning = "paper_observation_account_unavailable"
                 logger.warning("StrategyFactory: ensure paper observation account failed for %s: %s", strategy.get("id"), exc)
 
+            paper_lane_ready = bool(paper_account_id)
+            if not paper_lane_ready and not handoff_warning:
+                handoff_warning = "paper_observation_account_unavailable"
             return {
-                "paper_lane_ready": bool(paper_account_id),
+                "paper_lane_ready": paper_lane_ready,
                 "paper_account_id": paper_account_id,
                 "paper_account_status": paper_account_status or ("active" if paper_account_id else None),
+                "incubation_factory_required": True,
+                "paper_observation_backlog_status": "queued" if paper_lane_ready else "handoff_failed",
+                "paper_observation_handoff_warning": handoff_warning,
             }
 
         async def _enqueue_diagnostic_observation(

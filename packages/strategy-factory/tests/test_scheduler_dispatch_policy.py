@@ -58,10 +58,67 @@ def test_shadow_readonly_skips_paper_trading_cycle(monkeypatch) -> None:
     assert paper_calls["count"] == 0
     assert result["paper_trading_cycle"]["status"] == "skipped"
     assert result["paper_trading_cycle"]["reason"] == "shadow_readonly"
+    assert result["summary"]["paper_trading_cycle"]["reason"] == "shadow_readonly"
     assert cycle_calls == [
         {"parity_role": "primary", "read_only": False},
         {"parity_role": "shadow", "read_only": True},
     ]
+
+
+def test_gate3_record_only_skips_paper_trading_cycle(monkeypatch) -> None:
+    from strategy_factory.application.factory_execution import FactoryExecutionMode
+    from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
+    from strategy_factory.application.research import paper_trading_scheduler
+
+    monkeypatch.setenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", "1")
+    paper_calls = {"count": 0}
+
+    async def _paper_cycle(_db):
+        paper_calls["count"] += 1
+        return {"status": "success"}
+
+    monkeypatch.setattr(paper_trading_scheduler, "run_paper_trading_cycle", _paper_cycle)
+
+    scheduler = StrategyFactoryScheduler()
+
+    async def _cycle_once(
+        self,
+        resolved_db,
+        *,
+        previous_result,
+        execution_mode,
+        parity_role="primary",
+        read_only=False,
+        run_id=None,
+        trace_id=None,
+        target_codes=None,
+    ):
+        return (
+            {
+                "run_id": run_id or "factory_run_primary",
+                "trace_id": trace_id or "trace-primary",
+                "status": "success",
+                "summary": {},
+                "artifacts": [],
+            },
+            [],
+        )
+
+    scheduler._execute_factory_cycle_once = MethodType(_cycle_once, scheduler)
+
+    result, failures = asyncio.run(
+        scheduler._execute_factory_run_once_mode(
+            object(),
+            previous_result=None,
+            execution_mode=FactoryExecutionMode.STOCK_FIRST_OBSERVE_PRIMARY,
+        )
+    )
+
+    assert failures == []
+    assert paper_calls["count"] == 0
+    assert result["paper_trading_cycle"]["status"] == "skipped"
+    assert result["paper_trading_cycle"]["reason"] == "gate3_record_only"
+    assert result["summary"]["paper_trading_cycle"]["reason"] == "gate3_record_only"
 
 
 class _DispatchDb:

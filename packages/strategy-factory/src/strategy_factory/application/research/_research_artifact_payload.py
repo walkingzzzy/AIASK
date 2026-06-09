@@ -86,6 +86,8 @@ def build_factor_research_artifact_payload(
     lifecycle_feedback_input = dict(runtime_context.get("lifecycle_feedback_input") or {})
     budget_feedback_root = dict(runtime_context.get("budget_feedback_root") or {})
     budget_feedback_summary = dict(runtime_context.get("budget_feedback_summary") or {})
+    paper_observation_backlog = dict(runtime_context.get("paper_observation_backlog") or {})
+    incubation_factory_health = dict(runtime_context.get("incubation_factory_health") or {})
     governed_source_candidate_count = int(
         runtime_context.get("governed_source_candidate_count") or 0
     )
@@ -496,6 +498,8 @@ def build_factor_research_artifact_payload(
             stock_family_allocation_summary=stock_family_allocation_summary,
             lifecycle_feedback_input=lifecycle_feedback_input,
             budget_feedback_summary=budget_feedback_summary,
+            paper_observation_backlog=paper_observation_backlog,
+            incubation_factory_health=incubation_factory_health,
             search_route_action_counts=search_route_action_counts,
             degraded=degraded,
             freshness_days=freshness_days,

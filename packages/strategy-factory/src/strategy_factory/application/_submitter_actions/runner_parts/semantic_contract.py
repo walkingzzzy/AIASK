@@ -8,7 +8,12 @@
             read_only: bool = False,
         ) -> dict:
             """处理单个候选策略的完整提交流程。"""
-            execution_options = SubmissionExecutionOptions(read_only=read_only)
+            gate3_record_only = bool(_gate3_record_only_enabled())
+            execution_options = SubmissionExecutionOptions(read_only=bool(read_only or gate3_record_only))
+            quality_report_options = SubmissionExecutionOptions(
+                read_only=read_only,
+                record_only=gate3_record_only,
+            )
             candidate = apply_resolved_candidate_envelope(candidate)
             candidate = self._ensure_runtime_playbook(candidate)
             run_submission_quality_gate = _local_run_submission_quality_gate
@@ -18,7 +23,14 @@
             existing_status = str((existing_strategy or {}).get("status") or "draft")
             strategy_id = str((existing_strategy or {}).get("id") or f"factory_{int(_time.time())}_{uuid4().hex[:8]}")
             name = self._candidate_name(candidate, existing_strategy)
-            metrics = candidate.get("backtest_metrics", {})
+            metrics = dict(candidate.get("backtest_metrics") or {})
+            backtest_metrics_contract = dict(
+                candidate.get("backtest_metrics_contract")
+                or metrics.get("backtest_metrics_contract")
+                or {}
+            )
+            if backtest_metrics_contract and not metrics.get("backtest_metrics_contract"):
+                metrics["backtest_metrics_contract"] = backtest_metrics_contract
             semantic_audit: dict[str, Any] = {}
             if _semantic_contract_feature_enabled():
                 candidate = ensure_candidate_semantic_contract(candidate)
@@ -116,6 +128,8 @@
                         or candidate.get("hard_failures")
                         or []
                     ),
+                    "backtest_metrics": dict(metrics or {}),
+                    "backtest_metrics_contract": dict(backtest_metrics_contract or {}),
                 }
             )
             if _semantic_contract_feature_enabled():
@@ -314,19 +328,9 @@
                         or candidate.get("hard_failures")
                         or []
                     ),
+                    "backtest_metrics": dict(metrics or {}),
+                    "backtest_metrics_contract": dict(backtest_metrics_contract or {}),
                 }
-            )
-            should_persist_strategy = await self._submission_coordinator.persist_candidate(
-                strategy_id=strategy_id,
-                candidate=candidate,
-                data=data,
-                metrics=metrics,
-                validation_report=validation_report,
-                risk_report=risk_report,
-                gate=gate,
-                db=db,
-                refresh_existing=refresh_existing,
-                options=execution_options,
             )
             quality_report = self._build_quality_report(
                 strategy_id=strategy_id,
@@ -371,94 +375,202 @@
 
             multiple_testing_registry = dict(gate.get("multiple_testing_registry") or {})
             multiple_testing_registry_record_id = None
-            if refresh_existing:
-                post_gate = await self._submission_coordinator.handle_existing_refresh(
-                    strategy_id=strategy_id,
-                    name=name,
-                    candidate=candidate,
+            if gate3_record_only:
+                gate3_quality_record = _build_gate3_quality_record_contract(
                     gate=gate,
-                    quality_report=quality_report,
-                    backtest_metrics=metrics,
-                    snapshot=snapshot,
-                    validation_report=validation_report,
-                    risk_report=risk_report,
-                    db=db,
-                    existing_status=existing_status,
-                    submission_lane=submission_lane,
-                    submission_action=submission_action,
-                    options=execution_options,
+                    quality_summary=quality_summary,
+                    read_only=read_only,
+                    gate3_record_only=gate3_record_only,
                 )
-            else:
-                post_gate = await self._submission_coordinator.handle_new_candidate(
-                    strategy_id=strategy_id,
-                    name=name,
-                    candidate=candidate,
-                    data=data,
-                    gate=gate,
-                    quality_report=quality_report,
-                    backtest_metrics=metrics,
-                    snapshot=snapshot,
-                    validation_report=validation_report,
-                    risk_report=risk_report,
-                    db=db,
+                planned_submission_lane = submission_lane
+                planned_final_status = final_status
+                record_status = "gate3_record_passed" if bool(gate.get("passed")) else "gate3_record_failed"
+                record_action = dict(submission_action.get("submission_action") or {})
+                record_action.update(
+                    {
+                        "type": "gate3_record_only",
+                        "trigger_reason": "gate3_record_only",
+                        "next_step": "await_manual_record_review",
+                        "completed": False,
+                        "planned_submission_lane": planned_submission_lane,
+                        "planned_final_status": planned_final_status,
+                        "record_status": record_status,
+                        "strategy_created": False,
+                        "lifecycle_action_executed": False,
+                    }
+                )
+                submission_lane = "gate3_record_only"
+                final_status = "gate3_recorded"
+                post_gate = {
+                    "submission_lane": submission_lane,
+                    "final_status": final_status,
+                    "planned_submission_lane": planned_submission_lane,
+                    "planned_final_status": planned_final_status,
+                    "gate3_record_only": True,
+                    "record_only": True,
+                    "gate_3_recorded": bool(not read_only),
+                    "gate3_record_status": record_status,
+                    **gate3_quality_record,
+                    "quality_report_record_only": True,
+                    "quality_report_persisted": False,
+                    "gate3_audit_evidence_persisted": False,
+                    "record_only_scope": "gate3_audit_evidence",
+                    "automatic_downstream_action": False,
+                    "strategy_created": False,
+                    "lifecycle_action_executed": False,
+                    "submission_action": record_action,
+                    "submission_action_type": "gate3_record_only",
+                    "submission_action_trigger": "gate3_record_only",
+                    "submission_action_gaps": list(submission_action.get("submission_action_gaps") or []),
+                    "submission_action_fallback_conditions": list(
+                        submission_action.get("submission_action_fallback_conditions") or []
+                    ),
+                    "submission_action_next_step": "await_manual_record_review",
+                    "submission_action_completed": False,
+                    "admission_decision": submission_action.get("admission_decision"),
+                    "formal_track_requested": bool(submission_action.get("formal_track_requested")),
+                    "formal_track_eligible": bool(submission_action.get("formal_track_eligible")),
+                    "formal_track_blockers": list(submission_action.get("formal_track_blockers") or []),
+                    "runtime_bootstrap_reason": submission_action.get("runtime_bootstrap_reason"),
+                    "wide_intake_admitted": bool(submission_action.get("wide_intake_admitted")),
+                }
+                self._apply_submission_action_audit(
+                    quality_report,
+                    final_status=final_status,
                     submission_lane=submission_lane,
-                    submission_action=submission_action,
-                    options=execution_options,
+                    submission_audit=post_gate,
                 )
                 if not read_only:
-                    try:
-                        parent_strategy_id = (
-                            str((candidate.get("dedup_result") or {}).get("parent_strategy_id") or "").strip()
-                            or str(candidate.get("parent_strategy_id") or "").strip()
-                            or None
-                        )
-                        await self._save_strategy_lineage_record(
-                            db,
-                            strategy_id=strategy_id,
-                            parent_strategy_id=parent_strategy_id,
-                            reason=str(candidate.get("spawn_reason") or ""),
-                            snapshot=snapshot,
-                            candidate={**dict(candidate or {}), "multiple_testing_registry": multiple_testing_registry},
-                        )
-                    except Exception as exc:
-                        logger.warning("StrategySubmitter: save lineage failed for %s: %s", strategy_id, exc)
-                    if multiple_testing_registry and callable(getattr(db, "save_factory_task_evidence", None)):
-                        research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
-                        evidence_payload = {
-                            "task_key": str(
-                                multiple_testing_registry.get("task_key")
-                                or multiple_testing_registry.get("registry_key")
-                                or multiple_testing_registry.get("task_signature")
-                                or strategy_id
-                            ).strip(),
-                            "event_id": research_task.get("event_id"),
-                            "theme_code": str(research_task.get("theme_code") or "").strip(),
-                            "symbol": next(iter(_normalize_target_codes(candidate.get("target_symbols") or [])), None),
-                            "evidence_type": "multiple_testing_registry",
-                            "weight": float((multiple_testing_registry.get("selection_ratio") or 0.0) or 0.0),
-                            "evidence_payload": {
-                                **multiple_testing_registry,
-                                "strategy_id": strategy_id,
-                                "status": str(post_gate.get("final_status") or final_status),
-                            },
-                        }
+                    await self._record_experiment(
+                        db,
+                        candidate,
+                        strategy_id,
+                        name,
+                        snapshot,
+                        gate,
+                        record_status,
+                        validation_report,
+                        risk_report,
+                        quality_report,
+                        metrics,
+                        None,
+                    )
+                    evidence_record = await self._record_gate3_audit_evidence(
+                        db,
+                        candidate,
+                        strategy_id,
+                        snapshot,
+                        gate,
+                        quality_report,
+                        metrics,
+                        status=record_status,
+                        planned_submission_lane=planned_submission_lane,
+                        planned_final_status=planned_final_status,
+                    )
+                    if evidence_record:
+                        post_gate["gate3_audit_evidence_id"] = evidence_record.get("id")
+                        post_gate["gate3_audit_evidence_persisted"] = True
+            else:
+                await self._submission_coordinator.persist_candidate(
+                    strategy_id=strategy_id,
+                    candidate=candidate,
+                    data=data,
+                    metrics=metrics,
+                    validation_report=validation_report,
+                    risk_report=risk_report,
+                    gate=gate,
+                    db=db,
+                    refresh_existing=refresh_existing,
+                    options=execution_options,
+                )
+                if refresh_existing:
+                    post_gate = await self._submission_coordinator.handle_existing_refresh(
+                        strategy_id=strategy_id,
+                        name=name,
+                        candidate=candidate,
+                        gate=gate,
+                        quality_report=quality_report,
+                        backtest_metrics=metrics,
+                        snapshot=snapshot,
+                        validation_report=validation_report,
+                        risk_report=risk_report,
+                        db=db,
+                        existing_status=existing_status,
+                        submission_lane=submission_lane,
+                        submission_action=submission_action,
+                        options=execution_options,
+                    )
+                else:
+                    post_gate = await self._submission_coordinator.handle_new_candidate(
+                        strategy_id=strategy_id,
+                        name=name,
+                        candidate=candidate,
+                        data=data,
+                        gate=gate,
+                        quality_report=quality_report,
+                        backtest_metrics=metrics,
+                        snapshot=snapshot,
+                        validation_report=validation_report,
+                        risk_report=risk_report,
+                        db=db,
+                        submission_lane=submission_lane,
+                        submission_action=submission_action,
+                        options=execution_options,
+                    )
+                    if not read_only:
                         try:
-                            persisted_registry = db.save_factory_task_evidence(evidence_payload)
-                            if inspect.isawaitable(persisted_registry):
-                                persisted_registry = await persisted_registry
-                            if isinstance(persisted_registry, dict):
-                                multiple_testing_registry_record_id = persisted_registry.get("id")
-                                multiple_testing_registry = {
-                                    **multiple_testing_registry,
-                                    "evidence_record_id": multiple_testing_registry_record_id,
-                                }
-                        except Exception as exc:
-                            logger.warning(
-                                "StrategySubmitter: save multiple-testing registry failed for %s: %s",
-                                strategy_id,
-                                exc,
+                            parent_strategy_id = (
+                                str((candidate.get("dedup_result") or {}).get("parent_strategy_id") or "").strip()
+                                or str(candidate.get("parent_strategy_id") or "").strip()
+                                or None
                             )
-            if _semantic_contract_feature_enabled() and not read_only:
+                            await self._save_strategy_lineage_record(
+                                db,
+                                strategy_id=strategy_id,
+                                parent_strategy_id=parent_strategy_id,
+                                reason=str(candidate.get("spawn_reason") or ""),
+                                snapshot=snapshot,
+                                candidate={**dict(candidate or {}), "multiple_testing_registry": multiple_testing_registry},
+                            )
+                        except Exception as exc:
+                            logger.warning("StrategySubmitter: save lineage failed for %s: %s", strategy_id, exc)
+                        if multiple_testing_registry and callable(getattr(db, "save_factory_task_evidence", None)):
+                            research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
+                            evidence_payload = {
+                                "task_key": str(
+                                    multiple_testing_registry.get("task_key")
+                                    or multiple_testing_registry.get("registry_key")
+                                    or multiple_testing_registry.get("task_signature")
+                                    or strategy_id
+                                ).strip(),
+                                "event_id": research_task.get("event_id"),
+                                "theme_code": str(research_task.get("theme_code") or "").strip(),
+                                "symbol": next(iter(_normalize_target_codes(candidate.get("target_symbols") or [])), None),
+                                "evidence_type": "multiple_testing_registry",
+                                "weight": float((multiple_testing_registry.get("selection_ratio") or 0.0) or 0.0),
+                                "evidence_payload": {
+                                    **multiple_testing_registry,
+                                    "strategy_id": strategy_id,
+                                    "status": str(post_gate.get("final_status") or final_status),
+                                },
+                            }
+                            try:
+                                persisted_registry = db.save_factory_task_evidence(evidence_payload)
+                                if inspect.isawaitable(persisted_registry):
+                                    persisted_registry = await persisted_registry
+                                if isinstance(persisted_registry, dict):
+                                    multiple_testing_registry_record_id = persisted_registry.get("id")
+                                    multiple_testing_registry = {
+                                        **multiple_testing_registry,
+                                        "evidence_record_id": multiple_testing_registry_record_id,
+                                    }
+                            except Exception as exc:
+                                logger.warning(
+                                    "StrategySubmitter: save multiple-testing registry failed for %s: %s",
+                                    strategy_id,
+                                    exc,
+                                )
+            if _semantic_contract_feature_enabled() and not read_only and not gate3_record_only:
                 candidate_evidence_rows = build_candidate_evidence_records(
                     candidate,
                     strategy_id=strategy_id,
@@ -505,16 +617,24 @@
                 db,
                 strategy_id,
                 quality_report,
-                options=execution_options,
+                options=quality_report_options,
             )
-            factor_performance_report = await self._report_factor_performance_after_submit(
-                candidate=candidate,
-                strategy_id=strategy_id,
-                metrics=metrics,
-                validation_report=validation_report,
-                gate=gate,
-                read_only=read_only,
-            )
+            if gate3_record_only:
+                factor_performance_report = {
+                    "reported": False,
+                    "skipped": True,
+                    "reason": "gate3_record_only",
+                }
+            else:
+                factor_performance_report = await self._report_factor_performance_after_submit(
+                    candidate=candidate,
+                    strategy_id=strategy_id,
+                    metrics=metrics,
+                    validation_report=validation_report,
+                    gate=gate,
+                    read_only=read_only,
+                )
+            quality_summary = dict(quality_report.get("summary") or {})
 
             resolved_submission_action = dict(post_gate.get("submission_action") or submission_action.get("submission_action") or {})
             resolved_submission_action_type = post_gate.get("submission_action_type", submission_action.get("submission_action_type"))
@@ -757,13 +877,29 @@
                 and submission_lane != "diagnostic_observation"
             )
             created_audit_only = bool(not read_only and created_total and not created_strategy_pool)
+            gate_3_recorded = bool(not read_only and gate3_record_only)
+            gate3_quality_record = _build_gate3_quality_record_contract(
+                gate=gate,
+                quality_summary=quality_summary,
+                read_only=read_only,
+                gate3_record_only=gate3_record_only,
+            )
+            submitted = bool(
+                final_status == "submitted"
+                and not read_only
+                and not gate3_record_only
+            )
             summary.update(
                 {
                     "created_total": created_total,
                     "created_strategy_pool": created_strategy_pool,
                     "created_audit_only": created_audit_only,
+                    "gate_3_recorded": gate_3_recorded,
+                    "record_only": bool(gate3_record_only),
+                    "gate3_record_only": bool(gate3_record_only),
                     "diagnostic_only": bool(read_only),
                     "read_only": bool(read_only),
+                    **gate3_quality_record,
                 }
             )
             for field_name in _SEMANTIC_CONTRACT_FIELDS:
@@ -773,8 +909,11 @@
                 "created_total": created_total,
                 "created_strategy_pool": created_strategy_pool,
                 "created_audit_only": created_audit_only,
+                "gate_3_recorded": gate_3_recorded,
+                **gate3_quality_record,
+                "record_only": bool(gate3_record_only),
                 "refreshed_existing": refresh_existing,
-                "submitted": bool(gate.get("passed")),
+                "submitted": submitted,
                 "passed": bool(gate.get("passed")),
                 "gate_3": dict(gate or {}),
                 "admission_decision_contract_version": submission_action.get(

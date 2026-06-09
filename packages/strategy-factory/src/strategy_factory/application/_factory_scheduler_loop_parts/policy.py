@@ -477,7 +477,11 @@
             if portfolio_candidate is not None:
                 enriched_snapshot["portfolio_candidate_id"] = portfolio_candidate.get("id")
 
-            if portfolio_candidate is not None and hasattr(db, "save_strategy"):
+            if (
+                portfolio_candidate is not None
+                and hasattr(db, "save_strategy")
+                and not _gate3_record_only_enabled()
+            ):
                 try:
                     await db.save_strategy(portfolio_candidate)
                 except Exception as exc:
@@ -798,13 +802,25 @@
                 read_only=False,
                 target_codes=target_codes,
             )
+            def _set_paper_trading_cycle(payload: dict[str, Any]) -> None:
+                primary_result["paper_trading_cycle"] = payload
+                if isinstance(primary_result.get("summary"), dict):
+                    primary_result["summary"]["paper_trading_cycle"] = payload
+
             if resolved_mode == FactoryExecutionMode.SHADOW_READONLY:
-                primary_result["paper_trading_cycle"] = {
+                _set_paper_trading_cycle({
                     "status": "skipped",
                     "skipped": True,
                     "reason": "shadow_readonly",
                     "write_path": "paper_trading_cycle",
-                }
+                })
+            elif _gate3_record_only_enabled():
+                _set_paper_trading_cycle({
+                    "status": "skipped",
+                    "skipped": True,
+                    "reason": "gate3_record_only",
+                    "write_path": "paper_trading_cycle",
+                })
             else:
                 # PR-D1: 策略工厂 cycle 完成后，执行模拟盘日循环
                 try:
@@ -821,18 +837,18 @@
                         run_paper_trading_cycle(resolved_db),
                         timeout=paper_timeout_sec,
                     )
-                    primary_result["paper_trading_cycle"] = paper_result
+                    _set_paper_trading_cycle(paper_result)
                 except asyncio.TimeoutError:
                     logger.warning(
                         "StrategyFactory: paper trading post-cycle timed out after %ss",
                         paper_timeout_sec,
                     )
-                    primary_result["paper_trading_cycle"] = {
+                    _set_paper_trading_cycle({
                         "status": "timeout",
                         "error": f"paper trading cycle exceeded {paper_timeout_sec}s",
-                    }
+                    })
                 except Exception as _paper_exc:
-                    primary_result["paper_trading_cycle"] = {"status": "failed", "error": str(_paper_exc)}
+                    _set_paper_trading_cycle({"status": "failed", "error": str(_paper_exc)})
             if resolved_mode != FactoryExecutionMode.SHADOW_READONLY:
                 return primary_result, persistence_failures
 

@@ -8,11 +8,11 @@ from typing import Any, Optional
 
 from .._runtime_toggles import diagnostic_observation_final_status
 
-
 @dataclass(slots=True)
 class SubmissionExecutionOptions:
     read_only: bool = False
     source: str = "strategy_factory_submit"
+    record_only: bool = False
 
 
 class StrategyUpsertService:
@@ -186,8 +186,9 @@ class ExperimentRecorder:
         quality_report: dict[str, Any],
         *,
         read_only: bool,
+        record_only: bool = False,
     ) -> None:
-        if read_only:
+        if read_only or record_only:
             return
         if self._submitter._get_optional_db_method(db, "save_strategy_quality_report") is None:
             return
@@ -430,6 +431,7 @@ class SubmissionCoordinator:
             strategy_id,
             quality_report,
             read_only=options.read_only,
+            record_only=options.record_only,
         )
 
 

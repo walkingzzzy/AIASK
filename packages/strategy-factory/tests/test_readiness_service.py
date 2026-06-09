@@ -25,6 +25,26 @@ def _missing_governed_pool_factor_research() -> dict:
     }
 
 
+def _governed_factor_research() -> dict:
+    return {
+        "summary": {
+            "factor_source_mode": "governed_candidate_pool",
+            "active_candidate_count": 8,
+            "governed_source_candidate_count": 8,
+            "governed_candidate_pool_mode": "strict_governed",
+            "active_family_names": ["momentum", "quality"],
+            "governed_freshness_days": 1.0,
+            "stale": False,
+            "degraded": False,
+        },
+        "freshness_repair": {
+            "auto_refresh_enabled": False,
+            "refresh_attempted": False,
+            "refresh_status": "not_needed",
+        },
+    }
+
+
 def test_soft_readiness_allows_missing_governed_pool_with_observability(monkeypatch):
     monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "0")
 
@@ -91,6 +111,59 @@ def test_active_factor_pool_fallback_counts_as_governed_supply(monkeypatch):
     assert readiness["governed_candidate_pool_active"] is True
     assert readiness["governed_supply_viable"] is True
     assert readiness["can_proceed"] is True
+
+
+def test_paper_observation_backlog_high_warns_without_blocking_healthy_intake(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    factor_research = _governed_factor_research()
+    factor_research["summary"].update(
+        {
+            "paper_observation_backlog_count": 64,
+            "paper_observation_backlog_status": "queued",
+            "paper_observation_last_recognized_at": "2026-06-09T09:20:00+08:00",
+            "incubation_factory_health": {"healthy": True},
+        }
+    )
+
+    readiness = ReadinessService().evaluate(_healthy_snapshot(), factor_research)
+
+    assert readiness["paper_observation_backlog_count"] == 64
+    assert readiness["paper_observation_backlog_status"] == "queued"
+    assert readiness["paper_observation_intake_stale"] is False
+    assert "paper_observation_backlog_high" in readiness["warnings"]
+    assert "paper_observation_intake_stale" not in readiness["warnings"]
+    assert "paper_observation_intake_stale" not in readiness["blockers"]
+    assert readiness["can_proceed"] is True
+
+
+def test_paper_observation_backlog_with_unhealthy_incubation_blocks_when_hard_block(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    factor_research = _governed_factor_research()
+    factor_research["summary"].update(
+        {
+            "paper_observation_backlog_count": 3,
+            "paper_observation_backlog_status": "queued",
+            "paper_observation_last_recognized_at": None,
+            "incubation_factory_health": {
+                "healthy": False,
+                "stale_reason": "heartbeat_expired",
+            },
+        }
+    )
+
+    readiness = ReadinessService().evaluate(_healthy_snapshot(), factor_research)
+
+    assert readiness["paper_observation_backlog_count"] == 3
+    assert readiness["paper_observation_intake_stale"] is True
+    assert "paper_observation_intake_stale" in readiness["warnings"]
+    assert "paper_observation_intake_stale" in readiness["blockers"]
+    assert readiness["can_proceed"] is False
 
 
 

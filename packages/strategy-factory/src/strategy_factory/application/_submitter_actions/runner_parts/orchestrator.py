@@ -15,7 +15,12 @@
             strategy_id = str(strategy_payload.get("id") or "").strip()
             if not strategy_id:
                 raise ValueError("strategy_id is required for replay_existing_submission")
-            execution_options = SubmissionExecutionOptions(read_only=read_only)
+            gate3_record_only = bool(_gate3_record_only_enabled())
+            execution_options = SubmissionExecutionOptions(read_only=bool(read_only or gate3_record_only))
+            quality_report_options = SubmissionExecutionOptions(
+                read_only=read_only,
+                record_only=gate3_record_only,
+            )
             name = str(strategy_payload.get("name") or strategy_id).strip()
             report = dict(latest_report or {})
             metrics = dict(backtest_metrics or report.get("backtest_metrics") or {})
@@ -98,29 +103,121 @@
                 gate=gate,
                 final_status=final_status,
             )
-            post_gate = await self._submission_coordinator.handle_new_candidate(
-                strategy_id=strategy_id,
-                name=name,
-                candidate=candidate,
-                data=strategy_payload,
-                gate=gate,
-                quality_report=quality_report,
-                backtest_metrics=metrics,
-                snapshot=snapshot,
-                validation_report=validation_report,
-                risk_report=risk_report,
-                db=db,
-                submission_lane=submission_lane,
-                submission_action=submission_action,
-                options=execution_options,
-            )
+            quality_summary = dict(quality_report.get("summary") or {})
+            if gate3_record_only:
+                gate3_quality_record = _build_gate3_quality_record_contract(
+                    gate=gate,
+                    quality_summary=quality_summary,
+                    read_only=read_only,
+                    gate3_record_only=gate3_record_only,
+                )
+                planned_submission_lane = submission_lane
+                planned_final_status = final_status
+                record_status = "gate3_record_passed" if bool(gate.get("passed")) else "gate3_record_failed"
+                record_action = dict(submission_action.get("submission_action") or {})
+                record_action.update(
+                    {
+                        "type": "gate3_record_only",
+                        "trigger_reason": "gate3_record_only",
+                        "next_step": "await_manual_record_review",
+                        "completed": False,
+                        "planned_submission_lane": planned_submission_lane,
+                        "planned_final_status": planned_final_status,
+                        "record_status": record_status,
+                        "strategy_created": False,
+                        "lifecycle_action_executed": False,
+                    }
+                )
+                submission_lane = "gate3_record_only"
+                final_status = "gate3_recorded"
+                post_gate = {
+                    "submission_lane": submission_lane,
+                    "final_status": final_status,
+                    "planned_submission_lane": planned_submission_lane,
+                    "planned_final_status": planned_final_status,
+                    "gate3_record_only": True,
+                    "record_only": True,
+                    "gate_3_recorded": bool(not read_only),
+                    "gate3_record_status": record_status,
+                    **gate3_quality_record,
+                    "quality_report_record_only": True,
+                    "quality_report_persisted": False,
+                    "gate3_audit_evidence_persisted": False,
+                    "record_only_scope": "gate3_audit_evidence",
+                    "automatic_downstream_action": False,
+                    "strategy_created": False,
+                    "lifecycle_action_executed": False,
+                    "submission_action": record_action,
+                    "submission_action_type": "gate3_record_only",
+                    "submission_action_trigger": "gate3_record_only",
+                    "submission_action_gaps": list(submission_action.get("submission_action_gaps") or []),
+                    "submission_action_fallback_conditions": list(
+                        submission_action.get("submission_action_fallback_conditions") or []
+                    ),
+                    "submission_action_next_step": "await_manual_record_review",
+                    "submission_action_completed": False,
+                    "admission_decision": submission_action.get("admission_decision"),
+                }
+                self._apply_submission_action_audit(
+                    quality_report,
+                    final_status=final_status,
+                    submission_lane=submission_lane,
+                    submission_audit=post_gate,
+                )
+                if not read_only:
+                    await self._record_experiment(
+                        db,
+                        candidate,
+                        strategy_id,
+                        name,
+                        snapshot,
+                        gate,
+                        record_status,
+                        validation_report,
+                        risk_report,
+                        quality_report,
+                        metrics,
+                        None,
+                    )
+                    evidence_record = await self._record_gate3_audit_evidence(
+                        db,
+                        candidate,
+                        strategy_id,
+                        snapshot,
+                        gate,
+                        quality_report,
+                        metrics,
+                        status=record_status,
+                        planned_submission_lane=planned_submission_lane,
+                        planned_final_status=planned_final_status,
+                    )
+                    if evidence_record:
+                        post_gate["gate3_audit_evidence_id"] = evidence_record.get("id")
+                        post_gate["gate3_audit_evidence_persisted"] = True
+            else:
+                post_gate = await self._submission_coordinator.handle_new_candidate(
+                    strategy_id=strategy_id,
+                    name=name,
+                    candidate=candidate,
+                    data=strategy_payload,
+                    gate=gate,
+                    quality_report=quality_report,
+                    backtest_metrics=metrics,
+                    snapshot=snapshot,
+                    validation_report=validation_report,
+                    risk_report=risk_report,
+                    db=db,
+                    submission_lane=submission_lane,
+                    submission_action=submission_action,
+                    options=execution_options,
+                )
             final_status = str(post_gate.get("final_status") or final_status)
             submission_lane = str(post_gate.get("submission_lane") or submission_lane)
             await self._submission_coordinator.save_quality_report(
                 db,
                 strategy_id,
                 quality_report,
-                options=execution_options,
+                options=quality_report_options,
             )
             return {
                 "strategy_id": strategy_id,
@@ -369,8 +466,40 @@
                 evaluation["admission_block_reasons"] = list(gate.get("admission_block_reasons") or [])
                 evaluation["admission_evaluations"] = compact_json(gate.get("admission_evaluations") or {})
 
+                record_only_status = str(status or "").startswith("gate3_record_")
+                experiment_gate3_quality_record = (
+                    _build_gate3_quality_record_contract(
+                        gate=gate,
+                        quality_summary=quality_summary,
+                        read_only=False,
+                        gate3_record_only=True,
+                    )
+                    if record_only_status
+                    else {}
+                )
+                if experiment_gate3_quality_record:
+                    evaluation.update(experiment_gate3_quality_record)
+                    evaluation["record_only_scope"] = "gate3_audit_evidence"
+                    evaluation["automatic_downstream_action"] = False
                 result = dict(existing_result)
-                result.update({"strategy_id": strategy_id, "generated_strategy_id": strategy_id, "status": status})
+                if record_only_status:
+                    result.update(
+                        {
+                            "candidate_id": strategy_id,
+                            "strategy_id": None,
+                            "generated_strategy_id": None,
+                            "status": status,
+                            "record_only": True,
+                            "gate3_record_only": True,
+                            **experiment_gate3_quality_record,
+                            "record_only_scope": "gate3_audit_evidence",
+                            "automatic_downstream_action": False,
+                            "strategy_created": False,
+                            "lifecycle_action_executed": False,
+                        }
+                    )
+                else:
+                    result.update({"strategy_id": strategy_id, "generated_strategy_id": strategy_id, "status": status})
                 _assign_if_present(result, "candidate_provenance", candidate_provenance)
                 _assign_if_present(result, "source_candidate_artifact_id", candidate_provenance.get("source_candidate_artifact_id"))
                 _assign_if_present(result, "candidate_family", candidate_provenance.get("candidate_family"))
@@ -425,7 +554,7 @@
                     result["incubation_pipeline"] = (incubation_pipeline or {}).get("snapshot") or {}
 
                 parent_strategy_id = existing.get("parent_strategy_id") or candidate.get("parent_strategy_id")
-                experiment_strategy_id = existing.get("strategy_id") or parent_strategy_id or strategy_id
+                experiment_strategy_id = None if record_only_status else existing.get("strategy_id") or parent_strategy_id or strategy_id
                 prompt_payload = existing.get("prompt") or (str(candidate.get("llm_prompt")) if candidate.get("llm_prompt") else str(snapshot.get("date") or ""))
 
                 await db.save_strategy_generation_experiment(
@@ -434,7 +563,7 @@
                         "experiment_id": experiment_id,
                         "strategy_id": experiment_strategy_id,
                         "parent_strategy_id": parent_strategy_id,
-                        "generated_strategy_id": strategy_id,
+                        "generated_strategy_id": None if record_only_status else strategy_id,
                         "task_run_id": candidate.get("task_run_id") or existing.get("task_run_id"),
                         "source": candidate.get("source") or existing.get("source") or "strategy_factory",
                         "generator_type": candidate.get("generator_type") or existing.get("generator_type") or "rule",
@@ -452,3 +581,80 @@
                 )
             except Exception as exc:
                 logger.warning("StrategySubmitter: record experiment failed for %s: %s", strategy_id, exc)
+
+        @classmethod
+        async def _record_gate3_audit_evidence(
+            cls,
+            db,
+            candidate: dict,
+            strategy_id: str,
+            snapshot: dict,
+            gate: dict,
+            quality_report: Optional[dict],
+            backtest_metrics: Optional[dict],
+            *,
+            status: str,
+            planned_submission_lane: str,
+            planned_final_status: str,
+        ) -> Optional[dict]:
+            if not hasattr(db, "save_factory_task_evidence"):
+                return None
+            research_task = _normalize_research_task_contract(candidate.get("research_task") or {})
+            target_symbols = _normalize_target_codes(candidate.get("target_symbols") or [])
+            task_key = str(
+                research_task.get("task_key")
+                or research_task.get("task_id")
+                or candidate.get("task_run_id")
+                or candidate.get("experiment_id")
+                or strategy_id
+            ).strip()
+            if not task_key:
+                task_key = strategy_id
+            quality_summary = dict((quality_report or {}).get("summary") or {})
+            gate3_quality_record = _build_gate3_quality_record_contract(
+                gate=gate,
+                quality_summary=quality_summary,
+                read_only=False,
+                gate3_record_only=True,
+            )
+            payload = {
+                "task_key": task_key,
+                "event_id": research_task.get("event_id"),
+                "theme_code": str(research_task.get("theme_code") or "").strip(),
+                "symbol": next(iter(target_symbols), None),
+                "evidence_type": "gate3_record_only_audit",
+                "weight": 1.0 if gate3_quality_record.get("gate3_record_quality_qualified") else 0.0,
+                "evidence_payload": {
+                    "contract_version": "strategy_factory.gate3_record_only_audit.v1",
+                    "candidate_id": strategy_id,
+                    "experiment_id": candidate.get("experiment_id"),
+                    "factory_run_id": candidate.get("factory_run_id") or snapshot.get("factory_run_id"),
+                    "status": status,
+                    "passed": bool((gate or {}).get("passed")),
+                    "validation_grade": gate3_quality_record.get("gate3_record_grade")
+                    or quality_summary.get("validation_grade"),
+                    "validation_total_score": quality_summary.get("validation_total_score"),
+                    **gate3_quality_record,
+                    "planned_submission_lane": planned_submission_lane,
+                    "planned_final_status": planned_final_status,
+                    "submission_lane": "gate3_record_only",
+                    "strategy_created": False,
+                    "lifecycle_action_executed": False,
+                    "quality_report_persisted": False,
+                    "gate3_audit_evidence_persisted": True,
+                    "record_only_scope": "gate3_audit_evidence",
+                    "automatic_downstream_action": False,
+                    "quality_gate": compact_json(gate or {}),
+                    "quality_summary": compact_json(dict((quality_report or {}).get("summary") or {})),
+                    "quality_report": compact_json(quality_report or {}),
+                    "backtest_metrics": compact_scalar_metrics(backtest_metrics or {}),
+                },
+            }
+            try:
+                result = db.save_factory_task_evidence(payload)
+                if inspect.isawaitable(result):
+                    result = await result
+                return dict(result or {}) if isinstance(result, dict) else None
+            except Exception as exc:
+                logger.warning("StrategySubmitter: record gate3 audit evidence failed for %s: %s", strategy_id, exc)
+                return None
