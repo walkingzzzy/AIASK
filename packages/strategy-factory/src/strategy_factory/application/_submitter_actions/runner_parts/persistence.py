@@ -93,11 +93,25 @@
                 diagnostic_only = True
                 if not execution_readiness_tier or execution_readiness_tier == "formal_runtime_ready":
                     execution_readiness_tier = "observe_diagnostic_only"
-            semantic_hard_fail = bool(
-                list(
+            trade_prediction_ready = (
+                trade_prediction_contract_status == "ready"
+                and bool(trade_prediction_contract_hash)
+                and bool(trade_prediction_contract)
+            )
+            evidence_hard_fail_reasons = [
+                str(item or "").strip().lower()
+                for item in list(
                     dict(payload.get("evidence_alignment_audit") or {}).get("hard_fail_reasons") or []
                 )
-            )
+                if str(item or "").strip()
+            ]
+            if trade_prediction_ready:
+                evidence_hard_fail_reasons = [
+                    reason
+                    for reason in evidence_hard_fail_reasons
+                    if "prediction_contract_conflict_resolution_rule_missing" not in reason
+                ]
+            semantic_hard_fail = bool(evidence_hard_fail_reasons)
             quality_passed = bool(normalized_gate.get("passed"))
             # === DEV-V1 P0: D 级硬否决 toggle 化 ===
             # 当 STRATEGY_FACTORY_OBSERVE_D_GRADE_ENABLED=1 时,D 级 + Gate passed 候选
@@ -194,11 +208,12 @@
                 if any(fragment in reason for fragment in hard_fail_fragments)
                 and not any(fragment in reason for fragment in audit_only_fragments)
             ]
-            trade_prediction_ready = (
-                trade_prediction_contract_status == "ready"
-                and bool(trade_prediction_contract_hash)
-                and bool(trade_prediction_contract)
-            )
+            if trade_prediction_ready:
+                pre_observe_hard_reasons = [
+                    reason
+                    for reason in pre_observe_hard_reasons
+                    if "prediction_contract_conflict_resolution_rule_missing" not in reason
+                ]
             if not trade_prediction_ready and not trade_prediction_contract_observation_gap:
                 pre_observe_hard_reasons.append("trade_prediction_contract_not_ready")
             pre_observe_hard_reasons = list(dict.fromkeys(pre_observe_hard_reasons))
@@ -416,7 +431,9 @@
             summary = dict(report.get("summary") or {})
             audit = dict(submission_audit or {})
             summary["status_after_review"] = final_status
+            summary["final_status"] = final_status
             summary["submission_lane"] = submission_lane
+            report["final_status"] = final_status
             report["submission_lane"] = submission_lane
             field_names = (
                 "live_review_ready",

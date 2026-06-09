@@ -10,7 +10,8 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 #   matrices after market data is available.
 # - Market Event Ingest refreshes official notice-first normalized anchors.
 #
-# Safety controls are forced by this launcher: G3 is audit-only and live writes stay off.
+# Safety controls are forced by this launcher: G3 record-only is disabled,
+# paper observation intake stays enabled, and live writes stay off.
 export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 export PYTHONUNBUFFERED="${PYTHONUNBUFFERED:-1}"
 

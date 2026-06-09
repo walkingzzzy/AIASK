@@ -69,6 +69,7 @@ def build_quality_report(
         "market_regime_assumption": backtest_assumptions.get("market_regime_assumption") or economic_semantics.get("market_regime_assumption"),
     }
     submission_lane = audit.get("submission_lane")
+    final_status = audit.get("final_status") or status_after_review
     direct_trade_candidate = bool(audit.get("direct_trade_candidate"))
     live_review_ready = bool(audit.get("live_review_ready"))
     paper_lane_ready = bool(audit.get("paper_lane_ready"))
@@ -231,6 +232,7 @@ def build_quality_report(
         "strategy_id": strategy_id,
         "strategy_type": strategy_type,
         "status_after_review": status_after_review,
+        "final_status": final_status,
         "validation_grade": effective_validation_grade,
         "raw_validation_grade": raw_validation_grade,
         "effective_validation_grade": effective_validation_grade,
@@ -334,6 +336,7 @@ def build_quality_report(
     report = {
         "report_type": report_type,
         "passed": bool(normalized_gate.get("passed")),
+        "final_status": final_status,
         "summary": summary,
         "quality_gate": normalized_gate,
         "validation_report": validation,

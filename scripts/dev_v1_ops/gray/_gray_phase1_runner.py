@@ -34,8 +34,8 @@ env = os.environ.copy()
 env["STRATEGY_FACTORY_OBSERVE_D_GRADE_ENABLED"] = "1"
 # 显式不开 P3 / P1 (本阶段只验 P0)
 env.pop("STRATEGY_FACTORY_TRADE_AWARE_EXTRA_FAMILIES", None)
-env.pop("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", None)
-env.pop("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", None)
+env["INCUBATION_FACTORY_PAPER_INTAKE_ENABLED"] = "1"
+env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "300")
 
 print(f"[gray] === 灰度阶段 1 启动 ===", flush=True)
 print(f"[gray] 时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", flush=True)

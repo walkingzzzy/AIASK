@@ -334,6 +334,67 @@ def test_derived_sparse_trade_prediction_contract_routes_to_observe_first() -> N
     assert "diagnostic_only_runtime" in result["formal_track_blockers"]
 
 
+def test_ready_trade_prediction_contract_downgrades_semantic_conflict_rule_gap_for_observe_first() -> None:
+    gate = {
+        "passed": False,
+        "validation_grade": "A",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "reason_codes": [
+            "prediction_contract_conflict_resolution_rule_missing",
+            "weak_wf_ic_ir",
+        ],
+        "hard_fail_reasons": [
+            "prediction_contract_conflict_resolution_rule_missing",
+        ],
+    }
+    candidate = _runtime_ready_candidate("semantic-conflict-gap", observe_first=True)
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "observe_incubation"
+    assert result["final_status"] == "submitted"
+    assert result["runtime_bootstrap_eligible"] is True
+    assert result["wide_intake_admitted"] is True
+    assert result["runtime_bootstrap_reason"] == "wide_intake_observe_gate3_not_required"
+    assert result["pre_observe_hard_reject_reasons"] == []
+    assert result["trade_prediction_contract_status"] == "ready"
+    assert result["trade_prediction_contract_hash"]
+    assert result["formal_track_eligible"] is False
+
+
+def test_ready_trade_prediction_contract_downgrades_evidence_audit_conflict_rule_gap_for_observe_first() -> None:
+    gate = {
+        "passed": False,
+        "validation_grade": "A",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "reason_codes": ["weak_wf_ic_ir"],
+    }
+    candidate = _runtime_ready_candidate(
+        "semantic-audit-conflict-gap",
+        observe_first=True,
+        evidence_alignment_audit={
+            "hard_fail_reasons": [
+                "prediction_contract_conflict_resolution_rule_missing",
+            ],
+        },
+    )
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "observe_incubation"
+    assert result["final_status"] == "submitted"
+    assert result["runtime_bootstrap_eligible"] is True
+    assert result["wide_intake_admitted"] is True
+    assert result["runtime_bootstrap_reason"] == "wide_intake_observe_gate3_not_required"
+    assert result["pre_observe_hard_reject_reasons"] == []
+    assert result["trade_prediction_contract_status"] == "ready"
+    assert result["formal_track_eligible"] is False
+
+
 def test_explicit_invalid_trade_prediction_contract_still_blocks_observe_first() -> None:
     gate = {
         "passed": False,
@@ -900,6 +961,7 @@ async def test_default_observe_handoff_creates_paper_account_and_quality_summary
     assert result["admission_decision"] == "observe_only"
     assert result["summary"]["submission_lane"] == "observe_incubation"
     assert result["summary"]["status"] == "submitted"
+    assert result["summary"]["final_status"] == "submitted"
     assert result["summary"]["paper_lane_ready"] is True
     assert result["summary"]["paper_account_id"].startswith("paper-factory_")
     assert result["summary"]["paper_account_status"] == "active"
@@ -913,6 +975,7 @@ async def test_default_observe_handoff_creates_paper_account_and_quality_summary
     assert incubation_gateway.accounts
     report_summary = db.quality_reports[-1][2]["summary"]
     assert report_summary["submission_lane"] == "observe_incubation"
+    assert report_summary["final_status"] == "submitted"
     assert report_summary["paper_lane_ready"] is True
     assert report_summary["paper_account_id"] == result["summary"]["paper_account_id"]
     assert report_summary["incubation_factory_required"] is True
