@@ -37,7 +37,7 @@ export function SkillsPanel({
   const api = useMemo(() => (endpoint ? new AiaskApi({ endpoint, apiToken, controlToken }) : null), [apiToken, controlToken, endpoint]);
   const recommendedPrompt = active
     ? `请使用 ${active.name} 技能协助我完成：${active.description || "分析当前任务并给出可执行建议。"}`
-    : "请选择一个技能后，可把推荐 prompt 带回对话。";
+    : "请选择一个技能后，可把推荐提示词带回对话。";
 
   async function runSkillAction(action: "install" | "update" | "delete", nameValue = skillName || active?.name || "") {
     if (!api || !nameValue.trim()) return;
@@ -82,7 +82,7 @@ export function SkillsPanel({
           <p>
             {management
               ? "这里用于安装、更新或删除 AIASK 原生技能；写入操作需要控制令牌。"
-              : "选择技能、查看说明，并把推荐 prompt 带回对话。安装、更新、删除放在设置的技能管理中。"}
+              : "选择技能、查看说明，并把推荐提示词带回对话。安装、更新、删除放在设置的技能管理中。"}
           </p>
         </div>
         <StatusBadge status="ready" label={skills.length ? "就绪" : "就绪 / 空"} />
@@ -135,7 +135,7 @@ export function SkillsPanel({
               </div>
               {onApplyToChat && (
                 <div className="skill-use-panel">
-                  <strong>推荐 prompt</strong>
+                  <strong>推荐提示词</strong>
                   <p>{recommendedPrompt}</p>
                   <button className="primary-button" disabled={!active || !onApplyToChat} onClick={() => onApplyToChat?.(active)} type="button">
                     应用到对话

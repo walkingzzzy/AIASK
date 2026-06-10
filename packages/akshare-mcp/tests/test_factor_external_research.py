@@ -19,7 +19,9 @@ from akshare_mcp.tools.managers.quant_mgr_validation import _resolve_candidate_f
 
 
 def test_external_factor_research_ingest_review_only_and_vectorized(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "external_factor.sqlite3"))
+    db_path = str(tmp_path / "external_factor.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()
@@ -124,7 +126,9 @@ def test_external_factor_research_ingest_review_only_and_vectorized(tmp_path, mo
 
 
 def test_data_sync_external_factor_research_task(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "external_factor_sync.sqlite3"))
+    db_path = str(tmp_path / "external_factor_sync.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()

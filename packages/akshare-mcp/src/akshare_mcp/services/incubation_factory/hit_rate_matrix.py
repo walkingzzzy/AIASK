@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from typing import Any, Awaitable, Callable, Optional
 
 import numpy as np
@@ -24,6 +25,24 @@ logger = logging.getLogger(__name__)
 
 # 单元最小样本量门槛（低于此值标注 insufficient_samples，不报命中率）。
 DEFAULT_MIN_CELL_N = 5
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
 
 # 类型签名
 StrategyLister = Callable[[str, int], Awaitable[list[dict[str, Any]]]]  # (status, limit) -> rows
@@ -69,10 +88,13 @@ class _CellAccumulator:
         self.n = 0
 
     def add(self, hit_rate: float, n: int) -> None:
-        if n <= 0:
+        safe_n = _safe_int(n, 0)
+        safe_hit_rate = _finite_float(hit_rate)
+        if safe_n <= 0 or safe_hit_rate is None:
             return
-        self.hit_weighted += float(hit_rate) * int(n)
-        self.n += int(n)
+        safe_hit_rate = max(0.0, min(1.0, safe_hit_rate))
+        self.hit_weighted += safe_hit_rate * safe_n
+        self.n += safe_n
 
     def summary(self, *, min_n: int) -> dict[str, Any]:
         if self.n < min_n:
@@ -88,8 +110,12 @@ class _CellAccumulator:
 
 def _wilson_skill_lcb(hit_rate: float, n: int) -> float:
     """Wilson 下界 - 0.5 随机基线（与 ForwardVerifier._compute_skill_lcb 同口径）。"""
-    if n < 5:
+    safe_hit_rate = _finite_float(hit_rate)
+    safe_n = _safe_int(n, 0)
+    if safe_hit_rate is None or safe_n < 5:
         return 0.0
+    hit_rate = max(0.0, min(1.0, safe_hit_rate))
+    n = safe_n
     z = 1.96
     denominator = 1.0 + z * z / n
     center = (hit_rate + z * z / (2.0 * n)) / denominator
@@ -137,8 +163,10 @@ def aggregate_hit_rate_matrix(
             for label, cell in dim_summary.items():
                 if not isinstance(cell, dict):
                     continue
-                hit_rate = float(cell.get("hit_rate") or 0.0)
-                n = int(cell.get("n") or 0)
+                hit_rate = _finite_float(cell.get("hit_rate"))
+                n = _safe_int(cell.get("n"), 0)
+                if hit_rate is None:
+                    continue
                 key = (stype, bucket, dimension, str(label or _REGIME_UNKNOWN))
                 cells.setdefault(key, _CellAccumulator()).add(hit_rate, n)
 

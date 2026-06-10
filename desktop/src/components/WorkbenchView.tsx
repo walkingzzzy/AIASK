@@ -113,8 +113,8 @@ export function WorkbenchView({
   });
   const reviewComments = buildTaskReviewComments(artifacts);
   const taskContext: TaskContextSummary = {
-    projectLabel: profileName || "Local workspace",
-    threadLabel: selectedThread?.title || sessionId || "New thread",
+    projectLabel: profileName || "本地工作区",
+    threadLabel: selectedThread?.title || sessionId || "新线程",
     runLabel: selectedThread?.runId || recentRuns[0]?.run_id || "-",
     mode: agentMode,
     backendMode: mockMode ? "mock" : "live",
@@ -130,16 +130,16 @@ export function WorkbenchView({
       <header className="workbench-header task-object-header">
         <div>
           <span className="endpoint-chip">{endpoint}</span>
-          <h1>{selectedThread?.title || "AIASK Workbench"}</h1>
+          <h1>{selectedThread?.title || "AIASK 工作台"}</h1>
           <p className="header-subtitle">
-            {(profileName || "Local operator") + " / " + (userId || "local")}
+            {(profileName || "本地操作员") + " / " + (userId || "local")}
           </p>
-          <div className="task-context-strip" aria-label="Task context">
+          <div className="task-context-strip" aria-label="任务上下文">
             <StatusBadge status={taskContext.backendMode} label={taskContext.backendMode} />
             <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "online" : status} />
             <span><GitBranch size={13} /> {taskContext.threadLabel}</span>
             <span><Zap size={13} /> {taskContext.mode}</span>
-            <span><FileSearch size={13} /> {taskContext.artifactCount} artifacts</span>
+            <span><FileSearch size={13} /> {taskContext.artifactCount} 个产物</span>
           </div>
           <div className="extension-slot-row header-slot">
             <SlotRenderer
@@ -158,14 +158,14 @@ export function WorkbenchView({
             slot="header-right"
           />
           <button
-            aria-label={status === "AIASK_DISCONNECTED" ? "Connect AIASK" : "Refresh AIASK status"}
+            aria-label={status === "AIASK_DISCONNECTED" ? "连接 AIASK" : "同步 AIASK 状态"}
             className="small-button"
             disabled={busy}
             onClick={onRefresh}
             type="button"
           >
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            {status === "AIASK_DISCONNECTED" ? "Connect" : "Sync"}
+            {status === "AIASK_DISCONNECTED" ? "连接" : "同步"}
           </button>
         </div>
       </header>
@@ -175,38 +175,38 @@ export function WorkbenchView({
           <section className="workflow-panel">
             <div className="section-header">
               <div>
-                <span>Command center</span>
-                <h3>Thread-first workspace</h3>
+                <span>任务中枢</span>
+                <h3>线程优先工作台</h3>
               </div>
               <StatusBadge status={access.fullModeReady ? "ready" : "partial"} label={agentMode} />
             </div>
 
             <div className="task-object-grid">
               <div className="metric-card">
-                <span>Project / Context</span>
+                <span>项目 / 上下文</span>
                 <strong>{taskContext.projectLabel}</strong>
-                <small>{taskContext.backendMode === "mock" ? "Mock data is active" : "Live backend mode"}</small>
+                <small>{taskContext.backendMode === "mock" ? "Mock 数据已启用" : "真实后端模式"}</small>
               </div>
               <div className="metric-card">
-                <span>Run</span>
+                <span>运行</span>
                 <strong>{taskContext.runLabel}</strong>
-                <small>Current or latest run for this thread</small>
+                <small>当前线程的当前或最近运行</small>
               </div>
               <div className="metric-card">
-                <span>Pending work</span>
+                <span>待处理</span>
                 <strong>{queue.pending_intents + queue.pending_approvals}</strong>
-                <small>{queue.pending_intents} intents / {queue.pending_approvals} approvals</small>
+                <small>{queue.pending_intents} 个意图 / {queue.pending_approvals} 个审批</small>
               </div>
               <div className="metric-card">
-                <span>Access</span>
-                <strong>{access.fullModeReady ? "full ready" : "safe mode"}</strong>
-                <small>API {access.apiToken}; control {access.controlToken}</small>
+                <span>权限</span>
+                <strong>{access.fullModeReady ? "完整模式就绪" : "安全模式"}</strong>
+                <small>API {access.apiToken}; 控制 {access.controlToken}</small>
               </div>
             </div>
 
             <div className="workbench-summary-grid">
               <article className="summary-card">
-                <strong>Recent sessions</strong>
+                <strong>最近会话</strong>
                 <div className="summary-list">
                   {(summary?.recent_sessions || []).slice(0, 4).map((session) => (
                     <button
@@ -218,12 +218,12 @@ export function WorkbenchView({
                       <small>{session.last_message_at || "-"}</small>
                     </button>
                   ))}
-                  {!summary?.recent_sessions?.length && <p className="muted">No recent sessions yet.</p>}
+                  {!summary?.recent_sessions?.length && <p className="muted">暂无最近会话。</p>}
                 </div>
               </article>
 
               <article className="summary-card">
-                <strong>Recent runs</strong>
+                <strong>最近运行</strong>
                 <div className="summary-list">
                   {recentRuns.slice(0, 4).map((run) => (
                     <button key={run.run_id} onClick={() => onOpenView("runs-events")} type="button">
@@ -231,16 +231,16 @@ export function WorkbenchView({
                       <small>{runLabel(run)}</small>
                     </button>
                   ))}
-                  {!recentRuns.length && <p className="muted">No recent runs yet.</p>}
+                  {!recentRuns.length && <p className="muted">暂无最近运行。</p>}
                 </div>
               </article>
 
               <article className="summary-card">
-                <strong>Operational queue</strong>
+                <strong>操作队列</strong>
                 <div className="summary-kv">
-                  <span>Intents</span>
+                  <span>意图</span>
                   <strong>{queue.pending_intents}</strong>
-                  <span>Approvals</span>
+                  <span>审批</span>
                   <strong>{queue.pending_approvals}</strong>
                   <span>Gateway</span>
                   <strong>{queue.gateway_failed}</strong>
@@ -253,19 +253,19 @@ export function WorkbenchView({
             <div className="quick-link-row context-actions">
               <button className="small-button" onClick={() => onOpenView("projects-contexts")} type="button">
                 <Database size={13} />
-                Projects / Contexts
+                项目 / 上下文
               </button>
               <button className="small-button" onClick={() => onOpenView("tools-intents-approvals")} type="button">
                 <ShieldCheck size={13} />
-                Approvals
+                审批
               </button>
               <button className="small-button" onClick={() => onOpenView("finance-lab")} type="button">
                 <Wrench size={13} />
-                Finance Lab
+                金融实验室
               </button>
               <button className="small-button" onClick={() => onOpenView("integrations")} type="button">
                 <Clock3 size={13} />
-                Integrations
+                集成
               </button>
               <SlotRenderer
                 controlToken={controlToken}
@@ -286,7 +286,7 @@ export function WorkbenchView({
 
       <form className="composer" onSubmit={onSubmit}>
         <div className="composer-toolbar">
-          <div aria-label="Agent mode" className="segmented" role="group">
+          <div aria-label="Agent 模式" className="segmented" role="group">
             <button
               aria-pressed={agentMode === "finance_safe"}
               className={agentMode === "finance_safe" ? "active" : ""}
@@ -294,7 +294,7 @@ export function WorkbenchView({
               type="button"
             >
               <CheckCircle2 size={13} />
-              Finance safe
+              金融安全
             </button>
             <button
               aria-pressed={agentMode === "hermes_full"}
@@ -309,28 +309,29 @@ export function WorkbenchView({
           </div>
 
           <label className="session-field">
-            <span>Session</span>
+            <span>会话</span>
             <input
               value={sessionId}
               onChange={(event) => onSessionIdChange(event.target.value)}
-              placeholder="New session"
+              placeholder="新会话"
+              aria-label="会话 ID"
             />
           </label>
 
           {busy && (
-            <button aria-label="Task running" className="ghost-button" disabled title="Task running" type="button">
+            <button aria-label="任务运行中" className="ghost-button" disabled title="任务运行中" type="button">
               <Square size={13} />
-              Running
+              运行中
             </button>
           )}
 
-          <span className="muted">{tools.length} tools available</span>
+          <span className="muted">{tools.length} 个工具可用</span>
         </div>
 
         {agentMode === "hermes_full" && !controlToken.trim() && (
           <div className="notice warn compact-notice">
             <ShieldCheck size={14} />
-            Hermes full requires a Control token in Settings.
+            Hermes full 需要先在 Settings 中填写控制令牌。
           </div>
         )}
 
@@ -339,11 +340,11 @@ export function WorkbenchView({
             value={prompt}
             onChange={(event) => onPromptChange(event.target.value)}
             onKeyDown={onComposerKeyDown}
-            placeholder="Ask AIASK to research, inspect tools, produce a report, or continue the selected thread..."
+            placeholder="让 AIASK 研究、检查工具、生成报告，或继续当前线程..."
           />
-          <button className="send-button" disabled={busy || !prompt.trim()} title="Run thread task" type="submit">
+          <button aria-label="运行线程任务" className="send-button" disabled={busy || !prompt.trim()} title="运行线程任务" type="submit">
             <Send size={16} />
-            Run
+            运行
           </button>
         </div>
       </form>

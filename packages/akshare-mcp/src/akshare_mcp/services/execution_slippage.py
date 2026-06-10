@@ -30,13 +30,24 @@ from typing import Any, Optional
 
 def _safe_float(value: Any, default: float) -> float:
     try:
-        return float(value if value is not None else default)
+        fallback = float(default)
     except (TypeError, ValueError):
-        return float(default)
+        fallback = 0.0
+    if not math.isfinite(fallback):
+        fallback = 0.0
+    try:
+        parsed = float(value if value is not None else fallback)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
-    return max(float(lo), min(float(hi), float(value)))
+    safe_lo = _safe_float(lo, 0.0)
+    safe_hi = _safe_float(hi, safe_lo)
+    if safe_hi < safe_lo:
+        safe_lo, safe_hi = safe_hi, safe_lo
+    return max(safe_lo, min(safe_hi, _safe_float(value, safe_lo)))
 
 
 def _bps_to_ratio(bps: float) -> float:
@@ -99,21 +110,21 @@ class VolumeShareSlippageModel:
         reference_price : float
             Reference price (e.g. mid-price or last price) in CNY.
         """
-        resolved_duration = max(1, int(duration_minutes or 1))
-        resolved_avg_vol = max(1.0, float(avg_minute_volume or 1.0))
-        resolved_order = max(1, int(order_shares or 1))
-        resolved_price = max(0.01, float(reference_price or 0.01))
+        resolved_duration = max(1, int(_safe_float(duration_minutes, 1.0)))
+        resolved_avg_vol = max(1.0, _safe_float(avg_minute_volume, 1.0))
+        resolved_order = max(1, int(_safe_float(order_shares, 1.0)))
+        resolved_price = max(0.01, _safe_float(reference_price, 0.01))
 
         total_available_volume = resolved_avg_vol * resolved_duration
         participation_rate = _clamp(
             resolved_order / total_available_volume,
             0.0,
-            self.max_participation_rate,
+            _safe_float(self.max_participation_rate, 0.25),
         )
 
-        spread_cost_bps = self.spread_bps * 0.5
-        linear_impact_bps = self.linear_coeff * participation_rate
-        sqrt_impact_bps = self.sqrt_coeff * math.sqrt(participation_rate)
+        spread_cost_bps = _safe_float(self.spread_bps, 5.0) * 0.5
+        linear_impact_bps = _safe_float(self.linear_coeff, 10.0) * participation_rate
+        sqrt_impact_bps = _safe_float(self.sqrt_coeff, 20.0) * math.sqrt(participation_rate)
         total_slippage_bps = spread_cost_bps + linear_impact_bps + sqrt_impact_bps
 
         slippage_ratio = _bps_to_ratio(total_slippage_bps)
@@ -185,17 +196,18 @@ class MarketImpactModel:
         reference_price : float
             Reference price in CNY.
         """
-        resolved_order = max(1, int(order_shares or 1))
-        resolved_adv = max(float(self.min_adv_shares), float(adv_shares or self.min_adv_shares))
-        resolved_price = max(0.01, float(reference_price or 0.01))
+        min_adv = max(1.0, _safe_float(self.min_adv_shares, 100_000.0))
+        resolved_order = max(1, int(_safe_float(order_shares, 1.0)))
+        resolved_adv = max(min_adv, _safe_float(adv_shares, min_adv))
+        resolved_price = max(0.01, _safe_float(reference_price, 0.01))
 
         order_fraction = resolved_order / resolved_adv
         # Scale factor reduces impact for larger, more liquid stocks
         scale_factor = math.sqrt(resolved_adv / 1_000_000.0)
         impact_bps = _clamp(
-            self.eta * order_fraction * max(scale_factor, 0.1),
+            _safe_float(self.eta, 80.0) * order_fraction * max(scale_factor, 0.1),
             0.0,
-            self.max_impact_bps,
+            _safe_float(self.max_impact_bps, 200.0),
         )
 
         impact_ratio = _bps_to_ratio(impact_bps)
@@ -264,22 +276,24 @@ class PartialFillSimulator:
         slices : int
             Number of execution slices (TWAP/VWAP sub-orders).
         """
-        resolved_order = max(1, int(order_shares or 1))
-        resolved_avol = max(1.0, float(available_volume or 1.0))
-        resolved_part = _clamp(float(participation_rate or 0.0), 0.0, 1.0)
-        resolved_slices = max(1, int(slices or 1))
+        resolved_order = max(1, int(_safe_float(order_shares, 1.0)))
+        resolved_avol = max(1.0, _safe_float(available_volume, 1.0))
+        resolved_part = _clamp(_safe_float(participation_rate, 0.0), 0.0, 1.0)
+        resolved_slices = max(1, int(_safe_float(slices, 1.0)))
 
         # Expected filled volume accounting for queue discount
-        accessible_volume = resolved_avol * resolved_part * self.queue_discount
+        queue_discount = _clamp(_safe_float(self.queue_discount, 0.70), 0.0, 1.0)
+        accessible_volume = resolved_avol * resolved_part * queue_discount
         expected_filled = min(float(resolved_order), accessible_volume)
         fill_ratio = expected_filled / max(float(resolved_order), 1.0)
 
         # Probability of full fill
-        if resolved_part <= self.fill_probability_threshold:
+        fill_probability_threshold = _clamp(_safe_float(self.fill_probability_threshold, 0.15), 0.0, 1.0)
+        if resolved_part <= fill_probability_threshold:
             full_fill_probability = 0.97
         else:
             # Logistic decay as participation increases
-            excess = resolved_part - self.fill_probability_threshold
+            excess = resolved_part - fill_probability_threshold
             full_fill_probability = _clamp(0.97 * math.exp(-excess * 4.0), 0.10, 0.97)
 
         # Partial fill scenario
@@ -289,7 +303,7 @@ class PartialFillSimulator:
         # Per-slice analysis
         shares_per_slice = resolved_order / resolved_slices
         volume_per_slice = resolved_avol / resolved_slices
-        slice_fill_ratio = min(1.0, (volume_per_slice * resolved_part * self.queue_discount) / max(shares_per_slice, 1.0))
+        slice_fill_ratio = min(1.0, (volume_per_slice * resolved_part * queue_discount) / max(shares_per_slice, 1.0))
 
         return {
             "model": "partial_fill_simulation",
@@ -299,7 +313,7 @@ class PartialFillSimulator:
             "full_fill_probability": round(full_fill_probability, 4),
             "is_partial_fill_risk": bool(is_partial_fill_risk),
             "shares_at_risk": round(shares_at_risk, 0),
-            "queue_discount_applied": self.queue_discount,
+            "queue_discount_applied": queue_discount,
             "per_slice": {
                 "shares_per_slice": round(shares_per_slice, 0),
                 "volume_per_slice": round(volume_per_slice, 0),
@@ -354,7 +368,7 @@ class ExecutionSlippageBundle:
             reference_price=reference_price,
         )
         # Partial fill
-        total_window_volume = avg_minute_volume * duration_minutes
+        total_window_volume = _safe_float(avg_minute_volume, 1.0) * max(1, int(_safe_float(duration_minutes, 1.0)))
         pf = self.partial_fill_simulator.simulate(
             order_shares=order_shares,
             available_volume=total_window_volume,

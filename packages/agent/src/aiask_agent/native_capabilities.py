@@ -29,6 +29,7 @@ from .financial_skill_templates import FINANCIAL_SKILL_TEMPLATES
 from .mcp_client import MCPAggregator, MCPOAuthRequired
 from .memory_providers import MemoryProviderManager
 from .model_providers import ModelProviderRegistry, ProviderUsageStore
+from .numeric import bounded_float, bounded_int
 from .paths import aiask_agent_home, default_state_db_path
 from .platform_apis import DiscordServerClient, FeishuClient
 from .plugin_runtime import NativePluginManager
@@ -76,7 +77,7 @@ def _safe_slug(value: str) -> str:
 
 
 def _limit(value: str, max_chars: int) -> tuple[str, bool]:
-    limit = max(1, min(int(max_chars or 20000), 200000))
+    limit = bounded_int(max_chars, default=20000, minimum=1, maximum=200000)
     return value[:limit], len(value) > limit
 
 
@@ -119,8 +120,8 @@ def _fetch_url(url: str, *, max_bytes: int = 262144, timeout: float = 15.0) -> t
             "Accept": "text/html,application/xhtml+xml,text/plain;q=0.9,*/*;q=0.5",
         },
     )
-    with urlopen(request, timeout=max(1.0, min(float(timeout or 15), 60.0))) as response:
-        raw = response.read(max(1, min(int(max_bytes or 262144), 1024 * 1024)))
+    with urlopen(request, timeout=bounded_float(timeout, default=15.0, minimum=1.0, maximum=60.0)) as response:
+        raw = response.read(bounded_int(max_bytes, default=262144, minimum=1, maximum=1024 * 1024))
         content_type = str(response.headers.get("Content-Type") or "")
         status = getattr(response, "status", None)
     return raw.decode("utf-8", errors="replace"), content_type, status
@@ -128,9 +129,9 @@ def _fetch_url(url: str, *, max_bytes: int = 262144, timeout: float = 15.0) -> t
 
 def _fetch_binary_url(url: str, *, max_bytes: int = 25 * 1024 * 1024, timeout: float = 60.0) -> tuple[bytes, str, int | None]:
     normalized = _validate_public_url(url)
-    limit = max(1, min(int(max_bytes or 25 * 1024 * 1024), 100 * 1024 * 1024))
+    limit = bounded_int(max_bytes, default=25 * 1024 * 1024, minimum=1, maximum=100 * 1024 * 1024)
     request = Request(normalized, headers={"User-Agent": "AIASK-Agent/0.1 (+native-provider-tool)", "Accept": "*/*"})
-    with urlopen(request, timeout=max(1.0, min(float(timeout or 60), 300.0))) as response:
+    with urlopen(request, timeout=bounded_float(timeout, default=60.0, minimum=1.0, maximum=300.0)) as response:
         raw = response.read(limit + 1)
         content_type = str(response.headers.get("Content-Type") or "application/octet-stream").split(";", 1)[0].strip()
         status = getattr(response, "status", None)
@@ -143,7 +144,7 @@ def _json_request(method: str, url: str, payload: dict[str, Any] | None = None, 
     data = None if payload is None else json.dumps(payload, ensure_ascii=False).encode("utf-8")
     request = Request(url, data=data, method=method, headers={"Content-Type": "application/json", **dict(headers or {})})
     try:
-        with urlopen(request, timeout=max(1.0, min(float(timeout or 30), 300.0))) as response:
+        with urlopen(request, timeout=bounded_float(timeout, default=30.0, minimum=1.0, maximum=300.0)) as response:
             raw = response.read(1024 * 1024)
             text = raw.decode("utf-8", errors="replace")
             parsed = json.loads(text) if text else {}
@@ -281,8 +282,8 @@ class SkillStore:
                     "updated_at": path.stat().st_mtime,
                     "state": metadata.get("state") or "active",
                     "pinned": bool(metadata.get("pinned")),
-                    "view_count": int(metadata.get("view_count") or 0),
-                    "use_count": int(metadata.get("use_count") or 0),
+                    "view_count": bounded_int(metadata.get("view_count"), default=0, minimum=0),
+                    "use_count": bounded_int(metadata.get("use_count"), default=0, minimum=0),
                     "last_viewed_at": metadata.get("last_viewed_at"),
                     "last_used_at": metadata.get("last_used_at"),
                 }
@@ -301,7 +302,7 @@ class SkillStore:
             **{
                 **metadata,
                 "state": "active",
-                "view_count": int(metadata.get("view_count") or 0) + 1,
+                "view_count": bounded_int(metadata.get("view_count"), default=0, minimum=0) + 1,
                 "last_viewed_at": time.time(),
             },
         )
@@ -324,7 +325,7 @@ class SkillStore:
                 **metadata,
                 "state": "active",
                 "pinned": bool(metadata.get("pinned")),
-                "patch_count": int(metadata.get("patch_count") or 0) + 1,
+                "patch_count": bounded_int(metadata.get("patch_count"), default=0, minimum=0) + 1,
                 "last_used_at": time.time(),
                 "agent_created": True,
                 "archived_at": None,
@@ -443,7 +444,9 @@ class SkillStore:
             "dry_run": bool(dry_run),
             "archive_candidates": [
                 item for item in skills
-                if not item.get("pinned") and int(item.get("view_count") or 0) == 0 and int(item.get("use_count") or 0) == 0
+                if not item.get("pinned")
+                and bounded_int(item.get("view_count"), default=0, minimum=0) == 0
+                and bounded_int(item.get("use_count"), default=0, minimum=0) == 0
             ],
         }
 
@@ -497,7 +500,8 @@ class MessageOutbox:
             payload = json.dumps({"platform": platform, "target": target, "message": message}).encode("utf-8")
             request = Request(webhook, data=payload, headers={"Content-Type": "application/json"}, method="POST")
             with urlopen(request, timeout=15) as response:
-                result = {"delivered": 200 <= int(response.status) < 300, "status": response.status, "transport": "webhook"}
+                status_code = bounded_int(getattr(response, "status", None), default=0, minimum=0, maximum=999)
+                result = {"delivered": 200 <= status_code < 300, "status": response.status, "transport": "webhook"}
                 status = "sent" if result["delivered"] else "failed"
         with closing(self._connect()) as conn:
             conn.execute(
@@ -570,7 +574,7 @@ async def _text_to_speech(arguments: dict[str, Any]) -> dict[str, Any]:
     voice = str(arguments.get("voice") or os.getenv("AIASK_AGENT_TTS_VOICE", "alloy"))
     kwargs: dict[str, Any] = {"model": model, "voice": voice, "input": text, "response_format": audio_format}
     if arguments.get("speed") is not None:
-        kwargs["speed"] = float(arguments.get("speed") or 1.0)
+        kwargs["speed"] = bounded_float(arguments.get("speed"), default=1.0, minimum=0.25, maximum=4.0)
     try:
         response = await AsyncOpenAI(api_key=api_key).audio.speech.create(**kwargs)
         if hasattr(response, "aread"):
@@ -611,8 +615,8 @@ async def _transcribe_audio(arguments: dict[str, Any]) -> dict[str, Any]:
     if audio_url:
         raw, content_type, _ = _fetch_binary_url(
             audio_url,
-            max_bytes=int(arguments.get("max_bytes") or 25 * 1024 * 1024),
-            timeout=float(arguments.get("timeout_seconds") or 60),
+            max_bytes=bounded_int(arguments.get("max_bytes"), default=25 * 1024 * 1024, minimum=1, maximum=100 * 1024 * 1024),
+            timeout=bounded_float(arguments.get("timeout_seconds"), default=60.0, minimum=1.0, maximum=300.0),
         )
         suffix = mimetypes.guess_extension(content_type) or ".audio"
         input_dir = aiask_agent_home() / "generated" / "audio-input"
@@ -683,11 +687,11 @@ def build_native_capability_handlers(
         try:
             content, content_type, status = _fetch_url(
                 str(arguments.get("url") or ""),
-                max_bytes=int(arguments.get("max_bytes") or 262144),
-                timeout=float(arguments.get("timeout_seconds") or 15),
+                max_bytes=bounded_int(arguments.get("max_bytes"), default=262144, minimum=1, maximum=1024 * 1024),
+                timeout=bounded_float(arguments.get("timeout_seconds"), default=15.0, minimum=1.0, maximum=60.0),
             )
             text = _extract_text(content, content_type)
-            limited, truncated = _limit(text, int(arguments.get("max_chars") or 20000))
+            limited, truncated = _limit(text, bounded_int(arguments.get("max_chars"), default=20000, minimum=1, maximum=200000))
             return _envelope(
                 True,
                 data={
@@ -711,7 +715,7 @@ def build_native_capability_handlers(
         try:
             if not query:
                 raise ValueError("query is required")
-            limit = max(1, min(int(arguments.get("limit") or 5), 20))
+            limit = bounded_int(arguments.get("limit"), default=5, minimum=1, maximum=20)
             url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
             content, content_type, status = _fetch_url(url, max_bytes=524288, timeout=20)
             links = _extract_links(content, url, limit=limit * 3)
@@ -765,7 +769,7 @@ def build_native_capability_handlers(
                 target=query,
             )
         try:
-            max_results = max(10, min(int(arguments.get("max_results") or arguments.get("limit") or 10), 100))
+            max_results = bounded_int(arguments.get("max_results") or arguments.get("limit"), default=10, minimum=10, maximum=100)
             params = {"query": query, "max_results": str(max_results), "tweet.fields": "created_at,author_id,public_metrics"}
             if arguments.get("since_id"):
                 params["since_id"] = str(arguments.get("since_id"))
@@ -787,7 +791,7 @@ def build_native_capability_handlers(
                 "configured": True,
                 "provider": "x_api_v2",
                 "query": query,
-                "results": tweets[: max(1, min(int(arguments.get("limit") or len(tweets) or 10), 100))],
+                "results": tweets[: bounded_int(arguments.get("limit"), default=len(tweets) or 10, minimum=1, maximum=100)],
                 "next_token": meta.get("next_token"),
                 "result_count": meta.get("result_count", len(tweets)),
                 "response": {key: value for key, value in result.items() if key != "body"},
@@ -918,7 +922,12 @@ def build_native_capability_handlers(
         try:
             return _envelope(
                 True,
-                data={"skill": skills.view(str(arguments.get("name") or ""), max_chars=int(arguments.get("max_chars") or 50000))},
+                data={
+                    "skill": skills.view(
+                        str(arguments.get("name") or ""),
+                        max_chars=bounded_int(arguments.get("max_chars"), default=50000, minimum=1, maximum=200000),
+                    )
+                },
                 tool_name="agent_skill_view",
                 level="read_only",
                 target=str(arguments.get("name") or ""),
@@ -1302,7 +1311,12 @@ def build_native_capability_handlers(
                     "prompt": prompt,
                     "model": arguments.get("model") or os.getenv("AIASK_VIDEO_MODEL") or "video",
                     "size": arguments.get("size") or os.getenv("AIASK_VIDEO_SIZE") or "1280x720",
-                    "duration_seconds": int(arguments.get("duration_seconds") or os.getenv("AIASK_VIDEO_DURATION_SECONDS") or 5),
+                    "duration_seconds": bounded_int(
+                        arguments.get("duration_seconds") or os.getenv("AIASK_VIDEO_DURATION_SECONDS"),
+                        default=5,
+                        minimum=1,
+                        maximum=300,
+                    ),
                     "metadata": dict(arguments.get("metadata") or {}),
                 }
                 result = await asyncio.to_thread(
@@ -1372,7 +1386,12 @@ def build_native_capability_handlers(
         action = str(arguments.get("action") or "list").strip().lower()
         try:
             if action == "sessions":
-                data = {"sessions": terminal_backend_sessions(state_path=session_store.path, limit=int(arguments.get("limit") or 200))}
+                data = {
+                    "sessions": terminal_backend_sessions(
+                        state_path=session_store.path,
+                        limit=bounded_int(arguments.get("limit"), default=200, minimum=1, maximum=1000),
+                    )
+                }
             elif action == "list":
                 data = {"backends": list_backends()}
             else:
@@ -1417,7 +1436,12 @@ def build_native_capability_handlers(
     async def gateway_history(arguments: dict[str, Any]) -> dict[str, Any]:
         return _envelope(
             True,
-            data={"messages": gateway.messages.list(platform=arguments.get("platform"), limit=int(arguments.get("limit") or 100))},
+            data={
+                "messages": gateway.messages.list(
+                    platform=arguments.get("platform"),
+                    limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000),
+                )
+            },
             tool_name="agent_gateway_history",
             level="read_only",
         )
@@ -1442,7 +1466,7 @@ def build_native_capability_handlers(
                     "items": directory.list(
                         platform=arguments.get("platform"),
                         kind=arguments.get("kind"),
-                        limit=int(arguments.get("limit") or 200),
+                        limit=bounded_int(arguments.get("limit"), default=200, minimum=1, maximum=1000),
                     )
                 }
                 level = "read_only"
@@ -1514,11 +1538,19 @@ def build_native_capability_handlers(
                 if handoff_id:
                     data = {"handoff": session_store.get_handoff(handoff_id)}
                 else:
-                    items = session_store.list_handoffs(session_id=arguments.get("session_id"), limit=int(arguments.get("limit") or 20))
+                    items = session_store.list_handoffs(
+                        session_id=arguments.get("session_id"),
+                        limit=bounded_int(arguments.get("limit"), default=20, minimum=1, maximum=1000),
+                    )
                     data = {"handoffs": items, "latest": items[0] if items else None}
                 level = "read_only"
             elif action == "list":
-                data = {"handoffs": session_store.list_handoffs(session_id=arguments.get("session_id"), limit=int(arguments.get("limit") or 100))}
+                data = {
+                    "handoffs": session_store.list_handoffs(
+                        session_id=arguments.get("session_id"),
+                        limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000),
+                    )
+                }
                 level = "read_only"
             elif action in {"complete", "fail"}:
                 status = "completed" if action == "complete" else "failed"
@@ -1542,7 +1574,12 @@ def build_native_capability_handlers(
     async def learning_review(arguments: dict[str, Any]) -> dict[str, Any]:
         return _envelope(
             True,
-            data={"proposals": learning.review(status=arguments.get("status"), limit=int(arguments.get("limit") or 100))},
+            data={
+                "proposals": learning.review(
+                    status=arguments.get("status"),
+                    limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000),
+                )
+            },
             tool_name="agent_learning_review",
             level="read_only",
         )
@@ -1636,7 +1673,7 @@ def build_native_capability_handlers(
                     file_token=str(arguments.get("file_token") or ""),
                     file_type=str(arguments.get("file_type") or "docx"),
                     page_token=arguments.get("page_token"),
-                    page_size=int(arguments.get("page_size") or 50),
+                    page_size=bounded_int(arguments.get("page_size"), default=50, minimum=1, maximum=100),
                 )
                 level = "read_only"
             elif tool_name == "agent_feishu_drive_list_comment_replies":
@@ -1645,7 +1682,7 @@ def build_native_capability_handlers(
                     comment_id=str(arguments.get("comment_id") or ""),
                     file_type=str(arguments.get("file_type") or "docx"),
                     page_token=arguments.get("page_token"),
-                    page_size=int(arguments.get("page_size") or 100),
+                    page_size=bounded_int(arguments.get("page_size"), default=100, minimum=1, maximum=100),
                 )
                 level = "read_only"
             elif tool_name == "agent_feishu_drive_reply_comment":
@@ -1698,10 +1735,10 @@ def build_native_capability_handlers(
                 message_id=str(arguments.get("message_id") or ""),
                 query=str(arguments.get("query") or ""),
                 name=str(arguments.get("name") or ""),
-                limit=int(arguments.get("limit") or 50),
+                limit=bounded_int(arguments.get("limit"), default=50, minimum=1, maximum=100),
                 before=str(arguments.get("before") or ""),
                 after=str(arguments.get("after") or ""),
-                auto_archive_duration=int(arguments.get("auto_archive_duration") or 1440),
+                auto_archive_duration=bounded_int(arguments.get("auto_archive_duration"), default=1440, minimum=60, maximum=10080),
             )
             success = bool(data.get("configured")) and data.get("ok") is not False
             level = "platform_admin" if action in admin_actions else "read_only"
@@ -1752,7 +1789,11 @@ def build_native_capability_handlers(
             return _envelope(False, error=str(exc), tool_name="agent_rl_get_results")
 
     async def rl_list_runs(arguments: dict[str, Any]) -> dict[str, Any]:
-        return _envelope(True, data={"runs": rl.list_runs(limit=int(arguments.get("limit") or 100))}, tool_name="agent_rl_list_runs")
+        return _envelope(
+            True,
+            data={"runs": rl.list_runs(limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000))},
+            tool_name="agent_rl_list_runs",
+        )
 
     async def rl_test_inference(arguments: dict[str, Any]) -> dict[str, Any]:
         return _envelope(True, data=rl.test_inference(str(arguments.get("prompt") or "")), tool_name="agent_rl_test_inference", level="external_generation", idempotent=False)

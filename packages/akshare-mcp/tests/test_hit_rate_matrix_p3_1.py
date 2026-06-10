@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from akshare_mcp.services.incubation_factory import hit_rate_matrix as hrm
 
@@ -127,3 +128,22 @@ def test_empty_input_returns_empty_matrix():
     out = hrm.aggregate_hit_rate_matrix([], {})
     assert out["matrix"] == {}
     assert out["totals"]["strategies"] == 0
+
+
+def test_aggregate_skips_non_finite_cells():
+    strategies = {
+        "bad": {"id": "bad", "strategy_type": "momentum", "holding_period_bucket": "medium"},
+        "good": {"id": "good", "strategy_type": "momentum", "holding_period_bucket": "medium"},
+    }
+    results = [
+        _verify_result("bad", "momentum", trend_label="trend_up", n=10, hit_rate=float("inf")),
+        _verify_result("good", "momentum", trend_label="trend_up", n=10, hit_rate=0.6),
+    ]
+
+    out = hrm.aggregate_hit_rate_matrix(results, strategies, min_cell_n=5)
+    cell = out["matrix"]["momentum"]["medium"]["trend_regime"]["trend_up"]
+
+    assert cell["status"] == "ok"
+    assert cell["hit_rate"] == 0.6
+    assert cell["n"] == 10
+    json.dumps(out, allow_nan=False)

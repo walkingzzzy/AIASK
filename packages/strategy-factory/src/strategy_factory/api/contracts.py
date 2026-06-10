@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
@@ -21,16 +22,30 @@ def _string(value: Any) -> str:
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
+        fallback = float(default)
     except (TypeError, ValueError):
-        return float(default)
+        fallback = 0.0
+    if not math.isfinite(fallback):
+        fallback = 0.0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        return int(value)
+        fallback = int(default)
     except (TypeError, ValueError):
-        return int(default)
+        fallback = 0
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(parsed):
+        return fallback
+    return int(parsed)
 
 
 def _safe_bool(value: Any, default: bool = False) -> bool:

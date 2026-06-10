@@ -1,6 +1,22 @@
 from __future__ import annotations
 
+import math
 from dataclasses import asdict
+
+import pytest
+
+
+def _assert_all_finite(value) -> None:
+    if isinstance(value, dict):
+        for nested in value.values():
+            _assert_all_finite(nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _assert_all_finite(nested)
+        return
+    if isinstance(value, float):
+        assert math.isfinite(value)
 
 
 def test_package_facade_exposes_lazy_exports() -> None:
@@ -64,6 +80,43 @@ def test_contract_normalization_helpers() -> None:
     assert normalized["commission_rate"] == 0.0003
     assert normalized["expected_turnover_band"] == "high"
     assert normalized["turnover_cost_class"] == "medium_touch"
+
+
+def test_execution_assumption_normalization_rejects_non_finite_values() -> None:
+    from strategy_factory.api.contracts import normalize_execution_assumptions
+
+    normalized = normalize_execution_assumptions(
+        {
+            "slippage_bps": "inf",
+            "slippage": float("nan"),
+            "commission_rate": "-inf",
+            "market_impact_bps": float("inf"),
+            "capacity_participation_rate": "nan",
+            "adv_ratio_limit": "inf",
+            "margin_rate": "-inf",
+            "contract_multiplier": "inf",
+            "max_contracts_per_rebalance": float("nan"),
+        },
+        holding_horizon={"max_days": "inf"},
+        capacity_assumption={"capacity_bucket": "small", "capacity_participation_rate": "inf"},
+        cost_sensitivity_grid={
+            "base_case": {
+                "slippage_bps": 6.0,
+                "commission_rate": 0.0002,
+                "market_impact_bps": 1.5,
+            }
+        },
+    )
+
+    assert normalized["slippage_bps"] == pytest.approx(6.0)
+    assert normalized["commission_rate"] == 0.0002
+    assert normalized["market_impact_bps"] == 1.5
+    assert normalized["capacity_participation_rate"] == 0.0
+    assert normalized["adv_ratio_limit"] == 0.0
+    assert normalized["margin_rate"] == 0.0
+    assert normalized["contract_multiplier"] == 0
+    assert normalized["max_contracts_per_rebalance"] == 0
+    _assert_all_finite(normalized)
 
 
 def test_semantic_contract_exports_target_alignment_helper() -> None:

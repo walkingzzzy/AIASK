@@ -247,8 +247,8 @@ export function McpPanel({
           <strong>Partial MCP discovery</strong>
           <span>
             {uniqueUnsupportedMethods.length
-              ? `Tools discovered, unsupported MCP methods: ${uniqueUnsupportedMethods.join(", ")}`
-              : `Tools discovered with non-fatal warnings: ${warnings.length}`}
+              ? `已发现工具，不支持的 MCP 方法：${uniqueUnsupportedMethods.join(", ")}`
+              : `已发现工具，并有 ${warnings.length} 条非致命警告`}
           </span>
         </div>
       )}

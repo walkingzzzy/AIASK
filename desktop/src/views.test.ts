@@ -4,20 +4,21 @@ import type { MainView } from "./types";
 import { getViewItem, VIEW_GROUPS, VIEW_REGISTRY } from "./views";
 
 const routedViews: Array<{ id: MainView; label: string; route: string }> = [
-  { id: "workbench", label: "Workbench", route: "/workbench" },
-  { id: "projects-contexts", label: "Projects / Contexts", route: "/projects-contexts" },
-  { id: "sessions", label: "Sessions", route: "/sessions" },
-  { id: "runs-events", label: "Runs / Events", route: "/runs-events" },
-  { id: "tools-intents-approvals", label: "Approvals", route: "/tools-intents-approvals" },
-  { id: "finance-lab", label: "Finance Lab", route: "/finance-lab" },
-  { id: "integrations", label: "Integrations", route: "/integrations" },
-  { id: "automation", label: "Automations", route: "/automations" },
-  { id: "plugins-skills", label: "Plugins / Skills", route: "/plugins-skills" },
-  { id: "factory-events", label: "Factory Events", route: "/factory-events" },
-  { id: "mcp-connectors", label: "MCP / Connectors", route: "/mcp-connectors" },
+  { id: "workbench", label: "工作台", route: "/workbench" },
+  { id: "projects-contexts", label: "项目 / 上下文", route: "/projects-contexts" },
+  { id: "sessions", label: "会话", route: "/sessions" },
+  { id: "runs-events", label: "运行 / 事件", route: "/runs-events" },
+  { id: "tools-intents-approvals", label: "审批", route: "/tools-intents-approvals" },
+  { id: "finance-lab", label: "金融实验室", route: "/finance-lab" },
+  { id: "market-temperature", label: "市场温度", route: "/market-temperature" },
+  { id: "integrations", label: "集成", route: "/integrations" },
+  { id: "automation", label: "自动化", route: "/automations" },
+  { id: "plugins-skills", label: "插件 / 技能", route: "/plugins-skills" },
+  { id: "factory-events", label: "工厂事件", route: "/factory-events" },
+  { id: "mcp-connectors", label: "MCP / 连接器", route: "/mcp-connectors" },
   { id: "gateway", label: "Gateway", route: "/gateway" },
-  { id: "readiness-health", label: "Readiness / Health", route: "/readiness-health" },
-  { id: "extensions-pilot", label: "Extensions Pilot", route: "/extensions-pilot" },
+  { id: "readiness-health", label: "准备度 / 健康", route: "/readiness-health" },
+  { id: "extensions-pilot", label: "扩展注册表", route: "/extensions-pilot" },
 ];
 
 describe("VIEW_REGISTRY", () => {

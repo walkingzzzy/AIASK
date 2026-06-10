@@ -129,6 +129,7 @@ def test_audit_sync_factor_context_warmup_mode_does_not_call_requests(
     # Point at a throwaway DB so we don't pollute the real one.
     db_path = tmp_path / "warmup_contract.sqlite3"
     monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(db_path))
+    monkeypatch.setenv("AIASK_SQLITE_PATH", str(db_path))
 
     counter = _patch_blocking_requests(monkeypatch)
 
@@ -163,6 +164,7 @@ def test_audit_sync_core_market_warmup_disables_external_gap_fill(
     off, regardless of what the surrounding shell set."""
     db_path = tmp_path / "warmup_contract.sqlite3"
     monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(db_path))
+    monkeypatch.setenv("AIASK_SQLITE_PATH", str(db_path))
     monkeypatch.setenv("ENABLE_EXTERNAL_GAP_FILL", "1")
     monkeypatch.setenv("TDX_ENABLE_EXTERNAL_GAP_FILL", "1")
 
@@ -220,6 +222,7 @@ def test_audit_sync_core_market_full_mode_does_not_override_gap_fill(
     """In full mode the script must respect whatever the env says."""
     db_path = tmp_path / "warmup_contract.sqlite3"
     monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(db_path))
+    monkeypatch.setenv("AIASK_SQLITE_PATH", str(db_path))
     monkeypatch.setenv("ENABLE_EXTERNAL_GAP_FILL", "1")
 
     module = _load_module(

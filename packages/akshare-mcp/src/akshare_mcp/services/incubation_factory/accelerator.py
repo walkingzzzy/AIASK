@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -24,6 +25,32 @@ ACCELERATE_CONSECUTIVE_PROMOTE_DAYS = 10
 ACCELERATE_SKILL_LCB_MIN = 0.03
 ACCELERATE_STABILITY_GAP_MAX = 0.03
 ACCELERATE_COVERAGE_RATIO_MIN = 0.80
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return numeric
+    fallback = _finite_float(default)
+    return fallback if fallback is not None else 0.0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
 
 
 class IncubationAccelerator:
@@ -86,11 +113,11 @@ class IncubationAccelerator:
         sid = str(strategy.get("id") or "").strip()
 
         # 检查验证指标
-        primary_skill_lcb = float(verification.get("primary_skill_lcb") or 0.0)
-        recent_skill_lcb = float(verification.get("recent_primary_skill_lcb") or 0.0)
-        stability_gap = float(verification.get("stability_gap") or 1.0)
-        coverage_ratio = float(verification.get("coverage_ratio") or 0.0)
-        primary_n = int(verification.get("primary_effective_n") or 0)
+        primary_skill_lcb = _safe_float(verification.get("primary_skill_lcb"), 0.0)
+        recent_skill_lcb = _safe_float(verification.get("recent_primary_skill_lcb"), 0.0)
+        stability_gap = _safe_float(verification.get("stability_gap"), 1.0)
+        coverage_ratio = _safe_float(verification.get("coverage_ratio"), 0.0)
+        primary_n = _safe_int(verification.get("primary_effective_n"), 0)
 
         # 基本指标门槛
         if primary_skill_lcb < ACCELERATE_SKILL_LCB_MIN:

@@ -93,6 +93,7 @@ def register(mcp) -> None:
         days: int = 3,
         limit: int = 80,
         allow_network: bool = False,
+        allow_llm: bool = False,
         stock_codes: str = "",
     ) -> dict[str, Any]:
         db = get_db()
@@ -103,6 +104,7 @@ def register(mcp) -> None:
             days=days,
             limit=limit,
             allow_network=allow_network,
+            allow_llm=allow_llm,
             stock_codes=stock_codes,
         )
 

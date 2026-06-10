@@ -12,7 +12,9 @@ from akshare_mcp.services.unified_vector_governance import build_vector_collecti
 
 
 def test_sqlite_runtime_schema_and_query_compatibility(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "akshare_runtime.sqlite3"))
+    db_path = str(tmp_path / "akshare_runtime.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()
@@ -343,7 +345,9 @@ def test_sqlite_runtime_schema_and_query_compatibility(tmp_path, monkeypatch):
 
 
 def test_sqlite_vector_search_rejects_query_dimension_mismatch(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "vector_dim_guard.sqlite3"))
+    db_path = str(tmp_path / "vector_dim_guard.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()

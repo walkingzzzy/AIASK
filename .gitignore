@@ -8,6 +8,7 @@
 .mcp_cache/
 .benchmarks/
 .codex/
+.codex_last_*
 .playwright-mcp/
 aiask-workbench-*.png
 logs/
@@ -26,6 +27,7 @@ desktop/node_modules/
 desktop/dist/
 desktop/test-results/
 desktop/playwright-report/
+desktop/manual-results/
 desktop/src-tauri/target/
 desktop/.pytest_cache/
 

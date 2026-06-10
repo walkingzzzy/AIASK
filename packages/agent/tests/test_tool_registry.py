@@ -21,6 +21,12 @@ def test_registry_exposes_only_aiask_financial_allowlist(tmp_path) -> None:
         "agent_backtest_suite",
         "agent_portfolio_risk",
         "agent_quant_research_run",
+        "agent_market_temperature_snapshot",
+        "agent_market_temperature_cache_readiness",
+        "agent_market_temperature_cache_history",
+        "agent_market_temperature_industry_history",
+        "agent_market_temperature_industry_constituents",
+        "agent_market_temperature_forward_validation",
         "agent_factory_status",
         "agent_factory_runs",
         "agent_strategy_review_snapshot",
@@ -45,6 +51,284 @@ def test_registry_exposes_only_aiask_financial_allowlist(tmp_path) -> None:
     assert catalog["meta"]["trace_id"]
     assert catalog["meta"]["source_chain"]
     assert catalog["meta"]["side_effect"]["level"] == "read_only"
+
+
+def test_market_temperature_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    async def fake_snapshot(**kwargs):
+        return {
+            "success": True,
+            "data": {
+                "market": {"temperature": 66.6},
+                "quality": {"status": "healthy"},
+                "arguments": kwargs,
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.market_temperature"]},
+        }
+
+    monkeypatch.setattr(
+        "aiask_agent.adapters.akshare.load_registered_tool",
+        lambda module_name, function_name: fake_snapshot,
+    )
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_snapshot",
+            {"limit": 2, "top_n": 1, "use_cache": False},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["market"]["temperature"] == 66.6
+    assert result["data"]["arguments"]["limit"] == 2
+    assert result["data"]["arguments"]["use_cache"] is False
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    assert registry.get("agent_market_temperature_snapshot").parameters["properties"]["use_cache"]["default"] is True
+
+
+def test_market_temperature_cache_readiness_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_readiness(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "data": {
+                "ready": True,
+                "status": "fresh",
+                "read_only": True,
+                "as_of": kwargs.get("as_of"),
+                "max_stale_days": kwargs.get("max_stale_days"),
+                "blockers": [],
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.db_freshness"]},
+        }
+
+    def fake_loader(module_name, function_name):
+        assert module_name == "akshare_mcp.tools.db_freshness"
+        assert function_name == "check_market_temperature_cache_readiness"
+        return fake_readiness
+
+    monkeypatch.setattr("aiask_agent.adapters.akshare.load_registered_tool", fake_loader)
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_cache_readiness",
+            {"as_of": "2026-06-08", "max_stale_days": 2},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["ready"] is True
+    assert result["data"]["status"] == "fresh"
+    assert result["data"]["as_of"] == "2026-06-08"
+    assert captured == {"as_of": "2026-06-08", "max_stale_days": 2}
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    schema = registry.get("agent_market_temperature_cache_readiness").parameters
+    assert schema["properties"]["max_stale_days"]["default"] == 1
+
+
+def test_market_temperature_cache_history_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_history(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "data": {
+                "items": [
+                    {
+                        "as_of": "2026-06-08",
+                        "market_temperature": 55.5,
+                        "market_state": "neutral",
+                        "stock_count": 300,
+                        "industry_count": 5,
+                        "quality_status": "healthy",
+                        "warnings": [],
+                    }
+                ],
+                "count": 1,
+                "limit": kwargs.get("limit"),
+                "include_snapshot": kwargs.get("include_snapshot"),
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.market_temperature"]},
+        }
+
+    def fake_loader(module_name, function_name):
+        assert module_name == "akshare_mcp.tools.market_temperature"
+        assert function_name == "list_market_temperature_snapshot_cache"
+        return fake_history
+
+    monkeypatch.setattr("aiask_agent.adapters.akshare.load_registered_tool", fake_loader)
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_cache_history",
+            {"limit": 5, "include_snapshot": False},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["count"] == 1
+    assert result["data"]["items"][0]["as_of"] == "2026-06-08"
+    assert captured == {"limit": 5, "include_snapshot": False}
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    schema = registry.get("agent_market_temperature_cache_history").parameters
+    assert schema["properties"]["limit"]["default"] == 30
+    assert schema["properties"]["include_snapshot"]["default"] is False
+
+
+def test_market_temperature_industry_history_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_history(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "data": {
+                "items": [
+                    {
+                        "as_of": "2026-06-08",
+                        "name": "bank",
+                        "temperature": 60.0,
+                        "market_temperature": 55.5,
+                        "quality_status": "healthy",
+                    }
+                ],
+                "count": 1,
+                "industry": kwargs.get("industry"),
+                "match_mode": kwargs.get("match_mode"),
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.market_temperature"]},
+        }
+
+    def fake_loader(module_name, function_name):
+        assert module_name == "akshare_mcp.tools.market_temperature"
+        assert function_name == "list_market_temperature_industry_history"
+        return fake_history
+
+    monkeypatch.setattr("aiask_agent.adapters.akshare.load_registered_tool", fake_loader)
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_industry_history",
+            {"industry": "bank", "limit": 5, "top_n": 3, "match_mode": "exact"},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["count"] == 1
+    assert result["data"]["items"][0]["temperature"] == 60.0
+    assert captured == {"industry": "bank", "limit": 5, "top_n": 3, "match_mode": "exact"}
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    schema = registry.get("agent_market_temperature_industry_history").parameters
+    assert schema["properties"]["limit"]["default"] == 120
+    assert schema["properties"]["top_n"]["maximum"] == 50
+
+
+def test_market_temperature_industry_constituents_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_constituents(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "data": {
+                "items": [
+                    {
+                        "code": "000001",
+                        "name": "Ping An Bank",
+                        "industry": "bank",
+                        "market_cap": 3120.8,
+                    }
+                ],
+                "count": 1,
+                "industry": kwargs.get("industry"),
+                "match_mode": kwargs.get("match_mode"),
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.market_temperature"]},
+        }
+
+    def fake_loader(module_name, function_name):
+        assert module_name == "akshare_mcp.tools.market_temperature"
+        assert function_name == "list_market_temperature_industry_constituents"
+        return fake_constituents
+
+    monkeypatch.setattr("aiask_agent.adapters.akshare.load_registered_tool", fake_loader)
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_industry_constituents",
+            {"industry": "bank", "limit": 5, "offset": 1, "match_mode": "contains"},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["count"] == 1
+    assert result["data"]["items"][0]["code"] == "000001"
+    assert captured == {"industry": "bank", "limit": 5, "offset": 1, "match_mode": "contains"}
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    schema = registry.get("agent_market_temperature_industry_constituents").parameters
+    assert schema["required"] == ["industry"]
+    assert schema["properties"]["limit"]["maximum"] == 1000
+    assert schema["properties"]["match_mode"]["default"] == "contains"
+
+
+def test_market_temperature_forward_validation_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_forward_validation(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "data": {
+                "matrix": {"warm": {"1d": {"sample_n": 3, "hit_rate": 0.67}}},
+                "horizons": kwargs.get("horizons"),
+                "target_field": kwargs.get("target_field"),
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "read_only"}, "source_chain": ["fake.market_temperature"]},
+        }
+
+    def fake_loader(module_name, function_name):
+        assert module_name == "akshare_mcp.tools.market_temperature"
+        assert function_name == "get_market_temperature_forward_validation"
+        return fake_forward_validation
+
+    monkeypatch.setattr("aiask_agent.adapters.akshare.load_registered_tool", fake_loader)
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    result = asyncio.run(
+        registry.call_tool(
+            "agent_market_temperature_forward_validation",
+            {"limit": 30, "horizons": [1, 3], "target_field": "benchmark_return", "benchmark_code": "000300"},
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["matrix"]["warm"]["1d"]["sample_n"] == 3
+    assert captured == {"limit": 30, "horizons": [1, 3], "target_field": "benchmark_return", "benchmark_code": "000300"}
+    assert result["meta"]["side_effect"]["level"] == "read_only"
+    assert result["meta"]["toolset"] == "finance_safe"
+    schema = registry.get("agent_market_temperature_forward_validation").parameters
+    assert schema["properties"]["limit"]["maximum"] == 365
+    assert schema["properties"]["target_field"]["default"] == "weighted_pct_change"
+    assert "benchmark_return" in schema["properties"]["target_field"]["enum"]
+    assert schema["properties"]["benchmark_code"]["default"] == "000300"
 
 
 def test_mcp_contract_metadata_flows_into_agent_registry_without_raw_leaks(tmp_path) -> None:

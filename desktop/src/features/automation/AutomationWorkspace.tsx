@@ -197,7 +197,7 @@ export function AutomationWorkspace({
               <p>
                 {management
                   ? "这里用于管理高级调度、工具集和删除操作。"
-                  : "前台保留日常创建、运行、暂停和恢复；Cron、toolset 和删除操作放在设置的自动化管理中。"}
+                  : "前台保留日常创建、运行、暂停和恢复；定时表达式、间隔和工具集等高级配置放在设置的自动化管理中。"}
               </p>
             </div>
             <StatusBadge status={jobs.length ? "ready" : "not_loaded"} label={jobs.length ? "已配置" : "空"} />
@@ -217,13 +217,13 @@ export function AutomationWorkspace({
                 <input value={name} onChange={(event) => setName(event.target.value)} />
               </label>
               <label className="field-row">
-                <span>Prompt</span>
+                <span>提示词</span>
                 <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
               </label>
               {management ? (
                 <div className="quant-form-grid">
                   <label className="field-row">
-                    <span>Cron</span>
+                    <span>定时表达式</span>
                     <input value={schedule} onChange={(event) => setSchedule(event.target.value)} placeholder="*/30 * * * *" />
                   </label>
                   <label className="field-row">
@@ -244,7 +244,7 @@ export function AutomationWorkspace({
                 </div>
               ) : (
                 <div className="notice">
-                  默认使用 finance_safe 工具集和 30 分钟检查节奏。需要 Cron、interval 或 toolset 时，请到设置中的自动化管理调整。
+                  默认使用 finance_safe 工具集和 30 分钟检查节奏。需要定时表达式、间隔或工具集配置时，请到设置中的自动化管理调整。
                 </div>
               )}
               <button
@@ -327,7 +327,7 @@ export function AutomationWorkspace({
           {management ? (
             <details className="raw-details">
               <summary>已选任务</summary>
-              <JsonPanel value={selected || { status: "not_selected" }} />
+              <JsonPanel value={selected ? { selected, runs: jobRuns, runs_status: runsMessage } : { status: "not_selected" }} />
             </details>
           ) : (
             <section className="capability-section">

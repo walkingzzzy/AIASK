@@ -152,7 +152,7 @@ export function PluginsPanel({
       {gated && (
         <div className="notice warn">
           <ShieldCheck size={15} />
-          {localizeBlockedReason(pluginMeta.reason) || "需要控制令牌 Control token 才能查看原生插件注册表。"}
+          {localizeBlockedReason(pluginMeta.reason) || "需要控制令牌才能查看原生插件注册表。"}
         </div>
       )}
 
@@ -272,8 +272,8 @@ export function PluginsPanel({
                       const commandName = String(command.name || command.command || commandIndex);
                       const commandTestId = testIdPart(commandName);
                       return (
-                        <article className="job-row" key={`${plugin.name}:${commandName}`}>
-                          <div>
+                        <article className="job-row plugin-command-row" key={`${plugin.name}:${commandName}`}>
+                          <div className="plugin-command-copy">
                             <strong>{commandName}</strong>
                             <span>{compact(command.description || command.enabled || "-")}</span>
                           </div>

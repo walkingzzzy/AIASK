@@ -7,7 +7,7 @@ def get_factor_llm_provider() -> FactorLLMProvider:
     """返回全局 provider 单例。"""
 
     global _factor_llm_provider
-    if _factor_llm_provider is None or _factor_llm_provider.is_closed:
+    if _factor_llm_provider is None or bool(getattr(_factor_llm_provider, "_closed", False)):
         _factor_llm_provider = FactorLLMProvider()
     return _factor_llm_provider
 

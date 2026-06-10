@@ -68,3 +68,32 @@ async def data_validation(arguments: dict[str, Any]) -> dict[str, Any]:
     fn = load_registered_tool("akshare_mcp.tools.adapter_tools", "data_validation")
     return await call_function(fn, dict(arguments or {}))
 
+
+async def market_temperature_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.market_temperature", "get_market_temperature_snapshot")
+    return await call_function(fn, dict(arguments or {}))
+
+
+async def market_temperature_cache_readiness(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.db_freshness", "check_market_temperature_cache_readiness")
+    return await call_function(fn, dict(arguments or {}))
+
+
+async def market_temperature_cache_history(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.market_temperature", "list_market_temperature_snapshot_cache")
+    return await call_function(fn, dict(arguments or {}))
+
+
+async def market_temperature_industry_history(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.market_temperature", "list_market_temperature_industry_history")
+    return await call_function(fn, dict(arguments or {}))
+
+
+async def market_temperature_industry_constituents(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.market_temperature", "list_market_temperature_industry_constituents")
+    return await call_function(fn, dict(arguments or {}))
+
+
+async def market_temperature_forward_validation(arguments: dict[str, Any]) -> dict[str, Any]:
+    fn = load_registered_tool("akshare_mcp.tools.market_temperature", "get_market_temperature_forward_validation")
+    return await call_function(fn, dict(arguments or {}))

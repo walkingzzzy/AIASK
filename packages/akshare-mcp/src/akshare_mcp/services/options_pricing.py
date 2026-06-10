@@ -4,13 +4,37 @@
 
 import numpy as np
 from scipy.stats import norm
-from typing import Dict, Any, Optional
-from datetime import datetime, timedelta
+from typing import Dict, Optional
+from datetime import datetime
 
 
 class OptionsPricing:
     """期权定价和Greeks计算"""
     
+    @staticmethod
+    def _finite_float(name: str, value: float) -> float:
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{name} must be a finite number") from exc
+        if not np.isfinite(numeric):
+            raise ValueError(f"{name} must be a finite number")
+        return numeric
+
+    @staticmethod
+    def _positive_float(name: str, value: float) -> float:
+        numeric = OptionsPricing._finite_float(name, value)
+        if numeric <= 0:
+            raise ValueError(f"{name} must be greater than 0")
+        return numeric
+
+    @staticmethod
+    def _normalize_option_type(option_type: str) -> str:
+        normalized = (option_type or 'call').strip().lower()
+        if normalized not in {'call', 'put'}:
+            raise ValueError("option_type must be 'call' or 'put'")
+        return normalized
+
     @staticmethod
     def black_scholes(
         spot: float,
@@ -36,15 +60,21 @@ class OptionsPricing:
         Returns:
             期权价格
         """
+        option_type = OptionsPricing._normalize_option_type(option_type)
+        spot = OptionsPricing._positive_float('spot', spot)
+        strike = OptionsPricing._positive_float('strike', strike)
+        time_to_maturity = OptionsPricing._finite_float('time_to_maturity', time_to_maturity)
+        risk_free_rate = OptionsPricing._finite_float('risk_free_rate', risk_free_rate)
+        dividend_yield = OptionsPricing._finite_float('dividend_yield', dividend_yield)
+
         if time_to_maturity <= 0:
             # 到期时的内在价值
-            option_type = (option_type or 'call').strip().lower()
             if option_type == 'call':
                 return max(spot - strike, 0)
             else:
                 return max(strike - spot, 0)
         
-        option_type = (option_type or 'call').strip().lower()
+        volatility = OptionsPricing._positive_float('volatility', volatility)
         # 计算d1和d2
         d1 = (np.log(spot / strike) + (risk_free_rate - dividend_yield + 0.5 * volatility ** 2) * time_to_maturity) / (volatility * np.sqrt(time_to_maturity))
         d2 = d1 - volatility * np.sqrt(time_to_maturity)
@@ -83,9 +113,13 @@ class OptionsPricing:
         Returns:
             Greeks字典 {delta, gamma, theta, vega, rho}
         """
+        option_type = OptionsPricing._normalize_option_type(option_type)
+        spot = OptionsPricing._positive_float('spot', spot)
+        strike = OptionsPricing._positive_float('strike', strike)
+        time_to_maturity = OptionsPricing._finite_float('time_to_maturity', time_to_maturity)
+
         if time_to_maturity <= 0:
             # 到期时Greeks为0（除了delta）
-            option_type = (option_type or 'call').strip().lower()
             if option_type == 'call':
                 delta = 1.0 if spot > strike else 0.0
             else:
@@ -99,7 +133,9 @@ class OptionsPricing:
                 'rho': 0.0,
             }
         
-        option_type = (option_type or 'call').strip().lower()
+        risk_free_rate = OptionsPricing._finite_float('risk_free_rate', risk_free_rate)
+        volatility = OptionsPricing._positive_float('volatility', volatility)
+        dividend_yield = OptionsPricing._finite_float('dividend_yield', dividend_yield)
         # 计算d1和d2
         d1 = (np.log(spot / strike) + (risk_free_rate - dividend_yield + 0.5 * volatility ** 2) * time_to_maturity) / (volatility * np.sqrt(time_to_maturity))
         d2 = d1 - volatility * np.sqrt(time_to_maturity)
@@ -172,6 +208,14 @@ class OptionsPricing:
             隐含波动率（如果收敛）
         """
         # 初始猜测
+        option_price = OptionsPricing._positive_float('option_price', option_price)
+        spot = OptionsPricing._positive_float('spot', spot)
+        strike = OptionsPricing._positive_float('strike', strike)
+        time_to_maturity = OptionsPricing._positive_float('time_to_maturity', time_to_maturity)
+        risk_free_rate = OptionsPricing._finite_float('risk_free_rate', risk_free_rate)
+        dividend_yield = OptionsPricing._finite_float('dividend_yield', dividend_yield)
+        option_type = OptionsPricing._normalize_option_type(option_type)
+
         volatility = 0.3
         
         for i in range(max_iterations):
@@ -219,9 +263,9 @@ class OptionsPricing:
         try:
             expiry = datetime.strptime(expiry_date, '%Y-%m-%d')
             now = datetime.now()
-            days_to_maturity = (expiry - now).days
-            return max(days_to_maturity / 365.0, 0.0)
-        except:
+            seconds_to_maturity = (expiry - now).total_seconds()
+            return max(seconds_to_maturity / (365.0 * 24 * 3600), 0.0)
+        except Exception:
             return 0.0
 
 

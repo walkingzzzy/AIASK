@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 
@@ -9,7 +10,10 @@ def _to_float(v: Any, default: float | None = 0.0) -> float | None:
     try:
         if v is None:
             return float(default) if default is not None else None
-        return float(v)
+        parsed = float(v)
+        if not math.isfinite(parsed):
+            return float(default) if default is not None else None
+        return parsed
     except Exception:
         return float(default) if default is not None else None
 
@@ -33,6 +37,8 @@ def resolve_cost_assumptions(kwargs: dict, *, default_mode: str) -> dict:
 
     # slippage: 优先 slippage_bps → 兼容 slippage(rate) → 模式默认值
     slippage_bps = _to_float(kwargs.get("slippage_bps"), None)
+    if kwargs.get("slippage_bps") is not None and slippage_bps is None:
+        slippage_bps = mode_defaults.get("slippage_bps", 0.0)
     if slippage_bps is None:
         slippage_raw = kwargs.get("slippage")
         if slippage_raw is not None:
@@ -93,4 +99,3 @@ def effective_cost_rate(cost_model: dict, *, fallback_commission: float = 0.0, f
         return float(max(0.0, c + s_rate + impact_rate))
     except Exception:
         return float(max(0.0, _to_float(fallback_commission, 0.0) + _to_float(fallback_slippage, 0.0)))
-

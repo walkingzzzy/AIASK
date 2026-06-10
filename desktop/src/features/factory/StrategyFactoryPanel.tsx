@@ -2,13 +2,17 @@ import { useMemo, useState } from "react";
 import { GitPullRequest, Play } from "lucide-react";
 import { formatApiError } from "../../api";
 import type { CapabilityWorkbenchPayload, ToolEnvelope } from "../../types";
-import { JsonPanel, StatusBadge } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
+
+function asRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
 
 function envelopeStatus(envelope: ToolEnvelope | null | undefined): string {
   if (!envelope) return "not_loaded";
   if (envelope.success) return "implemented";
-  const data = envelope.data && typeof envelope.data === "object" ? (envelope.data as Record<string, unknown>) : {};
+  const data = asRecord(envelope.data);
   const errorCode = String(envelope.error_code || "");
   const configured = data.database_configured || data.configured;
   if (data.status === "partial" || (configured && (errorCode.includes("TIMEOUT") || errorCode.includes("RECOVERY") || errorCode.includes("UNAVAILABLE")))) {
@@ -21,7 +25,7 @@ function envelopeStatus(envelope: ToolEnvelope | null | undefined): string {
 }
 
 function FactoryCard({ title, envelope }: { title: string; envelope: ToolEnvelope | null | undefined }) {
-  const data = envelope?.data && typeof envelope.data === "object" ? (envelope.data as Record<string, unknown>) : {};
+  const data = asRecord(envelope?.data);
   const configured = data.configured;
   const detail = String(data.detail || "");
   const dependency = String(data.dependency || "");
@@ -53,9 +57,9 @@ function FactoryCard({ title, envelope }: { title: string; envelope: ToolEnvelop
         <strong>{String(configured ?? envelope?.success ?? false)}</strong>
         <span>数据库</span>
         <strong>{databaseConfigured === undefined ? "-" : databaseConfigured ? "已配置" : "未配置"}</strong>
-        <span>DB backend</span>
+        <span>数据库后端</span>
         <strong>{databaseBackend}</strong>
-        <span>DB path</span>
+        <span>数据库路径</span>
         <strong>{databasePath || databaseConfigSources || "-"}</strong>
         <span>错误</span>
         <strong>{errorText}</strong>
@@ -66,6 +70,16 @@ function FactoryCard({ title, envelope }: { title: string; envelope: ToolEnvelop
       </details>
     </article>
   );
+}
+
+function intentFromEnvelope(envelope: ToolEnvelope | null): Record<string, unknown> {
+  const data = asRecord(envelope?.data);
+  return asRecord(data.intent || data.action_intent || data);
+}
+
+function sideEffectFromEnvelope(envelope: ToolEnvelope | null): Record<string, unknown> {
+  const meta = asRecord(envelope?.meta);
+  return asRecord(meta.side_effect);
 }
 
 export function StrategyFactoryPanel({
@@ -94,7 +108,7 @@ export function StrategyFactoryPanel({
       const envelope = await api.factoryIntentCreate(
         "factory_run_once",
         { execution_mode: "desktop_approved_once", source: "desktop_strategy_factory" },
-        "从桌面控制面板运行一次 Strategy Factory。"
+        "从桌面控制面板运行一次策略工厂。"
       );
       setIntentEnvelope(envelope);
       setIntentMessage(envelope.success ? "STRATEGY_FACTORY_INTENT_CREATED" : envelope.error || "STRATEGY_FACTORY_INTENT_FAILED");
@@ -133,13 +147,29 @@ export function StrategyFactoryPanel({
           创建运行意图
         </button>
         {intentEnvelope && (
-          <details className="raw-details" open>
-            <summary>
-              <GitPullRequest size={14} />
-              最近意图
-            </summary>
-            <JsonPanel value={intentEnvelope} />
-          </details>
+          <>
+            <div className="kv-grid" aria-label="strategy factory intent summary">
+              <span>动作</span>
+              <strong>{compact(intentFromEnvelope(intentEnvelope).action || intentFromEnvelope(intentEnvelope).target_action || "factory_run_once")}</strong>
+              <span>意图 ID</span>
+              <strong>{compact(intentFromEnvelope(intentEnvelope).intent_id || intentFromEnvelope(intentEnvelope).id)}</strong>
+              <span>状态</span>
+              <strong>{compact(intentFromEnvelope(intentEnvelope).status || (intentEnvelope.success ? "created" : intentEnvelope.error_code || intentEnvelope.error))}</strong>
+              <span>目标工具</span>
+              <strong>{compact(intentFromEnvelope(intentEnvelope).target_tool || "agent_action_intent_create")}</strong>
+              <span>执行模式</span>
+              <strong>{compact(asRecord(intentFromEnvelope(intentEnvelope).params).execution_mode || asRecord(intentFromEnvelope(intentEnvelope).params).source || "desktop_approved_once")}</strong>
+              <span>副作用</span>
+              <strong>{compact(sideEffectFromEnvelope(intentEnvelope).level || "durable_intent")}</strong>
+            </div>
+            <details className="raw-details" open>
+              <summary>
+                <GitPullRequest size={14} />
+                最近意图
+              </summary>
+              <JsonPanel value={intentEnvelope} />
+            </details>
+          </>
         )}
       </div>
 

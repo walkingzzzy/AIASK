@@ -5,7 +5,7 @@ class FactorLLMProvider:
 
     def __init__(self, config: Optional[FactorLLMConfig] = None):
         self.config = config or FactorLLMConfig.from_env()
-        self._client: httpx.AsyncClient | Any | None = self._build_client()
+        self._client: httpx.AsyncClient | Any | None = None
         self._closed = False
         self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
         self._created_at = datetime.now().astimezone()
@@ -37,6 +37,20 @@ class FactorLLMProvider:
             return bool(getattr(self._client, "is_closed"))
         except Exception:
             return False
+
+    def _client_state(self) -> str:
+        if self._closed:
+            return "closed"
+        client = self._client
+        if client is None:
+            return "idle"
+        try:
+            return "closed" if bool(getattr(client, "is_closed")) else "open"
+        except Exception:
+            return "unknown"
+
+    def client_state(self) -> str:
+        return self._client_state()
 
     async def _ensure_client(self) -> None:
         if not self.is_closed:
@@ -81,7 +95,7 @@ class FactorLLMProvider:
             return "disabled"
         if not self._configured():
             return "misconfigured"
-        if self.is_closed:
+        if self._client_state() == "closed":
             return "closed"
         if self._active_compatibility_failure() is not None:
             return "blocked"
@@ -100,9 +114,10 @@ class FactorLLMProvider:
             "factorllmprovidercompatibilityerror",
             "jsondecodeerror",
         }
+        client_state = self._client_state()
         return bool(
             self._active_compatibility_failure() is not None
-            or self.is_closed
+            or client_state == "closed"
             or self._consecutive_failures > 0
             or timeout_like_error
         )
@@ -116,11 +131,12 @@ class FactorLLMProvider:
             "configured": self._configured(),
             "ready": bool(
                 self.is_enabled()
-                and not self.is_closed
+                and self._client_state() != "closed"
                 and self._consecutive_failures == 0
                 and compatibility_metrics is None
             ),
-            "client_closed": bool(self.is_closed),
+            "client_closed": bool(self._client_state() == "closed"),
+            "client_state": self._client_state(),
             "health_status": self._health_status(),
             "rebuild_recommended": self._rebuild_recommended(),
             "request_count": int(self._request_count),

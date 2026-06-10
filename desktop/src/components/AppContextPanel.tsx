@@ -46,7 +46,7 @@ export function AppContextPanel({
         </div>
         <div className="context-row">
           <Globe2 size={15} />
-          <span>Endpoint</span>
+          <span>Agent 端点</span>
           <code>{endpoint}</code>
         </div>
       </section>
@@ -64,13 +64,13 @@ export function AppContextPanel({
             action={
               onOpenSettings ? (
                 <button className="small-button" onClick={onOpenSettings} type="button">
-                  打开 Settings
+                  打开设置
                 </button>
               ) : undefined
             }
             reason={!controlReady ? "control token required" : "full mode required"}
             status={!controlReady ? "gated" : "unconfigured"}
-            title={!controlReady ? "控制令牌未就绪" : "Full mode 未开启"}
+            title={!controlReady ? "控制令牌未就绪" : "完整模式未开启"}
           />
         )}
         <div className="context-list">
@@ -81,7 +81,7 @@ export function AppContextPanel({
           </div>
           <div className="context-row">
             <ServerCog size={15} />
-            <span>Hermes full</span>
+            <span>完整模式</span>
             <StatusBadge status={fullModeReady ? "ready" : "gated"} label={fullModeReady ? "已开启" : "未开启"} />
           </div>
           <div className="context-row">
@@ -115,10 +115,10 @@ export function AppContextPanel({
         ) : (
           <div className="context-empty">
             <strong>暂无选中线程</strong>
-            <span>运行智能体任务后，这里会显示回复、模型、Token、审批和事件详情。</span>
+            <span>运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。</span>
             {compact && onOpenWorkbench && (
               <button className="small-button" onClick={onOpenWorkbench} type="button">
-                返回 Workbench
+                返回工作台
               </button>
             )}
           </div>

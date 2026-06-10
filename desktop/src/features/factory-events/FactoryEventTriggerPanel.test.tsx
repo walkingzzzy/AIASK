@@ -58,9 +58,23 @@ function makeFetchMock() {
               operator_id: "operator_alice",
               approver_id: "approver_bob",
               created_at: "2026-05-24T08:00:00Z"
+            },
+            {
+              event_id: "evt_test_002",
+              event_name: "AI 芯片新规(test)",
+              event_type: "regulation",
+              event_source: "news_llm",
+              status: "pending_review",
+              direction: "bearish",
+              intensity: 0.6,
+              confidence: 0.65,
+              primary_themes: ["AI_chip"],
+              operator_id: "operator_charlie",
+              approver_id: "",
+              created_at: "2026-05-24T07:30:00Z"
             }
           ],
-          count: 1
+          count: 2
         }
       });
     }
@@ -112,6 +126,57 @@ function makeFetchMock() {
     if (url.includes("/v1/tools/agent_factory_event_outbox_status")) {
       return jsonResponse({ success: true, error: null, data: { counts: { processed: 2, failed: 0 }, latest: [] } });
     }
+    if (url.includes("/v1/desktop/stock-radar/status")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          status: "ready",
+          counts: { alert: 1, watch: 1, observe: 0, reject: 0 },
+          degraded_flags: [],
+          latest_run: { run_id: "radar_component_test", status: "completed" },
+          digest_preview: "雷达摘要：观察池只读预览。"
+        }
+      });
+    }
+    if (url.includes("/v1/desktop/stock-radar/candidates")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          status: "ready",
+          candidates: [
+            {
+              candidate_id: "radar_candidate_component_001",
+              run_id: "radar_component_test",
+              symbol: "600111",
+              stock_name: "北方稀土",
+              tier: "alert",
+              radar_score: 84.5,
+              event_type: "policy_shock",
+              direction: "bullish",
+              summary: "稀土出口管制事件触发观察池候选。",
+              source_doc_uids: ["doc_radar_001", "doc_radar_002"],
+              source_chain: [{ uid: "doc_radar_001", kind: "news" }],
+              extraction: { confidence: 0.82 },
+              confirmations: { cross_source: true },
+              risk_flags: []
+            }
+          ],
+          count: 1
+        }
+      });
+    }
+    if (url.includes("/v1/desktop/stock-radar/digest")) {
+      return jsonResponse({
+        success: true,
+        error: null,
+        data: {
+          status: "ready",
+          digest_preview: "企微 / Telegram 预览：北方稀土进入观察池，不含交易指令。"
+        }
+      });
+    }
     if (url.includes("/v1/tools/agent_strategy_manager")) {
       const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
       const action = String(body.action || "");
@@ -134,9 +199,23 @@ function makeFetchMock() {
                 operator_id: "operator_alice",
                 approver_id: "approver_bob",
                 created_at: "2026-05-24T08:00:00Z"
+              },
+              {
+                event_id: "evt_test_002",
+                event_name: "AI 芯片新规(test)",
+                event_type: "regulation",
+                event_source: "news_llm",
+                status: "pending_review",
+                direction: "bearish",
+                intensity: 0.6,
+                confidence: 0.65,
+                primary_themes: ["AI_chip"],
+                operator_id: "operator_charlie",
+                approver_id: "",
+                created_at: "2026-05-24T07:30:00Z"
               }
             ],
-            count: 1
+            count: 2
           }
         });
       }
@@ -210,10 +289,11 @@ function makeFetchMock() {
       return jsonResponse({ success: true, error: null, data: { intent: { status: "succeeded" } } });
     }
     if (url.includes("/intents") && !url.includes("/confirm") && !url.includes("/deny")) {
+      const body = init && typeof init.body === "string" ? JSON.parse(init.body) : {};
       return jsonResponse({
         success: true,
         error: null,
-        data: { intent: { intent_id: "intent_phase5_test", status: "awaiting_confirmation" } }
+        data: { intent: { intent_id: "intent_phase5_test", status: "awaiting_confirmation", action: body.action, target_action: body.action } }
       });
     }
     return jsonResponse({ success: true, error: null, data: {} });
@@ -227,7 +307,7 @@ describe("VIEW_REGISTRY", () => {
     const ids = VIEW_REGISTRY.map((entry) => entry.id);
     expect(ids).toContain("factory-events");
     const entry = VIEW_REGISTRY.find((item) => item.id === "factory-events");
-    expect(entry?.label).toBe("Factory Events");
+    expect(entry?.label).toBe("工厂事件");
     expect(entry?.route).toBe("/factory-events");
   });
 });
@@ -421,12 +501,14 @@ describe("FactoryEventTriggerPanel render", () => {
     // factory_event_list is read through the Agent facade, not the raw manager.
     expect(calls.some((call) => call.url.includes("/v1/tools/agent_factory_event_list"))).toBe(true);
 
-    fireEvent.click(screen.getByRole("tab", { name: "Radar" }));
-    expect(screen.getByText("Stock Radar observation pool")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "雷达" }));
+    expect(screen.getByText("股票雷达观察池")).toBeInTheDocument();
     await waitFor(() => {
-      expect(screen.getByText("Evidence-ranked candidates")).toBeInTheDocument();
+      expect(screen.getByText("证据排序候选")).toBeInTheDocument();
     });
-    expect(screen.getByText("WeCom / Telegram payload preview")).toBeInTheDocument();
+    expect(screen.getByText("企微 / Telegram 载荷预览")).toBeInTheDocument();
+    expect(screen.getByText("北方稀土")).toBeInTheDocument();
+    expect(screen.getByText(/不含交易指令/)).toBeInTheDocument();
 
     // Switch to Create tab.
     fireEvent.click(screen.getByRole("tab", { name: "创建" }));
@@ -439,6 +521,31 @@ describe("FactoryEventTriggerPanel render", () => {
     expect(screen.getByText("已持久化的事件血缘")).toBeInTheDocument();
     expect(screen.getByText("event_evt_test_001_critical_minerals_abcd1234")).toBeInTheDocument();
     expect(screen.getByText("最近意图派发")).toBeInTheDocument();
+  });
+
+  it("applies event filters locally when the facade returns a wider payload", async () => {
+    makeFetchMock();
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("稀土出口管制(test)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("AI 芯片新规(test)")).not.toBeInTheDocument();
+    expect(screen.getByText("1 个匹配事件")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText(/^状态$/), { target: { value: "pending_review" } });
+
+    await waitFor(() => {
+      expect(screen.getByText("AI 芯片新规(test)")).toBeInTheDocument();
+    });
+    expect(screen.queryByText("稀土出口管制(test)")).not.toBeInTheDocument();
+    expect(screen.getByText("1 个匹配事件")).toBeInTheDocument();
   });
 
   it("submits create intent payload with source from the form", async () => {
@@ -490,9 +597,9 @@ describe("FactoryEventTriggerPanel render", () => {
     );
 
     await waitFor(() => {
-      expect(screen.getByText("BOOTSTRAP_NOT_RUN")).toBeInTheDocument();
+      expect(screen.getByText("引导未运行")).toBeInTheDocument();
     });
-    const bootstrapButton = screen.getByRole("button", { name: /^初始化 Bootstrap$/ });
+    const bootstrapButton = screen.getByRole("button", { name: /^初始化引导$/ });
     await waitFor(() => {
       expect(bootstrapButton).toBeEnabled();
     });
@@ -508,7 +615,92 @@ describe("FactoryEventTriggerPanel render", () => {
     );
     expect(bootstrapCall).toBeDefined();
     expect(requestBody(bootstrapCall!).params).toEqual({ batch_size: 1000, refresh_exposure: true });
-    expect(screen.getByText("BOOTSTRAP_CONFIRMED")).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByText("引导已确认")).toBeInTheDocument();
+    });
+  });
+
+  it("clicks stock radar refresh and confirms all radar ActionIntent buttons", async () => {
+    const { calls } = makeFetchMock();
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("稀土出口管制(test)")).toBeInTheDocument();
+    });
+    fireEvent.click(screen.getByRole("tab", { name: "雷达" }));
+    await waitFor(() => {
+      expect(screen.getByText(/雷达已加载/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新雷达" }));
+    await waitFor(() => {
+      expect(calls.filter((call) => call.url.includes("/v1/desktop/stock-radar/status")).length).toBeGreaterThanOrEqual(2);
+    });
+
+    const runButton = screen.getByRole("button", { name: "创建雷达运行意图" });
+    const pushButton = screen.getByRole("button", { name: "创建推送预览意图" });
+    const scheduleButton = screen.getByRole("button", { name: "创建调度意图" });
+
+    fireEvent.click(runButton);
+    await waitFor(() => {
+      expect(screen.getByText(/股票雷达运行 意图 intent_phase5_test 已确认/)).toBeInTheDocument();
+    });
+    await waitFor(() => expect(runButton).toBeEnabled());
+
+    fireEvent.click(pushButton);
+    await waitFor(() => {
+      expect(screen.getByText(/股票雷达推送预览 意图 intent_phase5_test 已确认/)).toBeInTheDocument();
+    });
+    await waitFor(() => expect(pushButton).toBeEnabled());
+
+    fireEvent.click(scheduleButton);
+    await waitFor(() => {
+      expect(screen.getByText(/股票雷达调度预览 意图 intent_phase5_test 已确认/)).toBeInTheDocument();
+    });
+
+    const radarActions = intentRequests(calls).map((call) => requestBody(call).action);
+    expect(radarActions).toEqual(expect.arrayContaining([
+      "stock_radar.run_once",
+      "stock_radar.push_digest",
+      "stock_radar.schedule_update"
+    ]));
+  });
+
+  it("shows event-list ActionIntent feedback without leaving the events tab", async () => {
+    const { calls } = makeFetchMock();
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    await waitFor(() => {
+      expect(screen.getByText("稀土出口管制(test)")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /^暂停$/ }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/意图 intent_phase5_test 已确认/)).toBeInTheDocument();
+    });
+    expect(screen.getByText("最近意图派发")).toBeInTheDocument();
+
+    const pauseIntent = intentRequests(calls).find(
+      (call) => requestBody(call).action === "strategy_manager.factory_event_update"
+    );
+    expect(pauseIntent).toBeDefined();
+    expect(requestBody(pauseIntent!).params).toEqual({ event_id: "evt_test_001", status: "paused" });
+    expect(
+      calls.some((call) => call.url === "http://127.0.0.1:8767/intents/intent_phase5_test/confirm")
+    ).toBe(true);
   });
 
   it("disables Approve / Pause when controlToken is missing", async () => {

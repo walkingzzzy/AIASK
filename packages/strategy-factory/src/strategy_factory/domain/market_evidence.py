@@ -70,20 +70,34 @@ def _string(value: Any) -> str:
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value in _EMPTY_VALUES:
-            return float(default)
-        return float(value)
+        fallback = float(default)
     except (TypeError, ValueError):
-        return float(default)
+        fallback = 0.0
+    if not math.isfinite(fallback):
+        fallback = 0.0
+    try:
+        if value in _EMPTY_VALUES:
+            return fallback
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        if value in _EMPTY_VALUES:
-            return int(default)
-        return int(float(value))
+        fallback = int(default)
     except (TypeError, ValueError):
-        return int(default)
+        fallback = 0
+    try:
+        if value in _EMPTY_VALUES:
+            return fallback
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    if not math.isfinite(parsed):
+        return fallback
+    return int(parsed)
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -104,6 +118,30 @@ def _first_non_empty(*values: Any) -> Any:
         if value not in _EMPTY_VALUES:
             return value
     return None
+
+
+def _sanitize_metric_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return _sanitize_metric_dict(value)
+    if isinstance(value, list):
+        return [_sanitize_metric_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_metric_value(item) for item in value]
+    if isinstance(value, float):
+        return value if math.isfinite(value) else 0.0
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        try:
+            parsed = float(value)
+        except ValueError:
+            return value
+        return parsed if math.isfinite(parsed) else 0.0
+    return value
+
+
+def _sanitize_metric_dict(value: Mapping[str, Any]) -> dict[str, Any]:
+    return {str(key): _sanitize_metric_value(item) for key, item in dict(value or {}).items()}
 
 
 def _normalize_direction(value: Any) -> Optional[str]:
@@ -258,7 +296,7 @@ def _entry_from_existing_evidence(
 ) -> dict[str, Any]:
     payload = dict(evidence or {})
     source_type = _evidence_source_type(payload.get("source_type") or payload.get("source"), candidate_source)
-    support_metric = _as_dict(payload.get("support_metric") or payload.get("metrics"))
+    support_metric = _sanitize_metric_dict(_as_dict(payload.get("support_metric") or payload.get("metrics")))
     direction = (
         _normalize_direction(payload.get("direction"))
         or _direction_from_expected_move(payload.get("expected_move"))

@@ -139,14 +139,17 @@ class StrategyLLMProvider(_StrategyLLMProviderNormalizeMixin, _StrategyLLMProvid
             self._last_failure_status_code: Optional[int] = None
             self._compatibility_cooldown_until = 0.0
             self._last_compatibility_failure_metrics: dict[str, Any] = {}
-            self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+            self._client: httpx.AsyncClient | Any | None = None
             self._request_semaphore = asyncio.Semaphore(max(1, int(self.config.max_concurrency or 1)))
             self._runtime_loop_id: Optional[int] = None
 
         async def close(self) -> None:
             """关闭共享 HTTP 连接池。"""
+            client = self._client
+            self._client = None
             try:
-                await self._client.aclose()
+                if client is not None:
+                    await client.aclose()
             except Exception:
                 pass
             self._runtime_loop_id = None

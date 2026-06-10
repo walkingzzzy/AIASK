@@ -213,8 +213,8 @@ export function ToolsIntentsApprovalsPage({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Agent</span>
-          <h1>Tools / Intents / Approvals</h1>
+          <span>Agent 安全控制</span>
+          <h1>工具 / 意图 / 审批</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message} label={message} />
@@ -253,11 +253,11 @@ export function ToolsIntentsApprovalsPage({
                 <select value={toolFilterType} onChange={(e) => setToolFilterType(e.target.value as ToolFilterType)}>
                   <option value="all">所有工具</option>
                   <option value="finance_safe">金融安全</option>
-                  <option value="full_mode">仅 full mode</option>
+                  <option value="full_mode">仅完整模式</option>
                   <option value="read_only">只读</option>
                   <option value="intent">Intent</option>
-                  <option value="approval">Approval</option>
-                  <option value="blocked">Blocked</option>
+                  <option value="approval">需审批</option>
+                  <option value="blocked">已阻塞</option>
                 </select>
 
                 <span>排序：</span>
@@ -282,7 +282,7 @@ export function ToolsIntentsApprovalsPage({
                   <span>{visibilityLabel(tool)}</span>
                   <span className="tool-chip-row">
                     {toolTags(tool).map((tag) => (
-                      <StatusBadge key={tag} status={tag} label={tag} />
+                      <StatusBadge key={tag} status={tag} technicalLabel={tag} />
                     ))}
                   </span>
                   <button
@@ -372,7 +372,7 @@ export function ToolsIntentsApprovalsPage({
                   >
                     <strong>{intent.action}</strong>
                     <span>{intent.intent_id}</span>
-                    <span>{intent.status}</span>
+                  <span>{intent.status}</span>
                   </button>
                 ))}
                 {!intents.length && <p className="muted">暂无意图记录。</p>}
@@ -398,7 +398,7 @@ export function ToolsIntentsApprovalsPage({
                     </button>
                   </div>
                   <details className="raw-details">
-                    <summary>当前 Intent</summary>
+                    <summary>当前意图</summary>
                     <JsonPanel value={intentEnvelope || currentIntent} />
                   </details>
                 </>

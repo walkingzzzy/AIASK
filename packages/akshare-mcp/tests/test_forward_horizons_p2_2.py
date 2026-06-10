@@ -6,6 +6,8 @@ env：STRATEGY_FACTORY_FORWARD_DAYS / STRATEGY_FACTORY_FORWARD_HORIZONS。
 
 from __future__ import annotations
 
+import math
+
 from akshare_mcp.services.signal_tracker_parts import context as st_ctx
 from akshare_mcp.services.incubation_factory import forward_verifier as fv
 
@@ -38,3 +40,23 @@ def test_forward_horizons_default_unchanged(monkeypatch):
 def test_forward_horizons_includes_40_when_set(monkeypatch):
     monkeypatch.setenv("STRATEGY_FACTORY_FORWARD_HORIZONS", "5,10,20,40")
     assert fv._resolve_forward_horizons() == [5, 10, 20, 40]
+
+
+def test_forward_verifier_ignores_non_finite_returns():
+    verifier = fv.ForwardVerifier()
+
+    assert verifier._extract_forward_return(
+        {"forward_5d": "nan", "return_5d": float("inf"), "fwd_5": "-inf"},
+        5,
+    ) is None
+    sharpe = verifier._compute_forward_sharpe(
+        [0.01, float("nan"), 0.02, float("inf"), 0.03, 0.04, 0.05],
+        horizon_days=5,
+    )
+    ic = verifier._compute_forward_ic(
+        [1, 1, -1, -1, 1, float("nan")],
+        [0.01, 0.02, -0.01, -0.02, 0.03, float("inf")],
+    )
+
+    assert math.isfinite(sharpe)
+    assert math.isfinite(ic)

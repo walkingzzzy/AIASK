@@ -66,7 +66,9 @@ async def _seed_market_data(db, codes: list[str], *, days: int = 190) -> None:
 
 
 def test_factor_validation_bootstrap_persists_factor_outputs(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "factor_validation.sqlite3"))
+    db_path = str(tmp_path / "factor_validation.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()
@@ -162,7 +164,9 @@ def test_factor_validation_bootstrap_persists_factor_outputs(tmp_path, monkeypat
 
 
 def test_factor_validation_bootstrap_strict_promotion_gate(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "factor_validation_gate.sqlite3"))
+    db_path = str(tmp_path / "factor_validation_gate.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         import akshare_mcp.services.factor_validation_bootstrap as bootstrap_mod
@@ -255,7 +259,9 @@ def test_factor_validation_bootstrap_strict_promotion_gate(tmp_path, monkeypatch
 
 
 def test_data_sync_factor_validation_bootstrap_dry_run(tmp_path, monkeypatch):
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "factor_validation_sync.sqlite3"))
+    db_path = str(tmp_path / "factor_validation_sync.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()

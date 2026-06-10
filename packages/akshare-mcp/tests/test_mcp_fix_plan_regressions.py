@@ -58,6 +58,64 @@ def test_fix7_min_history_reserves_extra_bar():
     assert _minimum_factor_history("volume_ratio") >= 21
 
 
+def test_quant_safe_float_rejects_non_finite_values():
+    from akshare_mcp.tools.quant_definitions import _safe_float
+    from akshare_mcp.tools.quant_engine import _calculate_factor_value
+
+    assert _safe_float("nan", 7.0) == 7.0
+    assert _safe_float(float("inf"), 7.0) == 7.0
+
+    closes = list(np.linspace(10.0, 12.0, 40))
+    quality = _calculate_factor_value(
+        "quality",
+        closes,
+        financial={"roe": "nan", "debt_ratio": "inf", "profit_growth": "nan"},
+    )
+    value = _calculate_factor_value(
+        "value",
+        closes,
+        financial={"pe_ratio": "nan", "pb_ratio": "inf", "ps_ratio": "-inf"},
+    )
+
+    assert quality is not None and np.isfinite(quality)
+    assert value is None
+
+
+def test_ai_workflows_rejects_non_finite_numeric_inputs():
+    from akshare_mcp.tools.ai_workflows import (
+        _budget_fail_response,
+        _extract_rank_ic_history,
+        _normalize_binary_outcomes,
+        _safe_float,
+    )
+
+    assert _safe_float("nan") is None
+    assert _safe_float(float("inf")) is None
+    assert _safe_float("-inf") is None
+
+    with pytest.raises(ValueError):
+        _normalize_binary_outcomes([float("inf")])
+
+    history = _extract_rank_ic_history(
+        {
+            "factor_validation_report": {
+                "cross_section": {
+                    "dates": [
+                        {"rank_ic": "inf"},
+                        {"rank_ic": float("nan")},
+                        {"rank_ic": 0.12},
+                    ]
+                }
+            }
+        }
+    )
+
+    assert history == [0.12]
+
+    response = _budget_fail_response(step="stage", message="failed", timeout_sec=float("inf"))
+    assert response["data"]["timeout_sec"] == 0.0
+
+
 # ── FIX-8: 符号倒挂块迭代 dict.items() ───────────────────────────
 
 def test_fix8_robustness_sign_inversion_block_iterates_items():

@@ -134,7 +134,7 @@ export function ConnectorsPanel({ apiToken = "", controlToken = "", endpoint = "
       {gated && (
         <div className="notice warn">
           <span>查看连接器需要控制权限。</span>
-          <p>请在设置中填写 Agent 控制令牌 Control token，然后刷新本面板。</p>
+          <p>请在设置中填写 Agent 控制令牌，然后刷新本面板。</p>
         </div>
       )}
 

@@ -112,6 +112,61 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "include_strategy_review": {"type": "boolean", "default": True},
         }
     ),
+    "agent_market_temperature_snapshot": schema(
+        {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 300},
+            "top_n": {"type": "integer", "minimum": 0, "maximum": 50, "default": 8},
+            "as_of": {"type": "string"},
+            "min_bars": {"type": "integer", "minimum": 2, "maximum": 120, "default": 20},
+            "use_cache": {"type": "boolean", "default": True},
+        }
+    ),
+    "agent_market_temperature_cache_readiness": schema(
+        {
+            "as_of": {"type": "string"},
+            "max_stale_days": {"type": "integer", "minimum": 0, "default": 1},
+        }
+    ),
+    "agent_market_temperature_cache_history": schema(
+        {
+            "limit": {"type": "integer", "minimum": 1, "maximum": 365, "default": 30},
+            "include_snapshot": {"type": "boolean", "default": False},
+        }
+    ),
+    "agent_market_temperature_industry_history": schema(
+        {
+            "industry": {"type": "string"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 365, "default": 120},
+            "top_n": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+            "match_mode": {"type": "string", "enum": ["exact", "contains"], "default": "exact"},
+            "include_source_chain": {"type": "boolean", "default": False},
+        }
+    ),
+    "agent_market_temperature_industry_constituents": schema(
+        {
+            "industry": {"type": "string", "minLength": 1},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
+            "offset": {"type": "integer", "minimum": 0, "maximum": 10000, "default": 0},
+            "match_mode": {"type": "string", "enum": ["exact", "contains"], "default": "contains"},
+            "include_source_chain": {"type": "boolean", "default": False},
+        },
+        required=["industry"],
+    ),
+    "agent_market_temperature_forward_validation": schema(
+        {
+            "limit": {"type": "integer", "minimum": 2, "maximum": 365, "default": 180},
+            "horizons": {"type": ["array", "string", "integer", "null"], "default": [1, 3, 5]},
+            "target_field": {
+                "type": "string",
+                "enum": ["weighted_pct_change", "avg_pct_change", "temperature_delta", "benchmark_return"],
+                "default": "weighted_pct_change",
+            },
+            "benchmark_code": {"type": "string", "default": "000300"},
+            "min_samples": {"type": "integer", "minimum": 1, "maximum": 100, "default": 3},
+            "neutral_band_pct": {"type": "number", "minimum": 0.0, "maximum": 5.0, "default": 0.2},
+            "include_samples": {"type": "boolean", "default": False},
+        }
+    ),
     "agent_factory_status": schema(
         {
             "recent_run_limit": {"type": "integer", "minimum": 1, "maximum": 10},

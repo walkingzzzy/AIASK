@@ -160,6 +160,12 @@ def _annualized_sharpe_ratio(returns: np.ndarray, periods_per_year: float = 252.
 
 def _grade_for_total_score(total_score: float) -> str:
     total = float(total_score or 0.0)
+    if total >= 90.0:
+        return "SSS"
+    if total >= 85.0:
+        return "SS"
+    if total >= 80.0:
+        return "S"
     if total >= 70.0:
         return "A"
     if total >= 55.0:

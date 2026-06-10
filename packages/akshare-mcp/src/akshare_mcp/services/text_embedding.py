@@ -120,7 +120,7 @@ class StrategyTextEmbeddingService:
         self.config = config or StrategyTextEmbeddingConfig.from_env()
         self._cache: dict[str, list[float]] = {}
         self._cache_info: dict[str, dict[str, Any]] = {}
-        self._client = self._build_client()
+        self._client: httpx.AsyncClient | None = None
         self._sentence_transformer = None
         self._created_at = datetime.now().astimezone()
         self._last_request_at: Optional[datetime] = None
@@ -149,6 +149,18 @@ class StrategyTextEmbeddingService:
             return bool(getattr(client, "is_closed"))
         except Exception:
             return False
+
+    def _client_state(self) -> str:
+        client = self._client
+        if client is None:
+            return "idle"
+        try:
+            return "closed" if bool(getattr(client, "is_closed")) else "open"
+        except Exception:
+            return "unknown"
+
+    def client_state(self) -> str:
+        return self._client_state()
 
     async def ensure_client(self) -> None:
         if not self.is_closed():
@@ -245,7 +257,7 @@ class StrategyTextEmbeddingService:
             return "disabled"
         if not self._configured():
             return "misconfigured"
-        if self.is_closed():
+        if self._client_state() == "closed":
             return "closed"
         if self._consecutive_failures > 0:
             return "degraded"
@@ -253,8 +265,9 @@ class StrategyTextEmbeddingService:
 
     def _rebuild_recommended(self) -> bool:
         last_error_type = str(self._last_error_type or "").lower()
+        client_state = self._client_state()
         return bool(
-            self.is_closed()
+            client_state == "closed"
             or self._consecutive_failures > 0
             or last_error_type in {"httperror", "httpstatuserror", "connecterror", "readerror", "jsondecodeerror"}
         )
@@ -288,10 +301,11 @@ class StrategyTextEmbeddingService:
             "configured": self._configured(),
             "ready": bool(
                 self.is_enabled()
-                and not self.is_closed()
+                and self._client_state() != "closed"
                 and self._consecutive_failures == 0
             ),
-            "client_closed": bool(self.is_closed()),
+            "client_closed": bool(self._client_state() == "closed"),
+            "client_state": self._client_state(),
             "health_status": self._health_status(),
             "rebuild_recommended": self._rebuild_recommended(),
             "request_count": int(self._request_count),

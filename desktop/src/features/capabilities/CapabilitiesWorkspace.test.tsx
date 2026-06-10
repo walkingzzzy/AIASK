@@ -159,7 +159,7 @@ describe("CapabilitiesWorkspace", () => {
     await waitFor(() => expect(screen.getByText("运行时评审面板")).toBeInTheDocument());
     expect(screen.getAllByText("已实现").length).toBeGreaterThan(0);
     expect(screen.getByText("可处理缺口")).toBeInTheDocument();
-    expect(screen.getAllByText(/缺少 Control token/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/缺少控制令牌/).length).toBeGreaterThan(0);
     expect(globalThis.fetch).toHaveBeenCalledWith(
       "http://127.0.0.1:8767/v1/desktop/capabilities",
       expect.objectContaining({ method: "GET" })
@@ -217,6 +217,9 @@ describe("CapabilitiesWorkspace", () => {
     await waitFor(() => expect(screen.getByText("plugin surface is registered")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "加载插件命令 audit-plugin" }));
     await waitFor(() => expect(screen.getByText("doctor")).toBeInTheDocument());
+    const commandRow = screen.getByText("doctor").closest(".plugin-command-row");
+    expect(commandRow).toBeTruthy();
+    expect(commandRow).toHaveTextContent("Run diagnostics");
     fireEvent.click(screen.getByRole("button", { name: "测试插件命令 audit-plugin doctor" }));
     await waitFor(() => expect(screen.getByText("command ok")).toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "保存插件" }));

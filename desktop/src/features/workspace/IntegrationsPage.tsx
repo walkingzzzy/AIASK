@@ -12,33 +12,33 @@ const integrationEntries: Array<{
 }> = [
   {
     id: "mcp-connectors",
-    title: "MCP and connectors",
-    label: "MCP / Connectors",
-    description: "Discover MCP servers, resources, prompts, OAuth status, and connector health.",
+    title: "MCP 与连接器",
+    label: "MCP / 连接器",
+    description: "发现 MCP 服务、资源、提示词、OAuth 状态和连接器健康。",
     icon: PlugZap,
     needsControl: true
   },
   {
     id: "gateway",
-    title: "Gateway delivery",
+    title: "Gateway 投递",
     label: "Gateway",
-    description: "Inspect platforms, daemon state, messages, directory, retry, and send intents.",
+    description: "查看平台、守护进程、消息、目录、重试和发送意图。",
     icon: Cable,
     needsControl: true
   },
   {
     id: "plugins-skills",
-    title: "Plugins and skills",
-    label: "Plugins / Skills",
-    description: "Manage native plugin lifecycle and apply skills back into the Workbench.",
+    title: "插件与技能",
+    label: "插件 / 技能",
+    description: "管理原生插件生命周期，并把技能应用回工作台线程。",
     icon: Puzzle,
     needsControl: true
   },
   {
     id: "readiness-health",
-    title: "Readiness and health",
-    label: "Readiness / Health",
-    description: "Review provider, MCP, gateway, plugin, and finance readiness gates.",
+    title: "准备度与健康",
+    label: "准备度 / 健康",
+    description: "复核模型、MCP、Gateway、插件和金融系统门控。",
     icon: CircleGauge
   }
 ];
@@ -63,14 +63,14 @@ export function IntegrationsPage({
     <section className="capabilities-workspace optimization-page">
       <header className="capabilities-header">
         <div>
-          <span>Ops</span>
-          <h1>Integrations</h1>
-          <p>Unified hub for MCP, Gateway, Plugins, Skills, connectors, and readiness. Gated actions remain visible and safe.</p>
+          <span>集成与运维</span>
+          <h1>集成</h1>
+          <p>MCP、Gateway、插件、技能、连接器和准备度的统一入口；受控动作保持可见，并继续走安全门控。</p>
         </div>
         <div className="header-actions">
-          <StatusBadge status={controlReady ? "ready" : "gated"} label={controlReady ? "control ready" : "control gated"} />
-          <StatusBadge status={fullModeReady ? "ready" : "gated"} label={fullModeReady ? "full mode" : "safe mode"} />
-          <StatusBadge status="ready" label={`${tools.length || health?.tools?.count || 0} tools`} />
+          <StatusBadge status={controlReady ? "ready" : "gated"} label={controlReady ? "控制已就绪" : "控制受限"} />
+          <StatusBadge status={fullModeReady ? "ready" : "gated"} label={fullModeReady ? "完整模式" : "安全模式"} />
+          <StatusBadge status="ready" label={`${tools.length || health?.tools?.count || 0} 个工具`} />
         </div>
       </header>
 
@@ -80,12 +80,18 @@ export function IntegrationsPage({
             const Icon = entry.icon;
             const gated = entry.needsControl && !controlReady;
             return (
-              <button className="optimization-card action-card" key={entry.id} onClick={() => onOpenView(entry.id)} type="button">
+              <button
+                aria-label={entry.label}
+                className="optimization-card action-card"
+                key={entry.id}
+                onClick={() => onOpenView(entry.id)}
+                type="button"
+              >
                 <Icon size={18} />
                 <span>{entry.label}</span>
                 <h2>{entry.title}</h2>
                 <p>{entry.description}</p>
-                <StatusBadge status={gated ? "gated" : "ready"} label={gated ? "control token required" : "ready"} />
+                <StatusBadge status={gated ? "gated" : "ready"} label={gated ? "需要控制令牌" : "可查看"} />
               </button>
             );
           })}
@@ -94,14 +100,13 @@ export function IntegrationsPage({
         <section className="capability-section">
           <div className="section-header">
             <div>
-              <span>Safety</span>
-              <h3>ActionIntent remains authoritative</h3>
+              <span>安全边界</span>
+              <h3>ActionIntent 仍是状态型动作的唯一授权链路</h3>
             </div>
             <ShieldCheck size={18} />
           </div>
           <p className="muted">
-            This hub only reorganizes the frontend entry points. Stateful integration actions still use the existing Agent
-            routes, Control token gates, and approval flows.
+            这个聚合页只重组前端入口。所有会改变状态的集成动作仍然使用现有 Agent 路由、控制令牌门控和审批流程。
           </p>
         </section>
       </div>

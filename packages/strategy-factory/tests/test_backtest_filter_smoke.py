@@ -127,6 +127,8 @@ def test_backtest_filter_digests_large_result_without_candidate_raw_payload():
     assert "trades" not in candidate["backtest_outcome"]
     assert "fills" not in candidate["backtest_outcome"]
     assert len(candidate["backtest_metrics"]["event_window_metrics"]["event_time_anchors"]) <= 8
+    assert "parameter_perturbation_trade_stability" in candidate["backtest_metrics_contract"]
+    assert "parameter_perturbation_trade_stability" in candidate["backtest_metrics"]
     assert "passed" not in report
     assert "failed" not in report
     assert report["diagnostics"]["passed_preview_count"] == 1

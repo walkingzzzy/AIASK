@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { CapabilityWorkbenchPayload } from "../../types";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, statusLabel } from "../../components/shared";
 import { filterRows, itemLabel } from "./capabilityUtils";
 
 function MappingTable({ title, rows }: { title: string; rows: Array<Record<string, unknown>> }) {
@@ -75,18 +75,18 @@ function surfaceDetail(payload: Record<string, unknown>): string {
 
 function SurfaceGrid({ hermes }: { hermes: NonNullable<CapabilityWorkbenchPayload["hermes"]> }) {
   const items = [
-    { label: "Providers", value: hermes.providers, hint: "模型路由与 fallback" },
-    { label: "Memory", value: hermes.memory, hint: "SQLite 与可选 provider" },
+    { label: "模型提供方", value: hermes.providers, hint: "模型路由与回退" },
+    { label: "记忆", value: hermes.memory, hint: "SQLite 与可选提供方" },
     { label: "ACP", value: hermes.acp, hint: "客户端提供的 MCP 适配器" },
-    { label: "Security", value: hermes.security, hint: "脱敏与策略检查" },
-    { label: "Skill Packs", value: hermes.skill_packs, hint: "AIASK-native 技能包" }
+    { label: "安全", value: hermes.security, hint: "脱敏与策略检查" },
+    { label: "技能包", value: hermes.skill_packs, hint: "AIASK-native 技能包" }
   ];
   return (
     <section className="capability-section">
       <div className="section-header">
         <div>
           <span>Full Mode 能力面</span>
-          <h3>Providers、记忆、ACP、安全与技能</h3>
+          <h3>模型、记忆、ACP、安全与技能</h3>
         </div>
       </div>
       <div className="status-grid">
@@ -96,7 +96,7 @@ function SurfaceGrid({ hermes }: { hermes: NonNullable<CapabilityWorkbenchPayloa
           return (
             <div className="metric-card" key={item.label}>
               <span>{item.label}</span>
-              <strong>{status}</strong>
+              <strong>{statusLabel(status)}</strong>
               <small>{item.hint}: {surfaceDetail(payload)}</small>
             </div>
           );

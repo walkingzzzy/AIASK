@@ -373,6 +373,9 @@ select:focus {
 
 .quant-body {
   display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   grid-template-columns: minmax(300px, 0.72fr) minmax(520px, 1.28fr);
   gap: 14px;
@@ -399,6 +402,9 @@ select:focus {
 .quant-params-panel,
 .quant-center-panel,
 .quant-report-panel {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
   min-height: 0;
   overflow: auto;
   border: 1px solid var(--border);
@@ -461,6 +467,103 @@ select:focus {
   line-height: 1.45;
   overflow-wrap: anywhere;
   white-space: normal;
+}
+
+.quant-stage-decision {
+  display: grid;
+  gap: 12px;
+}
+
+.quant-stage-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.quant-stage-decision-grid {
+  display: grid;
+  gap: 10px;
+}
+
+.quant-stage-decision-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-left-width: 4px;
+  border-radius: var(--radius);
+  padding: 12px;
+  background: #fff;
+}
+
+.quant-stage-decision-card.ok {
+  border-left-color: var(--ok);
+}
+
+.quant-stage-decision-card.warn {
+  border-left-color: var(--warn);
+}
+
+.quant-stage-decision-card.bad {
+  border-left-color: var(--bad);
+}
+
+.quant-stage-decision-card.neutral {
+  border-left-color: var(--border-strong);
+}
+
+.quant-stage-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.quant-stage-card-head span,
+.quant-stage-blocker span,
+.quant-stage-next span {
+  display: block;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.quant-stage-card-head strong {
+  display: block;
+  margin-top: 3px;
+  color: var(--text);
+  font-size: 14px;
+  font-weight: 650;
+}
+
+.quant-stage-decision-card p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.quant-stage-blocker,
+.quant-stage-next {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 9px 10px;
+  background: var(--bg-soft);
+}
+
+.quant-stage-blocker {
+  border-color: rgba(239, 100, 97, 0.32);
+  background: rgba(255, 246, 246, 0.86);
+}
+
+.quant-stage-blocker strong,
+.quant-stage-next strong {
+  color: var(--text);
+  font-size: 12px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .capabilities-header {
@@ -531,6 +634,8 @@ select:focus {
 
 .capability-stack {
   display: grid;
+  width: 100%;
+  min-width: 0;
   max-width: 1180px;
   gap: 14px;
   margin: 0 auto;
@@ -580,6 +685,7 @@ select:focus {
 
 .capability-grid {
   display: grid;
+  align-items: start;
   gap: 12px;
 }
 
@@ -595,6 +701,7 @@ select:focus {
 .capability-card {
   min-width: 0;
   padding: 14px;
+  overflow-wrap: anywhere;
 }
 
 .agent-management-panel,
@@ -643,6 +750,8 @@ select:focus {
 
 .data-table {
   display: grid;
+  min-width: 0;
+  max-width: 100%;
   overflow: hidden;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -651,7 +760,8 @@ select:focus {
 .table-head,
 .table-row {
   display: grid;
-  grid-template-columns: minmax(160px, 1.25fr) minmax(90px, 0.7fr) 135px minmax(160px, 1fr);
+  min-width: 0;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 0.7fr) minmax(0, 0.75fr) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
   padding: 9px 10px;
@@ -671,9 +781,11 @@ select:focus {
   font-size: 12px;
 }
 
+.table-head span,
 .table-row strong,
 .table-row small,
 .table-row span {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -682,6 +794,7 @@ select:focus {
 .table-row strong,
 .table-row small {
   font-family: var(--mono);
+  overflow-wrap: anywhere;
 }
 
 .table-row strong {
@@ -691,6 +804,20 @@ select:focus {
 
 .table-row small {
   color: var(--text-dim);
+}
+
+.plugin-readiness-table .table-head,
+.plugin-readiness-table .table-row {
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 0.65fr) minmax(0, 1fr) minmax(0, 1fr);
+  align-items: start;
+}
+
+.plugin-readiness-table .table-row span:nth-child(3) {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .table-empty {
@@ -809,6 +936,7 @@ select:focus {
 
 .thread-command-center {
   display: grid;
+  min-width: 0;
   max-width: 1120px;
   gap: 14px;
   margin: 0 auto 18px;
@@ -822,6 +950,7 @@ select:focus {
 }
 
 .workflow-panel {
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 12px;
@@ -858,8 +987,9 @@ select:focus {
 .summary-list button {
   display: grid;
   width: 100%;
+  min-width: 0;
   min-height: 44px;
-  align-items: center;
+  align-items: start;
   gap: 3px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -883,14 +1013,26 @@ select:focus {
 }
 
 .summary-list button span {
+  display: block;
+  overflow: visible;
+  line-height: 1.35;
   font-size: 12px;
   font-weight: 650;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .summary-list button small {
+  display: block;
+  overflow: visible;
   color: var(--text-muted);
   font-family: var(--mono);
   font-size: 11px;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .summary-kv {
@@ -901,11 +1043,15 @@ select:focus {
 }
 
 .summary-kv span {
+  min-width: 0;
   color: var(--text-muted);
   font-size: 12px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
 }
 
 .summary-kv strong {
+  min-width: 0;
   font-family: var(--mono);
   font-size: 12px;
 }
@@ -1047,24 +1193,32 @@ select:focus {
 
 .health-signal-grid div {
   min-width: 0;
+  flex-wrap: wrap;
+  align-items: flex-start;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 9px;
   background: rgba(255, 255, 255, 0.78);
+  overflow-wrap: anywhere;
 }
 
 .health-signal-grid span {
+  min-width: 0;
   color: var(--text-dim);
   font-size: 11px;
   font-weight: 650;
+  line-height: 1.25;
   text-transform: uppercase;
 }
 
 .health-signal-grid strong {
-  margin-left: auto;
+  min-width: 0;
+  margin-left: 0;
   color: var(--text);
   font-family: var(--mono);
   font-size: 12px;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
 }
 
 .empty-thread {
@@ -1340,9 +1494,13 @@ select:focus {
 }
 
 .metric-card span {
+  display: block;
+  min-width: 0;
   color: var(--text-dim);
   font-size: 11px;
   font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
   text-transform: uppercase;
 }
 
@@ -1395,19 +1553,20 @@ select:focus {
 }
 
 .kv-grid strong {
-  overflow: hidden;
+  min-width: 0;
   color: var(--text);
   font-weight: 550;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .status-badge {
   display: inline-flex;
   align-items: center;
   flex: 0 0 auto;
+  flex-wrap: nowrap;
   gap: 6px;
-  width: max-content;
+  width: fit-content;
+  min-width: max-content;
   max-width: 100%;
   border: 1px solid var(--border);
   border-radius: 999px;
@@ -1416,7 +1575,16 @@ select:focus {
   background: rgba(255, 255, 255, 0.76);
   font-size: 11px;
   font-weight: 650;
+  line-height: 1.2;
   white-space: nowrap;
+}
+
+.status-badge svg {
+  flex: 0 0 auto;
+}
+
+.status-badge-text {
+  flex: 0 0 auto;
 }
 
 .status-badge.ok {
@@ -1444,7 +1612,12 @@ select:focus {
 
 .extension-slot-item {
   display: inline-flex;
+  flex: 0 0 auto;
   min-width: 0;
+}
+
+.extension-slot-item > .small-button {
+  min-width: max-content;
 }
 
 .sidebar-slot {
@@ -1481,6 +1654,8 @@ select:focus {
 
 .notice {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 8px;
   border: 1px solid var(--border);
@@ -1490,6 +1665,12 @@ select:focus {
   background: #fff;
   font-size: 12px;
   line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.notice > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .notice.ok {
@@ -1579,7 +1760,74 @@ select:focus {
 }
 
 .raw-evidence-panel {
+  min-width: 0;
   margin-top: 10px;
+}
+
+.finance-relay-banner {
+  align-items: center;
+}
+
+.finance-relay-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.finance-relay-card {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.finance-relay-card.ready {
+  border-color: rgba(22, 131, 74, 0.24);
+}
+
+.finance-relay-card.partial,
+.finance-relay-card.not_loaded {
+  border-color: rgba(214, 169, 74, 0.3);
+}
+
+.finance-relay-card.failed {
+  border-color: rgba(239, 100, 97, 0.35);
+}
+
+.relay-kv-grid {
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.relay-evidence-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+}
+
+.relay-evidence-row strong {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.finance-relay-card .section-header,
+.finance-relay-card .section-header > div,
+.finance-relay-card .notice,
+.finance-relay-card .small-button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.relay-arrow {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  z-index: 2;
+  color: var(--text-dim);
+  opacity: 0.5;
+  pointer-events: none;
 }
 
 .raw-evidence-panel:not([open]) {
@@ -1597,9 +1845,20 @@ select:focus {
   font-size: 12px;
 }
 
+.subsystem-actions {
+  display: grid;
+  gap: 8px;
+  padding: 0 12px 12px;
+}
+
+.subsystem-actions .small-button {
+  justify-self: start;
+}
+
 .capability-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
   gap: 8px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -1621,20 +1880,20 @@ select:focus {
 
 .capability-row span,
 .capability-row small {
-  overflow: hidden;
   color: var(--text-dim);
   font-size: 11px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .capability-row strong {
   display: block;
-  overflow: hidden;
+  min-width: 0;
+  overflow: visible;
   margin-top: 4px;
   font-size: 13px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .capability-row small {
@@ -1642,7 +1901,36 @@ select:focus {
   font-family: var(--mono);
 }
 
+.capability-row .status-badge {
+  flex-wrap: wrap;
+  justify-self: start;
+  min-width: 0;
+  width: fit-content;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.capability-row .status-badge-text {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.capability-grid.three .capability-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.capability-grid.three .capability-row .status-badge {
+  width: 100%;
+}
+
 .json-panel {
+  max-width: 100%;
+  min-width: 0;
   max-height: 320px;
   overflow: auto;
   margin: 0;
@@ -1742,12 +2030,14 @@ select:focus {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.event-filter-grid label {
+.event-filter-grid label,
+.event-filter-grid .field-row {
   display: grid;
   gap: 7px;
 }
 
-.event-filter-grid label > span {
+.event-filter-grid label > span,
+.event-filter-grid .field-row > span {
   color: var(--text-muted);
   font-size: 12px;
   font-weight: 650;
@@ -1971,6 +2261,21 @@ select:focus {
 
 .job-row .row-actions {
   grid-column: 1 / -1;
+}
+
+.plugin-command-row {
+  gap: 10px;
+}
+
+.plugin-command-copy {
+  display: grid;
+  gap: 3px;
+}
+
+.plugin-command-copy strong,
+.plugin-command-copy span {
+  display: block;
+  min-width: 0;
 }
 
 .checkbox-row input[type="checkbox"] {
@@ -2214,6 +2519,62 @@ select:focus {
   overflow-wrap: anywhere;
 }
 
+.mcp-smoke-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.mcp-smoke-steps {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.mcp-smoke-step {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: #fff;
+}
+
+.mcp-smoke-step.ready {
+  border-color: rgba(70, 196, 124, 0.36);
+}
+
+.mcp-smoke-step.blocked,
+.mcp-smoke-step.failed {
+  border-color: rgba(239, 100, 97, 0.32);
+}
+
+.mcp-smoke-step.running {
+  border-color: rgba(74, 118, 214, 0.34);
+}
+
+.mcp-smoke-step-head {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
+.mcp-smoke-step-head strong,
+.mcp-smoke-step-head span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mcp-smoke-step-head span {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
 .tool-contract-details {
   margin-top: 0;
 }
@@ -2305,9 +2666,9 @@ select:focus {
 .coverage-row summary,
 .coverage-head {
   display: grid;
-  grid-template-columns: minmax(180px, 1.2fr) minmax(120px, 0.8fr) minmax(170px, 1fr) minmax(150px, 0.9fr) minmax(190px, 1.2fr) 130px;
+  grid-template-columns: minmax(140px, 1.05fr) minmax(90px, 0.72fr) minmax(120px, 0.92fr) minmax(110px, 0.78fr) minmax(150px, 1.28fr) minmax(100px, auto);
   gap: 10px;
-  align-items: center;
+  align-items: start;
   min-width: 0;
 }
 
@@ -2352,6 +2713,15 @@ select:focus {
 .coverage-item summary > span {
   color: var(--text-muted);
   font-size: 12px;
+}
+
+.coverage-item strong,
+.coverage-item summary > span {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .coverage-detail {
@@ -2507,6 +2877,7 @@ select:focus {
 
   .capability-grid.three,
   .diagnostics-summary.wide,
+  .finance-relay-grid,
   .connector-review-grid,
   .review-queue-list,
   .workflow-grid,
@@ -2541,6 +2912,7 @@ select:focus {
   .capability-grid.two,
   .capability-grid.three,
   .diagnostics-summary.wide,
+  .finance-relay-grid,
   .connector-review-grid,
   .review-queue-list,
   .workflow-grid,
@@ -2549,6 +2921,10 @@ select:focus {
   .feedback-grid,
   .quant-body {
     grid-template-columns: 1fr;
+  }
+
+  .quant-body.data-sync-layout {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .data-sync-layout .quant-report-panel {
@@ -2682,6 +3058,10 @@ select:focus {
   .table-head,
   .table-row {
     grid-template-columns: 1fr;
+  }
+
+  .relay-arrow {
+    display: none;
   }
 }
 
@@ -2935,6 +3315,7 @@ select:focus {
 
 .task-panel {
   display: grid;
+  min-width: 0;
   gap: 12px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -2956,6 +3337,7 @@ select:focus {
 .artifact-card,
 .review-comment {
   display: grid;
+  min-width: 0;
   grid-template-columns: 34px minmax(0, 1fr);
   gap: 10px;
   border: 1px solid #edf1f5;
@@ -3000,9 +3382,23 @@ select:focus {
 
 .artifact-card-head {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: flex-start;
   justify-content: space-between;
   gap: 10px;
+}
+
+.artifact-card > div,
+.review-comment > div {
+  min-width: 0;
+}
+
+.artifact-card-head strong,
+.artifact-card p,
+.review-comment p {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .artifact-card p,
@@ -3015,6 +3411,7 @@ select:focus {
 
 .artifact-meta {
   display: flex;
+  min-width: 0;
   flex-wrap: wrap;
   gap: 6px;
   margin-top: 8px;
@@ -3022,9 +3419,11 @@ select:focus {
 
 .artifact-meta span,
 .review-comment span {
+  min-width: 0;
   color: var(--text-dim);
   font-family: var(--mono);
   font-size: 11px;
+  overflow-wrap: anywhere;
 }
 
 .optimization-page .capabilities-header p {
@@ -3579,6 +3978,115 @@ select:focus {
   gap: 14px;
 }
 
+.financial-workflow-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.financial-workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.financial-workflow-step {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 12px;
+  background: #fff;
+}
+
+.financial-workflow-step.ready {
+  border-color: rgba(70, 196, 124, 0.36);
+}
+
+.financial-workflow-step.blocked,
+.financial-workflow-step.failed {
+  border-color: rgba(239, 100, 97, 0.32);
+}
+
+.financial-workflow-step.running {
+  border-color: rgba(74, 118, 214, 0.34);
+}
+
+.financial-workflow-step-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 8px;
+}
+
+.financial-workflow-step-head > span:not(.status-badge) {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-soft);
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.financial-workflow-step-head > div {
+  min-width: 0;
+}
+
+.financial-workflow-step-head strong,
+.financial-workflow-step-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.financial-workflow-step-head strong {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.financial-workflow-step-head small {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.financial-workflow-step dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.financial-workflow-step dl div {
+  min-width: 0;
+}
+
+.financial-workflow-step dt {
+  color: var(--text-dim);
+  font-size: 11px;
+  font-weight: 650;
+}
+
+.financial-workflow-step dd {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
 .financial-action-list {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
@@ -3604,6 +4112,8 @@ select:focus {
 
 .financial-action-runner {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
   gap: 10px;
   padding: 16px;
   border: 1px solid var(--border);
@@ -3613,11 +4123,108 @@ select:focus {
 
 .financial-action-runner textarea {
   width: 100%;
+  min-width: 0;
   resize: vertical;
   padding: 10px;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.5;
+}
+
+.stock-analysis-runner {
+  display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 10px 14px;
+  align-items: end;
+  padding: 12px;
+  border: 1px solid rgba(74, 118, 214, 0.22);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.stock-analysis-runner .field-row {
+  margin: 0;
+}
+
+.stock-analysis-toggle {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.stock-analysis-toggle input {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.stock-analysis-route {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.stock-analysis-route code {
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+
+.stock-analysis-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: 8px;
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+.stock-analysis-summary .metric-card strong {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.stock-analysis-tool {
+  display: flex;
+  grid-column: 1 / -1;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.stock-analysis-tool span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  white-space: nowrap;
 }
 
 @media (max-width: 1279px) {
@@ -3722,6 +4329,24 @@ select:focus {
   .workflow-hub-grid,
   .settings-shortcut-grid,
   .financial-manager-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .financial-workflow-steps {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-analysis-runner,
+  .stock-analysis-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .stock-analysis-route,
+  .stock-analysis-tool {
+    grid-column: auto;
+  }
+
+  .mcp-smoke-steps {
     grid-template-columns: 1fr;
   }
 }

@@ -51,7 +51,7 @@ const workflowCards: Array<{
     id: "factor-factory",
     label: "因子工厂",
     eyebrow: "因子挖掘",
-    description: "跟踪活跃因子池、引擎健康和 pool health，让因子挖掘沉到工作流层。",
+    description: "跟踪活跃因子池、引擎健康和池健康，让因子挖掘沉到工作流层。",
     status: "ready",
     statusLabel: "研究",
     icon: BarChart3

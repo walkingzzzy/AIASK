@@ -38,6 +38,280 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _task_symbols(task: dict[str, Any]) -> list[str]:
+    symbols = task.get("target_symbols")
+    if not symbols and isinstance(task.get("stock_pool"), dict):
+        symbols = dict(task.get("stock_pool") or {}).get("symbols")
+    values: list[str] = []
+    for item in list(symbols or []):
+        token = str(item or "").strip()
+        if token and token not in values:
+            values.append(token)
+        if len(values) >= 12:
+            break
+    return values
+
+
+def _task_event_context(task: dict[str, Any]) -> dict[str, Any]:
+    context = dict(task.get("event_context") or {})
+    if not context and isinstance(task.get("research_task"), dict):
+        context = dict((task.get("research_task") or {}).get("event_context") or {})
+    return context
+
+
+def _task_dedupe_key(task: dict[str, Any]) -> str:
+    context = _task_event_context(task)
+    existing = str(context.get("dedupe_key") or "").strip()
+    if existing:
+        return existing
+    event_id = str(context.get("event_id") or task.get("event_id") or "").strip()
+    theme_code = str(
+        context.get("theme_code")
+        or task.get("theme_code")
+        or task.get("candidate_family")
+        or task.get("factor_name")
+        or ""
+    ).strip()
+    symbols_signature = "-".join(_task_symbols(task))[:64]
+    if not event_id or not theme_code or not symbols_signature:
+        return ""
+    return f"{event_id}:{theme_code}:{symbols_signature}"
+
+
+def _direction_to_lineage(value: Any) -> str:
+    token = str(value or "").strip().lower()
+    if token in {"negative", "bearish", "cost_up", "down"}:
+        return "negative"
+    if token in {"neutral", "flat"}:
+        return "neutral"
+    return "positive"
+
+
+def _lineage_record_from_task(task: dict[str, Any]) -> dict[str, Any] | None:
+    context = _task_event_context(task)
+    dedupe_key = _task_dedupe_key(task)
+    event_id = str(context.get("event_id") or task.get("event_id") or "").strip()
+    theme_code = str(
+        context.get("theme_code")
+        or task.get("theme_code")
+        or task.get("candidate_family")
+        or task.get("factor_name")
+        or ""
+    ).strip()
+    symbols = _task_symbols(task)
+    if not dedupe_key or not event_id or not theme_code or not symbols:
+        return None
+    score_summary = dict((task.get("evidence_bundle") or {}).get("score_summary") or {})
+    impact_magnitude = (
+        score_summary.get("avg_final_score")
+        or context.get("reliability_score")
+        or task.get("reliability_score")
+        or 0.0
+    )
+    try:
+        magnitude = float(impact_magnitude or 0.0)
+    except Exception:
+        magnitude = 0.0
+    return {
+        "dedupe_key": dedupe_key,
+        "event_id": event_id,
+        "task_id": task.get("task_id"),
+        "theme_code": theme_code,
+        "impact_direction": _direction_to_lineage(context.get("direction") or task.get("direction")),
+        "impact_magnitude": magnitude,
+        "target_symbols": symbols,
+        "target_count": len(symbols),
+        "breadth_resolved": "verified_event_signal",
+    }
+
+
+def _with_dedupe_context(task: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(task or {})
+    dedupe_key = _task_dedupe_key(payload)
+    if not dedupe_key:
+        return payload
+    event_context = dict(payload.get("event_context") or {})
+    event_context["dedupe_key"] = dedupe_key
+    payload["event_context"] = event_context
+    if isinstance(payload.get("research_task"), dict):
+        research_task = dict(payload.get("research_task") or {})
+        research_context = dict(research_task.get("event_context") or {})
+        research_context["dedupe_key"] = dedupe_key
+        research_task["event_context"] = research_context
+        payload["research_task"] = research_task
+    return payload
+
+
+async def _generate_tasks_from_verified_event_clusters(
+    db: Any,
+    snapshot: dict[str, Any] | None,
+    *,
+    event_limit: int,
+) -> dict[str, Any]:
+    if not callable(getattr(db, "list_factory_event_clusters", None)):
+        return {
+            "enabled": False,
+            "tasks": [],
+            "lineage_records": [],
+            "reason": "factory_event_clusters_unavailable",
+        }
+    try:
+        from ..collect import DataCollector
+        from ..opportunity import MarketOpportunityScanner
+
+        event_payload, status, reason, details = await DataCollector._collect_event_driven_snapshot(db)
+        event_payload = dict(event_payload or {})
+        events = list(event_payload.get("events") or [])[: max(1, int(event_limit or 20))]
+        if not events:
+            return {
+                "enabled": True,
+                "tasks": [],
+                "lineage_records": [],
+                "event_count": 0,
+                "event_snapshot_status": status,
+                "event_snapshot_reason": reason,
+                "event_snapshot_details": dict(details or {}) if isinstance(details, dict) else details,
+                "diagnostic_event_count": len(list(event_payload.get("diagnostic_events") or [])),
+                "source": "verified_event_clusters",
+            }
+        task_snapshot = {
+            **dict(snapshot or {}),
+            "event_driven": {
+                **event_payload,
+                "events": events,
+            },
+        }
+        raw_tasks = MarketOpportunityScanner._build_event_driven_tasks(task_snapshot, [])
+        tasks = [
+            _with_dedupe_context(task)
+            for task in MarketOpportunityScanner._deduplicate_tasks(list(raw_tasks or []))
+        ]
+        lineage_records = [
+            record for record in (_lineage_record_from_task(task) for task in tasks) if record
+        ]
+        return {
+            "enabled": True,
+            "tasks": tasks,
+            "lineage_records": lineage_records,
+            "event_count": len(events),
+            "impact_count": len(tasks),
+            "task_count": len(tasks),
+            "lineage_count": len(lineage_records),
+            "event_snapshot_status": status,
+            "event_snapshot_reason": reason,
+            "event_snapshot_details": dict(details or {}) if isinstance(details, dict) else details,
+            "source": "verified_event_clusters",
+        }
+    except Exception as exc:
+        logger.debug("event_task_generator: verified event cluster fallback failed: %s", exc)
+        return {
+            "enabled": False,
+            "tasks": [],
+            "lineage_records": [],
+            "reason": f"{type(exc).__name__}: {exc}",
+            "source": "verified_event_clusters",
+        }
+
+
+async def _claim_fallback_outbox(
+    db: Any,
+    tasks: list[dict[str, Any]],
+    lineage_records: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+    lineage_by_key = {
+        str(item.get("dedupe_key") or "").strip(): dict(item or {})
+        for item in lineage_records
+        if str(item.get("dedupe_key") or "").strip()
+    }
+    outbox_claimed = 0
+    outbox_processed = 0
+    outbox_skipped = 0
+    outbox_failed = 0
+    outbox_details: list[dict[str, Any]] = []
+    emitted_tasks: list[dict[str, Any]] = []
+    emitted_lineage: list[dict[str, Any]] = []
+    required_methods = (
+        "claim_event_outbox",
+        "upsert_event_task_lineage",
+        "mark_event_outbox_processed",
+        "mark_event_outbox_failed",
+    )
+    if not all(hasattr(db, name) for name in required_methods):
+        for task in tasks:
+            dedupe_key = _task_dedupe_key(task)
+            outbox_failed += 1
+            outbox_details.append({
+                "dedupe_key": dedupe_key,
+                "status": "failed",
+                "reason": "outbox_dao_unsupported",
+            })
+        return emitted_tasks, emitted_lineage, {
+            "outbox_claimed": outbox_claimed,
+            "outbox_processed": outbox_processed,
+            "outbox_skipped": outbox_skipped,
+            "outbox_failed": outbox_failed,
+            "outbox_details": outbox_details,
+        }
+    for task in tasks:
+        dedupe_key = _task_dedupe_key(task)
+        record = lineage_by_key.get(dedupe_key)
+        if not dedupe_key or not record:
+            outbox_skipped += 1
+            outbox_details.append({
+                "dedupe_key": dedupe_key,
+                "status": "skipped",
+                "reason": "missing_lineage_record",
+            })
+            continue
+        context = _task_event_context(task)
+        try:
+            claim = await db.claim_event_outbox({
+                "dedupe_key": dedupe_key,
+                "source_event_id": record.get("event_id") or context.get("event_id"),
+                "theme_code": record.get("theme_code") or task.get("candidate_family"),
+                "event_type": context.get("event_type") or task.get("event_type") or task.get("opportunity_type"),
+            })
+            if not claim.get("claimed"):
+                outbox_skipped += 1
+                outbox_details.append({
+                    "dedupe_key": dedupe_key,
+                    "status": "skipped",
+                    "claim_status": claim.get("status"),
+                })
+                continue
+            outbox_claimed += 1
+            await db.upsert_event_task_lineage(record)
+            await db.mark_event_outbox_processed(dedupe_key)
+            outbox_processed += 1
+            outbox_details.append({
+                "dedupe_key": dedupe_key,
+                "status": "processed",
+                "event_id": record.get("event_id"),
+                "task_id": record.get("task_id"),
+                "theme_code": record.get("theme_code"),
+            })
+            emitted_tasks.append(task)
+            emitted_lineage.append(record)
+        except Exception as exc:
+            outbox_failed += 1
+            try:
+                await db.mark_event_outbox_failed(dedupe_key, error=str(exc))
+            except Exception:
+                pass
+            outbox_details.append({
+                "dedupe_key": dedupe_key,
+                "status": "failed",
+                "error": str(exc),
+            })
+    return emitted_tasks, emitted_lineage, {
+        "outbox_claimed": outbox_claimed,
+        "outbox_processed": outbox_processed,
+        "outbox_skipped": outbox_skipped,
+        "outbox_failed": outbox_failed,
+        "outbox_details": outbox_details,
+    }
+
+
 def _build_event_task(
     event: NormalizedEvent,
     impact: ThemeImpact,
@@ -200,7 +474,57 @@ async def generate_tasks_from_active_events(
         events_raw = await db.list_event_injections(status="active", limit=max(1, int(event_limit or 20)))
 
     if not events_raw:
-        return {"enabled": True, "tasks": [], "event_count": 0}
+        fallback = await _generate_tasks_from_verified_event_clusters(
+            db,
+            snapshot,
+            event_limit=max(1, int(event_limit or 20)),
+        )
+        fallback_tasks = list(fallback.get("tasks") or [])
+        fallback_lineage = list(fallback.get("lineage_records") or [])
+        outbox_meta = {
+            "outbox_claimed": 0,
+            "outbox_processed": 0,
+            "outbox_skipped": 0,
+            "outbox_failed": 0,
+            "outbox_details": [],
+        }
+        if fallback_tasks and claim_outbox:
+            fallback_tasks, fallback_lineage, outbox_meta = await _claim_fallback_outbox(
+                db,
+                fallback_tasks,
+                fallback_lineage,
+            )
+        elif fallback_lineage and persist_lineage and hasattr(db, "upsert_event_task_lineage"):
+            persisted_lineage: list[dict[str, Any]] = []
+            for record in fallback_lineage:
+                try:
+                    await db.upsert_event_task_lineage(record)
+                    persisted_lineage.append(record)
+                except Exception as exc:
+                    logger.debug("event_task_generator: fallback lineage persist failed: %s", exc)
+            fallback_lineage = persisted_lineage
+        if fallback_tasks or fallback.get("enabled"):
+            return {
+                "enabled": True,
+                "tasks": fallback_tasks,
+                "event_count": int(fallback.get("event_count") or 0),
+                "impact_count": len(fallback_tasks),
+                "task_count": len(fallback_tasks),
+                "lineage_count": len(fallback_lineage),
+                "lineage_records": fallback_lineage,
+                "persist_lineage": bool(persist_lineage),
+                "claim_outbox": bool(claim_outbox),
+                "event_source_mode": "verified_event_clusters",
+                "active_injection_event_count": 0,
+                "verified_event_fallback": {
+                    key: value
+                    for key, value in dict(fallback or {}).items()
+                    if key not in {"tasks", "lineage_records"}
+                },
+                **outbox_meta,
+                "feature_flag_target_max": TARGET_COUNT_MAX if DYNAMIC_TARGET_COUNT_ENABLED else 12,
+            }
+        return {"enabled": True, "tasks": [], "event_count": 0, "event_source_mode": "event_injections"}
 
     # Filter to currently valid events
     now = _now_iso()
@@ -362,6 +686,8 @@ async def generate_tasks_from_active_events(
         "lineage_records": lineage_records,
         "persist_lineage": bool(persist_lineage),
         "claim_outbox": bool(claim_outbox),
+        "event_source_mode": "event_injections",
+        "active_injection_event_count": len(active_events),
         "outbox_claimed": outbox_claimed,
         "outbox_processed": outbox_processed,
         "outbox_skipped": outbox_skipped,

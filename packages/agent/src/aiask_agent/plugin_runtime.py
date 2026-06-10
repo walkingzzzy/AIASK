@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
+from .numeric import bounded_float, bounded_int
 from .paths import aiask_agent_home
 
 
@@ -403,10 +404,10 @@ class NativePluginManager:
         for key, value in dict(runner.get("headers") or {}).items():
             headers[str(key)] = str(value)
         body = json.dumps({"plugin": plugin.get("name"), "tool": tool, "arguments": arguments}, ensure_ascii=False).encode("utf-8")
-        timeout = max(1.0, min(float(runner.get("timeout_seconds") or 30), 300.0))
+        timeout = bounded_float(runner.get("timeout_seconds"), default=30.0, minimum=1.0, maximum=300.0)
         request = Request(url, data=body, headers=headers, method=str(runner.get("method") or "POST").upper())
         with urlopen(request, timeout=timeout) as response:
-            raw = response.read(max(1, min(int(runner.get("max_bytes") or 1048576), 5 * 1024 * 1024)))
+            raw = response.read(bounded_int(runner.get("max_bytes"), default=1048576, minimum=1, maximum=5 * 1024 * 1024))
             text = raw.decode("utf-8", errors="replace")
         try:
             return json.loads(text)
@@ -420,7 +421,7 @@ class NativePluginManager:
         plugin_dir = Path(str(plugin.get("path") or "")).parent if plugin.get("path") else self.root / _safe_slug(str(plugin.get("name") or ""))
         cwd = self._safe_subprocess_cwd(plugin_dir, runner.get("cwd"))
         env = self._subprocess_env(runner)
-        timeout = max(1.0, min(float(runner.get("timeout_seconds") or 30), 300.0))
+        timeout = bounded_float(runner.get("timeout_seconds"), default=30.0, minimum=1.0, maximum=300.0)
         args = [str(item) for item in command] if isinstance(command, list) else str(command)
         proc = subprocess.run(
             args,

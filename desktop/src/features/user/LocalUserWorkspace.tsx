@@ -155,7 +155,7 @@ export function LocalUserWorkspace({
                 <StatusBadge status={profile?.status || "ready"} />
               </div>
               <label className="field-row">
-                <span>User ID</span>
+                <span>用户 ID</span>
                 <input value={draftUserId} onChange={(event) => setDraftUserId(event.target.value)} />
               </label>
               <label className="field-row">
@@ -261,13 +261,13 @@ export function LocalUserWorkspace({
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Agent memory</span>
+                <span>Agent 记忆</span>
                 <h3>记忆状态</h3>
               </div>
               <StatusBadge status={String(memoryStatusRecord.status || (memoryStatus ? "ready" : "not_loaded"))} />
             </div>
             <div className="kv-grid">
-              <span>Provider</span>
+              <span>提供方</span>
               <strong>{compact(memoryStatusRecord.provider || memoryStatusRecord.default_provider)}</strong>
               <span>路径</span>
               <strong>{compact(memoryStatusRecord.path || memoryStatusRecord.database_path)}</strong>

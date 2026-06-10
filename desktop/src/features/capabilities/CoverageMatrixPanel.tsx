@@ -62,7 +62,7 @@ function rowFromTool(tool: ToolCatalogItem): CoverageRow {
     domain: tool.category || tool.capability || "agent_tool",
     capability: tool.name,
     backend: "Agent tool registry",
-    desktopApi: readOnly ? `/v1/tools/${tool.name}` : "control token / intent gated",
+    desktopApi: readOnly ? `/v1/tools/${tool.name}` : "控制令牌 / 意图门控",
     frontend: readOnly ? "工具页安全探测" : "工具页受控操作记录",
     testPath: readOnly ? "在工具页点击“填充示例”或“运行安全探测”。" : "验证禁用/受控状态；仅从已审批面板创建意图。",
     status: normalizeStatus(tool.status || (readOnly ? "implemented" : "gated")),
@@ -140,26 +140,26 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "data:sync",
     domain: "数据与同步",
-    capability: "SQLite/AKShare freshness, quality gate, sync-plan intent",
+    capability: "SQLite/AKShare 新鲜度、质量门控、同步计划意图",
     backend: data?.database?.writable === false ? "database blocked" : data?.status || "not_loaded",
     desktopApi: "/v1/desktop/data/status, /v1/desktop/data/sync-plan, /intents",
     frontend: "数据与同步",
     testPath: "刷新数据、生成计划，并且只在有控制令牌时创建审批意图。",
     status: normalizeStatus(data?.status || "not_loaded"),
-    notes: `${data?.codes?.length || 0} codes / missing ${data?.missing_count ?? "-"} / stale ${data?.stale_count ?? "-"}`
+    notes: `${data?.codes?.length || 0} 个代码 / 缺失 ${data?.missing_count ?? "-"} / 过期 ${data?.stale_count ?? "-"}`
   });
 
   const mcp = capabilities?.mcp;
   appendIf(rows, {
     id: "mcp:service",
     domain: "MCP",
-    capability: "registered servers, tools, resources, prompts, OAuth",
+    capability: "已注册服务、工具、资源、提示词与 OAuth",
     backend: mcp?.gated ? "control gated" : mcp?.discovery_status || "not_loaded",
     desktopApi: "/v1/mcp/* via Agent",
     frontend: "MCP、能力中心 / MCP",
     testPath: "在 mock/控制模式下发现服务、读取安全资源、获取提示词、启动 OAuth。",
     status: normalizeStatus(mcp?.gated ? "gated" : mcp?.discovery_status || "not_loaded"),
-    notes: `${mcp?.tools?.length || 0} tools / ${mcp?.resources?.length || 0} resources / ${mcp?.prompts?.length || 0} prompts`
+    notes: `${mcp?.tools?.length || 0} 个工具 / ${mcp?.resources?.length || 0} 个资源 / ${mcp?.prompts?.length || 0} 个提示词`
   });
   (mcp?.tools || []).forEach((tool, index) => {
     rows.push({
@@ -180,7 +180,7 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "factory:strategy",
     domain: "策略工厂",
-    capability: "scheduler status, recent runs, review snapshot, run intent",
+    capability: "调度器状态、最近运行、评审快照、运行意图",
     backend: rowStatus(strategy?.status),
     desktopApi: "agent_factory_status, agent_factory_runs, /intents",
     frontend: "策略工厂、能力中心 / 策略工厂",
@@ -192,7 +192,7 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "factory:factor",
     domain: "因子挖掘工厂",
-    capability: "active pool, engine health, run and maintenance intents",
+    capability: "活跃池、引擎健康、运行和维护意图",
     backend: factor?.configured === false ? "unconfigured" : factor?.status || "not_loaded",
     desktopApi: "/v1/desktop/factor-factory/status, /intents",
     frontend: "因子工厂",
@@ -205,7 +205,7 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "factory:incubation",
     domain: "孵化工厂",
-    capability: "runner status, lifecycle events, hit-rate dashboard, run/dry-run/maintenance intents",
+    capability: "运行器状态、生命周期事件、命中率看板、运行/试运行/维护意图",
     backend: rowStatus(strategy?.review_snapshot),
     desktopApi: "agent_incubation_factory_status, agent_strategy_domain_events, /intents",
     frontend: "孵化工厂",
@@ -218,7 +218,7 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "user:local",
     domain: "本地用户",
-    capability: "local profile, user_id scope, sessions, messages, memory search",
+    capability: "本地画像、user_id 作用域、会话、消息与记忆搜索",
     backend: profile?.status || "ready",
     desktopApi: "/v1/desktop/users/local-profile, /v1/hermes/sessions, /v1/search, agent_memory_search",
     frontend: "本地用户、设置、工作台",
@@ -230,7 +230,7 @@ export function buildCoverageRows({
   appendIf(rows, {
     id: "automation:jobs",
     domain: "自动化",
-    capability: "job list/create/update/delete/run with user ownership",
+    capability: "任务列表、创建、更新、删除、运行与用户归属",
     backend: jobs.length ? "configured" : "empty",
     desktopApi: "/v1/jobs",
     frontend: "自动化",
@@ -342,7 +342,7 @@ export function CoverageMatrixPanel({
       <section className="capability-section">
         <div className="section-header">
           <div>
-            <span>Traceability</span>
+            <span>可追溯性</span>
             <h3>从来源到前端测试路径</h3>
           </div>
           <Filter size={18} />
@@ -407,7 +407,7 @@ export function CoverageMatrixPanel({
           <div className="section-header">
             <div>
               <span>Hermes Full</span>
-              <h3>Full mode 对齐</h3>
+              <h3>完整模式对齐</h3>
             </div>
             <Wrench size={18} />
           </div>

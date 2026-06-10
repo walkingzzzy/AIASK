@@ -25,6 +25,18 @@ class _StrategyVectorPlatformBackendMixin:
         def _embedding_service_is_closed(service: Any) -> bool:
             if service is None:
                 return True
+            client_state = getattr(service, 'client_state', None)
+            if callable(client_state):
+                try:
+                    return str(client_state() or '').strip().lower() == 'closed'
+                except Exception:
+                    return False
+            client_state = getattr(service, '_client_state', None)
+            if callable(client_state):
+                try:
+                    return str(client_state() or '').strip().lower() == 'closed'
+                except Exception:
+                    return False
             is_closed = getattr(service, 'is_closed', None)
             if callable(is_closed):
                 try:

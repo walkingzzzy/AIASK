@@ -62,15 +62,15 @@ describe("extensionRegistry", () => {
       />
     );
 
-    expect(screen.getByText("Sessions")).toBeInTheDocument();
-    expect(screen.getByText("gated")).toBeInTheDocument();
+    expect(screen.getByText("会话")).toBeInTheDocument();
+    expect(screen.getByText("受限")).toBeInTheDocument();
   });
 
   it("renders registry diagnostics with supported slots", () => {
     render(<ExtensionsPilotPage controlToken="control" fullModeActive />);
 
-    expect(screen.getByText("Extensions Pilot")).toBeInTheDocument();
-    expect(screen.getByText("Internal pages and slots only")).toBeInTheDocument();
+    expect(screen.getByText("扩展注册表")).toBeInTheDocument();
+    expect(screen.getByText("仅展示仓库内页面与插槽")).toBeInTheDocument();
     expect(screen.getAllByText("sidebar-top").length).toBeGreaterThan(0);
     expect(screen.getAllByText("workbench.quick-actions").length).toBeGreaterThan(0);
   });

@@ -1,7 +1,7 @@
 import { RefreshCw, Trash2, Webhook } from "lucide-react";
 import { FormEvent, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge, compact } from "../../components/shared";
+import { JsonPanel, StatusBadge, compact, confirmAction } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { WebhookSubscription } from "../../types";
 
@@ -53,6 +53,7 @@ export function WebhooksPanel({ apiToken, controlToken, endpoint }: { apiToken: 
   }
 
   async function remove(webhookId: string) {
+    if (!confirmAction("删除 Webhook 订阅", `Webhook: ${webhookId}`)) return;
     setBusy(true);
     try {
       setResult(await api.webhookDelete(webhookId));
@@ -107,7 +108,7 @@ export function WebhooksPanel({ apiToken, controlToken, endpoint }: { apiToken: 
           <div className="section-header"><h3>创建订阅</h3></div>
           <label className="field-row"><span>名称</span><input value={name} onChange={(event) => setName(event.target.value)} /></label>
           <label className="field-row"><span>事件</span><input value={events} onChange={(event) => setEvents(event.target.value)} /></label>
-          <label className="field-row"><span>Prompt 模板</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
+          <label className="field-row"><span>提示词模板</span><textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} /></label>
           <button className="primary-button" disabled={busy || !name.trim() || !prompt.trim()} type="submit">创建 Webhook</button>
         </form>
 

@@ -531,6 +531,9 @@
         candidate.pop("backtest_result", None)
         derived_trade_metrics = self._derive_trade_validation_metrics(candidate, result)
         metrics_contract = self._build_backtest_metrics_contract(candidate, result)
+        for key, value in derived_trade_metrics.items():
+            if value not in (None, "", [], {}):
+                metrics_contract[key] = value
         candidate["backtest_metrics_contract"] = metrics_contract
         compact_event_metrics = self._compact_event_window_metrics(result.get("event_window_metrics") or {})
         candidate["backtest_metrics"] = {

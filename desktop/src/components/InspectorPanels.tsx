@@ -460,7 +460,7 @@ export function ToolCatalog({
                       <Play size={13} />
                       运行安全探测
                     </button>
-                    <span>{hermesOnly ? "此只读探测需要 Hermes full 控制令牌。" : "使用 Desktop 只读工具 facade。"}</span>
+                    <span>{hermesOnly ? "此只读探测需要完整模式控制令牌。" : "使用桌面端只读工具 facade。"}</span>
                   </>
                 ) : (
                   <span>这是有状态工具。请验证受限状态，或使用专用审批意图面板。</span>
@@ -690,7 +690,7 @@ export function GeneralApprovalsPanel({
             </article>
           );
         })}
-        {!approvals.length && <p className="muted">暂无匹配审批项，或需要 Control token 后刷新。</p>}
+        {!approvals.length && <p className="muted">暂无匹配审批项，或需要控制令牌后刷新。</p>}
       </div>
       <details className="raw-details">
         <summary>

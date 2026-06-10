@@ -161,14 +161,14 @@ export function SessionsPage({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Agent</span>
-          <h1>Sessions</h1>
+          <span>Agent 会话</span>
+          <h1>会话</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={accessAllowed ? "implemented" : "gated"} label={accessAllowed ? "full mode" : "locked"} />
+          <StatusBadge status={accessAllowed ? "implemented" : "gated"} label={accessAllowed ? "完整模式已开启" : "已锁定"} />
           <button className="small-button" disabled={busy || !accessAllowed} onClick={() => loadSessions()} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -178,15 +178,15 @@ export function SessionsPage({
           <div className="capability-stack">
             <div className="capability-banner">
               <div>
-                <span>Sessions admin</span>
-                <h2>需要 full mode + control token</h2>
+                <span>会话管理</span>
+                <h2>需要完整模式和控制令牌</h2>
                 <p>{localizeBlockedReason("Hermes full mode and control token required")}</p>
               </div>
               <LockKeyhole size={22} />
             </div>
             <div className="notice warn">
               <LockKeyhole size={14} />
-              <span>当前页面始终可见，但在未激活 full mode、未配置 control token 或无管理员访问权时不会发起请求。</span>
+              <span>当前页面始终可见，但在未激活完整模式、未配置控制令牌或无管理员访问权时不会发起请求。</span>
             </div>
           </div>
         ) : (
@@ -245,8 +245,8 @@ export function SessionsPage({
                       {session.message_count ? ` • ${session.message_count} 条消息` : ""}
                     </span>
                     <span className="session-flags">
-                      {session.has_pending_approval ? <StatusBadge status="queued" label="approval" /> : null}
-                      {session.has_errors ? <StatusBadge status="error" label="error" /> : null}
+                      {session.has_pending_approval ? <StatusBadge status="queued" label="有审批" /> : null}
+                      {session.has_errors ? <StatusBadge status="error" label="有错误" /> : null}
                     </span>
                   </button>
                 ))}
@@ -277,18 +277,18 @@ export function SessionsPage({
 
               {selectedSession ? (
                 <div className="session-summary-card">
-                  <div className="kv-grid">
-                    <span>Created</span>
+                <div className="kv-grid">
+                    <span>创建时间</span>
                     <strong>{selectedSession.created_at || "unknown"}</strong>
-                    <span>Updated</span>
+                    <span>更新时间</span>
                     <strong>{selectedSession.updated_at || selectedSession.last_message_at || "unknown"}</strong>
-                    <span>Messages</span>
+                    <span>消息数</span>
                     <strong>{selectedSession.message_count ?? "not_loaded"}</strong>
-                    <span>Last run</span>
+                    <span>最近运行</span>
                     <strong>{selectedSession.last_run_id || selectedSession.last_run_summary?.run_id || "unknown"}</strong>
-                    <span>Run status</span>
+                    <span>运行状态</span>
                     <strong>{lastRunStatus(selectedSession)}</strong>
-                    <span>Last event</span>
+                    <span>最近事件</span>
                     <strong>{eventLabel(selectedSession.last_event)}</strong>
                   </div>
                 </div>

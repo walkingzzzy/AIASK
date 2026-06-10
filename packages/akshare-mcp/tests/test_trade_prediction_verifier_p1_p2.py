@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import date
 
 from akshare_mcp.services.incubation_factory import trade_prediction_verifier as verifier_mod
@@ -89,6 +90,37 @@ def test_daily_verifier_scores_direction_target_and_risk_proxy():
     assert db.saved[0]["outcome_json"]["direction_hit"] is True
     assert db.saved[0]["outcome_json"]["target_touch"] is True
     assert db.saved[0]["outcome_json"]["risk_proxy_score"] > 0
+
+
+class _NonFiniteDailyBarDb(_VerifierDb):
+    async def get_klines(self, code, start_date=None, end_date=None, limit=None):
+        return [
+            {
+                "date": "2026-06-08",
+                "open": "nan",
+                "high": "inf",
+                "low": 9.9,
+                "close": 10.5,
+            }
+        ]
+
+
+def test_daily_verifier_rejects_non_finite_ohlc_without_leaking_json_values():
+    db = _NonFiniteDailyBarDb()
+
+    async def _run():
+        return await TradePredictionDailyVerifier().verify_pending(
+            db,
+            as_of=date(2026, 6, 8),
+            include_intraday=False,
+        )
+
+    result = asyncio.run(_run())
+    outcome = result["outcomes"][0]
+    assert outcome["score_status"] == "pending_market_data"
+    assert outcome["data_quality_status"] == "invalid_ohlc"
+    assert outcome["trade_prediction_score"] is None
+    json.dumps(result, allow_nan=False)
 
 
 def test_verifier_syncs_intraday_before_replay(monkeypatch):
@@ -205,6 +237,21 @@ def test_intraday_replay_marks_partial_when_intraday_missing():
     assert outcome["score_version"] == INTRADAY_SCORE_VERSION
     assert outcome["score_status"] == "partial_intraday_missing"
     assert outcome["data_quality_status"] == "intraday_missing"
+
+
+def test_intraday_replay_rejects_non_finite_ohlc_without_leaking_json_values():
+    bars = _bars()
+    bars[0] = {**bars[0], "high": float("inf")}
+    db = _IntradayDb(bars)
+
+    async def _run():
+        return await IntradayReplayService(min_bars=8).replay_prediction(db, _prediction())
+
+    outcome = asyncio.run(_run())
+    assert outcome["score_version"] == INTRADAY_SCORE_VERSION
+    assert outcome["score_status"] == "partial_intraday_missing"
+    assert outcome["outcome_json"]["reason"] == "invalid_ohlc"
+    json.dumps(outcome, allow_nan=False)
 
 
 class _ReporterDb:

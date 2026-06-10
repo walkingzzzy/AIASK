@@ -113,6 +113,123 @@ def test_ai_models_lists_openai_compatible_models_with_fake_client(tmp_path, mon
     assert {item["id"] for item in payload["data"]} == {"model-a", "model-b"}
 
 
+def test_ai_smoke_accepts_openai_compatible_string_response(tmp_path, monkeypatch) -> None:
+    created_clients: list[dict[str, str | None]] = []
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            return "AIASK_LIVE_OK"
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str | None = None, base_url: str | None = None) -> None:
+            self.api_key = api_key
+            self.base_url = base_url
+            created_clients.append({"api_key": api_key, "base_url": str(base_url) if base_url is not None else None})
+            self.chat = FakeChat()
+
+        async def close(self) -> None:
+            return None
+
+    fake_openai = types.ModuleType("openai")
+    fake_openai.AsyncOpenAI = FakeAsyncOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("AIASK_AGENT_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("AIASK_AGENT_MODEL", "compat-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8317")
+    runtime = AgentRuntime(session_store=AgentSessionStore(tmp_path / "state.sqlite3"))
+    client = TestClient(create_app(runtime=runtime))
+
+    response = client.post("/v1/ai/smoke", json={"prompt": "ping"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["model"] == "compat-model"
+    assert payload["response_preview"] == "AIASK_LIVE_OK"
+    assert payload["secrets_redacted"] is True
+    assert created_clients[0]["base_url"] == "http://localhost:8317/v1"
+
+
+def test_ai_smoke_rejects_html_gateway_response(tmp_path, monkeypatch) -> None:
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            return "<!doctype html><html><title>Gateway</title></html>"
+
+    class FakeChat:
+        def __init__(self) -> None:
+            self.completions = FakeCompletions()
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str | None = None, base_url: str | None = None) -> None:
+            self.chat = FakeChat()
+
+        async def close(self) -> None:
+            return None
+
+    fake_openai = types.ModuleType("openai")
+    fake_openai.AsyncOpenAI = FakeAsyncOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("AIASK_AGENT_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8317")
+    runtime = AgentRuntime(session_store=AgentSessionStore(tmp_path / "state.sqlite3"))
+    client = TestClient(create_app(runtime=runtime))
+
+    response = client.post("/v1/ai/smoke", json={"prompt": "ping"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is False
+    assert payload["error_code"] == "AI_SMOKE_FAILED"
+    assert "returned HTML" in payload["error"]
+    assert payload["secrets_redacted"] is True
+
+
+def test_ai_models_falls_back_to_configured_model_on_nonstandard_provider(tmp_path, monkeypatch) -> None:
+    created_clients: list[dict[str, str | None]] = []
+
+    class FakeModels:
+        async def list(self):
+            raise AttributeError("'str' object has no attribute '_set_private_attributes'")
+
+    class FakeAsyncOpenAI:
+        def __init__(self, *, api_key: str | None = None, base_url: str | None = None) -> None:
+            self.api_key = api_key
+            self.base_url = base_url
+            created_clients.append({"api_key": api_key, "base_url": str(base_url) if base_url is not None else None})
+            self.models = FakeModels()
+
+        async def close(self) -> None:
+            return None
+
+    fake_openai = types.ModuleType("openai")
+    fake_openai.AsyncOpenAI = FakeAsyncOpenAI
+    monkeypatch.setitem(sys.modules, "openai", fake_openai)
+    monkeypatch.setenv("AIASK_AGENT_MODEL_PROVIDER", "openai")
+    monkeypatch.setenv("AIASK_AGENT_MODEL", "compat-model")
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_BASE_URL", "http://localhost:8317")
+    runtime = AgentRuntime(model_client=MockModelClient(), session_store=AgentSessionStore(tmp_path / "state.sqlite3"))
+    client = TestClient(create_app(runtime=runtime))
+
+    response = client.get("/v1/ai/models")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["configured"] is True
+    assert payload["unsupported"] is True
+    assert payload["data"] == [{"id": "compat-model", "owned_by": "openai", "fallback": True}]
+    assert payload["warning_code"] == "AI_SMOKE_FAILED"
+    assert "error" not in payload
+    assert payload["secrets_redacted"] is True
+    assert created_clients[0]["base_url"] == "http://localhost:8317/v1"
+
+
 def test_live_ai_smoke_when_configured(tmp_path, request, monkeypatch) -> None:
     if not request.config.getoption("--run-live-ai"):
         pytest.skip("live AI smoke tests disabled")

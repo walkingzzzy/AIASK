@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .numeric import bounded_float, bounded_int
 from .process_registry import ProcessRegistry
 
 
@@ -50,7 +51,7 @@ def _truthy(value: str | None) -> bool:
 
 
 def _limit_bytes(value: bytes, limit: int) -> tuple[str, bool]:
-    bounded = max(1, min(int(limit or 65536), 1024 * 1024))
+    bounded = bounded_int(limit, default=65536, minimum=1, maximum=1024 * 1024)
     truncated = len(value) > bounded
     return value[:bounded].decode("utf-8", errors="replace"), truncated
 
@@ -403,8 +404,8 @@ class TerminalBackendManager:
     async def _run(self, invocation: TerminalInvocation, *, backend: TerminalBackend) -> dict[str, Any]:
         args, metadata = backend.build_command(invocation)
         status = backend.status()
-        timeout = max(1.0, min(float(invocation.timeout_seconds or 30), 3600.0))
-        max_output = max(1, min(int(invocation.max_output_bytes or 65536), 1024 * 1024))
+        timeout = bounded_float(invocation.timeout_seconds, default=30.0, minimum=1.0, maximum=3600.0)
+        max_output = bounded_int(invocation.max_output_bytes, default=65536, minimum=1, maximum=1024 * 1024)
         proc = await asyncio.create_subprocess_exec(
             *args,
             cwd=backend.local_cwd(invocation),
@@ -459,6 +460,7 @@ class TerminalBackendManager:
         process_id = self.registry.new_process_id()
         stdout_path, stderr_path = self.registry.spool_paths(process_id)
         args, metadata = backend.build_command(invocation, process_id=process_id)
+        max_output = bounded_int(invocation.max_output_bytes, default=65536, minimum=1, maximum=1024 * 1024)
         stdout_fh = stdout_path.open("ab")
         stderr_fh = stderr_path.open("ab")
         try:
@@ -505,7 +507,7 @@ class TerminalBackendManager:
         thread = threading.Thread(
             target=self._watch_subprocess,
             args=(record["process_id"], proc),
-            kwargs={"max_output_bytes": invocation.max_output_bytes},
+            kwargs={"max_output_bytes": max_output},
             daemon=True,
         )
         thread.start()
@@ -597,20 +599,20 @@ class TerminalBackendManager:
     async def process_action(self, arguments: dict[str, Any]) -> dict[str, Any]:
         action = str(arguments.get("action") or "list").strip().lower()
         if action == "list":
-            return {"items": self.registry.list(session_id=arguments.get("session_id"), limit=int(arguments.get("limit") or 100))}
+            return {"items": self.registry.list(session_id=arguments.get("session_id"), limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000))}
         if action == "read":
             return self.registry.read_output(
                 str(arguments.get("process_id") or "").strip(),
-                max_bytes=int(arguments.get("max_output_bytes") or 65536),
+                max_bytes=bounded_int(arguments.get("max_output_bytes"), default=65536, minimum=1, maximum=1024 * 1024),
                 tail=bool(arguments.get("tail", True)),
             )
         if action == "wait":
-            return await self._wait(str(arguments.get("process_id") or "").strip(), timeout_seconds=float(arguments.get("timeout_seconds") or 30))
+            return await self._wait(str(arguments.get("process_id") or "").strip(), timeout_seconds=bounded_float(arguments.get("timeout_seconds"), default=30.0, minimum=0.1, maximum=3600.0))
         if action == "watch":
-            waited = await self._wait(str(arguments.get("process_id") or "").strip(), timeout_seconds=float(arguments.get("timeout_seconds") or 1))
+            waited = await self._wait(str(arguments.get("process_id") or "").strip(), timeout_seconds=bounded_float(arguments.get("timeout_seconds"), default=1.0, minimum=0.1, maximum=3600.0))
             output = self.registry.read_output(
                 str(arguments.get("process_id") or "").strip(),
-                max_bytes=int(arguments.get("max_output_bytes") or 65536),
+                max_bytes=bounded_int(arguments.get("max_output_bytes"), default=65536, minimum=1, maximum=1024 * 1024),
                 tail=bool(arguments.get("tail", True)),
             )
             return {"watch": True, **waited, "output": output}
@@ -619,7 +621,7 @@ class TerminalBackendManager:
         raise ValueError(f"unsupported process action: {action}")
 
     async def _wait(self, process_id: str, *, timeout_seconds: float) -> dict[str, Any]:
-        deadline = time.time() + max(0.1, min(float(timeout_seconds or 30), 3600.0))
+        deadline = time.time() + bounded_float(timeout_seconds, default=30.0, minimum=0.1, maximum=3600.0)
         while time.time() < deadline:
             item = self.registry.refresh(process_id)
             if item is None:

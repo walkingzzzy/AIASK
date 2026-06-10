@@ -18,16 +18,16 @@ describe("PluginsSkillsPage", () => {
   it("renders plugin and skill lifecycle state from Agent APIs", async () => {
     render(<PluginsSkillsPage {...props} onApplyToChat={vi.fn()} />);
 
-    expect(screen.getByText("Plugins / Skills")).toBeInTheDocument();
-    await waitFor(() => expect(screen.getAllByText("CAPABILITIES_SYNCED").length).toBeGreaterThan(0));
+    expect(screen.getByText("插件 / 技能")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getAllByText("能力已同步").length).toBeGreaterThan(0));
 
-    expect(screen.getByText("Native plugin and skill operations")).toBeInTheDocument();
+    expect(screen.getByText("原生插件与技能操作")).toBeInTheDocument();
     expect(screen.getAllByText("risk-review").length).toBeGreaterThan(0);
     expect(screen.getAllByText("audit-plugin").length).toBeGreaterThan(0);
     expect(screen.getAllByText("已安装").length).toBeGreaterThan(0);
     expect(screen.getAllByText("已启用").length).toBeGreaterThan(0);
-    expect(screen.getByText("Plugin readiness details")).toBeInTheDocument();
-    expect(screen.getAllByText(/tools 1 \/ commands 0 \/ hooks 0/).length).toBeGreaterThan(0);
+    expect(screen.getByText("插件准备度详情")).toBeInTheDocument();
+    expect(screen.getAllByText(/工具 1 \/ 命令 0 \/ 钩子 0/).length).toBeGreaterThan(0);
   });
 
   it("applies a selected skill back to chat", async () => {

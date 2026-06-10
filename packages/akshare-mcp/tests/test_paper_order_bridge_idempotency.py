@@ -9,7 +9,9 @@ from akshare_mcp.storage import close_db, get_db
 
 
 def test_paper_trading_bridge_partial_unique_index(tmp_path, monkeypatch) -> None:
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "bridge_orders.sqlite3"))
+    db_path = str(tmp_path / "bridge_orders.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
     async def _run() -> None:
         db = get_db()

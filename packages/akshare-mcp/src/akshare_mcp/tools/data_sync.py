@@ -172,6 +172,55 @@ def register(mcp):
         return _sync_envelope(result, source="data_sync.batch_sync_klines")
 
     @mcp.tool()
+    async def sync_market_temperature_snapshot_cache(
+        limit: int = 1000,
+        top_n: int = 20,
+        as_of: str = "",
+        min_bars: int = 20,
+    ) -> dict:
+        """Refresh the local market-temperature snapshot cache through the data-sync surface."""
+        limit, limit_error = validate_int_range(limit, field_name="limit", minimum=1, maximum=1000)
+        if limit_error:
+            return _sync_envelope(fail(limit_error), source="data_sync.market_temperature_snapshot_cache")
+        top_n, top_n_error = validate_int_range(top_n, field_name="top_n", minimum=0, maximum=50)
+        if top_n_error:
+            return _sync_envelope(fail(top_n_error), source="data_sync.market_temperature_snapshot_cache")
+        min_bars, min_bars_error = validate_int_range(min_bars, field_name="min_bars", minimum=2, maximum=120)
+        if min_bars_error:
+            return _sync_envelope(fail(min_bars_error), source="data_sync.market_temperature_snapshot_cache")
+
+        normalized_as_of = None
+        if str(as_of or "").strip():
+            parsed_as_of = parse_date_input(str(as_of))
+            if parsed_as_of is None:
+                return _sync_envelope(
+                    fail(f"as_of invalid: {as_of}"),
+                    source="data_sync.market_temperature_snapshot_cache",
+                )
+            normalized_as_of = parsed_as_of.isoformat()
+
+        from . import market_temperature as market_temperature_tools
+
+        result = await market_temperature_tools.refresh_market_temperature_snapshot_cache(
+            limit=limit,
+            top_n=top_n,
+            as_of=normalized_as_of,
+            min_bars=min_bars,
+        )
+        payload = dict(result or {})
+        source = "data_sync.market_temperature_snapshot_cache"
+        nested_chain = [
+            str(item)
+            for item in list(payload.get("source_chain") or (payload.get("meta") or {}).get("source_chain") or [])
+            if str(item).strip()
+        ]
+        payload["source"] = source
+        meta = dict(payload.get("meta") or {})
+        meta["data_sync_source_chain"] = [source, *nested_chain]
+        payload["meta"] = meta
+        return _sync_envelope(payload, source=source)
+
+    @mcp.tool()
     def get_sync_status() -> dict:
         """
         获取数据同步队列与失败状态（含 dead-letter 概览）

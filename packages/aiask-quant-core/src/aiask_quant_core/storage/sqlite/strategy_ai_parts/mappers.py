@@ -31,6 +31,7 @@
         self,
         task_key: Optional[str] = None,
         event_id: Optional[str] = None,
+        evidence_type: Optional[str] = None,
         limit: int = 200,
     ) -> List[dict]:
         async with self.acquire() as conn:
@@ -44,6 +45,10 @@
             if event_id:
                 sql += f" AND event_id = ${idx}"
                 params.append(str(event_id))
+                idx += 1
+            if evidence_type:
+                sql += f" AND evidence_type = ${idx}"
+                params.append(str(evidence_type))
                 idx += 1
             sql += f" ORDER BY created_at DESC LIMIT ${idx}"
             params.append(max(1, min(int(limit or 200), 500)))

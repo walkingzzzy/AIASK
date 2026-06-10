@@ -1,5 +1,12 @@
 """服务层"""
 
+from __future__ import annotations
+
+import inspect
+import logging
+from collections.abc import Awaitable, Callable
+from typing import Any
+
 from .technical_analysis import technical_analysis
 from .backtest.engine import backtest_engine
 from .pattern_recognition import pattern_recognition
@@ -73,22 +80,77 @@ from .evidence_chain import (
     save_chain, get_chain, query_chains_by_code, query_chains_by_date,
     list_chains, summarize_chain,
 )
+from .background_tasks import drain_background_tasks
+
+logger = logging.getLogger(__name__)
+_shared_runtime_clients_closing = False
+
+
+async def _best_effort_close(name: str, callback: Callable[[], Awaitable[Any] | Any]) -> None:
+    try:
+        result = callback()
+        if inspect.isawaitable(result):
+            await result
+    except Exception as exc:
+        logger.warning("[services] close %s failed: %s", name, exc)
+
+
+def _close_market_runtime_resources() -> None:
+    try:
+        from ..data_source.quotes import shutdown_efinance_executor
+
+        shutdown_efinance_executor()
+    except Exception as exc:
+        logger.warning("[services] close efinance executor failed: %s", exc)
+    try:
+        from ..tools.market.helpers import shutdown_spot_executor
+
+        shutdown_spot_executor()
+    except Exception as exc:
+        logger.warning("[services] close market spot executor failed: %s", exc)
+    try:
+        from ..tools.managers._execution_manager_support import shutdown_realtime_quote_executor
+
+        shutdown_realtime_quote_executor()
+    except Exception as exc:
+        logger.warning("[services] close execution realtime executor failed: %s", exc)
+    try:
+        from ..data_source.tdx_local import get_tdx_local_source
+
+        get_tdx_local_source().reset_hq()
+    except Exception as exc:
+        logger.warning("[services] close TDX HQ connection failed: %s", exc)
+    try:
+        from ..data_source.tdx_tqcenter import reset_tq
+
+        reset_tq()
+    except Exception as exc:
+        logger.warning("[services] reset TQCenter runtime failed: %s", exc)
 
 
 async def close_shared_runtime_clients() -> None:
     """关闭进程级共享资源，供一次性脚本/退出钩子显式调用。"""
-    await close_factor_llm_provider()
-    await close_strategy_llm_provider()
-    await close_strategy_text_embedding_service()
+    global _shared_runtime_clients_closing
+    if _shared_runtime_clients_closing:
+        return
+    _shared_runtime_clients_closing = True
     try:
-        from ..storage import close_db, drain_cleanup_callbacks
-    except Exception:
-        close_db = None
-        drain_cleanup_callbacks = None
-    if callable(close_db):
-        await close_db()
-    if callable(drain_cleanup_callbacks):
-        await drain_cleanup_callbacks()
+        await _best_effort_close("factor LLM provider", close_factor_llm_provider)
+        await _best_effort_close("strategy LLM provider", close_strategy_llm_provider)
+        await _best_effort_close("strategy text embedding service", close_strategy_text_embedding_service)
+        _close_market_runtime_resources()
+        await _best_effort_close("background tasks", drain_background_tasks)
+        try:
+            from ..storage import close_db, drain_cleanup_callbacks
+        except Exception:
+            close_db = None
+            drain_cleanup_callbacks = None
+        if callable(close_db):
+            await _best_effort_close("storage database", close_db)
+        if callable(drain_cleanup_callbacks):
+            await _best_effort_close("storage cleanup callbacks", drain_cleanup_callbacks)
+    finally:
+        _shared_runtime_clients_closing = False
 
 __all__ = [
     'technical_analysis',

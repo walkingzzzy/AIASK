@@ -244,6 +244,7 @@ class DataSyncScheduler:
         fin_ok = 0
         fin_fail = 0
         manager_schedule_result: Optional[Dict[str, Any]] = None
+        runtime_warmup_result: Optional[Dict[str, Any]] = None
         errors: List[str] = []
 
         # ---- Phase 1: K线同步 (并发抓取 + 串行写库) ----
@@ -341,6 +342,19 @@ class DataSyncScheduler:
                     force=False,
                     limit=max(1, int(os.getenv("DATA_SYNC_MANAGER_SCHEDULE_LIMIT", "4") or 4)),
                 )
+                if str(os.getenv("DATA_SYNC_BOOTSTRAP_RUNTIME_SCHEDULES", "true")).strip().lower() not in {"0", "false", "no"}:
+                    runtime_task_types = str(
+                        os.getenv("DATA_SYNC_RUNTIME_WARMUP_TASK_TYPES", "market_temperature_snapshot_cache")
+                        or "market_temperature_snapshot_cache"
+                    ).strip()
+                    if runtime_task_types:
+                        runtime_warmup_result = await data_sync_manager_mod.run_runtime_data_warmup(
+                            task_type=runtime_task_types,
+                            force=False,
+                            limit=max(1, int(os.getenv("DATA_SYNC_RUNTIME_WARMUP_LIMIT", "4") or 4)),
+                            source="data_sync_scheduler",
+                            bootstrap_missing=True,
+                        )
             except Exception as e:
                 logger.warning("[DataSyncScheduler] data_sync_manager schedules phase error: %s", e)
                 if len(errors) < 10:
@@ -382,6 +396,7 @@ class DataSyncScheduler:
             "elapsed_seconds": round(elapsed, 1),
             "sync_count": self._sync_count,
             "manager_schedules": manager_schedule_result,
+            "runtime_warmup": runtime_warmup_result,
             "tdx_sync": tdx_sync_result,
             "errors": errors[:10],
         }

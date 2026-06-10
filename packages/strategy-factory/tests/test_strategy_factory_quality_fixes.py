@@ -1,5 +1,25 @@
 from __future__ import annotations
 
+import pytest
+
+
+@pytest.mark.parametrize(
+    "score,expected",
+    [
+        (39.99, "D"),
+        (40.0, "C"),
+        (55.0, "B"),
+        (70.0, "A"),
+        (80.0, "S"),
+        (85.0, "SS"),
+        (90.0, "SSS"),
+    ],
+)
+def test_trade_quality_panel_grade_ladder_supports_s_tiers(score, expected):
+    from strategy_factory.application.panels import _grade_for_total_score
+
+    assert _grade_for_total_score(score) == expected
+
 import asyncio
 from types import MethodType
 
@@ -172,6 +192,79 @@ def test_statistical_gate_uses_validation_and_backtest_metrics():
     assert result["metric_source_audit"]["wf_ic_ir"] == "validation_report.walk_forward"
 
 
+def test_statistical_gate_derives_param_sensitivity_from_backtest_contract_only():
+    from strategy_factory.application.submission_gate import runner
+
+    result = asyncio.run(
+        runner._run_statistical_gate(
+            None,
+            _semantic_ready_strategy("value_factor"),
+            profile={"profile": "factor_rank_validation"},
+            validation_report={
+                "walk_forward": {"oos_rank_ic_ir": 0.35},
+                "purged_kfold": {"oos_rank_ic_mean": 0.03},
+                "bootstrap_ci": {"ci_lower": 0.02},
+            },
+            backtest_metrics={
+                "backtest_metrics_contract": {
+                    "status": "present",
+                    "parameter_perturbation_trade_stability": 0.86,
+                }
+            },
+        )
+    )
+
+    assert result["passed"] is True
+    assert result["param_sensitivity"] == 0.14
+    assert "missing_param_sensitivity" not in result["reasons"]
+    assert (
+        result["metric_source_audit"]["param_sensitivity"]
+        == "backtest_metrics.parameter_perturbation_trade_stability_inverse"
+    )
+
+
+def test_compact_scalar_metrics_preserves_gate3_quality_evidence():
+    from strategy_factory.application.compact_contracts import compact_scalar_metrics
+
+    compact = compact_scalar_metrics(
+        {
+            "trade_count": 12,
+            "trades_count": 12,
+            "post_cost_sharpe": 1.12,
+            "wf_ic_ir": 0.42,
+            "pkf_ic": 0.05,
+            "bootstrap_ci_lower": 0.03,
+            "param_sensitivity": 0.14,
+            "parameter_perturbation_trade_stability": 0.86,
+            "deflated_sharpe_ratio": 0.21,
+            "pbo": 0.28,
+            "white_reality_check_pvalue": 0.09,
+            "hansen_spa_pvalue": 0.08,
+            "backtest_metrics_contract_status": "present",
+            "metric_source_audit": {
+                "param_sensitivity": "backtest_metrics.parameter_perturbation_trade_stability_inverse",
+                "pkf_ic": "validation_report.purged_kfold",
+            },
+            "period_robustness": {"first_half_ic": 0.05, "second_half_ic": 0.04},
+            "gate_3_evaluation": [
+                {"metric": "pkf_ic", "status": "pass", "value": 0.05},
+            ],
+            "equity_curve": [1, 2, 3],
+            "trades": [{"id": "too-heavy"}],
+        }
+    )
+
+    assert compact["trade_count"] == 12
+    assert compact["param_sensitivity"] == 0.14
+    assert compact["parameter_perturbation_trade_stability"] == 0.86
+    assert compact["backtest_metrics_contract_status"] == "present"
+    assert compact["metric_source_audit"]["pkf_ic"] == "validation_report.purged_kfold"
+    assert compact["period_robustness"]["first_half_ic"] == 0.05
+    assert compact["gate_3_evaluation"][0]["status"] == "pass"
+    assert "equity_curve" not in compact
+    assert "trades" not in compact
+
+
 def test_research_task_timeout_skips_without_local_fallback(monkeypatch):
     from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
 
@@ -229,14 +322,27 @@ def test_success_summary_exposes_quality_diagnostics():
         submit_result={
             "created_strategy_pool": 0,
             "created_audit_only": 1,
+            "gate3_quality_recorded": 1,
+            "gate3_record_quality_qualified_count": 1,
+            "gate3_record_diagnostic_only_count": 1,
             "gate_3_failure_reason_topn": [{"reason_code": "missing_statistical_metrics:wf_ic_ir", "count": 1}],
             "strategies": [
                 {
                     "validation_grade": "D",
+                    "record_only": True,
+                    "gate3_record_only": True,
+                    "gate3_record_diagnostic_only": True,
                     "metric_source_audit": {"expectancy": "event_window_metrics"},
                     "gate_b": {
                         "statistical_metric_missing_counts": {"wf_ic_ir": 1},
                     },
+                },
+                {
+                    "validation_grade": "S",
+                    "effective_validation_grade": "S",
+                    "gate3_record_only": True,
+                    "gate3_quality_recorded": True,
+                    "gate3_record_quality_qualified": True,
                 }
             ],
         },
@@ -265,9 +371,65 @@ def test_success_summary_exposes_quality_diagnostics():
     assert summary["llm_status_counts"] == {"skipped_timeout": 1}
     assert summary["pipeline_fallback_counts"] == {"empty_confirmations": 1}
     assert summary["gate_3_failure_topn"] == [{"reason_code": "missing_statistical_metrics:wf_ic_ir", "count": 1}]
-    assert summary["validation_grade_counts"] == {"D": 1}
+    assert summary["validation_grade_counts"] == {"D": 1, "S": 1}
+    assert summary["diagnostic_validation_grade_counts"] == {"D": 1}
+    assert summary["qualified_validation_grade_counts"] == {"S": 1}
+    assert summary["latest_validation_grade"] == "S"
+    assert summary["latest_qualified_validation_grade"] == "S"
+    assert summary["latest_diagnostic_validation_grade"] == "D"
+    assert summary["gate3_quality_recorded"] == 1
+    assert summary["gate3_record_diagnostic_only_count"] == 1
     assert summary["statistical_metric_missing_counts"]["wf_ic_ir"] == 1
     assert summary["metric_source_audit"]["expectancy"]["event_window_metrics"] == 1
+
+
+def test_success_summary_exposes_market_temperature_context():
+    from strategy_factory.application._cycle_success_summary import build_success_run_summary
+
+    summary = build_success_run_summary(
+        trace_id="trace_market_temperature",
+        snapshot={},
+        candidates=[],
+        passed=[],
+        unique=[],
+        eliminated=[],
+        spawn_report={},
+        submit_result={},
+        quality_gate_report={},
+        backtest_report={},
+        autonomy_summary={},
+        task_scan_summary={},
+        task_source_counts={},
+        bulk_stock_matrix_family_counts={},
+        bulk_stock_matrix_allocation_pass_counts={},
+        factor_research_summary={},
+        factor_refresh_summary={},
+        readiness_summary={
+            "market_temperature_context": {
+                "available": True,
+                "as_of": "2026-06-08",
+                "temperature": 61.5,
+                "state": "warm",
+                "quality_status": "healthy",
+                "readiness_status": "ready",
+                "staleness_days": 0,
+                "source_chain": ["market_temperature_snapshots"],
+            }
+        },
+        warmup_summary={},
+        backtest_audit_summary={},
+        submission_audit_summary={},
+        vector_summary={},
+        elapsed=1.0,
+    )
+
+    assert summary["market_temperature_context_available"] is True
+    assert summary["market_temperature"] == 61.5
+    assert summary["market_temperature_state"] == "warm"
+    assert summary["market_temperature_as_of"] == "2026-06-08"
+    assert summary["market_temperature_quality_status"] == "healthy"
+    assert summary["market_temperature_readiness_status"] == "ready"
+    assert summary["market_temperature_context"]["source_chain"] == ["market_temperature_snapshots"]
 
 
 def test_success_summary_maps_llm_provider_diagnostics_into_status_counts():

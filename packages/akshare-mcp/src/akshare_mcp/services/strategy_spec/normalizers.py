@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any, Optional
 
 from strategy_factory.api.semantic_contract import (
@@ -114,16 +115,30 @@ def _task_source(research_task: dict[str, Any], event_context: dict[str, Any]) -
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        return float(value)
+        fallback = float(default)
     except Exception:
-        return float(default)
+        fallback = 0.0
+    if not math.isfinite(fallback):
+        fallback = 0.0
+    try:
+        parsed = float(value)
+    except Exception:
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
     try:
-        return int(value)
+        fallback = int(default)
     except Exception:
-        return int(default)
+        fallback = 0
+    try:
+        parsed = float(value)
+    except Exception:
+        return fallback
+    if not math.isfinite(parsed):
+        return fallback
+    return int(parsed)
 
 
 def _normalize_turnover_band(value: Any) -> str:
@@ -497,4 +512,3 @@ def _normalize_instrument_profile(
     if str(normalized.get("asset_class") or "").strip().lower() == "futures":
         normalized["board_bucket"] = "futures"
     return normalized
-

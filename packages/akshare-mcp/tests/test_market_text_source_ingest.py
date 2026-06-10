@@ -23,7 +23,9 @@ def _write_embedding_env(tmp_path, monkeypatch, db_name: str) -> None:
         encoding="utf-8",
     )
     monkeypatch.setenv("AKSHARE_MCP_ENV", str(env_file))
-    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / f"{db_name}.sqlite3"))
+    db_path = str(tmp_path / f"{db_name}.sqlite3")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", db_path)
+    monkeypatch.setenv("AIASK_SQLITE_PATH", db_path)
 
 
 def test_market_text_source_ingest_vectorizes_public_text(tmp_path, monkeypatch):

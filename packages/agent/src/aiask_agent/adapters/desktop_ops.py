@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..numeric import bounded_float, bounded_int
+
 
 def _ensure_monorepo_paths() -> None:
     for parent in Path(__file__).resolve().parents:
@@ -79,7 +81,7 @@ async def factor_factory_status(limit: int = 50) -> dict[str, Any]:
         gateway = get_factor_pool_gateway()
         pool_status = await asyncio.wait_for(gateway.get_pool_status(), timeout=15)
         active_factors = await asyncio.wait_for(
-            gateway.get_active_factors(limit=max(1, min(int(limit or 50), 200))),
+            gateway.get_active_factors(limit=bounded_int(limit, default=50, minimum=1, maximum=200)),
             timeout=15,
         )
         return {
@@ -151,7 +153,7 @@ async def _execute_data_sync(action: str, params: dict[str, Any]) -> dict[str, A
                     priority=params.get("priority"),
                 )
             ),
-            timeout=float(params.get("_timeout_seconds") or 120),
+            timeout=bounded_float(params.get("_timeout_seconds"), default=120.0, minimum=1.0, maximum=3600.0),
         )
         return result if isinstance(result, dict) else {"success": True, "data": result, "error": None}
     except Exception as exc:
@@ -167,14 +169,14 @@ async def _execute_factor_factory(action: str, params: dict[str, Any]) -> dict[s
 
     try:
         factory = get_factor_mining_factory()
-        timeout = float(params.get("_timeout_seconds") or 300)
+        timeout = bounded_float(params.get("_timeout_seconds"), default=300.0, minimum=1.0, maximum=3600.0)
         if action == "run_once":
             result = await asyncio.wait_for(
                 factory.run_mining_cycle(
                     trigger=str(params.get("trigger") or "desktop_intent"),
                     engines=[str(item) for item in list(params.get("engines") or [])] or None,
-                    candidate_count=int(params.get("candidate_count") or params.get("candidates") or 10),
-                    evolution_generations=int(params.get("evolution_generations") or params.get("generations") or 2),
+                    candidate_count=bounded_int(params.get("candidate_count") or params.get("candidates"), default=10, minimum=1, maximum=1000),
+                    evolution_generations=bounded_int(params.get("evolution_generations") or params.get("generations"), default=2, minimum=0, maximum=100),
                     codes=[str(item) for item in list(params.get("codes") or [])] or None,
                 ),
                 timeout=timeout,
@@ -199,7 +201,7 @@ async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> di
         return _dependency_missing(exc, dependency="incubation_factory")
 
     try:
-        timeout = float(params.get("_timeout_seconds") or 600)
+        timeout = bounded_float(params.get("_timeout_seconds"), default=600.0, minimum=1.0, maximum=3600.0)
         if action == "dry_run":
             runner = IncubationFactoryRunner(dry_run=True)
             result = await asyncio.wait_for(runner.run_once(), timeout=timeout)
@@ -254,7 +256,7 @@ async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str,
                     "target": target,
                     "status": "delivered" if delivery.get("ok") else "failed",
                     "message_preview": payload.get("message") or data.get("message_preview"),
-                    "candidate_count": int(first_log.get("candidate_count") or data.get("candidate_count") or 0),
+                    "candidate_count": bounded_int(first_log.get("candidate_count") or data.get("candidate_count"), default=0, minimum=0),
                     "error": None if delivery.get("ok") else delivery.get("error") or delivery.get("status"),
                     "sent_at": datetime.now(timezone.utc).isoformat() if delivery.get("ok") else None,
                     "metadata": {
@@ -362,7 +364,12 @@ async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str,
 
     try:
         payload = dict(params or {})
-        timeout = float(payload.pop("_timeout_seconds", 300 if action == "run_once" else 60))
+        timeout = bounded_float(
+            payload.pop("_timeout_seconds", 300 if action == "run_once" else 60),
+            default=300.0 if action == "run_once" else 60.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
         db = get_db()
         await db.initialize()
         if action == "run_once":
@@ -374,6 +381,7 @@ async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str,
                     limit=payload.get("limit", 80),
                     stock_codes=payload.get("stock_codes") or payload.get("codes"),
                     allow_network=payload.get("allow_network", False),
+                    allow_llm=payload.get("allow_llm", False),
                     embed=payload.get("embed", False),
                     parse_pdf=payload.get("parse_pdf", True),
                     include_rss=payload.get("include_rss", True),
@@ -622,7 +630,7 @@ async def _execute_financial_manager(action: str, params: dict[str, Any]) -> dic
             "action": "place_order",
             "code": str(payload.get("code") or ""),
             "side": str(payload.get("side") or payload.get("direction") or "buy"),
-            "quantity": int(payload.get("quantity") or payload.get("shares") or 0),
+            "quantity": bounded_int(payload.get("quantity") or payload.get("shares"), default=0, minimum=0),
             "order_type": str(payload.get("order_type") or "market"),
             "account_id": payload.get("account_id"),
             "user_id": payload.get("user_id"),

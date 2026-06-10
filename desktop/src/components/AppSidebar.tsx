@@ -1,7 +1,7 @@
 import { ChevronDown, ChevronRight, FolderGit2, Plus, Search, Terminal } from "lucide-react";
 import { useMemo, useState } from "react";
 import { SlotRenderer } from "../extensions/extensionRegistry";
-import { IconButton, StatusBadge } from "./shared";
+import { IconButton, StatusBadge, statusLabel } from "./shared";
 import type { HealthDetailed, HermesStatus, InspectorTab, MainView, TaskThread } from "../types";
 import type { ViewGroup, ViewRegistryItem } from "../views";
 
@@ -92,14 +92,14 @@ export function AppSidebar({
 
       <button className="new-task-button" onClick={onNewTask} type="button">
         <Plus size={16} />
-        New thread
+        新建线程
       </button>
 
       <div className="sidebar-project-card">
         <div>
-          <span>Project / Context</span>
-          <strong>{health?.service || "Local AIASK"}</strong>
-          <small>{health?.host ? `${health.host}:${health.port || ""}` : "Desktop client"}</small>
+          <span>项目 / 上下文</span>
+          <strong>{health?.service || "本地 AIASK"}</strong>
+          <small>{health?.host ? `${health.host}:${health.port || ""}` : "桌面客户端"}</small>
         </div>
         <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "online" : status} />
       </div>
@@ -115,12 +115,12 @@ export function AppSidebar({
 
       <div className="sidebar-section thread-section">
         <div className="section-label">
-          <span>Threads</span>
+          <span>任务线程</span>
           <small>{threads.length}</small>
         </div>
         <button className="thread-search-button" onClick={() => onSelectView("runs-events")} type="button">
           <Search size={14} />
-          Search and history
+          搜索与历史
         </button>
         <div className="thread-list">
           {threads.map((thread) => (
@@ -132,13 +132,13 @@ export function AppSidebar({
             >
               <span>{thread.sessionId || thread.id}</span>
               <strong>{thread.title}</strong>
-              <em>{thread.status}</em>
+              <em>{statusLabel(thread.status)}</em>
             </button>
           ))}
           {!threads.length && (
             <div className="sidebar-empty">
-              <strong>No threads yet</strong>
-              <span>Start a thread to collect prompts, runs, tool calls, approvals, and artifacts here.</span>
+              <strong>暂无线程</strong>
+              <span>新建线程后，这里会收集提示词、运行、工具调用、审批和产物。</span>
             </div>
           )}
         </div>
@@ -147,7 +147,7 @@ export function AppSidebar({
       <nav className="side-actions grouped" aria-label="Main navigation">
         <div className="section-label nav-label root-label">
           <FolderGit2 size={13} />
-          <span>Navigation</span>
+          <span>导航</span>
         </div>
         {primaryGroups.map((group) => (
           <SidebarNavGroup
@@ -180,8 +180,8 @@ export function AppSidebar({
 
       <div className="sidebar-footer">
         <StatusBadge status={status} label={status} />
-        <span>{health?.tools?.count ?? 0} tools</span>
-        <span>{hermesStatus?.full_mode_enabled ? "Hermes full enabled" : "Hermes full off"}</span>
+        <span>{health?.tools?.count ?? 0} 个工具</span>
+        <span>{hermesStatus?.full_mode_enabled ? "完整模式已启用" : "完整模式未启用"}</span>
       </div>
     </aside>
   );

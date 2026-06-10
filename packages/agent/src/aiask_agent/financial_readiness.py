@@ -7,6 +7,7 @@ from .capabilities import parity_summary
 from .env_config import load_project_env
 from .gateway import ADAPTERS
 from .mcp_client import MCPAggregator
+from .memory_providers import MemoryProviderManager
 from .model_client import MockModelClient
 from .runtime import AgentRuntime
 from .adapters import quant as quant_adapter
@@ -23,6 +24,208 @@ def _gate(name: str, status: str, *, required: bool, detail: str, evidence: dict
         "required": bool(required),
         "detail": detail,
         "evidence": dict(evidence or {}),
+    }
+
+
+def _next_action(
+    action_id: str,
+    title: str,
+    detail: str,
+    *,
+    priority: str = "recommended",
+    target_page: str = "readiness-health",
+    endpoint: str | None = None,
+    env_vars: list[str] | None = None,
+    gate: str | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "action_id": action_id,
+        "title": title,
+        "detail": detail,
+        "priority": priority,
+        "target_page": target_page,
+    }
+    if endpoint:
+        payload["endpoint"] = endpoint
+    if env_vars:
+        payload["env_vars"] = list(env_vars)
+    if gate:
+        payload["gate"] = gate
+    return payload
+
+
+def _build_next_actions(
+    *,
+    required_gates: list[dict[str, Any]],
+    optional_gates: list[dict[str, Any]],
+    mcp_diagnostics: dict[str, Any],
+    full_mode_enabled: bool,
+    control_token_configured: bool,
+    status: str,
+) -> list[dict[str, Any]]:
+    gate_by_name = {str(item.get("name") or ""): item for item in [*required_gates, *optional_gates]}
+    actions: list[dict[str, Any]] = []
+
+    ai_gate = gate_by_name.get("ai_model", {})
+    if ai_gate.get("status") in {"blocked", "degraded"}:
+        actions.append(
+            _next_action(
+                "configure_model_provider",
+                "Configure a real model provider",
+                "Set an OpenAI-compatible provider and verify /v1/ai/smoke before judging financial Agent quality.",
+                priority="critical" if ai_gate.get("status") == "blocked" else "recommended",
+                target_page="settings",
+                endpoint="/v1/ai/status",
+                env_vars=["AIASK_AGENT_MODEL_PROVIDER", "OPENAI_API_KEY", "OPENAI_BASE_URL"],
+                gate="ai_model",
+            )
+        )
+
+    if not control_token_configured or gate_by_name.get("control_plane", {}).get("status") == "blocked":
+        actions.append(
+            _next_action(
+                "set_control_token",
+                "Set the Agent control token",
+                "Stateful intents, MCP administration, full-mode operations, and approval flows need AIASK_AGENT_CONTROL_TOKEN or AIASK_LOCAL_CONTROL_TOKEN.",
+                priority="critical",
+                target_page="settings",
+                env_vars=["AIASK_AGENT_CONTROL_TOKEN", "AIASK_LOCAL_CONTROL_TOKEN"],
+                gate="control_plane",
+            )
+        )
+
+    database_gate = gate_by_name.get("database", {})
+    if database_gate.get("status") == "blocked":
+        actions.append(
+            _next_action(
+                "configure_writable_database",
+                "Configure a writable local database",
+                "Set AIASK_SQLITE_PATH or AKSHARE_MCP_SQLITE_PATH to a writable SQLite file, then rerun data readiness.",
+                priority="critical",
+                target_page="data",
+                endpoint="/v1/desktop/data/status",
+                env_vars=["AIASK_SQLITE_PATH", "AKSHARE_MCP_SQLITE_PATH"],
+                gate="database",
+            )
+        )
+
+    strategy_gate = gate_by_name.get("strategy_factory", {})
+    if strategy_gate.get("status") in {"blocked", "degraded"}:
+        actions.append(
+            _next_action(
+                "inspect_strategy_factory",
+                "Inspect Strategy Factory readiness",
+                "Open the Strategy Factory panel to review status, runs, snapshots, and database/runtime errors before running factory actions.",
+                priority="critical" if strategy_gate.get("status") == "blocked" else "recommended",
+                target_page="strategy-factory",
+                endpoint="/v1/desktop/capabilities",
+                gate="strategy_factory",
+            )
+        )
+
+    semantic_gate = gate_by_name.get("semantic_search", {})
+    if semantic_gate.get("status") in {"blocked", "degraded"}:
+        actions.append(
+            _next_action(
+                "verify_semantic_search",
+                "Verify memory and session search",
+                "Run the read-only memory/session search smoke before relying on Agent recall, run history search, or vector-backed research UX.",
+                priority="critical" if semantic_gate.get("status") == "blocked" else "recommended",
+                target_page="readiness-health",
+                endpoint="/v1/search",
+                gate="semantic_search",
+            )
+        )
+
+    mcp_gate = gate_by_name.get("mcp_aggregation", {})
+    missing_auth = [str(item) for item in list(mcp_diagnostics.get("missing_auth_env_vars") or []) if str(item).strip()]
+    if missing_auth:
+        actions.append(
+            _next_action(
+                "configure_mcp_auth",
+                "Configure MCP authorization",
+                "The MCP server is registered but some auth environment variables are missing. Configure them in the Agent process and refresh MCP discovery.",
+                priority="recommended",
+                target_page="mcp-connectors",
+                endpoint="/v1/mcp/tools",
+                env_vars=missing_auth,
+                gate="mcp_aggregation",
+            )
+        )
+    elif mcp_gate.get("status") != "ready":
+        detected_port = str(mcp_diagnostics.get("detected_service_port") or "").strip()
+        actions.append(
+            _next_action(
+                "register_or_discover_mcp",
+                "Register or discover the financial MCP server",
+                "Use MCP / Connectors to register the local AKShare MCP endpoint and refresh the wrapped Agent tool registry.",
+                priority="recommended",
+                target_page="mcp-connectors",
+                endpoint="/v1/mcp/register-local" if detected_port else "/v1/mcp/discover",
+                gate="mcp_aggregation",
+            )
+        )
+
+    if not full_mode_enabled:
+        actions.append(
+            _next_action(
+                "enable_full_mode_when_needed",
+                "Enable full mode only when advanced tools are needed",
+                "The default finance_safe mode is intentionally narrow. Enable full mode for plugins, browser, terminal, RL, learning, and MCP administration demos.",
+                priority="optional",
+                target_page="settings",
+                env_vars=["AIASK_AGENT_ENABLE_HERMES_FULL", "AIASK_AGENT_TOOLSET", "AIASK_AGENT_ENABLE_GENERAL_TOOLS"],
+                gate="hermes_full_mode",
+            )
+        )
+
+    if status == "ready":
+        actions.insert(
+            0,
+            _next_action(
+                "run_live_financial_workflow",
+                "Run one live read-only financial workflow",
+                "Start with Financial Manager read-only risk/query, then run Quant Research and confirm the report is completed or explicitly blocked by data freshness.",
+                priority="recommended",
+                target_page="financial-manager",
+                endpoint="/v1/desktop/financial-manager/query",
+            ),
+        )
+
+    return actions[:8]
+
+
+def _live_smoke_checklist(next_actions: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "object": "aiask.live_smoke_checklist",
+        "status": "ready" if not any(item.get("priority") == "critical" for item in next_actions) else "blocked",
+        "script": "scripts/ops/live_readiness_smoke.py",
+        "checks": [
+            {"name": "health", "method": "GET", "path": "/health/detailed"},
+            {"name": "tools", "method": "GET", "path": "/v1/tools"},
+            {"name": "financial_readiness", "method": "GET", "path": "/v1/financial-system/readiness"},
+            {"name": "memory_status", "method": "GET", "path": "/v1/desktop/settings/status"},
+            {"name": "session_search", "method": "GET", "path": "/v1/search?query=AIASK&limit=5"},
+            {"name": "memory_search", "method": "POST", "path": "/v1/tools/agent_memory_search"},
+            {"name": "mcp_servers", "method": "GET", "path": "/v1/mcp/servers"},
+            {"name": "mcp_tools", "method": "GET", "path": "/v1/mcp/tools"},
+            {"name": "financial_manager_catalog", "method": "GET", "path": "/v1/desktop/financial-manager/catalog"},
+            {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
+            {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
+            {
+                "name": "market_temperature_cache",
+                "method": "POST",
+                "path": "/v1/tools/agent_market_temperature_cache_readiness",
+                "observes": ["ready", "status", "blockers", "warnings"],
+            },
+            {
+                "name": "market_temperature_forward_validation",
+                "method": "POST",
+                "path": "/v1/tools/agent_market_temperature_forward_validation",
+                "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"],
+            },
+            {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
+        ],
     }
 
 
@@ -53,6 +256,33 @@ async def financial_system_readiness(
 
     mcp = MCPAggregator()
     mcp_diagnostics = mcp.registration_diagnostics()
+    memory_status = MemoryProviderManager(path=runtime.session_store.path).status()
+    memory_providers = [item for item in list(memory_status.get("providers") or []) if isinstance(item, dict)]
+    active_memory_provider = str(memory_status.get("active_provider") or memory_status.get("default_provider") or "sqlite")
+    active_memory = next((item for item in memory_providers if str(item.get("name") or "") == active_memory_provider), None)
+    sqlite_memory = next((item for item in memory_providers if str(item.get("name") or "") == "sqlite"), {})
+    vector_memory = next((item for item in memory_providers if str(item.get("name") or "") == "vector"), {})
+    memory_probe = await runtime.tool_registry.call_tool(
+        "agent_memory_search",
+        {"query": "AIASK_READINESS_PROBE", "limit": 1, "_timeout_seconds": 5},
+    )
+    session_probe_failed = False
+    session_probe_count = 0
+    session_probe_error: str | None = None
+    try:
+        session_probe = runtime.session_store.search(query="AIASK_READINESS_PROBE", limit=1)
+        session_probe_count = len(session_probe)
+    except Exception as exc:
+        session_probe_failed = True
+        session_probe_error = str(exc)[:160]
+    memory_search_ready = bool(memory_probe.get("success"))
+    session_search_ready = not session_probe_failed
+    semantic_ready = (
+        "agent_memory_search" in runtime.tool_registry.names()
+        and "agent_session_search" in runtime.tool_registry.names()
+        and memory_search_ready
+        and session_search_ready
+    )
     db_env_snapshot = {key: os.environ.get(key) for key in quant_adapter.DATABASE_ENV_KEYS}
     try:
         factory_status = await runtime.tool_registry.call_tool("agent_factory_status", {"recent_run_limit": 5, "_timeout_seconds": 5})
@@ -114,6 +344,24 @@ async def financial_system_readiness(
             },
         ),
         _gate(
+            "semantic_search",
+            "ready" if semantic_ready else "blocked",
+            required=True,
+            detail="Memory search and session search probes are callable" if semantic_ready else "Agent memory/session search probes failed; recall and run search UX cannot be trusted yet",
+            evidence={
+                "active_provider": active_memory_provider,
+                "sqlite_provider_status": sqlite_memory.get("status"),
+                "memory_tool_registered": "agent_memory_search" in runtime.tool_registry.names(),
+                "session_tool_registered": "agent_session_search" in runtime.tool_registry.names(),
+                "memory_probe_success": memory_search_ready,
+                "memory_probe_count": len(list(((memory_probe.get("data") or {}).get("items") or []) if isinstance(memory_probe.get("data"), dict) else [])),
+                "memory_probe_error_code": memory_probe.get("error_code"),
+                "session_probe_success": session_search_ready,
+                "session_probe_count": session_probe_count,
+                "session_probe_error": session_probe_error,
+            },
+        ),
+        _gate(
             "hermes_code_parity",
             "ready"
             if parity.get("core_code_status") == "present"
@@ -153,6 +401,19 @@ async def financial_system_readiness(
             },
         ),
         _gate(
+            "vector_provider",
+            "ready" if vector_memory.get("configured") else "degraded",
+            required=False,
+            detail="External vector memory provider is configured" if vector_memory.get("configured") else "External vector memory provider is optional; built-in SQLite memory/session search remains the readiness baseline",
+            evidence={
+                "active_provider": active_memory_provider,
+                "configured": bool(vector_memory.get("configured")),
+                "status": vector_memory.get("status"),
+                "required_env": vector_memory.get("required_env", ["AIASK_VECTOR_MEMORY_URL"]),
+                "active_provider_configured": bool((active_memory or {}).get("configured", True)),
+            },
+        ),
+        _gate(
             "external_providers",
             "ready" if _env_configured("OPENAI_API_KEY") and (os.getenv("AIASK_GATEWAY_WEBHOOK_URL") or os.getenv("AIASK_GATEWAY_WEBHOOK_SECRET")) else "degraded",
             required=False,
@@ -169,12 +430,22 @@ async def financial_system_readiness(
     blocked_required = [item for item in required_gates if item["status"] == "blocked"]
     degraded_required = [item for item in required_gates if item["status"] == "degraded"]
     status = "blocked" if blocked_required else "degraded" if degraded_required else "ready"
+    next_actions = _build_next_actions(
+        required_gates=required_gates,
+        optional_gates=optional_gates,
+        mcp_diagnostics=mcp_diagnostics,
+        full_mode_enabled=full_mode_enabled,
+        control_token_configured=control_token_configured,
+        status=status,
+    )
     return {
         "object": "aiask.financial_system_readiness",
         "status": status,
         "production_ready": status == "ready",
         "required_gates": required_gates,
         "optional_gates": optional_gates,
+        "next_actions": next_actions,
+        "live_smoke": _live_smoke_checklist(next_actions),
         "summary": {
             "required_total": len(required_gates),
             "required_ready": sum(1 for item in required_gates if item["status"] == "ready"),

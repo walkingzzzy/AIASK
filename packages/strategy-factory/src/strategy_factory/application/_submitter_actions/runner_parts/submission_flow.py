@@ -67,7 +67,8 @@
             snap = dict(snapshot or {})
             factor_research = dict(snap.get("factor_research") or {})
             factor_summary = dict(factor_research.get("summary") or {})
-            return {
+            market_temperature_context = resolve_market_temperature_context(snap)
+            birth_regime = {
                 "fg_level": snap.get("fg_level"),
                 "fear_greed_index": snap.get("fear_greed_index"),
                 "hot_sectors": list(snap.get("hot_sectors") or [])[:8],
@@ -83,6 +84,21 @@
                 "snapshot_id": snap.get("snapshot_id") or snap.get("trace_id"),
                 "factory_run_id": snap.get("factory_run_id"),
             }
+            if bool(market_temperature_context.get("available")):
+                birth_regime["market_temperature_context"] = {
+                    "as_of": market_temperature_context.get("as_of"),
+                    "temperature": market_temperature_context.get("temperature"),
+                    "state": market_temperature_context.get("state"),
+                    "quality_status": market_temperature_context.get("quality_status"),
+                    "readiness_status": market_temperature_context.get("readiness_status"),
+                    "staleness_days": market_temperature_context.get("staleness_days"),
+                    "degraded": bool(market_temperature_context.get("degraded")),
+                    "warnings": list(market_temperature_context.get("warnings") or [])[:8],
+                    "source_chain": list(market_temperature_context.get("source_chain") or [])[:8],
+                    "stock_count": market_temperature_context.get("stock_count"),
+                    "industry_count": market_temperature_context.get("industry_count"),
+                }
+            return birth_regime
 
         @classmethod
         def _build_strategy_data(

@@ -144,6 +144,50 @@ class TestTonghuashunProtocol:
         assert content["success"] is False
         assert "entrust_no" in content["error"].lower()
 
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("ths_place_order", {"code": "600519", "price": 100.0, "amount": 100, "direction": "buy"}),
+            ("ths_cancel_order", {"entrust_no": "E123"}),
+        ],
+    )
+    def test_trade_risk_tools_reject_when_server_token_unset(self, monkeypatch, tool_name, arguments):
+        from aiask_finance_mcp.tonghuashun.server import _handle_jsonrpc
+
+        monkeypatch.delenv("AIASK_FINANCE_THS_BROKER_TOKEN", raising=False)
+        result = _call_jsonrpc(_handle_jsonrpc, "tools/call", {"name": tool_name, "arguments": {**arguments, "broker_token": "anything"}})
+        content = json.loads(result["result"]["content"][0]["text"])
+
+        assert result["result"]["isError"] is True
+        assert content["success"] is False
+        assert content["error_code"] == "TRADE_RISK_TOKEN_REQUIRED"
+        assert content["meta"]["side_effect"]["level"] == "trade_risk"
+        assert content["meta"]["side_effect"]["explicit_token_required"] is True
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("ths_place_order", {"code": "600519", "price": 100.0, "amount": 100, "direction": "buy"}),
+            ("ths_cancel_order", {"entrust_no": "E123"}),
+        ],
+    )
+    @pytest.mark.parametrize("broker_token", ["", "wrong-token"])
+    def test_trade_risk_tools_reject_missing_or_mismatched_token(self, monkeypatch, tool_name, arguments, broker_token):
+        from aiask_finance_mcp.tonghuashun.server import _handle_jsonrpc
+
+        monkeypatch.setenv("AIASK_FINANCE_THS_BROKER_TOKEN", "expected-token")
+        call_args = dict(arguments)
+        if broker_token:
+            call_args["broker_token"] = broker_token
+        result = _call_jsonrpc(_handle_jsonrpc, "tools/call", {"name": tool_name, "arguments": call_args})
+        content = json.loads(result["result"]["content"][0]["text"])
+
+        assert result["result"]["isError"] is True
+        assert content["success"] is False
+        assert content["error_code"] == "TRADE_RISK_TOKEN_REQUIRED"
+        assert content["meta"]["side_effect"]["confirmation_required"] is True
+        assert content["meta"]["side_effect"]["explicit_token_required"] is True
+
 
 class TestEastmoneyProtocol:
     def test_initialize(self):
@@ -215,3 +259,47 @@ class TestQmtProtocol:
         )
         content = json.loads(result["result"]["content"][0]["text"])
         assert content["success"] is False
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("qmt_place_order", {"code": "600519", "price": 100.0, "volume": 100, "direction": "buy"}),
+            ("qmt_cancel_order", {"order_id": 123}),
+        ],
+    )
+    def test_trade_risk_tools_reject_when_server_token_unset(self, monkeypatch, tool_name, arguments):
+        from aiask_finance_mcp.qmt.server import _handle_jsonrpc
+
+        monkeypatch.delenv("AIASK_FINANCE_QMT_BROKER_TOKEN", raising=False)
+        result = _call_jsonrpc(_handle_jsonrpc, "tools/call", {"name": tool_name, "arguments": {**arguments, "broker_token": "anything"}})
+        content = json.loads(result["result"]["content"][0]["text"])
+
+        assert result["result"]["isError"] is True
+        assert content["success"] is False
+        assert content["error_code"] == "TRADE_RISK_TOKEN_REQUIRED"
+        assert content["meta"]["side_effect"]["level"] == "trade_risk"
+        assert content["meta"]["side_effect"]["explicit_token_required"] is True
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("qmt_place_order", {"code": "600519", "price": 100.0, "volume": 100, "direction": "buy"}),
+            ("qmt_cancel_order", {"order_id": 123}),
+        ],
+    )
+    @pytest.mark.parametrize("broker_token", ["", "wrong-token"])
+    def test_trade_risk_tools_reject_missing_or_mismatched_token(self, monkeypatch, tool_name, arguments, broker_token):
+        from aiask_finance_mcp.qmt.server import _handle_jsonrpc
+
+        monkeypatch.setenv("AIASK_FINANCE_QMT_BROKER_TOKEN", "expected-token")
+        call_args = dict(arguments)
+        if broker_token:
+            call_args["broker_token"] = broker_token
+        result = _call_jsonrpc(_handle_jsonrpc, "tools/call", {"name": tool_name, "arguments": call_args})
+        content = json.loads(result["result"]["content"][0]["text"])
+
+        assert result["result"]["isError"] is True
+        assert content["success"] is False
+        assert content["error_code"] == "TRADE_RISK_TOKEN_REQUIRED"
+        assert content["meta"]["side_effect"]["confirmation_required"] is True
+        assert content["meta"]["side_effect"]["explicit_token_required"] is True

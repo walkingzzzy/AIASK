@@ -199,3 +199,167 @@ def test_check_p0_1_data_readiness_mcp_registration_and_validation(monkeypatch) 
     invalid = asyncio.run(mcp.tools["check_p0_1_data_readiness"](codes=["bad-code"]))
     assert invalid["success"] is False
     assert "Invalid stock code" in invalid["error"]
+
+
+class MarketTemperatureCacheDb:
+    def __init__(self, cached):
+        self.cached = cached
+        self.requests = []
+
+    async def get_market_temperature_snapshot_cache(self, as_of=None):
+        self.requests.append(as_of)
+        return self.cached
+
+
+def test_market_temperature_cache_readiness_reports_fresh_cache() -> None:
+    from akshare_mcp.tools.db_freshness import assess_market_temperature_cache_readiness
+
+    db = MarketTemperatureCacheDb(
+        {
+            "as_of": _today(),
+            "created_at": f"{_today()}T15:00:00",
+            "updated_at": f"{_today()}T15:05:00",
+            "market_temperature": 55.5,
+            "market_state": "neutral",
+            "stock_count": 300,
+            "industry_count": 5,
+            "quality_status": "healthy",
+            "warnings": [],
+            "snapshot": {
+                "as_of": _today(),
+                "quality": {"status": "healthy", "warnings": [], "industry_count": 5},
+                "market": {"temperature": 55.5, "state": "neutral", "stock_count": 300},
+            },
+        }
+    )
+
+    result = asyncio.run(
+        assess_market_temperature_cache_readiness(
+            as_of=_today(),
+            max_stale_days=1,
+            db=db,
+        )
+    )
+
+    assert result["ready"] is True
+    assert result["status"] == "fresh"
+    assert result["read_only"] is True
+    assert result["quality_status"] == "healthy"
+    assert result["stock_count"] == 300
+    assert result["market_temperature"] == 55.5
+    assert result["blockers"] == []
+    assert db.requests == [_today()]
+
+
+def test_market_temperature_cache_readiness_reports_stale_and_missing_cache() -> None:
+    from akshare_mcp.tools.db_freshness import assess_market_temperature_cache_readiness
+
+    stale_db = MarketTemperatureCacheDb(
+        {
+            "as_of": _days_ago(10),
+            "market_temperature": 40.0,
+            "market_state": "cool",
+            "stock_count": 300,
+            "industry_count": 5,
+            "quality_status": "healthy",
+            "warnings": [],
+            "snapshot": {"quality": {"status": "healthy"}, "market": {"stock_count": 300}},
+        }
+    )
+    stale = asyncio.run(assess_market_temperature_cache_readiness(max_stale_days=1, db=stale_db))
+
+    assert stale["ready"] is False
+    assert stale["status"] == "stale"
+    assert "market_temperature_cache_stale" in stale["blockers"]
+
+    missing = asyncio.run(
+        assess_market_temperature_cache_readiness(
+            as_of="2026-06-08",
+            db=MarketTemperatureCacheDb(None),
+        )
+    )
+
+    assert missing["ready"] is False
+    assert missing["status"] == "missing"
+    assert missing["blockers"] == ["market_temperature_cache_missing"]
+
+
+def test_market_temperature_cache_readiness_rejects_non_finite_temperature() -> None:
+    from akshare_mcp.tools.db_freshness import assess_market_temperature_cache_readiness
+
+    db = MarketTemperatureCacheDb(
+        {
+            "as_of": _today(),
+            "market_temperature": "inf",
+            "market_state": "neutral",
+            "stock_count": 300,
+            "industry_count": 5,
+            "quality_status": "healthy",
+            "warnings": [],
+            "snapshot": {
+                "as_of": _today(),
+                "quality": {"status": "healthy", "warnings": [], "industry_count": 5},
+                "market": {"temperature": 52.5, "state": "neutral", "stock_count": 300},
+            },
+        }
+    )
+
+    result = asyncio.run(assess_market_temperature_cache_readiness(db=db))
+
+    assert result["ready"] is True
+    assert result["market_temperature"] == 52.5
+
+    invalid = asyncio.run(
+        assess_market_temperature_cache_readiness(
+            db=MarketTemperatureCacheDb(
+                {
+                    "as_of": _today(),
+                    "market_temperature": "inf",
+                    "market_state": "neutral",
+                    "stock_count": 300,
+                    "industry_count": 5,
+                    "quality_status": "healthy",
+                    "warnings": [],
+                    "snapshot": {
+                        "as_of": _today(),
+                        "quality": {"status": "healthy", "warnings": [], "industry_count": 5},
+                        "market": {"temperature": float("nan"), "state": "neutral", "stock_count": 300},
+                    },
+                }
+            )
+        )
+    )
+
+    assert invalid["ready"] is True
+    assert invalid["market_temperature"] is None
+
+
+def test_check_market_temperature_cache_readiness_mcp_registration_and_validation(monkeypatch) -> None:
+    from akshare_mcp.tools import db_freshness
+
+    captured = {}
+
+    async def fake_assess(**kwargs):
+        captured.update(kwargs)
+        return {"ready": True, "read_only": True, "status": "fresh"}
+
+    monkeypatch.setattr(db_freshness, "assess_market_temperature_cache_readiness", fake_assess)
+
+    mcp = FakeMcp()
+    db_freshness.register(mcp)
+
+    assert "check_market_temperature_cache_readiness" in mcp.tools
+    result = asyncio.run(
+        mcp.tools["check_market_temperature_cache_readiness"](
+            as_of=_today(),
+            max_stale_days=1,
+        )
+    )
+
+    assert result["success"] is True
+    assert captured["as_of"] == _today()
+    assert captured["max_stale_days"] == 1
+
+    invalid = asyncio.run(mcp.tools["check_market_temperature_cache_readiness"](as_of="not-a-date"))
+    assert invalid["success"] is False
+    assert "Invalid as_of date" in invalid["error"]

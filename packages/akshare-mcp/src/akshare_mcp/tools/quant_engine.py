@@ -634,7 +634,7 @@ def _calculate_factor_value(
         if not financial:
             return None
         roe = _safe_float(financial.get("roe"), 0.0)
-        debt_ratio = _safe_float(financial.get("debt_ratio"), 0.0)
+        debt_ratio = _safe_float(financial.get("debt_ratio"), 1.0)
         growth = _extract_profit_growth(financial)
         return float(factor_calculator.calculate_quality_factor(roe, debt_ratio, growth if growth != 0 else None))
 

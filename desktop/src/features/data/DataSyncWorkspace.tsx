@@ -18,6 +18,10 @@ function intentIdFromEnvelope(envelope: ToolEnvelope | null): string {
   return String(intent.intent_id || "");
 }
 
+function taskRequiresCodes(taskType: string): boolean {
+  return !["market_temperature_snapshot_cache", "core_market", "factor_context"].includes(taskType);
+}
+
 export function DataSyncWorkspace({
   endpoint,
   apiToken,
@@ -125,6 +129,7 @@ export function DataSyncWorkspace({
       : "failed"
     : "not_loaded";
   const intentId = intentIdFromEnvelope(intentEnvelope);
+  const requiresCodes = taskRequiresCodes(taskType);
 
   return (
     <section className="quant-workspace">
@@ -168,18 +173,19 @@ export function DataSyncWorkspace({
                 <option value="financial">financial</option>
                 <option value="core_market">core_market</option>
                 <option value="factor_context">factor_context</option>
+                <option value="market_temperature_snapshot_cache">market_temperature_snapshot_cache</option>
               </select>
             </label>
             <label className="field-row">
               <span>周期</span>
               <select value={period} onChange={(event) => setPeriod(event.target.value)}>
-                <option value="daily">daily</option>
-                <option value="weekly">weekly</option>
-                <option value="monthly">monthly</option>
+                <option value="daily">每日</option>
+                <option value="weekly">每周</option>
+                <option value="monthly">每月</option>
               </select>
             </label>
           </div>
-          <button className="primary-button" disabled={busy || !splitList(codes).length} type="submit">
+          <button className="primary-button" disabled={busy || (requiresCodes && !splitList(codes).length)} type="submit">
             <Play size={15} />
             生成同步计划
           </button>

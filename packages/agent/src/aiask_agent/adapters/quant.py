@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ..numeric import bounded_float, bounded_int
 from ..quant_research import QuantResearchStore, research_id as new_research_id
 from .akshare import call_function, load_registered_tool
 from . import strategy_factory as strategy_factory_adapter
@@ -161,10 +162,7 @@ def _factors(arguments: dict[str, Any]) -> list[str]:
 
 
 def _rate_from_bps(value: Any, default_bps: float) -> float:
-    try:
-        bps = float(value)
-    except Exception:
-        bps = default_bps
+    bps = bounded_float(value, default=default_bps, minimum=0.0, maximum=10000.0)
     return bps / 10000.0
 
 
@@ -186,7 +184,12 @@ def _dependency_unconfigured(tool_name: str, data: dict[str, Any] | None = None)
 async def _call_registered(module_name: str, function_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     _ensure_monorepo_paths()
     fn = load_registered_tool(module_name, function_name)
-    timeout = float(arguments.pop("_timeout_seconds", os.getenv("AIASK_QUANT_TOOL_TIMEOUT", "30")))
+    timeout = bounded_float(
+        arguments.pop("_timeout_seconds", os.getenv("AIASK_QUANT_TOOL_TIMEOUT", "30")),
+        default=30.0,
+        minimum=1.0,
+        maximum=3600.0,
+    )
     try:
         result = await asyncio.wait_for(call_function(fn, dict(arguments)), timeout=timeout)
     except TimeoutError as exc:
@@ -206,7 +209,7 @@ async def quant_data_gate(arguments: dict[str, Any]) -> dict[str, Any]:
     tool_name = "agent_quant_data_gate"
     db = database_status()
     codes = _codes(arguments)
-    max_stale_days = int(arguments.get("max_stale_days") or 5)
+    max_stale_days = bounded_int(arguments.get("max_stale_days"), default=5, minimum=0, maximum=3650)
     if not db["configured"] or not db.get("writable", False):
         return _dependency_unconfigured(tool_name, {"codes": codes, "max_stale_days": max_stale_days})
 
@@ -248,7 +251,7 @@ async def factor_validation(arguments: dict[str, Any]) -> dict[str, Any]:
 
     codes = _codes(arguments)
     factors = _factors(arguments)
-    period = int(arguments.get("period") or 20)
+    period = bounded_int(arguments.get("period"), default=20, minimum=1, maximum=2520)
     include_oos = bool(arguments.get("include_oos", True))
     include_robustness = bool(arguments.get("include_robustness", True))
     validations: list[dict[str, Any]] = []
@@ -267,8 +270,8 @@ async def factor_validation(arguments: dict[str, Any]) -> dict[str, Any]:
             {
                 "codes": codes,
                 "factor": factor,
-                "groups": int(arguments.get("groups") or 5),
-                "holding_days": int(arguments.get("holding_days") or period),
+                "groups": bounded_int(arguments.get("groups"), default=5, minimum=1, maximum=100),
+                "holding_days": bounded_int(arguments.get("holding_days"), default=period, minimum=1, maximum=2520),
                 "commission": _rate_from_bps(arguments.get("cost_bps"), 3),
                 "slippage": _rate_from_bps(arguments.get("slippage_bps"), 0),
                 "start_date": arguments.get("start_date"),
@@ -330,8 +333,8 @@ async def backtest_suite(arguments: dict[str, Any]) -> dict[str, Any]:
     assumptions = {
         "benchmark": str(arguments.get("benchmark") or "000300"),
         "rebalance_frequency": str(arguments.get("rebalance_frequency") or "monthly"),
-        "cost_bps": float(arguments.get("cost_bps") or 3),
-        "slippage_bps": float(arguments.get("slippage_bps") or 1),
+        "cost_bps": bounded_float(arguments.get("cost_bps"), default=3.0, minimum=0.0, maximum=10000.0),
+        "slippage_bps": bounded_float(arguments.get("slippage_bps"), default=1.0, minimum=0.0, maximum=10000.0),
         "start_date": arguments.get("start_date"),
         "end_date": arguments.get("end_date"),
     }
@@ -339,7 +342,7 @@ async def backtest_suite(arguments: dict[str, Any]) -> dict[str, Any]:
         "strategy": strategy,
         "start_date": assumptions["start_date"],
         "end_date": assumptions["end_date"],
-        "initial_capital": float(arguments.get("initial_capital") or 100000),
+        "initial_capital": bounded_float(arguments.get("initial_capital"), default=100000.0, minimum=0.0),
         "commission": _rate_from_bps(assumptions["cost_bps"], 3),
         "benchmark": assumptions["benchmark"],
     }
@@ -382,9 +385,9 @@ def _weights_from_optimization(result: dict[str, Any], codes: list[str]) -> list
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     weights = data.get("weights")
     if isinstance(weights, dict):
-        return [float(weights.get(code, 0.0) or 0.0) for code in codes]
+        return [bounded_float(weights.get(code), default=0.0, minimum=0.0, maximum=1.0) for code in codes]
     if isinstance(weights, list) and len(weights) == len(codes):
-        return [float(item or 0.0) for item in weights]
+        return [bounded_float(item, default=0.0, minimum=0.0, maximum=1.0) for item in weights]
     return [1.0 / len(codes)] * len(codes) if codes else []
 
 
@@ -404,16 +407,23 @@ async def portfolio_risk(arguments: dict[str, Any]) -> dict[str, Any]:
         {
             "stocks": codes,
             "method": str(arguments.get("method") or "equal_weight"),
-            "lookback_days": int(arguments.get("lookback_days") or 252),
-            "max_weight": float(dict(arguments.get("risk_limits") or {}).get("max_weight") or arguments.get("max_weight") or 0.35),
+            "lookback_days": bounded_int(arguments.get("lookback_days"), default=252, minimum=1, maximum=10000),
+            "max_weight": bounded_float(
+                dict(arguments.get("risk_limits") or {}).get("max_weight") or arguments.get("max_weight"),
+                default=0.35,
+                minimum=0.0,
+                maximum=1.0,
+            ),
         },
     )
-    resolved_weights = _weights_from_optimization(optimization, codes) or [float(item or 0.0) for item in weights]
+    resolved_weights = _weights_from_optimization(optimization, codes) or [
+        bounded_float(item, default=0.0, minimum=0.0, maximum=1.0) for item in weights
+    ]
     holdings = [{"code": code, "weight": resolved_weights[index]} for index, code in enumerate(codes)]
     risk = await _call_registered(
         "akshare_mcp.tools.portfolio",
         "analyze_portfolio_risk",
-        {"holdings": holdings, "lookback_days": int(arguments.get("lookback_days") or 252)},
+        {"holdings": holdings, "lookback_days": bounded_int(arguments.get("lookback_days"), default=252, minimum=1, maximum=10000)},
     )
     stress = await _call_registered(
         "akshare_mcp.tools.portfolio",
@@ -425,7 +435,7 @@ async def portfolio_risk(arguments: dict[str, Any]) -> dict[str, Any]:
         barra = await _call_registered(
             "akshare_mcp.tools.portfolio",
             "analyze_portfolio_risk_barra",
-            {"holdings": holdings, "lookback_days": int(arguments.get("lookback_days") or 252)},
+            {"holdings": holdings, "lookback_days": bounded_int(arguments.get("lookback_days"), default=252, minimum=1, maximum=10000)},
         )
     status = "completed" if risk.get("success") is not False and stress.get("success") is not False else "partial"
     return _envelope(
@@ -474,8 +484,8 @@ def _report(research_id: str, arguments: dict[str, Any], stages: list[dict[str, 
         "universe": codes,
         "factor_evidence": next((item.get("output") for item in stages if item["name"] == "factor_validation"), None),
         "backtest_assumptions": {
-            "cost_bps": float(arguments.get("cost_bps") or 3),
-            "slippage_bps": float(arguments.get("slippage_bps") or 1),
+            "cost_bps": bounded_float(arguments.get("cost_bps"), default=3.0, minimum=0.0, maximum=10000.0),
+            "slippage_bps": bounded_float(arguments.get("slippage_bps"), default=1.0, minimum=0.0, maximum=10000.0),
             "rebalance_frequency": arguments.get("rebalance_frequency") or "monthly",
         },
         "backtest": next((item.get("output") for item in stages if item["name"] == "backtest_suite"), None),

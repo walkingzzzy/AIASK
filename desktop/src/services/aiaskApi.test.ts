@@ -32,6 +32,60 @@ function mockFetch() {
     if (url.includes("/v1/tools/agent_quant_data_gate")) {
       return jsonResponse({ success: true, data: { status: "passed", missing: [], stale: [] }, error: null });
     }
+    if (url.includes("/v1/tools/agent_market_temperature_snapshot")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          contract_version: "market_temperature.v1",
+          as_of: "2026-06-08",
+          market: { stock_count: 3, temperature: 55.8, state: "neutral" },
+          hot_industries: [],
+          cold_industries: [],
+          industries: [],
+          quality: { status: "healthy", warnings: [] }
+        },
+        error: null
+      });
+    }
+    if (url.includes("/v1/tools/agent_market_temperature_cache_readiness")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          ready: true,
+          status: "fresh",
+          read_only: true,
+          as_of: "2026-06-08",
+          max_stale_days: 2,
+          staleness_days: 1,
+          blockers: []
+        },
+        error: null
+      });
+    }
+    if (url.includes("/v1/tools/agent_market_temperature_cache_history")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          items: [{ as_of: "2026-06-08", market_temperature: 55.5, quality_status: "healthy" }],
+          count: 1,
+          limit: 5,
+          include_snapshot: false
+        },
+        error: null
+      });
+    }
+    if (url.includes("/v1/tools/agent_market_temperature_industry_history")) {
+      return jsonResponse({
+        success: true,
+        data: {
+          items: [{ as_of: "2026-06-08", name: "bank", temperature: 60.0, quality_status: "healthy" }],
+          count: 1,
+          limit: 5,
+          industry: "bank"
+        },
+        error: null
+      });
+    }
     if (url.includes("/v1/desktop/users/local-profile")) {
       return jsonResponse({ object: "aiask.local_profile", user_id: "local", profile_name: "本地操作者" });
     }
@@ -135,6 +189,49 @@ describe("AiaskApi desktop contract", () => {
     expect(calls.every((call) => (call.init.headers as Record<string, string>).Authorization === "Bearer api-token")).toBe(true);
   });
 
+  it("uses the read-only market temperature agent tools", async () => {
+    const { calls } = mockFetch();
+    const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767/", apiToken: "api-token", controlToken: "control-token" });
+
+    await api.marketTemperatureSnapshot({ limit: 300, top_n: 8, min_bars: 20, as_of: "2026-06-08" });
+    await api.marketTemperatureCacheReadiness({ as_of: "2026-06-08", max_stale_days: 2 });
+    await api.marketTemperatureCacheHistory({ limit: 5, include_snapshot: false });
+    await api.marketTemperatureIndustryHistory({ industry: "bank", limit: 5, top_n: 3 });
+    await api.marketTemperatureIndustryConstituents({ industry: "bank", limit: 20, offset: 0 });
+    await api.marketTemperatureForwardValidation({
+      limit: 30,
+      horizons: [1, 3],
+      target_field: "benchmark_return",
+      benchmark_code: "000300"
+    });
+
+    expect(calls.map((call) => [call.init.method || "GET", call.url])).toEqual([
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_snapshot"],
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_cache_readiness"],
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_cache_history"],
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_industry_history"],
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_industry_constituents"],
+      ["POST", "http://127.0.0.1:8767/v1/tools/agent_market_temperature_forward_validation"]
+    ]);
+    expect(calls[0].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[0])).toEqual({ limit: 300, top_n: 8, min_bars: 20, as_of: "2026-06-08" });
+    expect(calls[1].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[1])).toEqual({ as_of: "2026-06-08", max_stale_days: 2 });
+    expect(calls[2].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[2])).toEqual({ limit: 5, include_snapshot: false });
+    expect(calls[3].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[3])).toEqual({ industry: "bank", limit: 5, top_n: 3 });
+    expect(calls[4].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[4])).toEqual({ industry: "bank", limit: 20, offset: 0 });
+    expect(calls[5].init.headers).toEqual(expect.objectContaining({ Authorization: "Bearer api-token" }));
+    expect(requestBody(calls[5])).toEqual({
+      limit: 30,
+      horizons: [1, 3],
+      target_field: "benchmark_return",
+      benchmark_code: "000300"
+    });
+  });
+
   it("uses approval intents for factory and sync operations", async () => {
     const { calls } = mockFetch();
     const api = new AiaskApi({ endpoint: "http://127.0.0.1:8767", apiToken: "api-token", controlToken: "control-token" });
@@ -191,6 +288,8 @@ describe("AiaskApi desktop contract", () => {
     await api.rlRunGet("rl 1");
     await api.rlRunResults("rl 1");
     await api.rlRunLogs("rl 1");
+    await api.terminalBackendSessions("local powershell", 7);
+    await api.quantResearchGet("qr 1");
     await api.quantResearchReport("qr 1");
     await api.financialManagerCatalog();
     await api.financialManagerStatus();
@@ -213,6 +312,8 @@ describe("AiaskApi desktop contract", () => {
       ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201"],
       ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201/results"],
       ["GET", "http://127.0.0.1:8767/v1/rl/runs/rl%201/logs"],
+      ["GET", "http://127.0.0.1:8767/v1/terminal/backends/local%20powershell/sessions?limit=7"],
+      ["GET", "http://127.0.0.1:8767/v1/desktop/quant/research-runs/qr%201"],
       ["GET", "http://127.0.0.1:8767/v1/desktop/quant/research-runs/qr%201/report"],
       ["GET", "http://127.0.0.1:8767/v1/desktop/financial-manager/catalog"],
       ["GET", "http://127.0.0.1:8767/v1/desktop/financial-manager/status"],
@@ -223,10 +324,11 @@ describe("AiaskApi desktop contract", () => {
     expect(requestBody(calls[6])).toEqual({ name: "audit-plugin", enabled: true });
     expect(requestBody(calls[8])).toEqual({ verbose: true });
     expect(requestBody(calls[11])).toEqual({ reason: "not safe" });
-    expect(requestBody(calls[18])).toEqual({ capability_id: "portfolio", action_id: "risk", params: { codes: ["600519"] } });
-    expect(requestBody(calls[19])).toEqual({ capability_id: "portfolio", action_id: "create", params: { name: "Desk" }, rationale: "review", user_id: "local" });
+    expect(requestBody(calls[20])).toEqual({ capability_id: "portfolio", action_id: "risk", params: { codes: ["600519"] } });
+    expect(requestBody(calls[21])).toEqual({ capability_id: "portfolio", action_id: "create", params: { name: "Desk" }, rationale: "review", user_id: "local" });
     expect((calls[9].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
-    expect((calls[15].init.headers as Record<string, string>).Authorization).toBe("Bearer api-token");
-    expect((calls[19].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
+    expect((calls[15].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
+    expect((calls[17].init.headers as Record<string, string>).Authorization).toBe("Bearer api-token");
+    expect((calls[21].init.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
   });
 });

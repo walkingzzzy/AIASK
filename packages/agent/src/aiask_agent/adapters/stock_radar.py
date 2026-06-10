@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from ..numeric import bounded_float
+
 
 DEFAULT_SQLITE_PATH = Path.home() / ".aiask" / "akshare_mcp.sqlite3"
 
@@ -73,7 +75,12 @@ async def _call_db_handler(
 
     try:
         payload = dict(params or {})
-        timeout = float(payload.pop("_timeout_seconds", os.getenv("AIASK_STOCK_RADAR_TOOL_TIMEOUT", "30")))
+        timeout = bounded_float(
+            payload.pop("_timeout_seconds", os.getenv("AIASK_STOCK_RADAR_TOOL_TIMEOUT", "30")),
+            default=30.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
         db = get_db()
         await db.initialize()
         handler = loader()

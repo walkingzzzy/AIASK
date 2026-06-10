@@ -753,6 +753,9 @@
                                 summary["family_gate_feedback_submitted"] = int(
                                     feedback_update.get("submitted") or 0
                                 )
+                                summary["family_gate_feedback_gate_3_recorded"] = int(
+                                    feedback_update.get("gate_3_recorded") or 0
+                                )
                                 summary["family_gate_feedback_created_audit_only"] = int(
                                     feedback_update.get("created_audit_only") or 0
                                 )

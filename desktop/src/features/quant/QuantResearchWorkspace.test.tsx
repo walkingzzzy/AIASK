@@ -120,10 +120,14 @@ describe("QuantResearchWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: /运行研究/ }));
 
     await waitFor(() => expect(screen.getByText("qr_test_1")).toBeInTheDocument());
-    expect(screen.getByText("data gate")).toBeInTheDocument();
-    expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("数据闸门").length).toBeGreaterThan(0);
+    expect(screen.getByText("阶段结论与下一步")).toBeInTheDocument();
+    expect(screen.getAllByText("LOCAL_DATABASE_REQUIRED").length).toBeGreaterThan(0);
+    expect(screen.getByText("配置可写 SQLite 数据库并完成行情同步，然后重新运行研究。")).toBeInTheDocument();
+    expect(screen.getAllByText("已阻塞").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/NOT_INVESTMENT_ADVICE/).length).toBeGreaterThan(0);
     expect(screen.getByText("结构化报告").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByText("数据闸门 原始证据").closest("details")).not.toHaveAttribute("open");
     expect(screen.getByText("回测假设 JSON").closest("details")).not.toHaveAttribute("open");
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
@@ -136,6 +140,21 @@ describe("QuantResearchWorkspace", () => {
           status: 200,
           headers: { "Content-Type": "application/json" }
         });
+      }
+      if (url.endsWith("/v1/desktop/quant/research-runs/qr_history")) {
+        return new Response(
+          JSON.stringify({
+            object: "aiask.quant_research_run",
+            research: {
+              research_id: "qr_history",
+              status: "completed",
+              payload: {
+                stages: [{ name: "detail_loaded", status: "completed", output: { source: "run_detail" } }]
+              }
+            }
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
       }
       if (url.endsWith("/v1/desktop/quant/research-runs/qr_history/report")) {
         return new Response(
@@ -160,5 +179,6 @@ describe("QuantResearchWorkspace", () => {
 
     await waitFor(() => expect(screen.getByText("qr_history")).toBeInTheDocument());
     expect(screen.getByText("000905")).toBeInTheDocument();
+    expect(screen.getAllByText("detail loaded").length).toBeGreaterThan(0);
   });
 });

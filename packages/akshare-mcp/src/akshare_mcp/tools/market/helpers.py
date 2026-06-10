@@ -77,7 +77,25 @@ _index_cache: dict[str, Any] = {"indexed": None, "ts": 0.0}
 _list_lock = Lock()
 _list_cache: dict[str, Any] = {"data": None, "ts": 0.0}
 
-_spot_executor = ThreadPoolExecutor(max_workers=2)
+_spot_executor: ThreadPoolExecutor | None = None
+_spot_executor_lock = Lock()
+
+
+def _get_spot_executor() -> ThreadPoolExecutor:
+    global _spot_executor
+    with _spot_executor_lock:
+        if _spot_executor is None:
+            _spot_executor = ThreadPoolExecutor(max_workers=2, thread_name_prefix="market-spot")
+        return _spot_executor
+
+
+def shutdown_spot_executor(*, wait: bool = False) -> None:
+    global _spot_executor
+    with _spot_executor_lock:
+        executor = _spot_executor
+        _spot_executor = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 
 def _call_silenced(fn):
@@ -88,7 +106,7 @@ def _call_silenced(fn):
 
 def run_with_timeout(fn, timeout: float) -> Any:
     """带超时的函数执行"""
-    future = _spot_executor.submit(_call_silenced, fn)
+    future = _get_spot_executor().submit(_call_silenced, fn)
     try:
         return future.result(timeout=timeout)
     except FuturesTimeoutError:

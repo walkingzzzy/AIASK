@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 from aiask_agent.intents import ActionIntentStore, IntentExecutor
 from aiask_agent.model_client import MockModelClient, ModelResponse
 from aiask_agent.runtime import AgentRuntime
-from aiask_agent.server import build_server
+from aiask_agent.server import _json_dumps, build_server
 from aiask_agent.session_store import AgentSessionStore
 from aiask_agent.tool_registry import AgentToolRegistry, aiask_envelope, build_default_tool_registry
 
@@ -47,6 +47,16 @@ def _raw_request(
     req = Request(url, data=data, method=method, headers={"Content-Type": "application/json", **dict(headers or {})})
     with urlopen(req, timeout=HTTP_TEST_TIMEOUT_SECONDS) as response:
         return response.status, dict(response.headers), response.read()
+
+
+def test_http_json_encoder_sanitizes_non_finite_numbers() -> None:
+    body = _json_dumps({"value": float("nan"), "nested": [float("inf"), -float("inf"), 1.25]})
+    text = body.decode("utf-8")
+
+    assert "NaN" not in text
+    assert "Infinity" not in text
+    assert json.loads(text) == {"nested": [None, None, 1.25], "value": None}
+    json.dumps(json.loads(text), allow_nan=False)
 
 
 def test_http_health_chat_and_control_endpoints(tmp_path, monkeypatch) -> None:

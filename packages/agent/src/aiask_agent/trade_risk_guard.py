@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, time as dt_time
 from typing import Any
 
+from .numeric import bounded_float, bounded_int
+
 
 # ---------------------------------------------------------------------------
 # Configuration (all overridable via environment variables)
@@ -29,16 +31,16 @@ from typing import Any
 class TradeRiskConfig:
     """交易风控配置。"""
 
-    max_single_order_amount: float = float(os.getenv("TRADE_MAX_SINGLE_AMOUNT", "100000"))
-    max_daily_trade_count: int = int(os.getenv("TRADE_MAX_DAILY_COUNT", "50"))
-    max_daily_trade_amount: float = float(os.getenv("TRADE_MAX_DAILY_AMOUNT", "500000"))
-    max_position_ratio: float = float(os.getenv("TRADE_MAX_POSITION_RATIO", "0.3"))
-    forbidden_hours_start: int = int(os.getenv("TRADE_FORBIDDEN_HOURS_START", "15"))
-    forbidden_hours_end: int = int(os.getenv("TRADE_FORBIDDEN_HOURS_END", "9"))
+    max_single_order_amount: float = field(default_factory=lambda: bounded_float(os.getenv("TRADE_MAX_SINGLE_AMOUNT"), default=100000.0, minimum=0.0))
+    max_daily_trade_count: int = field(default_factory=lambda: bounded_int(os.getenv("TRADE_MAX_DAILY_COUNT"), default=50, minimum=1))
+    max_daily_trade_amount: float = field(default_factory=lambda: bounded_float(os.getenv("TRADE_MAX_DAILY_AMOUNT"), default=500000.0, minimum=0.0))
+    max_position_ratio: float = field(default_factory=lambda: bounded_float(os.getenv("TRADE_MAX_POSITION_RATIO"), default=0.3, minimum=0.0, maximum=1.0))
+    forbidden_hours_start: int = field(default_factory=lambda: bounded_int(os.getenv("TRADE_FORBIDDEN_HOURS_START"), default=15, minimum=0, maximum=23))
+    forbidden_hours_end: int = field(default_factory=lambda: bounded_int(os.getenv("TRADE_FORBIDDEN_HOURS_END"), default=9, minimum=0, maximum=23))
     allow_st_stocks: bool = os.getenv("TRADE_ALLOW_ST", "").strip().lower() in {"1", "true"}
     allow_limit_chase: bool = os.getenv("TRADE_ALLOW_LIMIT_CHASE", "").strip().lower() in {"1", "true"}
     require_confirmation: bool = True
-    confirmation_timeout_seconds: int = int(os.getenv("TRADE_CONFIRM_TIMEOUT", "300"))
+    confirmation_timeout_seconds: int = field(default_factory=lambda: bounded_int(os.getenv("TRADE_CONFIRM_TIMEOUT"), default=300, minimum=1))
 
 
 # ---------------------------------------------------------------------------

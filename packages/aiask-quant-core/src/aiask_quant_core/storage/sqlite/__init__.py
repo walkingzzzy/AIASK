@@ -19,6 +19,7 @@ from .factor_storage import FactorStorageMixin
 from .financials import FinancialsMixin
 from .kline import KlineMixin
 from .market_context import MarketContextMixin
+from .market_temperature import MarketTemperatureStorageMixin
 from .quotes import QuotesMixin
 from .schema import SchemaBase
 from .signal_tracking import SignalTrackingMixin
@@ -37,6 +38,7 @@ class SQLiteAdapter(
     FinancialsMixin,
     QuotesMixin,
     MarketContextMixin,
+    MarketTemperatureStorageMixin,
     VectorUnifiedMixin,
     ArtifactMixin,
     StrategyMixin,

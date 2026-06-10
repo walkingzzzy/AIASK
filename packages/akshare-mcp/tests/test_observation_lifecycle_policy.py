@@ -69,3 +69,18 @@ def test_regime_enabled_low_sample_not_halt():
     # regime 负但样本不足（n<min_n）→ 不触发 halt，仍 promote
     hr = {"trend_regime": {"range": {"recent_skill_lcb": -0.50, "n": 3}}}
     assert _decide(**_base(regime_enabled=True, hit_rate_by_regime=hr)) == "promote"
+
+
+def test_non_finite_metrics_fall_back_to_observe():
+    policy = ObservationLifecyclePolicy(regime_enabled=True)
+    decision = policy.decide(
+        primary_skill_lcb=float("inf"),
+        recent_primary_skill_lcb="inf",
+        stability_gap=float("nan"),
+        coverage_ratio="-inf",
+        primary_n=float("inf"),
+        hit_rate_by_regime={"trend_regime": {"range": {"recent_skill_lcb": "-inf", "n": "inf"}}},
+    )
+
+    assert decision.decision == "observe"
+    assert decision.reasons == ["insufficient_samples:0<10"]

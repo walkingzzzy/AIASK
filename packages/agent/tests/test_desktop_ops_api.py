@@ -166,6 +166,26 @@ def test_desktop_data_sync_plan_creates_intent_request_without_executing(tmp_pat
     assert payload["secrets_redacted"] is True
 
 
+def test_desktop_data_sync_plan_supports_market_temperature_cache_without_codes(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/v1/desktop/data/sync-plan",
+        json={"codes": [], "task_type": "market_temperature_snapshot_cache"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "ready"
+    assert payload["intent_request"]["action"] == "data_sync.sync"
+    assert payload["intent_request"]["params"]["codes"] == []
+    assert payload["intent_request"]["params"]["task_type"] == "market_temperature_snapshot_cache"
+    assert payload["intent_request"]["params"]["limit"] == 1000
+    assert payload["intent_request"]["params"]["top_n"] == 20
+    assert payload["intent_request"]["params"]["min_bars"] == 20
+    assert payload["side_effect"]["confirmation_required"] is True
+
+
 def test_desktop_intent_create_is_control_gated_and_returns_intent(tmp_path, monkeypatch) -> None:
     client = _client(tmp_path, monkeypatch)
     payload = {

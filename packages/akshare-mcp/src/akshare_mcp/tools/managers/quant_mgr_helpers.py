@@ -2,6 +2,7 @@
 
 import json
 import logging
+import math
 from datetime import date, datetime, timedelta
 from typing import Any, Optional
 
@@ -52,7 +53,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(value)
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            return default
+        return parsed
     except (TypeError, ValueError):
         return default
 
@@ -263,7 +267,7 @@ def _compute_scalar_factor_bundle(
         roe = _safe_float(financial_snapshot.get("roe"), default=0.0)
         roa = _safe_float(financial_snapshot.get("roa"), default=0.0)
         gross_margin = _safe_float(financial_snapshot.get("gross_margin"), default=0.0)
-        debt_ratio = _safe_float(financial_snapshot.get("debt_ratio"), default=0.0)
+        debt_ratio = _safe_float(financial_snapshot.get("debt_ratio"), default=1.0)
         factor_values["quality"] = float(
             (roe / 30.0 if roe > 0 else 0.0) * 0.4
             + (roa / 15.0 if roa > 0 else 0.0) * 0.3

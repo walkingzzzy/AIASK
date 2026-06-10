@@ -80,11 +80,18 @@ def _clip(value: float, lower: float, upper: float) -> float:
 
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
-        if value in (None, ""):
-            return default
-        return float(value)
+        fallback = float(default)
     except Exception:
-        return default
+        fallback = 0.0
+    if not math.isfinite(fallback):
+        fallback = 0.0
+    try:
+        if value in (None, ""):
+            return fallback
+        parsed = float(value)
+    except Exception:
+        return fallback
+    return parsed if math.isfinite(parsed) else fallback
 
 
 def _parse_iso_date(value: Any) -> date | None:
@@ -161,10 +168,7 @@ class FinancialSemanticConfig:
 
         def _env_float(name: str, *fallbacks: str, default: float) -> float:
             raw = _env_text(name, *fallbacks, default=str(default))
-            try:
-                return float(raw)
-            except Exception:
-                return float(default)
+            return _safe_float(raw, default)
 
         def _env_bool(name: str, *fallbacks: str, default: bool) -> bool:
             for key in (name, *fallbacks):
@@ -202,11 +206,29 @@ class FinancialSemanticConfig:
 class FinancialSemanticService:
     def __init__(self, config: Optional[FinancialSemanticConfig] = None):
         self.config = config or FinancialSemanticConfig.from_env()
-        self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+        self._client: httpx.AsyncClient | None = None
+
+    def _client_is_closed(self) -> bool:
+        client = self._client
+        if client is None:
+            return True
+        try:
+            return bool(getattr(client, "is_closed"))
+        except Exception:
+            return False
+
+    async def _ensure_client(self) -> httpx.AsyncClient:
+        if self._client_is_closed():
+            self._client = httpx.AsyncClient(follow_redirects=True, http2=False)
+        return self._client
 
     async def close(self) -> None:
+        client = self._client
+        self._client = None
+        if client is None:
+            return
         try:
-            await self._client.aclose()
+            await client.aclose()
         except Exception:
             pass
 
@@ -214,12 +236,12 @@ class FinancialSemanticService:
         return bool(self.config.enabled)
 
     def _timeout(self) -> httpx.Timeout:
-        timeout = max(float(self.config.timeout_sec or 20.0), 5.0)
+        timeout = max(_safe_float(self.config.timeout_sec, 20.0), 5.0)
         return httpx.Timeout(
-            connect=max(1.0, min(float(self.config.connect_timeout_sec or timeout), timeout)),
+            connect=max(1.0, min(_safe_float(self.config.connect_timeout_sec, min(timeout, 5.0)), timeout)),
             read=timeout,
-            write=max(1.0, min(float(self.config.write_timeout_sec or timeout), timeout)),
-            pool=max(1.0, min(float(self.config.pool_timeout_sec or timeout), timeout)),
+            write=max(1.0, min(_safe_float(self.config.write_timeout_sec, min(timeout, 10.0)), timeout)),
+            pool=max(1.0, min(_safe_float(self.config.pool_timeout_sec, min(timeout, 5.0)), timeout)),
         )
 
     def _normalize_documents(self, documents: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -310,7 +332,7 @@ class FinancialSemanticService:
             headers["Authorization"] = f"Bearer {self.config.api_key}"
         payload = {
             "model": self.config.model,
-            "temperature": self.config.temperature,
+            "temperature": _clip(_safe_float(self.config.temperature, 0.1), 0.0, 1.0),
             "response_format": {"type": "json_object"},
             "messages": [
                 {
@@ -346,7 +368,8 @@ class FinancialSemanticService:
                 },
             ],
         }
-        response = await self._client.post(endpoint, headers=headers, json=payload, timeout=self._timeout())
+        client = await self._ensure_client()
+        response = await client.post(endpoint, headers=headers, json=payload, timeout=self._timeout())
         response.raise_for_status()
         body = response.json()
         choices = list(body.get("choices") or []) if isinstance(body, dict) else []
@@ -371,7 +394,8 @@ class FinancialSemanticService:
                 },
             ],
         }
-        response = await self._client.post(endpoint, json=payload, timeout=self._timeout())
+        client = await self._ensure_client()
+        response = await client.post(endpoint, json=payload, timeout=self._timeout())
         response.raise_for_status()
         body = response.json()
         message = body.get("message") if isinstance(body, dict) else {}
@@ -405,14 +429,25 @@ class FinancialSemanticService:
         credibility_values = []
         risk_counts: dict[str, int] = {}
         event_counts: dict[str, int] = {}
+        output_documents: list[dict[str, Any]] = []
         for row in rows:
             credibility = _clip(_safe_float(row.get("credibility"), 0.6), 0.0, 1.0)
             recency = _clip(_safe_float(row.get("recency"), 0.85), 0.0, 1.0)
+            entity = _clip(_safe_float(row.get("entity_sentiment")), -1.0, 1.0)
+            event = _clip(_safe_float(row.get("event_sentiment")), -1.0, 1.0)
+            surprise_value = _clip(_safe_float(row.get("surprise")), 0.0, 1.0)
             weight = max(credibility * recency, 1e-6)
-            weighted_sentiments.append(weight * _clip(_safe_float(row.get("entity_sentiment")), -1.0, 1.0))
-            weighted_events.append(weight * _clip(_safe_float(row.get("event_sentiment")), -1.0, 1.0))
-            weighted_surprises.append(weight * _clip(_safe_float(row.get("surprise")), 0.0, 1.0))
+            weighted_sentiments.append(weight * entity)
+            weighted_events.append(weight * event)
+            weighted_surprises.append(weight * surprise_value)
             credibility_values.append(credibility)
+            sanitized_row = dict(row)
+            sanitized_row["entity_sentiment"] = round(entity, 4)
+            sanitized_row["event_sentiment"] = round(event, 4)
+            sanitized_row["surprise"] = round(surprise_value, 4)
+            sanitized_row["credibility"] = round(credibility, 4)
+            sanitized_row["recency"] = round(recency, 4)
+            output_documents.append(sanitized_row)
             for tag in list(row.get("risk_tags") or []):
                 name = str(tag).strip()
                 if name:
@@ -443,7 +478,7 @@ class FinancialSemanticService:
             "credibility": round(float(credibility), 4),
             "event_types": [{"tag": name, "count": count} for name, count in top_events[:8]],
             "risk_tags": [{"tag": name, "count": count} for name, count in top_risks[:8]],
-            "documents": rows[:20],
+            "documents": output_documents[:20],
         }
 
     async def analyze_documents(self, documents: list[dict[str, Any]]) -> dict[str, Any]:

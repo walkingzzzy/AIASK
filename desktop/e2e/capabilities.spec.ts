@@ -452,6 +452,309 @@ function dataSyncPlanPayload(body: Record<string, unknown> = {}) {
   };
 }
 
+function stockRadarStatusPayload() {
+  return {
+    status: "ready",
+    counts: { alert: 1, watch: 1, observe: 0, reject: 0 },
+    degraded_flags: [],
+    latest_run: {
+      run_id: "radar_e2e_20260608",
+      status: "completed",
+      started_at: "2026-06-08T14:30:00+08:00",
+      finished_at: "2026-06-08T14:31:00+08:00"
+    },
+    digest_preview: "企微 / Telegram 预览：北方稀土、工业富联进入观察池，不含交易指令。"
+  };
+}
+
+function stockRadarCandidatesPayload(tier = "") {
+  const candidates = [
+    {
+      candidate_id: "radar_candidate_e2e_001",
+      run_id: "radar_e2e_20260608",
+      symbol: "600111",
+      stock_name: "北方稀土",
+      tier: "alert",
+      radar_score: 84.5,
+      event_id: "radar_event_e2e_001",
+      event_type: "policy_shock",
+      direction: "bullish",
+      summary: "稀土出口管制事件触发观察池候选，证据链来自政策新闻与主题暴露。",
+      source_doc_uids: ["doc_radar_policy_001", "doc_radar_theme_002"],
+      source_chain: [{ uid: "doc_radar_policy_001", kind: "news", title: "稀土出口管制" }],
+      extraction: { confidence: 0.82, event_type: "policy_shock" },
+      confirmations: { cross_source: true, theme_exposure: "critical_minerals" },
+      risk_flags: []
+    },
+    {
+      candidate_id: "radar_candidate_e2e_002",
+      run_id: "radar_e2e_20260608",
+      symbol: "601138",
+      stock_name: "工业富联",
+      tier: "watch",
+      radar_score: 66.0,
+      event_id: "radar_event_e2e_002",
+      event_type: "supply_chain",
+      direction: "neutral",
+      summary: "供应链文本触发观察级候选，仍需更多确认。",
+      source_doc_uids: ["doc_radar_supply_001"],
+      source_chain: [{ uid: "doc_radar_supply_001", kind: "filing", title: "供应链观察" }],
+      extraction: { confidence: 0.64, event_type: "supply_chain" },
+      confirmations: { cross_source: false },
+      risk_flags: ["needs_confirmation"]
+    }
+  ];
+  const filtered = tier ? candidates.filter((candidate) => candidate.tier === tier) : candidates;
+  return { status: "ready", candidates: filtered, count: filtered.length };
+}
+
+function stockRadarDigestPayload() {
+  return {
+    status: "ready",
+    digest_preview: "企微 / Telegram 预览：北方稀土进入警报观察，工业富联进入观察列表。仅为观察池信息，不含买卖指令。",
+    channels: ["wecom", "telegram"],
+    push_logs: [{ push_id: "radar_push_e2e", channel: "preview", status: "preview", candidate_count: 2 }]
+  };
+}
+
+function marketTemperatureSnapshotPayload(body: Record<string, unknown> = {}) {
+  const asOf = String(body.as_of || "2026-06-08");
+  const industries = [
+    {
+      code: "801750",
+      name: "计算机",
+      stock_count: 48,
+      ma20_breadth: 0.7708,
+      advance_count: 34,
+      decline_count: 11,
+      amount: 428.35,
+      market_cap_weight: 0.118,
+      temperature: 74.42,
+      state: "warm"
+    },
+    {
+      code: "801080",
+      name: "电子",
+      stock_count: 62,
+      ma20_breadth: 0.738,
+      advance_count: 41,
+      decline_count: 18,
+      amount: 512.9,
+      market_cap_weight: 0.146,
+      temperature: 71.84,
+      state: "warm"
+    },
+    {
+      code: "801780",
+      name: "银行",
+      stock_count: 34,
+      ma20_breadth: 0.5294,
+      advance_count: 17,
+      decline_count: 15,
+      amount: 216.72,
+      market_cap_weight: 0.201,
+      temperature: 53.27,
+      state: "neutral"
+    },
+    {
+      code: "801730",
+      name: "电力设备",
+      stock_count: 55,
+      ma20_breadth: 0.25,
+      advance_count: 15,
+      decline_count: 37,
+      amount: 276.54,
+      market_cap_weight: 0.133,
+      temperature: 27.34,
+      state: "cool"
+    }
+  ];
+  return {
+    contract_version: "market_temperature.v1",
+    as_of: asOf,
+    market: {
+      stock_count: 300,
+      trend_known_count: 296,
+      ma20_breadth: 0.5473,
+      advance_count: 151,
+      decline_count: 136,
+      flat_count: 13,
+      advance_ratio: 0.5033,
+      avg_pct_change: 0.12,
+      weighted_pct_change: 0.18,
+      temperature: 55.84,
+      state: "neutral"
+    },
+    industries,
+    hot_industries: industries.slice(0, 3),
+    cold_industries: industries.slice().reverse(),
+    quality: {
+      status: "healthy",
+      warnings: [],
+      trend_coverage: 0.9867,
+      loaded_stock_rows: 300,
+      missing_kline_rows: 0,
+      industry_count: industries.length
+    },
+    source_chain: ["desktop.e2e", "market_temperature.fixture"]
+  };
+}
+
+function marketTemperatureCacheReadinessPayload(body: Record<string, unknown> = {}) {
+  return {
+    ready: true,
+    status: "fresh",
+    read_only: true,
+    as_of: String(body.as_of || "2026-06-08"),
+    max_stale_days: 1,
+    staleness_days: 1,
+    quality_status: "healthy",
+    degraded: false,
+    warnings: [],
+    blockers: [],
+    cache: { updated_at: "2026-06-08T15:05:00Z", source: "market_temperature_snapshots" },
+    source_chain: ["desktop.e2e", "cache_readiness"]
+  };
+}
+
+function marketTemperatureCacheHistoryPayload() {
+  return {
+    items: [
+      { as_of: "2026-06-08", market_temperature: 55.84, market_state: "neutral", stock_count: 300, industry_count: 4, quality_status: "healthy", warnings: [], updated_at: "2026-06-08T15:05:00Z" },
+      { as_of: "2026-06-07", market_temperature: 47.2, market_state: "neutral", stock_count: 298, industry_count: 4, quality_status: "healthy", warnings: [], updated_at: "2026-06-07T15:04:00Z" },
+      { as_of: "2026-06-06", market_temperature: 32.4, market_state: "cool", stock_count: 294, industry_count: 4, quality_status: "degraded", warnings: ["partial data"], updated_at: "2026-06-06T15:03:00Z" }
+    ],
+    count: 3,
+    limit: 10,
+    include_snapshot: false,
+    source_chain: ["desktop.e2e", "cache_history"]
+  };
+}
+
+function marketTemperatureIndustryHistoryPayload() {
+  return {
+    items: [
+      { as_of: "2026-06-07", code: "801750", name: "计算机", temperature: 71.4, state: "warm", ma20_breadth: 0.771, advance_count: 34, decline_count: 11, stock_count: 48, market_temperature: 47.2, market_state: "neutral", quality_status: "healthy", warnings: [], updated_at: "2026-06-07T15:04:00Z" },
+      { as_of: "2026-06-07", code: "801780", name: "银行", temperature: 50.3, state: "neutral", ma20_breadth: 0.529, advance_count: 17, decline_count: 15, stock_count: 34, market_temperature: 47.2, market_state: "neutral", quality_status: "healthy", warnings: [], updated_at: "2026-06-07T15:04:00Z" },
+      { as_of: "2026-06-08", code: "801750", name: "计算机", temperature: 74.4, state: "warm", ma20_breadth: 0.771, advance_count: 34, decline_count: 11, stock_count: 48, market_temperature: 55.8, market_state: "neutral", quality_status: "healthy", warnings: [], updated_at: "2026-06-08T15:05:00Z" },
+      { as_of: "2026-06-08", code: "801780", name: "银行", temperature: 53.3, state: "neutral", ma20_breadth: 0.529, advance_count: 17, decline_count: 15, stock_count: 34, market_temperature: 55.8, market_state: "neutral", quality_status: "healthy", warnings: [], updated_at: "2026-06-08T15:05:00Z" }
+    ],
+    count: 4,
+    limit: 10,
+    top_n: 3,
+    include_source_chain: false,
+    source_chain: ["desktop.e2e", "industry_history"]
+  };
+}
+
+function marketTemperatureIndustryConstituentsPayload(body: Record<string, unknown> = {}) {
+  const industry = String(body.industry || "计算机");
+  return {
+    items: [
+      { code: "300001", name: "计算机 Leader", industry, sector: industry, market: "SZ", market_cap: 1820.5, pe_ratio: 24.1, pb_ratio: 3.2, list_date: "2010-01-08" },
+      { code: "600001", name: "计算机 Growth", industry, sector: industry, market: "SH", market_cap: 1302.4, pe_ratio: 19.7, pb_ratio: 2.8, list_date: "2008-04-21" }
+    ],
+    count: 2,
+    total_matches: 2,
+    limit: 8,
+    offset: 0,
+    industry,
+    match_mode: "contains",
+    include_source_chain: false,
+    source_chain: ["desktop.e2e", "industry_constituents"]
+  };
+}
+
+function marketTemperatureForwardValidationPayload() {
+  return {
+    matrix: {
+      warm: {
+        "1d": { sample_n: 18, direction_hits: 12, reliable: true, avg_forward_return: 0.42, hit_rate: 0.667 },
+        "3d": { sample_n: 16, direction_hits: 10, reliable: true, avg_forward_return: 0.76, hit_rate: 0.625 }
+      },
+      neutral: {
+        "1d": { sample_n: 24, direction_hits: 15, reliable: true, avg_forward_return: 0.06, hit_rate: 0.625 },
+        "3d": { sample_n: 22, direction_hits: 12, reliable: true, avg_forward_return: 0.18, hit_rate: 0.545 }
+      },
+      cool: {
+        "1d": { sample_n: 14, direction_hits: 8, reliable: true, avg_forward_return: -0.31, hit_rate: 0.571 },
+        "3d": { sample_n: 12, direction_hits: 8, reliable: true, avg_forward_return: -0.64, hit_rate: 0.667 }
+      }
+    },
+    states: ["warm", "neutral", "cool"],
+    horizons: [1, 3, 5],
+    count: 56,
+    snapshot_count: 30,
+    limit: 120,
+    target_field: "benchmark_return",
+    requested_target_field: "benchmark_return",
+    benchmark_code: "000300",
+    benchmark_status: "available",
+    benchmark_bar_count: 76,
+    min_samples: 3,
+    include_samples: false,
+    samples: [],
+    source_chain: ["desktop.e2e", "forward_validation"]
+  };
+}
+
+function factoryEventListPayload() {
+  return {
+    events: [
+      {
+        event_id: "evt_e2e_001",
+        event_name: "稀土出口管制(e2e)",
+        event_type: "policy_shock",
+        event_source: "manual",
+        status: "active",
+        direction: "bullish",
+        intensity: 0.85,
+        confidence: 0.7,
+        primary_themes: ["critical_minerals"],
+        operator_id: "operator_e2e",
+        approver_id: "approver_e2e",
+        created_at: "2026-06-08T14:20:00+08:00"
+      }
+    ],
+    count: 1
+  };
+}
+
+function factoryEventPreviewTasksPayload(eventId = "evt_e2e_001") {
+  return {
+    event_id: eventId,
+    impacts: [{ theme_code: "critical_minerals", depth: 0, magnitude: 0.85 }],
+    candidate_symbols: ["600111", "600259"],
+    target_count: 2,
+    warnings: [],
+    preview_mode: "real_bfs"
+  };
+}
+
+function factoryEventLineagePayload(eventId = "evt_e2e_001") {
+  return {
+    lineage: [
+      {
+        lineage_id: 1,
+        event_id: eventId,
+        event_name: "稀土出口管制(e2e)",
+        event_status: "active",
+        task_id: "event_evt_e2e_001_critical_minerals",
+        theme_code: "critical_minerals",
+        impact_direction: "positive",
+        impact_magnitude: 0.85,
+        target_symbols: ["600111", "600259"],
+        target_count: 2,
+        breadth_resolved: "narrow",
+        generated_at: "2026-06-08T14:22:00+08:00",
+        gate_1_passed: 1,
+        strategies_submitted: 1
+      }
+    ],
+    count: 1
+  };
+}
+
 function quantResearchRunPayload() {
   return {
     success: true,
@@ -837,11 +1140,11 @@ function tradePredictionEnvelope(data: unknown) {
 function connectorsSummaryPayload() {
   return {
     data: {
-      total: 4,
-      connected: 2,
-      configured: 3,
+      total: 5,
+      connected: 3,
+      configured: 4,
       by_type: {
-        financial: { count: 1, connected: 1 },
+        financial: { count: 2, connected: 2 },
         platform: { count: 1, connected: 0 },
         mcp: { count: 1, connected: 1 },
         plugin: { count: 1, connected: 0 }
@@ -858,6 +1161,18 @@ function connectorsSummaryPayload() {
           status: "ready",
           description: "Mock AKShare data connector",
           metadata: { tools_read: ["quote"] }
+        },
+        {
+          id: "financial:tongdaxin",
+          name: "tongdaxin",
+          type: "financial",
+          category: "data",
+          enabled: true,
+          configured: true,
+          connected: true,
+          status: "ready",
+          description: "Mock Tongdaxin market connector",
+          metadata: { tools_read: ["quote"], wizard: "financial:tongdaxin" }
         },
         {
           id: "feishu",
@@ -953,6 +1268,143 @@ function workbenchSummaryPayload() {
   };
 }
 
+function financialManagerCatalogPayload() {
+  return {
+    object: "aiask.desktop.financial_manager.catalog",
+    groups: [
+      { id: "overview", label: "总览", description: "准备度和安全状态" },
+      { id: "market-research", label: "市场与研究", description: "个股分析和研究读取" },
+      { id: "risk-performance", label: "风险与绩效", description: "风险和数据准备度" },
+      { id: "portfolio-watchlist", label: "组合与自选", description: "组合读取和审批意图" },
+      { id: "broker-readonly", label: "券商只读", description: "券商只读查询" }
+    ],
+    actions: [
+      {
+        capability_id: "portfolio",
+        action_id: "risk",
+        group: "risk-performance",
+        label: "组合风险",
+        mode: "read_only",
+        status: "ready",
+        available: true,
+        tool: "agent_portfolio_risk",
+        default_params: { codes: ["600519", "000001"], weights: [0.5, 0.5] },
+        availability: { reason_code: "agent_tool_ready", required_tool: "agent_portfolio_risk", agent_registry_has_tool: true }
+      },
+      {
+        capability_id: "stock-analysis",
+        action_id: "analyze_stock",
+        group: "market-research",
+        label: "个股分析",
+        mode: "read_only",
+        status: "ready",
+        available: true,
+        tool: "agent_analyze_stock",
+        default_params: { code: "600519", include_decision: false },
+        availability: { reason_code: "agent_tool_ready", required_tool: "agent_analyze_stock", agent_registry_has_tool: true }
+      },
+      {
+        capability_id: "quant",
+        action_id: "data_gate",
+        group: "risk-performance",
+        label: "量化数据门禁",
+        mode: "read_only",
+        status: "ready",
+        available: true,
+        tool: "agent_quant_data_gate",
+        default_params: { codes: ["600519", "000001"], max_stale_days: 5 },
+        availability: { reason_code: "agent_tool_ready", required_tool: "agent_quant_data_gate", agent_registry_has_tool: true }
+      },
+      {
+        capability_id: "portfolio",
+        action_id: "create",
+        group: "portfolio-watchlist",
+        label: "创建组合意图",
+        mode: "stateful_intent",
+        status: "intent_ready",
+        available: true,
+        intent_action: "portfolio_manager.create",
+        default_params: { name: "Desktop portfolio" }
+      },
+      {
+        capability_id: "broker-live",
+        action_id: "place_order",
+        group: "broker-readonly",
+        label: "实盘下单",
+        mode: "blocked",
+        status: "blocked",
+        available: false,
+        blocked_reason: "金融经理台 V1 固定禁用实盘券商下单。"
+      }
+    ],
+    summary: { ready: 3, intent_ready: 1, blocked: 1 },
+    safety: { mode: "read_only_plus_intents", live_trading_enabled: false, stateful_execution: "action_intent_only", secrets_redacted: true },
+    secrets_redacted: true
+  };
+}
+
+function financialManagerQueryPayload(body: Record<string, unknown>) {
+  const capabilityId = String(body.capability_id || "");
+  const actionId = String(body.action_id || "");
+  if (capabilityId === "stock-analysis" && actionId === "analyze_stock") {
+    const params = typeof body.params === "object" && body.params && !Array.isArray(body.params)
+      ? body.params as Record<string, unknown>
+      : {};
+    const code = String(params.code || params.stock_code || params.symbol || "600519");
+    return {
+      object: "aiask.desktop.financial_manager.query",
+      capability_id: capabilityId,
+      action_id: actionId,
+      tool: "agent_analyze_stock",
+      success: true,
+      data: {
+        status: "ready",
+        code,
+        rating: "mock_watch",
+        risk: "medium",
+        decision: params.include_decision ? "observe_only" : "not_requested",
+        analysis: { signal: "watch", confidence: 0.72, investment_advice: false }
+      },
+      error: null,
+      meta: { side_effect: { level: "read_only", target: "agent_analyze_stock", confirmation_required: false, idempotent: true } },
+      secrets_redacted: true
+    };
+  }
+  if (capabilityId === "quant" && actionId === "data_gate") {
+    return {
+      object: "aiask.desktop.financial_manager.query",
+      capability_id: capabilityId,
+      action_id: actionId,
+      tool: "agent_quant_data_gate",
+      success: true,
+      data: {
+        status: "ready",
+        ready: true,
+        codes: ["600519", "000001"],
+        coverage: { requested: 2, missing_count: 0, stale_count: 0 },
+        blocking_reason: null
+      },
+      error: null,
+      meta: { side_effect: { level: "read_only", target: "agent_quant_data_gate", confirmation_required: false, idempotent: true } },
+      secrets_redacted: true
+    };
+  }
+  return {
+    object: "aiask.desktop.financial_manager.query",
+    capability_id: capabilityId || "portfolio",
+    action_id: actionId || "risk",
+    tool: "agent_portfolio_risk",
+    success: true,
+    data: {
+      status: "ready",
+      portfolio_risk: { var_95: -0.021, stress: "passed", concentration: "medium" }
+    },
+    error: null,
+    meta: { side_effect: { level: "read_only", target: "agent_portfolio_risk", confirmation_required: false, idempotent: true } },
+    secrets_redacted: true
+  };
+}
+
 function runEventsPayload() {
   return {
     object: "list",
@@ -976,6 +1428,16 @@ async function fulfillJson(route: Route, payload: unknown, status = 200) {
 
 async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } = {}) {
   const factoryMode = options.factoryMode || "success";
+  let webhookSubscriptions = [
+    {
+      webhook_id: "webhook_fixture",
+      name: "Mock Webhook",
+      events: ["MCP UI smoke test"],
+      prompt: "mock",
+      enabled: true,
+      status: "ready"
+    }
+  ];
   await page.route(`${API_ORIGIN}/**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1001,6 +1463,7 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
           { name: "agent_factory_status", capability: "factory", category: "quant", status: "ready", side_effect: "read_only", description: "Mock factory status" },
           { name: "agent_mcp_manage", capability: "mcp", category: "integration", status: "gated", side_effect: "stateful", description: "Mock MCP management" },
           { name: "agent_quant_data_gate", capability: "data", category: "quant", status: "ready", side_effect: "read_only", description: "Mock data gate" },
+          { name: "agent_portfolio_risk", capability: "portfolio_risk", category: "financial_read", status: "ready", side_effect: "read_only", description: "Mock portfolio risk" },
           { name: "agent_memory_search", capability: "memory", category: "memory", status: "ready", side_effect: "read_only", description: "Mock memory search" },
           { name: "agent_action_intent_create", capability: "approval", category: "governance", status: "ready", side_effect: "stateful", description: "Mock approval intent" }
         ]
@@ -1037,6 +1500,37 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
       return fulfillJson(route, dataSyncPlanPayload(body));
     }
+    if (path === "/v1/desktop/financial-manager/catalog") {
+      return fulfillJson(route, financialManagerCatalogPayload());
+    }
+    if (path === "/v1/desktop/financial-manager/status") {
+      return fulfillJson(route, {
+        object: "aiask.desktop.financial_manager.status",
+        status: "ready",
+        catalog_summary: financialManagerCatalogPayload().summary,
+        broker: { live_trading_enabled: false, read_only_surfaces: ["ths_query_position"], blocked_actions: ["ths_place_order"] },
+        mcp: { registration: "registered", servers: [{ name: "finance-demo", domain: "financial" }] },
+        secrets_redacted: true
+      });
+    }
+    if (path === "/v1/desktop/financial-manager/query") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, financialManagerQueryPayload(body));
+    }
+    if (path === "/v1/desktop/stock-radar/status") {
+      return fulfillJson(route, { success: true, data: stockRadarStatusPayload(), error: null, error_code: null });
+    }
+    if (path === "/v1/desktop/stock-radar/candidates") {
+      return fulfillJson(route, {
+        success: true,
+        data: stockRadarCandidatesPayload(url.searchParams.get("tier") || ""),
+        error: null,
+        error_code: null
+      });
+    }
+    if (path === "/v1/desktop/stock-radar/digest") {
+      return fulfillJson(route, { success: true, data: stockRadarDigestPayload(), error: null, error_code: null });
+    }
     if (path === "/v1/desktop/users/local-profile") {
       if (request.method() === "PATCH") {
         const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
@@ -1061,6 +1555,21 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     }
     if (path === "/v1/hermes/tools") {
       return fulfillJson(route, { data: hermesTools().map((tool) => ({ name: tool.aiask_tools[0], capability: tool.area, category: tool.area, status: tool.status, side_effect: "read_only", description: tool.hermes_tool })) });
+    }
+    if (path === "/v1/hermes/admin/tools/agent_security_scan") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        success: true,
+        data: {
+          status: "completed",
+          target: body.text ? "text" : body.path || ".",
+          include_env: body.include_env === true,
+          findings: [],
+          arguments: body
+        },
+        error: null,
+        error_code: null
+      });
     }
     if (path === "/v1/processes") {
       return fulfillJson(route, { data: [{ pid: 101, name: "aiask-agent", status: "running" }] });
@@ -1321,9 +1830,67 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path === "/v1/desktop/trade-predictions/matrix") {
       return fulfillJson(route, tradePredictionEnvelope(tradePredictionMatrix(queryRecord(url.searchParams))));
     }
+    if (path === "/v1/tools/agent_market_temperature_snapshot") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, { success: true, data: marketTemperatureSnapshotPayload(body), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_market_temperature_cache_readiness") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, { success: true, data: marketTemperatureCacheReadinessPayload(body), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_market_temperature_cache_history") {
+      return fulfillJson(route, { success: true, data: marketTemperatureCacheHistoryPayload(), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_market_temperature_industry_history") {
+      return fulfillJson(route, { success: true, data: marketTemperatureIndustryHistoryPayload(), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_market_temperature_industry_constituents") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, { success: true, data: marketTemperatureIndustryConstituentsPayload(body), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_market_temperature_forward_validation") {
+      return fulfillJson(route, { success: true, data: marketTemperatureForwardValidationPayload(), error: null, error_code: null });
+    }
     if (path === "/v1/tools/agent_strategy_domain_events") {
       const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
       return fulfillJson(route, strategyEventsEnvelope(typeof body.event_type === "string" ? body.event_type : null));
+    }
+    if (path === "/v1/tools/agent_factory_event_list") {
+      return fulfillJson(route, { success: true, data: factoryEventListPayload(), error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_factory_event_preview_tasks") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        success: true,
+        data: factoryEventPreviewTasksPayload(String(body.event_id || "evt_e2e_001")),
+        error: null,
+        error_code: null
+      });
+    }
+    if (path === "/v1/tools/agent_factory_event_lineage") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        success: true,
+        data: factoryEventLineagePayload(String(body.event_id || "evt_e2e_001")),
+        error: null,
+        error_code: null
+      });
+    }
+    if (path === "/v1/tools/agent_factory_theme_exposure_status") {
+      return fulfillJson(route, {
+        success: true,
+        data: { row_count: 42, symbol_count: 12, theme_count: 3, latest_updated_at: "2026-06-08T14:24:00+08:00" },
+        error: null,
+        error_code: null
+      });
+    }
+    if (path === "/v1/tools/agent_factory_event_outbox_status") {
+      return fulfillJson(route, {
+        success: true,
+        data: { counts: { processed: 2, failed: 0 }, latest: [] },
+        error: null,
+        error_code: null
+      });
     }
     if (path === "/v1/tools/agent_quant_data_gate") {
       return fulfillJson(route, { success: true, data: { status: "partial", missing: ["000858"], stale: ["000001"] }, error: null, error_code: null });
@@ -1341,7 +1908,26 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       return fulfillJson(route, { object: "list", data: [{ kind: "response", object_id: "resp_fixture", session_id: "session_fixture", user_id: "local-e2e", content: "AIASK_OK search result" }] });
     }
     if (path === "/v1/webhooks") {
-      return fulfillJson(route, { data: [] });
+      if (request.method() === "POST") {
+        const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+        const created = {
+          webhook_id: "webhook_fixture_created",
+          name: String(body.name || "Created Webhook"),
+          events: Array.isArray(body.events) ? body.events : ["MCP UI smoke test"],
+          prompt: String(body.prompt || ""),
+          enabled: true,
+          status: "ready"
+        };
+        webhookSubscriptions = [created, ...webhookSubscriptions];
+        return fulfillJson(route, { object: "webhook", data: created });
+      }
+      return fulfillJson(route, { object: "list", data: webhookSubscriptions });
+    }
+    const webhookMatch = path.match(/^\/v1\/webhooks\/([^/]+)$/);
+    if (webhookMatch && request.method() === "DELETE") {
+      const webhookId = decodeURIComponent(webhookMatch[1]);
+      webhookSubscriptions = webhookSubscriptions.filter((item) => item.webhook_id !== webhookId);
+      return fulfillJson(route, { object: "webhook.deleted", deleted: true, webhook_id: webhookId });
     }
     if (path === "/v1/approvals") {
       return fulfillJson(route, { data: [intentEnvelope("desktop.intent").data.intent] });
@@ -1387,20 +1973,56 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path.match(/^\/v1\/gateway\/platforms\/[^/]+\/health$/)) {
       return fulfillJson(route, { object: "aiask.gateway_platform_health", success: true, data: { status: "ready" } });
     }
-    if (path === "/v1/terminal/backends" || path === "/v1/terminal/sessions") {
-      return fulfillJson(route, { data: [] });
+    if (path === "/v1/terminal/backends") {
+      return fulfillJson(route, {
+        object: "list",
+        data: [{ name: "local-powershell", shell: "powershell", status: "ready", read_only_probe: true }]
+      });
+    }
+    if (path === "/v1/terminal/sessions") {
+      return fulfillJson(route, {
+        object: "list",
+        data: [{ session_id: "terminal_fixture", backend: "local-powershell", status: "idle", user_id: "local-e2e" }]
+      });
+    }
+    const terminalBackendSessionsMatch = path.match(/^\/v1\/terminal\/backends\/([^/]+)\/sessions$/);
+    if (terminalBackendSessionsMatch) {
+      const backend = decodeURIComponent(terminalBackendSessionsMatch[1]);
+      return fulfillJson(route, {
+        object: "list",
+        backend,
+        data: [{ session_id: "terminal_fixture", backend, status: "idle", user_id: "local-e2e" }]
+      });
     }
     if (path === "/v1/learning/status") {
       return fulfillJson(route, { status: "ready" });
     }
     if (path === "/v1/learning/review") {
-      return fulfillJson(route, { data: [] });
+      return fulfillJson(route, { object: "list", data: [{ proposal_id: "learn_fixture", status: "pending_review", title: "Mock 学习建议", summary: "Apply a safer prompt." }] });
+    }
+    if (path === "/v1/learning/apply") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, { object: "learning.proposal", data: { proposal_id: body.proposal_id || "learn_fixture", status: "applied" } });
     }
     if (path === "/v1/rl/environments") {
-      return fulfillJson(route, { data: { default: "mock" } });
+      return fulfillJson(route, { object: "list", data: { environments: [{ id: "finance_safe_eval", status: "ready" }], default: "finance_safe_eval" } });
+    }
+    if (path === "/v1/rl/config") {
+      if (request.method() === "PATCH") return fulfillJson(route, { object: "aiask.rl_config", data: { status: "updated" } });
+      return fulfillJson(route, { object: "aiask.rl_config", data: { provider: "mock", max_steps: 10, status: "configured" }, secrets_redacted: true });
     }
     if (path === "/v1/rl/runs") {
-      return fulfillJson(route, { data: [] });
+      if (request.method() === "POST") return fulfillJson(route, { object: "rl.run", data: { run_id: "rl_fixture_new", environment: "finance_safe_eval", status: "running" } });
+      return fulfillJson(route, { object: "list", data: [{ run_id: "rl_fixture", environment: "finance_safe_eval", status: "dry_run_ready" }] });
+    }
+    const rlRunMatch = path.match(/^\/v1\/rl\/runs\/([^/]+)(?:\/(stop|results|logs))?$/);
+    if (rlRunMatch) {
+      const runId = decodeURIComponent(rlRunMatch[1]);
+      const action = rlRunMatch[2];
+      if (action === "stop") return fulfillJson(route, { object: "rl.stop", data: { run_id: runId, status: "stopped" } });
+      if (action === "results") return fulfillJson(route, { object: "rl.results", data: { run_id: runId, metrics: { reward: 1 } } });
+      if (action === "logs") return fulfillJson(route, { object: "rl.logs", data: { run_id: runId, lines: ["mock rl log"] } });
+      return fulfillJson(route, { object: "rl.run", data: { run_id: runId, environment: "finance_safe_eval", status: "dry_run_ready" } });
     }
     return fulfillJson(route, { error: `Unhandled fixture route: ${path}` }, 500);
   });
@@ -1441,27 +2063,37 @@ test.afterEach(async ({ page }) => {
 });
 
 const VIEW_LABELS: Record<string, string> = {
-  Overview: "Overview",
-  Agent: "Workbench",
-  Workbench: "Workbench",
-  "Coverage Matrix": "Coverage",
-  Models: "Models",
-  "Data & Sync": "Data",
-  MCP: "MCP / Connectors",
-  Skills: "Plugins / Skills",
-  Automation: "Automations",
-  "Strategy Factory": "Strategy Factory",
-  "Factor Factory": "Factor Factory",
-  Incubation: "Incubation Factory",
-  "Local User": "User",
-  Tools: "Tools",
-  Capabilities: "Capabilities",
-  "Event Console": "Event Console",
-  "Factory Events": "Factory Events",
-  Diagnostics: "Diagnostics",
-  "Agent Status": "Agent",
-  Workflows: "Workflows",
-  Settings: "Settings"
+  Overview: "总览",
+  Agent: "工作台",
+  Workbench: "工作台",
+  Sessions: "会话",
+  "Runs / Events": "运行 / 事件",
+  "Coverage Matrix": "覆盖矩阵",
+  Models: "模型",
+  "Data & Sync": "数据",
+  MCP: "MCP / 连接器",
+  Skills: "插件 / 技能",
+  "Projects / Contexts": "项目 / 上下文",
+  Approvals: "审批",
+  "Finance Lab": "金融实验室",
+  Integrations: "集成",
+  Automation: "自动化",
+  Readiness: "准备度 / 健康",
+  "Financial Manager": "金融经理台",
+  "Market Temperature": "市场温度",
+  "Quant Research": "量化研究",
+  "Strategy Factory": "策略工厂",
+  "Factor Factory": "因子工厂",
+  Incubation: "孵化工厂",
+  "Local User": "本地用户",
+  Tools: "工具",
+  Capabilities: "能力中心",
+  "Event Console": "事件控制台",
+  "Factory Events": "工厂事件",
+  Diagnostics: "诊断",
+  "Agent Status": "智能体",
+  Workflows: "工作流",
+  Settings: "设置"
 };
 
 const TAB_LABELS: Record<string, string> = {
@@ -1478,23 +2110,27 @@ const TAB_LABELS: Record<string, string> = {
 };
 
 const CONTROL_LABELS: Record<string, string> = {
-  Connect: "连接智能体",
+  Connect: "连接 AIASK",
   Refresh: "刷新",
-  Run: "Run",
+  Run: "运行线程任务",
   Search: "搜索",
   "Sync Agent state": "同步 AIASK 状态",
   "Finance safe mode": "Finance safe",
-  "Finance safe": "Finance safe",
+  "Finance safe": "金融安全",
   "Hermes full mode": "Hermes full 模式",
   "Hermes full": "Hermes full",
-  "Run thread task": "Run",
+  "Run thread task": "运行线程任务",
   "Load run events": "加载运行事件",
   "Load run events for selected task": "Load events for the selected run",
   "Generate sync plan": "生成同步计划",
   "Create approval intent": "创建审批意图",
+  "Run research": "运行研究",
+  "Run read-only workflow": "运行只读工作流",
+  "Run query": "运行查询",
   "Refresh capability review": "刷新能力评审",
   "Register local MCP server": "注册本地 MCP 服务",
   "Discover or refresh MCP server": "发现或刷新 MCP 服务",
+  "Run MCP read-only smoke": "运行 MCP 只读冒烟测试",
   "Read MCP resource": "读取 MCP 资源",
   "Get MCP prompt": "获取 MCP 提示词",
   "Start MCP OAuth flow": "启动 MCP OAuth 流程",
@@ -1509,7 +2145,7 @@ const CONTROL_LABELS: Record<string, string> = {
   "Maintenance intent": "创建维护意图",
   "Run intent": "创建运行意图",
   "Dry-run intent": "创建试运行意图",
-  "Save profile": "保存 profile",
+  "Save profile": "保存画像",
   "Save local profile": "保存画像",
   "Run safe probe": "运行安全探测",
   "Run safe probe for agent_": "运行安全探测 agent_",
@@ -1527,10 +2163,17 @@ const CONTROL_LABELS: Record<string, string> = {
   "Test connection": "测试连接",
   "Reset endpoint to default Agent endpoint": "恢复默认 Agent 端点",
   "Refresh connectors": "刷新连接器",
+  "Load terminal sessions": "加载终端会话",
   "Connector detail": "详情",
   "Connector test": "测试",
   Reauthorize: "重新认证",
   "risk-review Risk review": "risk-review Risk review",
+  "Projects / Contexts": "项目 / 上下文",
+  "Plugins / Skills gated": "插件 / 技能 受限",
+  "Plugins / Skills ready": "插件 / 技能 就绪",
+  Approvals: "审批",
+  "Finance Lab": "金融实验室",
+  Integrations: "集成",
   "Load messages": "加载消息",
   "Run the first registered plugin tool": "运行第一个已注册插件工具",
   "Load plugin commands": "加载插件命令",
@@ -1545,18 +2188,46 @@ const CONTROL_LABELS: Record<string, string> = {
   "Pause job 每日研究监控": "暂停任务 每日研究监控",
   "Run job 每日研究监控": "运行任务 每日研究监控",
   "Delete job 每日研究监控": "删除任务 每日研究监控",
-  "Search tools input": "搜索工具输入"
+  "Search tools input": "搜索工具输入",
+  "初始化 Bootstrap": "初始化引导",
+  "排空 outbox": "排空出站队列"
 };
 
 const PLACEHOLDER_LABELS: Record<string, string> = {
   "resource uri": "资源 URI",
   "prompt name": "提示词名称",
   "OAuth server name": "OAuth 服务名称",
-  "Ask AIASK to research, code, inspect tools, or continue a session...": "Ask AIASK to research, inspect tools, produce a report, or continue the selected thread...",
+  "Ask AIASK to research, code, inspect tools, or continue a session...": "让 AIASK 研究、检查工具、生成报告，或继续当前线程...",
   "Search local sessions, responses, and memory": "搜索本地会话、回复和记忆",
   "Search tools": "搜索工具",
   "Search area, tool, platform...": "搜索领域、工具、平台...",
-  "payload text": "payload 文本"
+  "payload text": "载荷文本"
+};
+
+const EXPECTED_TEXT_LABELS: Record<string, string> = {
+  AGENT_STATUS_LOADED: "智能体状态已加载",
+  AIASK_ONLINE: "在线",
+  CONNECTORS_LOADED: "连接器已加载",
+  DATA_STATUS_LOADED: "数据状态已加载",
+  EVENTS_LOADED: "事件已加载",
+  FACTOR_FACTORY_LOADED: "因子工厂已加载",
+  FACTOR_MAINTENANCE_INTENT_CREATED: "因子维护意图已创建",
+  FACTOR_RUN_INTENT_CREATED: "因子运行意图已创建",
+  FACTORY_RELAY_LOADED: "工厂接力状态已加载",
+  INCUBATION_DRY_RUN_INTENT_CREATED: "孵化试运行意图已创建",
+  INCUBATION_LOADED: "孵化状态已加载",
+  INCUBATION_MAINTENANCE_INTENT_CREATED: "孵化维护意图已创建",
+  INCUBATION_RUN_ONCE_INTENT_CREATED: "孵化运行意图已创建",
+  JOBS_LOADED: "任务已加载",
+  LOCAL_PROFILE_LOADED: "本地画像已加载",
+  LOCAL_PROFILE_SAVED: "本地画像已保存",
+  MARKET_TEMPERATURE_LOADED: "快照已加载",
+  MODEL_STATUS_LOADED: "模型状态已加载",
+  RADAR_LOADED: "雷达已加载",
+  STRATEGY_FACTORY_INTENT_CREATED: "策略工厂意图已创建",
+  SYNC_INTENT_CREATED: "同步审批意图已创建",
+  SYNC_PLAN_READY: "同步计划已生成",
+  USER_DATA_SEARCHED: "用户数据已搜索"
 };
 
 const SETTINGS_STRUCTURE_BUTTONS = [
@@ -1580,21 +2251,19 @@ const SETTINGS_STRUCTURE_BUTTONS = [
 ];
 
 const LEGACY_REPLACEMENT_BUTTONS = [
-  "前往 Workbench",
-  "前往 Settings / Mode",
-  "前往 Tools / Intents / Approvals",
-  "前往 MCP / Connectors",
-  "前往 Runs / Events",
-  "前往 Readiness / Health",
-  "前往 Plugins / Skills",
-  "Open Workbench",
-  "Open Approvals",
-  "Open MCP / Connectors",
-  "Open Runs / Events",
-  "Open Readiness / Health",
-  "Open Plugins / Skills",
-  "Open Settings",
-  "Open Integrations",
+  "前往工作台",
+  "前往 工作台",
+  "前往设置",
+  "前往 设置",
+  "前往 审批",
+  "前往 MCP / 连接器",
+  "前往 运行 / 事件",
+  "前往 准备度 / 健康",
+  "前往 插件 / 技能",
+  "前往审批",
+  "前往 审批",
+  "前往集成",
+  "前往 集成",
 ];
 
 function viewLabel(name: string) {
@@ -1613,59 +2282,90 @@ function placeholderLabel(name: string) {
   return PLACEHOLDER_LABELS[name] || name;
 }
 
+function expectedTextLabel(text: string) {
+  return EXPECTED_TEXT_LABELS[text] || text;
+}
+
 Object.assign(VIEW_LABELS, {
-  Overview: "Overview",
-  Agent: "Workbench",
-  Workbench: "Workbench",
-  "Coverage Matrix": "Coverage",
-  Models: "Models",
-  "Data & Sync": "Data",
-  MCP: "MCP / Connectors",
-  Skills: "Plugins / Skills",
-  Automation: "Automations",
-  "Strategy Factory": "Strategy Factory",
-  "Factor Factory": "Factor Factory",
-  Incubation: "Incubation Factory",
-  "Local User": "User",
-  Tools: "Tools",
-  Capabilities: "Capabilities",
-  "Event Console": "Event Console",
-  "Factory Events": "Factory Events",
-  Diagnostics: "Diagnostics",
-  "Agent Status": "Agent",
-  Workflows: "Workflows",
-  Settings: "Settings"
+  Overview: "总览",
+  Agent: "工作台",
+  Workbench: "工作台",
+  Sessions: "会话",
+  "Runs / Events": "运行 / 事件",
+  "Coverage Matrix": "覆盖矩阵",
+  Models: "模型",
+  "Data & Sync": "数据",
+  MCP: "MCP / 连接器",
+  Skills: "插件 / 技能",
+  "Projects / Contexts": "项目 / 上下文",
+  Approvals: "审批",
+  "Finance Lab": "金融实验室",
+  Integrations: "集成",
+  Automation: "自动化",
+  "Financial Manager": "金融经理台",
+  "Market Temperature": "市场温度",
+  "Quant Research": "量化研究",
+  "Strategy Factory": "策略工厂",
+  "Factor Factory": "因子工厂",
+  Incubation: "孵化工厂",
+  "Local User": "本地用户",
+  Tools: "工具",
+  Capabilities: "能力中心",
+  "Event Console": "事件控制台",
+  "Factory Events": "工厂事件",
+  Diagnostics: "诊断",
+  "Agent Status": "智能体",
+  Workflows: "工作流",
+  Settings: "设置"
 });
 
 Object.assign(CONTROL_LABELS, {
   Refresh: "刷新",
-  "Sync Agent state": "Refresh AIASK status",
+  "Sync Agent state": "同步 AIASK 状态",
   "Test connection": "测试连接",
   "Reset endpoint to default Agent endpoint": "恢复默认 Agent 端点",
-  "Save profile": "保存 profile"
+  "Save profile": "保存画像",
+  "Update snapshot": "更新快照",
+  "Load terminal sessions": "加载终端会话",
+  "Refresh radar": "刷新雷达",
+  "Create radar run intent": "创建雷达运行意图",
+  "Create radar push preview intent": "创建推送预览意图",
+  "Create radar schedule intent": "创建调度意图",
+  "Run MCP read-only smoke": "运行 MCP 只读冒烟测试",
+  "初始化 Bootstrap": "初始化引导",
+  "排空 outbox": "排空出站队列"
 });
 
 async function openOverview(page: Page) {
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Thread-first workspace" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK 工作台" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "线程优先工作台" })).toBeVisible();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toBeVisible();
 }
 
 async function openSettings(page: Page) {
   if (await page.getByRole("button", { name: "返回对话", exact: true }).count()) return;
-  await page.getByRole("region", { name: "Workspace" }).getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
+  await page.getByRole("region", { name: "主工作区" }).getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
 }
 
-async function setControlToken(page: Page) {
+async function openSettingsSection(page: Page, sectionLabel: string) {
+  await openSettings(page);
+  await page.getByRole("navigation", { name: "设置导航" }).getByRole("button", { name: sectionLabel, exact: true }).click();
+}
+
+async function clickSettingsPanelRefresh(page: Page) {
+  await page.locator(".settings-section-stack").getByRole("button", { name: controlLabel("Refresh"), exact: true }).last().click();
+}
+
+async function setControlToken(page: Page, token = CONTROL_TOKEN) {
   await openSettings(page);
   await page.getByRole("button", { name: "令牌与权限", exact: true }).click();
   const controlTokenInput = page.locator("label.settings-row").filter({ hasText: "控制令牌" }).locator("input");
   await expect(controlTokenInput).toHaveCount(1);
-  await controlTokenInput.fill(CONTROL_TOKEN);
+  await controlTokenInput.fill(token);
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Test connection") }).click();
-  await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
   await page.getByRole("button", { name: "返回对话", exact: true }).click();
 }
 
@@ -1695,6 +2395,11 @@ async function openCollapsedNavGroup(page: Page, groupName: string, targetLabel:
   return true;
 }
 
+async function waitForMainViewReady(page: Page, context: string) {
+  await expect(page.getByLabel("Loading view"), `${context} loading fallback should finish`).toHaveCount(0, { timeout: 15_000 });
+  await expect(page.locator("main h1, main h2, main h3").first(), `${context} should render a heading`).toBeVisible({ timeout: 15_000 });
+}
+
 async function openMainView(page: Page, name: string) {
   const backToChat = page.getByRole("button", { name: "返回对话", exact: true });
   if (name !== "Settings" && (await backToChat.count())) {
@@ -1703,17 +2408,28 @@ async function openMainView(page: Page, name: string) {
 
   if (name === "Agent" || name === "Workbench") {
     await page.getByRole("navigation").getByRole("button", { name: viewLabel("Agent"), exact: true }).click();
+    await waitForMainViewReady(page, name);
     return;
   }
 
   if (name === "Settings") {
     await openSettings(page);
+    await waitForMainViewReady(page, name);
+    return;
+  }
+
+  if (name === "Sessions") {
+    const sessionsButton = page.getByRole("button").filter({ hasText: viewLabel("Sessions") }).first();
+    await expect(sessionsButton, "Sessions sidebar button should be visible").toBeVisible({ timeout: 15_000 });
+    await sessionsButton.click();
+    await waitForMainViewReady(page, name);
     return;
   }
 
   if (WORKFLOW_ENTRY_VIEWS.has(name)) {
     await page.getByRole("navigation").getByRole("button", { name: viewLabel("Workflows"), exact: true }).click();
     await clickShortcutByLabel(page, viewLabel(name));
+    await waitForMainViewReady(page, name);
     return;
   }
 
@@ -1740,18 +2456,35 @@ async function openMainView(page: Page, name: string) {
 
   const label = viewLabel(name);
   const navigationButton = page.getByRole("navigation").getByRole("button", { name: label, exact: true });
-  if (await navigationButton.count()) {
-    await navigationButton.click();
+  const navigationButtonCount = await navigationButton.count();
+  if (navigationButtonCount) {
+    await navigationButton.first().click();
+    await waitForMainViewReady(page, name);
     return;
   }
-  for (const groupName of ["Advanced Finance", "Advanced Ops", "Legacy / Advanced"]) {
-    if (await openCollapsedNavGroup(page, groupName, label)) return;
+  const navigationTextButton = page.getByRole("navigation").getByRole("button").filter({ hasText: label });
+  const navigationTextButtonCount = await navigationTextButton.count();
+  if (navigationTextButtonCount) {
+    await navigationTextButton.first().click();
+    await waitForMainViewReady(page, name);
+    return;
+  }
+  for (const groupName of ["高级金融", "高级运维", "旧入口 / 高级诊断"]) {
+    if (await openCollapsedNavGroup(page, groupName, label)) {
+      await waitForMainViewReady(page, name);
+      return;
+    }
   }
   await page.getByRole("button", { name: label, exact: true }).click();
+  await waitForMainViewReady(page, name);
 }
 
 async function openCapabilityTab(page: Page, name: string) {
-  await page.locator(".capabilities-tabs").getByRole("button", { name: tabLabel(name), exact: true }).click();
+  const tab = page.locator(".capabilities-tabs").getByRole("button", { name: tabLabel(name), exact: true });
+  await expect(tab, `Capability tab ${name} should be visible`).toBeVisible({ timeout: 15_000 });
+  await tab.click();
+  await expect(tab, `Capability tab ${name} should become active`).toHaveAttribute("aria-pressed", "true", { timeout: 15_000 });
+  await waitForMainViewReady(page, `Capabilities / ${name}`);
 }
 
 interface FrontendControl {
@@ -1804,6 +2537,8 @@ function uniqueNames(items: FrontendControl[]): string[] {
 async function collectMainInventory(page: Page, pageName: string): Promise<FrontendInventory> {
   return page.locator("body").evaluate((body, label) => {
     const visible = (element: Element) => {
+      const closedDetails = element.closest("details:not([open])");
+      if (closedDetails && !element.closest("summary")) return false;
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       return rect.width > 0 && rect.height > 0 && style.visibility !== "hidden" && style.display !== "none";
@@ -1875,7 +2610,9 @@ async function collectMainInventory(page: Page, pageName: string): Promise<Front
         sidebarRect.width > 0 &&
         mainRect.width > 0 &&
         mainRect.left < sidebarRect.right - 1 &&
-        mainRect.right > sidebarRect.left + 1
+        mainRect.right > sidebarRect.left + 1 &&
+        mainRect.top < sidebarRect.bottom - 1 &&
+        mainRect.bottom > sidebarRect.top + 1
     );
     const oversizedRadius = Array.from(main.querySelectorAll("button,.capability-section,.metric-card,.capability-card,.event-card,.job-row"))
       .filter(visible)
@@ -1956,6 +2693,7 @@ function assertMainButtonCoverage(
 }
 
 async function recordInventory(report: MatrixReport, page: Page, pageName: string) {
+  await waitForMainViewReady(page, pageName);
   const inventory = await collectMainInventory(page, pageName);
   expectCleanInventory(inventory);
   report.pages.push(inventory);
@@ -1977,12 +2715,13 @@ async function clickAndRecord(
   await expect(button, `${pageName} ${buttonName} should be enabled`).toBeEnabled();
   await button.click();
   if (expectedText) {
+    const visibleExpectedText = expectedTextLabel(expectedText);
     await expect
       .poll(async () => page.locator("body").evaluate((body) => (body as HTMLElement).innerText), {
-        message: `${pageName} should show ${expectedText}`,
+        message: `${pageName} should show ${visibleExpectedText}`,
         timeout: 7_500
       })
-      .toContain(expectedText);
+      .toContain(visibleExpectedText);
   }
   report.actions.push({ page: pageName, control: buttonName, result: "clicked", note: expectedText });
 }
@@ -2001,7 +2740,7 @@ test("MCP panel gates controls without token and executes resource, prompt, and 
 
   await openMainView(page, "Capabilities");
   await openCapabilityTab(page, "MCP");
-  await expect(page.getByText("缺少 Control token", { exact: false }).first()).toBeVisible();
+  await expect(page.getByText(/缺少控制令牌|需要控制令牌/).first()).toBeVisible();
   await expect(page.getByRole("button", { name: controlLabel("Read MCP resource"), exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: controlLabel("Get MCP prompt"), exact: true })).toBeDisabled();
   await expect(page.getByRole("button", { name: controlLabel("Start MCP OAuth flow"), exact: true })).toBeDisabled();
@@ -2092,8 +2831,8 @@ test("AI Tests panel runs model status, smoke, model list, and Workbench respons
   await openCapabilityTab(page, "AI Tests");
 
   await expect(page.getByRole("heading", { name: "gpt-5.4" })).toBeVisible();
-  await expect(page.getByText("Provider openai / live / base URL 已配置")).toBeVisible();
-  await expect(page.getByText("API key")).toBeVisible();
+  await expect(page.getByText("提供方 openai / 真实后端 / 基础 URL 已配置")).toBeVisible();
+  await expect(page.getByText("API 密钥")).toBeVisible();
   await expect(page.locator("body")).not.toContainText("sk-");
 
   await page.getByRole("button", { name: controlLabel("Run AI Smoke") }).click();
@@ -2139,24 +2878,158 @@ test("Capabilities workspace remains usable at desktop and narrow widths without
   await expect(page.getByRole("button", { name: tabLabel("AI Tests") })).toBeVisible();
 });
 
+test("Market Temperature workspace renders localized cache panels and stays single-column on mobile", async ({ page }) => {
+  await setupApiMocks(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await openOverview(page);
+  await openMainView(page, "Market Temperature");
+
+  await expect(page.getByRole("heading", { name: "市场温度" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "缓存就绪" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "缓存历史" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "行业历史" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "前向验证" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "行业成分股" })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Cache readiness");
+  await expect(page.locator("main")).not.toContainText("Forward validation");
+  await page.getByRole("button", { name: controlLabel("Update snapshot"), exact: true }).click();
+  await expect(page.getByText(expectedTextLabel("MARKET_TEMPERATURE_LOADED"))).toBeVisible();
+
+  const inventory = await collectMainInventory(page, "Market Temperature mobile");
+  expectCleanInventory(inventory);
+});
+
 test("Data & Sync workspace renders database preflight and creates a gated sync intent in mock mode", async ({ page }) => {
   await setupApiMocks(page);
   await openOverview(page);
   await openMainView(page, "Data & Sync");
   await expect(page.getByRole("heading", { name: "数据库质量与同步审批" })).toBeVisible();
   await expect(page.getByText("/tmp/akshare_mcp.sqlite3").first()).toBeAttached();
+  await expect(page.getByRole("heading", { name: "数据闸门复核" })).toBeVisible();
+  await expect(page.locator("strong", { hasText: "agent_quant_data_gate" }).first()).toBeVisible();
 
   await page.getByRole("button", { name: controlLabel("Generate sync plan") }).click();
-  await expect(page.getByText("SYNC_PLAN_READY")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("SYNC_PLAN_READY"))).toBeVisible();
   await expect(page.getByText("data_sync.run_once", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("button", { name: controlLabel("Create approval intent") })).toBeDisabled();
 
   await setControlToken(page);
   await openMainView(page, "Data & Sync");
   await page.getByRole("button", { name: controlLabel("Generate sync plan") }).click();
+  await expect(page.getByText(expectedTextLabel("SYNC_PLAN_READY"))).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Create approval intent") }).click();
-  await expect(page.getByText("SYNC_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("SYNC_INTENT_CREATED"))).toBeVisible();
   await expect(page.getByText("intent_e2e_approved_path", { exact: true })).toBeVisible();
+});
+
+test("Settings advanced management panels execute integrations, webhooks, RL, security, and automation flows", async ({ page }) => {
+  test.setTimeout(90_000);
+  const requestedPaths: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().startsWith(API_ORIGIN)) {
+      const url = new URL(request.url());
+      requestedPaths.push(`${request.method()} ${url.pathname}`);
+    }
+  });
+
+  await setupApiMocks(page);
+  await openOverview(page);
+  await setControlToken(page);
+
+  await openSettingsSection(page, "应用集成");
+  await clickSettingsPanelRefresh(page);
+  await expect(page.getByText("INTEGRATIONS_LOADED")).toBeVisible();
+  const connectorRow = page.locator(".connector-item").filter({ hasText: "tongdaxin" }).first();
+  await connectorRow.getByRole("button", { name: "详情", exact: true }).click();
+  await connectorRow.getByRole("button", { name: "测试连接", exact: true }).click();
+  await expect(page.getByText("连接器测试完成")).toBeVisible();
+  await connectorRow.getByRole("button", { name: /生成配置片段/ }).click();
+  await page.locator(".wizard-panel input").first().fill("119.147.212.81");
+  await page.locator(".wizard-panel input").nth(1).fill("7709");
+  await page.getByRole("button", { name: /下一步/ }).click();
+  await page.getByRole("button", { name: /完成/ }).click();
+  await expect(page.locator(".env-block")).toContainText("TDX_SERVER_IP=119.147.212.81");
+  const platformRow = page.locator(".capability-section").filter({ hasText: "Gateway 平台" }).locator(".job-row").first();
+  await platformRow.getByRole("button", { name: "健康", exact: true }).click();
+  await platformRow.getByRole("button", { name: "启动", exact: true }).click();
+  await platformRow.getByRole("button", { name: "停止", exact: true }).click();
+  await page.locator("form").filter({ hasText: "消息发送预览" }).getByLabel("目标").fill("ops-room");
+  await page.locator("form").filter({ hasText: "消息发送预览" }).getByRole("button", { name: "创建发送审批" }).click();
+  await expect(page.getByText("GATEWAY_INTENT_CREATED")).toBeVisible();
+  expect(requestedPaths).toContain("GET /v1/gateway/platforms/local/health");
+  expect(requestedPaths).toContain("POST /v1/gateway/platforms/local/start");
+  expect(requestedPaths).toContain("POST /v1/gateway/platforms/local/stop");
+
+  await openSettingsSection(page, "Webhook");
+  await clickSettingsPanelRefresh(page);
+  await expect(page.locator(".capability-section").filter({ hasText: "订阅列表" })).toContainText("Mock Webhook");
+  await page.getByRole("button", { name: "创建 Webhook", exact: true }).click();
+  expect(requestedPaths).toContain("POST /v1/webhooks");
+  await expect(page.locator(".capability-section").filter({ hasText: "订阅列表" })).toContainText("codex-mcp-test-webhook");
+  await page.getByRole("button", { name: "创建触发审批", exact: true }).click();
+  await expect(page.getByText("WEBHOOK_TRIGGER_INTENT_CREATED")).toBeVisible();
+  const webhookRow = page.locator(".job-row").filter({ hasText: "Mock Webhook" }).first();
+  await webhookRow.getByRole("button", { name: "删除", exact: true }).click();
+  expect(requestedPaths).toContain("DELETE /v1/webhooks/webhook_fixture");
+  await expect(page.locator(".capability-section").filter({ hasText: "订阅列表" })).not.toContainText("Mock Webhook");
+
+  await openSettingsSection(page, "学习 / RL");
+  await clickSettingsPanelRefresh(page);
+  await expect(page.getByText("LEARNING_RL_LOADED")).toBeVisible();
+  const configBox = page.locator(".capability-section").filter({ hasText: "RL 配置" }).locator("textarea");
+  await configBox.fill("{");
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(page.getByText("RL_CONFIG_JSON_INVALID")).toBeVisible();
+  await configBox.fill("{\"max_steps\":5}");
+  await page.getByRole("button", { name: "保存配置", exact: true }).click();
+  await expect(page.locator(".raw-details")).toContainText("updated");
+  const proposalRow = page.locator(".job-row").filter({ hasText: "Mock 学习建议" }).first();
+  await proposalRow.getByRole("button", { name: "应用", exact: true }).click();
+  await expect(page.locator(".raw-details")).toContainText("applied");
+  await page.getByRole("button", { name: "启动训练", exact: true }).click();
+  await expect(page.locator(".raw-details")).toContainText("rl_fixture_new");
+  const runRow = page.locator(".job-row").filter({ hasText: "finance_safe_eval" }).first();
+  await runRow.getByRole("button", { name: /详情/ }).click();
+  await expect(page.getByText("RL_RUN_DETAIL_LOADED")).toBeVisible();
+  await runRow.getByRole("button", { name: "结果", exact: true }).click();
+  await expect(page.locator(".raw-details")).toContainText("reward");
+  await runRow.getByRole("button", { name: "日志", exact: true }).click();
+  await expect(page.locator(".raw-details")).toContainText("mock rl log");
+  await runRow.getByRole("button", { name: /停止/ }).click();
+  await expect(page.locator(".raw-details")).toContainText("stopped");
+
+  await openSettingsSection(page, "安全扫描");
+  await page.getByLabel("文本片段").fill("password=secret\nAIASK_AGENT_CONTROL_TOKEN=token");
+  await page.getByRole("button", { name: "运行扫描", exact: true }).click();
+  await expect(page.getByText("SECURITY_SCAN_COMPLETED")).toBeVisible();
+  await expect(page.locator(".raw-details")).toContainText("[redacted]");
+  await expect(page.locator(".raw-details")).not.toContainText("password=secret");
+  await expect(page.locator(".raw-details")).not.toContainText("AIASK_AGENT_CONTROL_TOKEN=token");
+
+  await openSettingsSection(page, "自动化管理");
+  await clickSettingsPanelRefresh(page);
+  const managedJobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" }).first();
+  await managedJobRow.getByRole("button", { name: /查看任务/ }).click();
+  await expect(page.locator(".raw-details").filter({ hasText: "已选任务" })).toContainText("run_job_e2e");
+  await managedJobRow.getByRole("button", { name: /运行任务/ }).click();
+  await expect(page.locator(".capability-section").filter({ hasText: "运行输出" })).toContainText("job ok");
+  await managedJobRow.getByRole("button", { name: /删除任务/ }).click();
+  await expect(page.locator(".capability-section").filter({ hasText: "运行输出" })).toContainText("deleted");
+});
+
+test("Quant Research workspace explains staged blockers and next actions in mock mode", async ({ page }) => {
+  await setupApiMocks(page);
+  await openOverview(page);
+  await openMainView(page, "Quant Research");
+  await expect(page.getByRole("heading", { name: "数据、因子、回测与组合风险" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "阶段结论与下一步" })).toBeVisible();
+
+  await page.getByRole("button", { name: controlLabel("Run research") }).click();
+  await expect(page.getByText("RESEARCH_RUN_CREATED")).toBeVisible();
+  await expect(page.getByText("research_e2e_quant_1", { exact: true }).first()).toBeVisible();
+  await expect(page.getByText("LOCAL_DATABASE_REQUIRED").first()).toBeVisible();
+  await expect(page.getByText("配置可写 SQLite 数据库并完成行情同步，然后重新运行研究。")).toBeVisible();
+  await expect(page.getByText("数据闸门 原始证据")).toBeVisible();
 });
 
 test("Unified control console opens every primary page and exercises safe mock controls", async ({ page }) => {
@@ -2165,26 +3038,29 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openOverview(page);
 
   await page.getByRole("button", { name: controlLabel("Sync Agent state") }).click();
-  await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
   await setControlToken(page);
 
   await openMainView(page, "Agent");
-  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK 工作台" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Sync Agent state") }).click();
-  await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Hermes full") }).click();
   await expect(page.getByRole("button", { name: controlLabel("Hermes full") })).toHaveAttribute("aria-pressed", "true");
 
   await openMainView(page, "Models");
   await expect(page.getByRole("heading", { name: "LLM 提供方配置" })).toBeVisible();
+  const providerSection = page.locator(".capability-section").filter({ has: page.getByRole("heading", { name: "已配置提供方" }) });
+  await expect(providerSection).toBeVisible();
+  await expect(providerSection.locator("strong", { hasText: "openai" }).first()).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Refresh") }).click();
-  await expect(page.getByText("MODEL_STATUS_LOADED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("MODEL_STATUS_LOADED"))).toBeVisible();
 
   await openMainView(page, "Data & Sync");
   await expect(page.getByRole("heading", { name: "数据库质量与同步审批" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Generate sync plan") }).click();
   await page.getByRole("button", { name: controlLabel("Create approval intent") }).click();
-  await expect(page.getByText("SYNC_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("SYNC_INTENT_CREATED"))).toBeVisible();
 
   await openMainView(page, "MCP");
   await expect(page.getByRole("heading", { name: "连接器评审队列" })).toBeVisible();
@@ -2204,7 +3080,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("heading", { name: "已安装 1 个技能" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("risk-review Risk review") }).click();
   await page.getByRole("button", { name: "应用到对话" }).click();
-  await expect(page.getByRole("heading", { name: "AIASK Workbench" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "AIASK 工作台" })).toBeVisible();
   await expect(page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session..."))).toHaveValue(/risk-review/);
   await openSettings(page);
   await page.getByRole("button", { name: "技能管理", exact: true }).click();
@@ -2243,31 +3119,33 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openMainView(page, "Strategy Factory");
   await expect(page.getByRole("heading", { name: "调度器、运行和晋升评审" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Create run intent") }).click();
-  await expect(page.getByText("STRATEGY_FACTORY_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("STRATEGY_FACTORY_INTENT_CREATED"))).toBeVisible();
 
   await openMainView(page, "Factor Factory");
-  await expect(page.getByRole("heading", { name: "Factor mining and active pool" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "因子挖掘与活跃池" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Create run intent") }).click();
-  await expect(page.getByText("FACTOR_RUN_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("FACTOR_RUN_INTENT_CREATED"))).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Maintenance intent") }).click();
-  await expect(page.getByText("FACTOR_MAINTENANCE_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("FACTOR_MAINTENANCE_INTENT_CREATED"))).toBeVisible();
 
   await openMainView(page, "Incubation");
-  await expect(page.getByRole("heading", { name: "Lifecycle and hit-rate control" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "生命周期与命中率控制" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Run intent"), exact: true }).click();
-  await expect(page.getByText("INCUBATION_RUN_ONCE_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("INCUBATION_RUN_ONCE_INTENT_CREATED"))).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Dry-run intent") }).click();
-  await expect(page.getByText("INCUBATION_DRY_RUN_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("INCUBATION_DRY_RUN_INTENT_CREATED"))).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Maintenance intent") }).click();
-  await expect(page.getByText("INCUBATION_MAINTENANCE_INTENT_CREATED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("INCUBATION_MAINTENANCE_INTENT_CREATED"))).toBeVisible();
 
   await openMainView(page, "Local User");
   await expect(page.getByRole("heading", { name: "画像与本地数据范围" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "记忆状态" })).toBeVisible();
+  await expect(page.getByText("Agent 记忆")).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Save local profile") }).click();
-  await expect(page.getByText("LOCAL_PROFILE_SAVED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("LOCAL_PROFILE_SAVED"))).toBeVisible();
   await page.getByPlaceholder(placeholderLabel("Search local sessions, responses, and memory")).fill("AIASK");
-  await page.getByRole("button", { name: controlLabel("Search") }).click();
-  await expect(page.getByText("USER_DATA_SEARCHED")).toBeVisible();
+  await page.getByRole("button", { name: controlLabel("Search"), exact: true }).click();
+  await expect(page.getByText(expectedTextLabel("USER_DATA_SEARCHED"))).toBeVisible();
 
   await openMainView(page, "Tools");
   await expect(page.getByRole("heading", { name: "可用操作与安全探测" })).toBeVisible();
@@ -2290,7 +3168,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openMainView(page, "Event Console");
   await expect(page.getByRole("heading", { name: "生命周期、风险与孵化事件" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Refresh") }).click();
-  await expect(page.getByText("EVENTS_LOADED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("EVENTS_LOADED"))).toBeVisible();
 
   await openMainView(page, "Diagnostics");
   await expect(page.getByRole("heading", { name: "Hermes 原生对齐" })).toBeVisible();
@@ -2300,7 +3178,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openMainView(page, "Agent Status");
   await expect(page.getByRole("heading", { name: "运行状态" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Refresh") }).click();
-  await expect(page.getByText("AGENT_STATUS_LOADED")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("AGENT_STATUS_LOADED"))).toBeVisible();
 
   await openMainView(page, "Settings");
   await expect(page.getByRole("heading", { name: "设置中心" })).toBeVisible();
@@ -2309,10 +3187,10 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByText("只读查看模型提供方")).toBeVisible();
   await page.getByRole("button", { name: "常规", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Save profile") }).click();
-  await expect(page.locator("label.settings-row").filter({ hasText: "Profile 名称" }).locator("input")).toHaveValue("E2E 本地操作者");
+  await expect(page.locator("label.settings-row").filter({ hasText: "画像名称" }).locator("input")).toHaveValue("E2E 本地操作者");
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Test connection") }).click();
-  await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
   await page.getByRole("button", { name: "返回对话", exact: true }).click();
 });
 
@@ -2357,6 +3235,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
     "run_fixture completed / tools 0 / approvals 0",
+    "准备度",
     "Readiness",
     "Projects / Contexts",
     "Approvals",
@@ -2364,22 +3243,31 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Integrations",
     "Gateway",
     "Gateway gated",
+    "Gateway 受限",
     "Plugins / Skills gated",
+    "扩展 内部",
     "Extensions internal",
   ]);
 
   await openMainView(page, "Data & Sync");
   await page.getByRole("button", { name: controlLabel("Generate sync plan") }).click();
-  await expect(page.getByText("SYNC_PLAN_READY")).toBeVisible();
+  await expect(page.getByText(expectedTextLabel("SYNC_PLAN_READY"))).toBeVisible();
   report.actions.push({ page: "Data & Sync gated", control: "Generate sync plan", result: "clicked", note: "plan generated without write intent" });
   await expectDisabledAndRecord(report, page, "Data & Sync gated", "Create approval intent", "control token required");
 
   await openMainView(page, "MCP");
   await expectDisabledAndRecord(report, page, "MCP gated", "Register local MCP server", "control token required or already registered");
   await expectDisabledAndRecord(report, page, "MCP gated", "Discover or refresh MCP server", "control token required");
+  await expectDisabledAndRecord(report, page, "MCP gated", "Run MCP read-only smoke", "control token required");
   await expectDisabledAndRecord(report, page, "MCP gated", "Read MCP resource", "control token and resource uri required");
   await expectDisabledAndRecord(report, page, "MCP gated", "Get MCP prompt", "control token and prompt name required");
   await expectDisabledAndRecord(report, page, "MCP gated", "Start MCP OAuth flow", "control token and server required");
+
+  await openMainView(page, "Finance Lab");
+  await expect(page.getByRole("heading", { name: "工厂接力总览" })).toBeVisible();
+  await expect(page.locator("body")).toContainText("因子工厂");
+  await expect(page.locator("body")).toContainText("策略工厂");
+  await expect(page.locator("body")).toContainText("孵化工厂");
 
   await openMainView(page, "Skills");
   await expect(page.getByText("需要控制令牌", { exact: false }).first()).toBeVisible();
@@ -2419,6 +3307,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
     "run_fixture completed / tools 0 / approvals 0",
+    "准备度",
     "Readiness",
     "Projects / Contexts",
     "Approvals",
@@ -2426,17 +3315,51 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Integrations",
     "Gateway",
     "Gateway ready",
-    "Plugins / Skills ready",
+    "Gateway 就绪",
+    "插件 / 技能 就绪",
+    "扩展 内部",
     "Extensions internal",
   ]);
 
   await openMainView(page, "Models");
   const modelsInventory = await recordInventory(report, page, "Models");
+  const matrixProviderSection = page.locator(".capability-section").filter({ has: page.getByRole("heading", { name: "已配置提供方" }) });
+  await expect(matrixProviderSection).toBeVisible();
+  await expect(matrixProviderSection.locator("strong", { hasText: "openai" }).first()).toBeVisible();
+  report.actions.push({ page: "Models", control: "Provider status", result: "visible", note: "modelProviderStatus payload visible" });
   await clickAndRecord(report, page, "Models", "Refresh", "MODEL_STATUS_LOADED");
   assertMainButtonCoverage(modelsInventory, ["Refresh"]);
 
+  await openMainView(page, "Readiness");
+  const readinessInventory = await recordInventory(report, page, "Readiness");
+  await expect(page.getByRole("heading", { name: "真实金融流程前置检查" })).toBeVisible();
+  await expect(page.getByText("1. 模式与模型")).toBeVisible();
+  await expect(page.getByText("2. MCP 与连接器")).toBeVisible();
+  await expect(page.getByText("3. 记忆与搜索")).toBeVisible();
+  await expect(page.getByText("4. 金融 Agent 流程")).toBeVisible();
+  await expect(page.getByText("5. 数据与量化研究")).toBeVisible();
+  await expect(page.getByText("6. 工厂接力")).toBeVisible();
+  report.actions.push({ page: "Readiness", control: "运行前检查", result: "visible", note: "mode, MCP, memory, financial agent, data, and factory relay path visible" });
+  assertMainButtonCoverage(readinessInventory, [
+    "Refresh",
+    "刷新完整控制台"
+  ], {
+    allowedPrefixes: [
+      "前往",
+      "打开设置",
+      "打开MCP / 连接器",
+      "打开本地用户 / 记忆",
+      "打开金融经理台",
+      "打开数据",
+      "打开金融实验室"
+    ]
+  });
+
   await openMainView(page, "Data & Sync");
   const dataInventory = await recordInventory(report, page, "Data & Sync");
+  await expect(page.getByRole("heading", { name: "数据闸门复核" })).toBeVisible();
+  await expect(page.locator("strong", { hasText: "agent_quant_data_gate" }).first()).toBeVisible();
+  report.actions.push({ page: "Data & Sync", control: "Data gate evidence", result: "visible", note: "agent_quant_data_gate read-only result visible" });
   await page.locator("label.field-row").filter({ hasText: "证券代码" }).locator("textarea").fill("600519, 000001");
   await clickAndRecord(report, page, "Data & Sync", "Refresh", "DATA_STATUS_LOADED");
   await clickAndRecord(report, page, "Data & Sync", "Generate sync plan", "SYNC_PLAN_READY");
@@ -2445,18 +3368,58 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   assertMainButtonCoverage(dataInventoryWithPlan, ["Refresh", "Generate sync plan", "Create approval intent"]);
   assertMainButtonCoverage(dataInventory, ["Refresh", "Generate sync plan"]);
 
+  await openMainView(page, "Financial Manager");
+  const financialManagerInventory = await recordInventory(report, page, "Financial Manager");
+  await expect(page.getByRole("heading", { name: "金融 Agent 只读工作流" })).toBeVisible();
+  await clickAndRecord(report, page, "Financial Manager", "Run read-only workflow", "FINANCIAL_WORKFLOW_DONE");
+  await expect(page.getByText("agent_portfolio_risk").first()).toBeVisible();
+  await expect(page.getByText("agent_analyze_stock").first()).toBeVisible();
+  await expect(page.getByText("agent_quant_data_gate").first()).toBeVisible();
+  await expect(page.getByText("agent_session_search").first()).toBeVisible();
+  await expect(page.getByText("agent_memory_search").first()).toBeVisible();
+  await expect(page.locator("body")).toContainText("AIASK_OK search result");
+  await expect(page.locator("body")).toContainText("mock memory hit");
+  await expect(page.locator("body")).toContainText("quote resource ok");
+  await expect(page.locator("body")).toContainText("risk prompt ok");
+  report.actions.push({ page: "Financial Manager", control: "Read-only Agent workflow evidence", result: "visible", note: "portfolio, quant, session search, memory search, and MCP evidence visible" });
+  await page.getByRole("button", { name: "市场与研究", exact: true }).click();
+  await page.getByRole("button", { name: /个股分析/ }).click();
+  await page.getByLabel("stock analysis code").fill("300750");
+  await page.getByLabel("include stock decision").check();
+  await clickAndRecord(report, page, "Financial Manager", "Run query", "mock_watch");
+  await expect(page.locator("body")).toContainText("300750");
+  await expect(page.locator("body")).toContainText("observe_only");
+  const stockSummary = page.getByLabel("stock analysis summary");
+  const stockSummaryValues = await stockSummary.locator(".metric-card strong").filter({ hasText: /mock_watch|observe_only/ }).all();
+  expect(stockSummaryValues).toHaveLength(2);
+  for (const value of stockSummaryValues) {
+    const box = await value.evaluate((element) => {
+      const style = window.getComputedStyle(element);
+      const lineHeight = Number.parseFloat(style.lineHeight);
+      return { height: element.getBoundingClientRect().height, lineHeight: Number.isFinite(lineHeight) ? lineHeight : 24 };
+    });
+    expect(box.height).toBeLessThan(box.lineHeight * 1.35);
+  }
+  report.actions.push({ page: "Financial Manager", control: "Stock analysis query", result: "visible", note: "agent_analyze_stock read-only query accepts a stock code and renders summary evidence" });
+  assertMainButtonCoverage(financialManagerInventory, ["Refresh", "Run read-only workflow", "Run query"], {
+    allowedPrefixes: ["总览", "市场与研究", "风险与绩效", "组合与自选", "券商只读", "组合风险", "个股分析", "量化数据门禁", "创建组合意图", "实盘下单"]
+  });
+
   await openMainView(page, "MCP");
   const mcpInventory = await recordInventory(report, page, "MCP");
-  await clickAndRecord(report, page, "MCP", "Refresh", "CONNECTORS_LOADED");
+  await clickAndRecord(report, page, "MCP", "Refresh", "连接器已加载");
   const firstConnector = page.locator(".connector-item").first();
   await firstConnector.getByRole("button", { name: controlLabel("Connector detail"), exact: true }).click();
-  await expect(page.locator("body")).toContainText("CONNECTOR_DETAIL_LOADED");
-  report.actions.push({ page: "MCP", control: "Connector detail", result: "clicked", note: "CONNECTOR_DETAIL_LOADED" });
+  await expect(page.locator("body")).toContainText("连接器详情已加载");
+  report.actions.push({ page: "MCP", control: "Connector detail", result: "clicked", note: "连接器详情已加载" });
   await firstConnector.getByRole("button", { name: controlLabel("Connector test"), exact: true }).click();
-  await expect(page.locator("body")).toContainText("CONNECTOR_TESTED");
-  report.actions.push({ page: "MCP", control: "Connector test", result: "clicked", note: "CONNECTOR_TESTED" });
+  await expect(page.locator("body")).toContainText("连接器测试完成");
+  report.actions.push({ page: "MCP", control: "Connector test", result: "clicked", note: "连接器测试完成" });
   await expectDisabledAndRecord(report, page, "MCP", "Register local MCP server", "already registered in mock");
   await clickAndRecord(report, page, "MCP", "Discover or refresh MCP server", "finance-demo");
+  await clickAndRecord(report, page, "MCP", "Run MCP read-only smoke", "只读冒烟测试已完成");
+  await expect(page.locator("body")).toContainText("quote resource ok");
+  await expect(page.locator("body")).toContainText("risk prompt ok");
   await page.getByPlaceholder(placeholderLabel("resource uri")).fill("aiask://quotes");
   await clickAndRecord(report, page, "MCP", "Read MCP resource", "quote resource ok");
   await page.getByPlaceholder(placeholderLabel("prompt name")).fill("risk-review");
@@ -2469,6 +3432,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Connector test",
     "Register local MCP server",
     "Discover or refresh MCP server",
+    "Run MCP read-only smoke",
     "Read MCP resource",
     "Get MCP prompt",
     "Start MCP OAuth flow",
@@ -2528,10 +3492,45 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     structural: SETTINGS_STRUCTURE_BUTTONS
   });
 
+  await openMainView(page, "Finance Lab");
+  await expect(page.locator("body")).toContainText(expectedTextLabel("FACTORY_RELAY_LOADED"));
+  const financeLabInventory = await recordInventory(report, page, "Finance Lab");
+  await clickAndRecord(report, page, "Finance Lab", "刷新接力状态", "FACTORY_RELAY_LOADED");
+  await expect(page.locator("body")).toContainText("20d momentum");
+  await expect(page.locator("body")).toContainText("risk-review");
+  await expect(page.locator("body")).toContainText("completed");
+  assertMainButtonCoverage(financeLabInventory, [
+    "刷新接力状态",
+    "查看因子池",
+    "打开策略评审",
+    "查看孵化看板",
+    "打开因子工厂",
+    "打开策略工厂",
+    "打开孵化工厂",
+    "财务管理",
+    "量化研究",
+    "策略工厂",
+    "因子工厂",
+    "孵化工厂",
+    "数据",
+    "事件工厂"
+  ]);
+  await clickAndRecord(report, page, "Finance Lab", "查看因子池", "因子挖掘与活跃池");
+
+  await openMainView(page, "Market Temperature");
+  await expect(page.getByRole("heading", { name: "缓存就绪" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "前向验证" })).toBeVisible();
+  await expect(page.locator("main")).not.toContainText("Cache readiness");
+  const marketTemperatureInventory = await recordInventory(report, page, "Market Temperature");
+  await clickAndRecord(report, page, "Market Temperature", "Update snapshot", "MARKET_TEMPERATURE_LOADED");
+  assertMainButtonCoverage(marketTemperatureInventory, ["Refresh", "Update snapshot"]);
+
   await openMainView(page, "Strategy Factory");
   const strategyInventory = await recordInventory(report, page, "Strategy Factory");
   await clickAndRecord(report, page, "Strategy Factory", "Refresh capability review", "Mock 数据");
   await clickAndRecord(report, page, "Strategy Factory", "Create run intent", "STRATEGY_FACTORY_INTENT_CREATED");
+  await expect(page.locator("[aria-label='strategy factory intent summary']")).toContainText("intent_e2e_approved_path");
+  await expect(page.locator("[aria-label='strategy factory intent summary']")).toContainText("agent_action_intent_create");
   assertMainButtonCoverage(strategyInventory, ["Refresh capability review", "Create run intent"], {
     structural: ["Overview", "Coverage Matrix", "Connectors", "Hermes", "MCP", "Strategy Factory", "Incubation", "Skills", "Plugins", "AI Tests"]
   });
@@ -2551,8 +3550,41 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await clickAndRecord(report, page, "Incubation", "Maintenance intent", "INCUBATION_MAINTENANCE_INTENT_CREATED");
   assertMainButtonCoverage(incubationInventory, ["Refresh", "Run intent", "Dry-run intent", "Maintenance intent"]);
 
+  await openMainView(page, "Factory Events");
+  await page.getByRole("tab", { name: "雷达", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "股票雷达观察池" })).toBeVisible();
+  await expect(page.locator("strong", { hasText: "北方稀土" }).first()).toBeVisible();
+  const factoryEventsRadarInventory = await recordInventory(report, page, "Factory Events / Radar");
+  await clickAndRecord(report, page, "Factory Events / Radar", "Refresh radar", "RADAR_LOADED");
+  await clickAndRecord(report, page, "Factory Events / Radar", "Create radar run intent", "股票雷达运行 意图");
+  await expect(page.getByRole("button", { name: controlLabel("Create radar run intent"), exact: true })).toBeEnabled();
+  await clickAndRecord(report, page, "Factory Events / Radar", "Create radar push preview intent", "股票雷达推送预览 意图");
+  await expect(page.getByRole("button", { name: controlLabel("Create radar push preview intent"), exact: true })).toBeEnabled();
+  await clickAndRecord(report, page, "Factory Events / Radar", "Create radar schedule intent", "股票雷达调度预览 意图");
+  await page.getByRole("tab", { name: "事件", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "当前生效的事件注入" })).toBeVisible();
+  await page.getByRole("button", { name: controlLabel("Pause"), exact: true }).click();
+  await expect(page.getByRole("heading", { name: "最近意图派发" })).toBeVisible();
+  await expect(page.locator("main")).toContainText("意图 intent_e2e_approved_path 已确认");
+  assertMainButtonCoverage(factoryEventsRadarInventory, [
+    "Refresh",
+    "刷新状态",
+    "初始化 Bootstrap",
+    "刷新暴露",
+    "排空 outbox",
+    "运行回归",
+    "Refresh radar",
+    "Create radar run intent",
+    "Create radar push preview intent",
+    "Create radar schedule intent"
+  ], {
+    structural: ["雷达", "事件", "创建", "预览", "血缘"]
+  });
+
   await openMainView(page, "Local User");
   const userInventory = await recordInventory(report, page, "Local User");
+  await expect(page.getByRole("heading", { name: "记忆状态" })).toBeVisible();
+  report.actions.push({ page: "Local User", control: "Memory status", result: "visible", note: "memoryStatus payload visible" });
   await clickAndRecord(report, page, "Local User", "Refresh", "LOCAL_PROFILE_LOADED");
   await clickAndRecord(report, page, "Local User", "Save local profile", "LOCAL_PROFILE_SAVED");
   await expectDisabledAndRecord(report, page, "Local User", "Search", "query required");
@@ -2631,9 +3663,12 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   });
 
   await openMainView(page, "Diagnostics");
-  const diagnosticsInventory = await recordInventory(report, page, "Diagnostics");
   await clickAndRecord(report, page, "Diagnostics", "Refresh", "系统健康中心");
-  assertMainButtonCoverage(diagnosticsInventory, ["Refresh"], {
+  await page.locator(".subsystem-row").filter({ has: page.locator("summary", { hasText: "终端" }) }).locator("summary").click();
+  await expect(page.getByText("local-powershell").first()).toBeVisible();
+  const diagnosticsInventory = await recordInventory(report, page, "Diagnostics");
+  await clickAndRecord(report, page, "Diagnostics", "Load terminal sessions", "TERMINAL_BACKEND_SESSIONS_LOADED");
+  assertMainButtonCoverage(diagnosticsInventory, ["Refresh", "Load terminal sessions"], {
     structural: LEGACY_REPLACEMENT_BUTTONS
   });
 
@@ -2647,7 +3682,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await openMainView(page, "Settings");
   const settingsInventory = await recordInventory(report, page, "Settings");
   await page.getByRole("button", { name: "连接", exact: true }).click();
-  await page.locator("label.settings-row").filter({ hasText: "Endpoint" }).locator("input").fill(API_ORIGIN);
+  await page.locator("label.settings-row").filter({ hasText: "Agent 端点" }).locator("input").fill(API_ORIGIN);
   await page.getByRole("button", { name: "令牌与权限", exact: true }).click();
   await page.locator("label.settings-row").filter({ hasText: "API 令牌" }).locator("input").fill("api-token-mock");
   await page.locator("label.settings-row").filter({ hasText: "控制令牌" }).locator("input").fill(CONTROL_TOKEN);
@@ -2656,7 +3691,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expect(page.getByText("只读查看模型提供方")).toBeVisible();
   await page.getByRole("button", { name: "常规", exact: true }).click();
   await clickAndRecord(report, page, "Settings", "Save profile");
-  await expect(page.locator("label.settings-row").filter({ hasText: "Profile 名称" }).locator("input")).toHaveValue("E2E 本地操作者");
+  await expect(page.locator("label.settings-row").filter({ hasText: "画像名称" }).locator("input")).toHaveValue("E2E 本地操作者");
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await clickAndRecord(report, page, "Settings", "Test connection", "AIASK_ONLINE");
   assertMainButtonCoverage(settingsInventory, ["Refresh", "Reset endpoint to default Agent endpoint", "Save profile", "Test connection"], {
@@ -2674,15 +3709,188 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await writeFile(path.join(reportDir, "playwright-full-matrix-report.json"), JSON.stringify(report, null, 2), "utf8");
 });
 
+async function liveBodyText(page: Page): Promise<string> {
+  return page.locator("body").evaluate((body) => (body as HTMLElement).innerText);
+}
+
+async function expectLiveBodyToMatch(page: Page, pattern: RegExp, message: string, timeout = 10_000) {
+  await expect
+    .poll(async () => liveBodyText(page), { message, timeout })
+    .toMatch(pattern);
+}
+
+async function clickLiveButtonWhenEnabled(page: Page, buttonName: string, timeout = 15_000) {
+  const button = page.getByRole("button", { name: controlLabel(buttonName), exact: true });
+  await expect(button, `${buttonName} should resolve once`).toHaveCount(1);
+  await expect(button, `${buttonName} should be enabled`).toBeEnabled({ timeout });
+  await button.click();
+}
+
+async function clickLiveButtonIfEnabled(page: Page, buttonName: string) {
+  const button = page.getByRole("button", { name: controlLabel(buttonName), exact: true }).first();
+  if ((await button.count()) === 0) return false;
+  await expect(button).toBeVisible();
+  if (await button.isDisabled()) return false;
+  await button.click();
+  return true;
+}
+
+async function clickFirstVisibleButtonContaining(page: Page, text: string) {
+  const button = page.getByRole("button").filter({ hasText: text }).first();
+  if ((await button.count()) === 0) return false;
+  await expect(button).toBeVisible();
+  await button.click();
+  return true;
+}
+
+async function openLastRawEvidencePanel(page: Page) {
+  const panels = page.locator("main details.raw-evidence-panel, main details.raw-details");
+  const count = await panels.count();
+  if (!count) return false;
+  const panel = panels.nth(count - 1);
+  if ((await panel.getAttribute("open")) === null) {
+    await panel.locator("summary").click();
+  }
+  return true;
+}
+
+async function expectNoLiveSecretLeak(page: Page) {
+  await expect(page.locator("body")).not.toContainText(/(^|[^A-Za-z0-9_])sk-[A-Za-z0-9_-]{20,}/);
+  await expect(page.locator("body")).not.toContainText(/api[_-]?key\s*[:=]\s*[^,\s}]+/i);
+}
+
+async function assertLivePageHealth(page: Page, name: string, bodyPattern: RegExp, timeout = 30_000) {
+  await openMainView(page, name);
+  await expectLiveBodyToMatch(page, bodyPattern, `live ${name} should render expected domain content`, timeout);
+  const inventory = await collectMainInventory(page, `Live ${name}`);
+  expectCleanInventory(inventory);
+  await expectNoLiveSecretLeak(page);
+}
+
+async function assertLiveSettingsSectionHealth(page: Page, sectionLabel: string, bodyPattern: RegExp, timeout = 30_000) {
+  await openSettings(page);
+  const settingsNav = page.getByRole("navigation", { name: "设置导航" });
+  const sectionButton = settingsNav.getByRole("button", { name: sectionLabel, exact: true });
+  await expect(sectionButton, `settings section ${sectionLabel} should be available`).toHaveCount(1);
+  await sectionButton.click();
+  await expectLiveBodyToMatch(page, bodyPattern, `live settings section ${sectionLabel} should render expected content`, timeout);
+  const inventory = await collectMainInventory(page, `Live Settings / ${sectionLabel}`);
+  expectCleanInventory(inventory);
+  await expectNoLiveSecretLeak(page);
+}
+
 test.describe("optional live desktop smoke", () => {
+  test.describe.configure({ mode: "serial" });
   test.skip(process.env.AIASK_DESKTOP_RUN_LIVE !== "1", "set AIASK_DESKTOP_RUN_LIVE=1 and run a real backend on 127.0.0.1:8767");
+  test.setTimeout(150_000);
+
+  test("covers real backend model, Hermes, MCP, factory, financial, and status pages", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.locator("main")).toBeVisible();
+    const connectButton = page.getByRole("button", { name: controlLabel("Connect") });
+    if ((await connectButton.count()) === 1) {
+      await connectButton.click();
+    }
+    const token = process.env.AIASK_AGENT_CONTROL_TOKEN || CONTROL_TOKEN;
+    await setControlToken(page, token);
+
+    await openMainView(page, "Capabilities");
+    await openCapabilityTab(page, "AI Tests");
+    await expect(page.locator(".capability-banner").filter({ hasText: tabLabel("AI Tests") })).toBeVisible();
+    await clickLiveButtonWhenEnabled(page, "Run AI Smoke", 30_000);
+    await expectLiveBodyToMatch(page, /AI_SMOKE_PASSED|aiask\.ai_smoke|true/, "live AI smoke result should render", 30_000);
+    await clickLiveButtonWhenEnabled(page, "List Models", 30_000);
+    await expectLiveBodyToMatch(page, /AI_MODELS_LOADED|mock-live-model|aiask_mock|"object":\s*"list"/, "live model list should render", 30_000);
+    await expectNoLiveSecretLeak(page);
+
+    await openMainView(page, "Agent");
+    await page.getByPlaceholder(placeholderLabel("Ask AIASK to research, code, inspect tools, or continue a session...")).fill("Return exactly AIASK_LIVE_OK.");
+    await page.getByRole("button", { name: controlLabel("Run"), exact: true }).click();
+    await expectLiveBodyToMatch(page, /AIASK_LIVE_OK|run\.completed|model\.completed/, "live workbench response should render", 45_000);
+    await expectNoLiveSecretLeak(page);
+
+    await openMainView(page, "Capabilities");
+    await openCapabilityTab(page, "Hermes");
+    await expect(page.locator(".capability-section").first()).toBeVisible();
+    await expectLiveBodyToMatch(page, /Hermes|agent_[a-z0-9_]+|baseline/i, "live Hermes capability tables should render", 30_000);
+
+    await openMainView(page, "MCP");
+    await expectLiveBodyToMatch(page, /MCP|not_registered|discovered|unconfigured|gated/i, "live MCP page should render a clear state", 30_000);
+    await clickLiveButtonWhenEnabled(page, "Refresh", 30_000);
+    await expectLiveBodyToMatch(page, /CONNECTORS_LOADED|杩炴帴鍣ㄥ凡鍔犺浇|connector|MCP/i, "live MCP connectors should refresh visibly", 30_000);
+    const liveConnectorItems = page.locator(".connector-item");
+    const liveConnectorCount = await liveConnectorItems.count();
+    if (liveConnectorCount > 0) {
+      const firstConnector = liveConnectorItems.first();
+      const detailButton = firstConnector.getByRole("button", { name: controlLabel("Connector detail"), exact: true });
+      if ((await detailButton.count()) === 1 && !(await detailButton.isDisabled())) {
+        await detailButton.click();
+        await expectLiveBodyToMatch(page, /CONNECTOR_DETAIL_LOADED|杩炴帴鍣ㄨ鎯呭凡鍔犺浇|connector_detail|configured|connected/i, "live connector detail should render", 30_000);
+      }
+      const testButton = firstConnector.getByRole("button", { name: controlLabel("Connector test"), exact: true });
+      if ((await testButton.count()) === 1 && !(await testButton.isDisabled())) {
+        await testButton.click();
+        await expectLiveBodyToMatch(page, /CONNECTOR_TESTED|连接器测试完成|杩炴帴鍣ㄦ祴璇曞畬鎴?|connector\.test|last_test_status|passed|failed|disconnected|connected|未配置|就绪/i, "live connector test should render", 45_000);
+      }
+    }
+    const ranMcpSmoke = await clickLiveButtonIfEnabled(page, "Run MCP read-only smoke");
+    if (ranMcpSmoke) {
+      await expectLiveBodyToMatch(page, /MCP_SMOKE_DONE|鍙鍐掔儫娴嬭瘯宸插畬鎴?|success|blocked|failed|\/v1\/mcp\/resources\/read|\/v1\/mcp\/prompts\/get|MCP/i, "live MCP read-only smoke should finish visibly", 45_000);
+    }
+    await expectNoLiveSecretLeak(page);
+
+    await openMainView(page, "Strategy Factory");
+    await expect(page.locator(".capability-card")).toHaveCount(3, { timeout: 30_000 });
+    await expectLiveBodyToMatch(page, /strategy_factory|agent_factory_status|CONTROL_TOKEN_REQUIRED|DESKTOP_TOOL_UNAVAILABLE|true|false/, "live Strategy Factory cards should render structured envelopes", 30_000);
+    const createdFactoryIntent = await clickLiveButtonIfEnabled(page, "Create run intent");
+    if (createdFactoryIntent) {
+      await expectLiveBodyToMatch(page, /STRATEGY_FACTORY_INTENT_CREATED|STRATEGY_FACTORY_INTENT_FAILED|factory_run_once|desktop_strategy_factory|intent_id|awaiting_confirmation|CONTROL_TOKEN/i, "live Strategy Factory intent result should render", 30_000);
+    }
+
+    await openMainView(page, "Financial Manager");
+    await expectLiveBodyToMatch(page, /agent_analyze_stock|stock-analysis|read_only_plus_intents/, "live Financial Manager catalog should expose stock analysis", 30_000);
+    await expect(page.getByRole("button", { name: controlLabel("Refresh"), exact: true }).first()).toBeEnabled({ timeout: 30_000 });
+    if ((await page.getByLabel("stock analysis code").count()) === 0) {
+      expect(await clickFirstVisibleButtonContaining(page, "stock-analysis")).toBe(true);
+    }
+    await expect(page.getByLabel("stock analysis code")).toBeVisible({ timeout: 30_000 });
+    await page.getByLabel("stock analysis code").fill("600519");
+    const includeDecision = page.getByLabel("include stock decision");
+    if (await includeDecision.isChecked()) {
+      await includeDecision.uncheck();
+    }
+    await page.getByLabel("financial action params").fill(JSON.stringify({
+      code: "600519",
+      include_decision: false,
+      include_financials: false,
+      include_kline: false,
+      kline_limit: 20
+    }, null, 2));
+    await clickLiveButtonWhenEnabled(page, "Run query", 20_000);
+    await expectLiveBodyToMatch(page, /FINANCIAL_ACTION_OK|FINANCIAL_ACTION_FAILED|INTERNAL_ERROR|agent_analyze_stock|stock-analysis|600519/, "live stock analysis query should render a structured result", 60_000);
+    await openLastRawEvidencePanel(page);
+    const liveStockSummary = page.getByLabel("stock analysis summary");
+    if ((await liveStockSummary.count()) > 0) {
+      await expect(liveStockSummary).toBeVisible({ timeout: 30_000 });
+      await expectLiveBodyToMatch(page, /600519|agent_analyze_stock|read_only|confirmation_required|not_requested|observe_only/i, "live stock summary should include code, tool, and read-only evidence", 30_000);
+    } else {
+      await expectLiveBodyToMatch(page, /FINANCIAL_ACTION_FAILED|INTERNAL_ERROR|error_code|availability|agent_analyze_stock|stock-analysis/i, "live stock failure should remain structured and diagnosable", 30_000);
+    }
+    await expectNoLiveSecretLeak(page);
+
+    await openMainView(page, "Readiness");
+    await expectLiveBodyToMatch(page, /AIASK|MCP|Hermes|financial|factory|ready|gated|unconfigured/i, "live readiness and frontend status should render", 30_000);
+  });
 
   test("connects to the real backend and runs the visible AI smoke path", async ({ page }) => {
     await page.goto("/");
-    await page.getByRole("button", { name: controlLabel("Connect") }).click();
-    await expect(page.getByText("AIASK_ONLINE").first()).toBeVisible();
-
+    await expect(page.getByRole("heading", { name: "AIASK 工作台" })).toBeVisible();
+    const connectButton = page.getByRole("button", { name: controlLabel("Connect") });
+    if ((await connectButton.count()) === 1) {
+      await connectButton.click();
+    }
     const token = process.env.AIASK_AGENT_CONTROL_TOKEN || CONTROL_TOKEN;
+    await setControlToken(page, token);
     await openSettings(page);
     await page.getByRole("button", { name: "令牌与权限", exact: true }).click();
     await page.locator("label.settings-row").filter({ hasText: "控制令牌" }).locator("input").fill(token);
@@ -2692,5 +3900,73 @@ test.describe("optional live desktop smoke", () => {
     await expect(page.locator(".capability-banner").filter({ hasText: "AI 测试" })).toBeVisible();
     await page.getByRole("button", { name: controlLabel("Run AI Smoke") }).click();
     await expect(page.locator(".capability-section").filter({ hasText: "冒烟测试结果" })).toContainText("true", { timeout: 30_000 });
+  });
+
+  test("renders the expanded live frontend matrix without layout regressions", async ({ page }) => {
+    test.setTimeout(300_000);
+    await page.goto("/");
+    await expect(page.locator("main")).toBeVisible();
+    const connectButton = page.getByRole("button", { name: controlLabel("Connect") });
+    if ((await connectButton.count()) === 1) {
+      await connectButton.click();
+    }
+    const token = process.env.AIASK_AGENT_CONTROL_TOKEN || CONTROL_TOKEN;
+    await setControlToken(page, token);
+
+    const livePages: Array<{ name: string; pattern: RegExp; timeout?: number }> = [
+      { name: "Projects / Contexts", pattern: /Agent|端点|上下文|finance_safe|AIASK/i },
+      { name: "Sessions", pattern: /会话|session|消息|full|控制|暂无/i },
+      { name: "Runs / Events", pattern: /运行|事件|run|timeline|暂无/i },
+      { name: "Approvals", pattern: /审批|意图|approval|intent|工具/i },
+      { name: "Finance Lab", pattern: /金融实验室|因子|策略工厂|孵化|数据|接力/i },
+      { name: "Market Temperature", pattern: /市场温度|market_temperature|MARKET_TEMPERATURE|数据质量|热行业|冷行业|DESKTOP_TOOL_UNAVAILABLE|INTERNAL_ERROR/i, timeout: 45_000 },
+      { name: "Quant Research", pattern: /量化研究|quant|数据|因子|research|SQLite/i },
+      { name: "Data & Sync", pattern: /数据|agent_quant_data_gate|同步|新鲜度|DATA_STATUS/i },
+      { name: "Factor Factory", pattern: /因子|FACTOR_FACTORY|活跃池|维护|DESKTOP_TOOL_UNAVAILABLE|CONTROL_TOKEN/i, timeout: 45_000 },
+      { name: "Incubation", pattern: /INCUBATION_LOADED|孵化状态已加载|INCUBATION_DEGRADED|DESKTOP_TOOL_UNAVAILABLE/i, timeout: 45_000 },
+      { name: "Automation", pattern: /自动化|任务|job|cron|JOBS|调度/i },
+      { name: "Workflows", pattern: /工作流|workflow|金融|任务|Agent/i },
+      { name: "Factory Events", pattern: /工厂事件|雷达|event|outbox|FACTORY|事件/i, timeout: 45_000 },
+      { name: "Integrations", pattern: /集成|MCP|Gateway|插件|技能|连接器/i },
+      { name: "Skills", pattern: /插件|技能|plugin|skill|受限|就绪/i },
+      { name: "Gateway", pattern: /Gateway|平台|daemon|消息|目录|受限|就绪/i },
+      { name: "Models", pattern: /模型|provider|AI|status|提供方|mock-live-model/i },
+      { name: "Settings", pattern: /设置|Agent 端点|令牌|模型状态|连接/i },
+      { name: "Overview", pattern: /总览|运行概览|系统|健康|Agent/i },
+      { name: "Coverage Matrix", pattern: /覆盖矩阵|能力|implemented|partial|Hermes/i },
+      { name: "Tools", pattern: /工具|agent_|safe|probe|目录/i },
+      { name: "Capabilities", pattern: /能力中心|Hermes|MCP|策略工厂|AI 测试/i },
+      { name: "Diagnostics", pattern: /诊断|系统健康中心|子系统|终端|Gateway/i },
+      { name: "Agent Status", pattern: /智能体|Agent|工具集|状态|健康/i },
+      { name: "Local User", pattern: /本地用户|画像|搜索|local|memory|记忆/i },
+      { name: "Event Console", pattern: /事件控制台|事件|payload|刷新|event/i }
+    ];
+
+    for (const item of livePages) {
+      await assertLivePageHealth(page, item.name, item.pattern, item.timeout);
+    }
+
+    const settingsSections: Array<{ label: string; pattern: RegExp; timeout?: number }> = [
+      { label: "常规", pattern: /默认行为|默认模式|画像名称|本地用户/i },
+      { label: "连接", pattern: /Agent 连接|Agent 端点|测试连接|默认本地 Agent/i },
+      { label: "令牌与权限", pattern: /令牌与完整模式|API 令牌|控制令牌|完整模式/i },
+      { label: "技能管理", pattern: /技能管理|安装或更新技能|已安装|原始技能/i },
+      { label: "自动化管理", pattern: /自动化管理|任务|调度|工具集|删除/i },
+      { label: "应用集成", pattern: /应用集成|连接器|Gateway|平台|消息/i },
+      { label: "Webhook", pattern: /Webhook|订阅|触发|受控/i },
+      { label: "插件与技能包", pattern: /插件与技能包|插件|skill pack|技能包/i },
+      { label: "模型状态", pattern: /模型状态|提供方|模型|密钥|只读/i },
+      { label: "MCP 管理入口", pattern: /MCP 管理入口|MCP 服务|资源|提示词|OAuth/i },
+      { label: "工作流入口", pattern: /工作流入口|数据与同步|策略工厂|因子工厂|孵化/i },
+      { label: "数据路径", pattern: /数据路径|数据库|Agent|量化|AKShare/i },
+      { label: "学习 / RL", pattern: /学习|RL|环境|运行|结果/i },
+      { label: "安全扫描", pattern: /安全扫描|扫描|修复建议|环境变量/i },
+      { label: "高级诊断入口", pattern: /高级诊断入口|运行概览|工具目录|能力中心|诊断/i },
+      { label: "关于", pattern: /关于 AIASK Desktop|Agent HTTP API|桌面端|版本/i }
+    ];
+
+    for (const section of settingsSections) {
+      await assertLiveSettingsSectionHealth(page, section.label, section.pattern, section.timeout);
+    }
   });
 });

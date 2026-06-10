@@ -21,6 +21,7 @@ from ...data_source import data_source
 from ...storage import get_db, run_with_db_cleanup
 from ...utils import safe_stderr_print
 from ..data_quality import build_quality_meta, infer_missing_fields, normalize_reason_list
+from ...services.background_tasks import track_background_task
 try:
     import akshare as ak
 except ImportError:
@@ -153,7 +154,7 @@ def _save_quote_nonblocking(payload: dict) -> None:
 
     if loop and loop.is_running():
         try:
-            loop.create_task(_save_quote_best_effort(payload))
+            track_background_task(_save_quote_best_effort(payload), name="quote-save")
         except Exception as e:
             safe_stderr_print(f"[quote] create save task failed: {e}")
         return
@@ -179,7 +180,7 @@ def _save_quotes_nonblocking(items: list[dict]) -> None:
 
     if loop and loop.is_running():
         try:
-            loop.create_task(_runner())
+            track_background_task(_runner(), name="quote-batch-save")
         except Exception as e:
             safe_stderr_print(f"[quote] create batch save task failed: {e}")
         return

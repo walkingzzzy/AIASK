@@ -16,6 +16,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+from .background_tasks import track_background_task
+
 logger = logging.getLogger(__name__)
 
 # ── 内存缓存（LRU 淘汰）───────────────────────────────────────────
@@ -166,7 +168,8 @@ def save_chain(chain: dict) -> dict:
     if db is not None:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(_safe_save_chain(db, payload))
+            if loop.is_running():
+                track_background_task(_safe_save_chain(db, payload), name=f"evidence-save:{tid}")
         except RuntimeError:
             logger.debug("No event loop; chain %s cached in memory only", tid)
 

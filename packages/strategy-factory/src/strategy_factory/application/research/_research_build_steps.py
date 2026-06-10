@@ -587,7 +587,10 @@ def build_ranked_factor_context(
             if abs(builder_cls._safe_float(item.get("ic_value"))) >= 0.02
         ][:3]
     if governed_active_factors:
-        active_factors = list(dict.fromkeys([*governed_active_factors[:4], *active_factors]))[:4]
+        governed_active_limit = max(4, min(8, len(governed_active_factors)))
+        active_factors = list(
+            dict.fromkeys([*governed_active_factors[:governed_active_limit], *active_factors])
+        )[:governed_active_limit]
     active_factors = [name for name in active_factors if name]
 
     active_factor_set = set(active_factors)
@@ -608,6 +611,11 @@ def build_ranked_factor_context(
         for item in ranked_factors[:3]
         if str(item.get("factor_name") or "")
     ]
+    if governed_active_factors:
+        top_factor_limit = max(3, min(8, len(governed_active_factors)))
+        top_factor_names = list(dict.fromkeys([*top_factor_names, *governed_active_factors]))[
+            :top_factor_limit
+        ]
 
     return {
         "ranked_factors": ranked_factors,

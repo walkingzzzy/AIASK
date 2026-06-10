@@ -50,7 +50,7 @@ _core_tool_names = (
     "technical", "backtest", "portfolio", "valuation", "decision",
     "search", "semantic", "data_warmup", "alerts", "ai_workflows",
     "governance_workflow", "adapter_tools",
-    "market_blocks", "basic_data", "managers", "research",
+    "market_blocks", "basic_data", "managers", "research", "market_temperature",
     "key_levels", "stop_levels", "trade_plan", "stock_radar",
 )
 try:
@@ -59,7 +59,7 @@ try:
         technical, backtest, portfolio, valuation, decision,
         search, semantic, data_warmup, alerts, ai_workflows,
         governance_workflow, adapter_tools,
-        market_blocks, basic_data, managers, research,
+        market_blocks, basic_data, managers, research, market_temperature,
         key_levels, stop_levels, trade_plan, db_freshness,
         valuation_consensus, decision_consensus, stock_radar,
     )
@@ -385,6 +385,7 @@ def _register_core_tools(app: FastMCP, *, startup_profile: str) -> None:
     stop_levels.register(app)
     trade_plan.register(app)
     stock_radar.register(app)
+    market_temperature.register(app)
     db_freshness.register(app)
     managers.register(
         app,

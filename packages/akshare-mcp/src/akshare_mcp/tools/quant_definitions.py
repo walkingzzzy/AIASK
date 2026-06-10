@@ -1,5 +1,6 @@
 """Quant factor definitions, constants, and configuration utilities."""
 
+import math
 import os
 from typing import Any, Dict
 
@@ -450,7 +451,10 @@ def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
-        return float(value)
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            return default
+        return parsed
     except (TypeError, ValueError):
         return default
 

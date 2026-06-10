@@ -33,16 +33,16 @@ export function ProjectsContextsPage({
     <section className="capabilities-workspace optimization-page">
       <header className="capabilities-header">
         <div>
-          <span>Workspace</span>
-          <h1>Projects / Contexts</h1>
-          <p>Manage the current Agent endpoint, backend mode, operator profile, and readiness gates for thread-first work.</p>
+          <span>工作区</span>
+          <h1>项目 / 上下文</h1>
+          <p>集中查看当前 Agent 端点、后端模式、操作员画像和线程任务所需的就绪门控。</p>
         </div>
         <div className="header-actions">
-          <StatusBadge status={mockMode ? "mock" : "live"} label={mockMode ? "mock" : "live"} />
-          <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "online" : status} />
+          <StatusBadge status={mockMode ? "mock" : "live"} label={mockMode ? "Mock 数据" : "真实后端"} />
+          <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "在线" : status} />
           <button className="small-button" onClick={onRefresh} type="button">
             <RefreshCw size={14} />
-            Sync
+            同步
           </button>
         </div>
       </header>
@@ -51,24 +51,24 @@ export function ProjectsContextsPage({
         <div className="optimization-grid">
           <article className="optimization-card">
             <FolderGit2 size={18} />
-            <span>Context</span>
-            <h2>{profileName || "Local workspace"}</h2>
-            <p>User: {userId || "local"}</p>
-            <p>Mode: {agentMode}</p>
+            <span>上下文</span>
+            <h2>{profileName || "本地工作区"}</h2>
+            <p>用户：{userId || "local"}</p>
+            <p>模式：{agentMode}</p>
           </article>
           <article className="optimization-card">
             <Database size={18} />
-            <span>Endpoint</span>
+            <span>Agent 端点</span>
             <h2>{endpoint}</h2>
-            <p>Default: {defaultEndpoint}</p>
-            <p>Service: {health?.service || "not loaded"}</p>
+            <p>默认：{defaultEndpoint}</p>
+            <p>服务：{health?.service || "未加载"}</p>
           </article>
           <article className="optimization-card">
             <ShieldCheck size={18} />
-            <span>Access</span>
-            <h2>{controlToken.trim() ? "Control ready" : "Control gated"}</h2>
-            <p>API token: {apiToken.trim() ? "configured" : "missing"}</p>
-            <p>Full mode: {health?.hermes?.full_mode_active ? "active" : "not active"}</p>
+            <span>权限</span>
+            <h2>{controlToken.trim() ? "控制令牌就绪" : "控制令牌门控"}</h2>
+            <p>API 令牌：{apiToken.trim() ? "已配置" : "缺失"}</p>
+            <p>完整模式：{health?.hermes?.full_mode_active ? "已激活" : "未激活"}</p>
           </article>
         </div>
 
@@ -76,27 +76,27 @@ export function ProjectsContextsPage({
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Recommended actions</span>
-                <h3>Keep context visible</h3>
+                <span>推荐动作</span>
+                <h3>保持上下文可见</h3>
               </div>
               <Zap size={18} />
             </div>
             <div className="button-row">
-              <button className="primary-button" onClick={() => onOpenView("settings")} type="button">Open Settings</button>
-              <button className="small-button" onClick={() => onOpenView("readiness-health")} type="button">Readiness / Health</button>
-              <button className="small-button" onClick={() => onOpenView("workbench")} type="button">Back to Workbench</button>
+              <button className="primary-button" onClick={() => onOpenView("settings")} type="button">打开设置</button>
+              <button className="small-button" onClick={() => onOpenView("readiness-health")} type="button">准备度 / 健康</button>
+              <button className="small-button" onClick={() => onOpenView("workbench")} type="button">返回工作台</button>
             </div>
           </section>
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Design note</span>
-                <h3>Thread-first context</h3>
+                <span>设计说明</span>
+                <h3>线程优先上下文</h3>
               </div>
             </div>
             <p className="muted">
-              This page is the lightweight project/context hub for the current Desktop client. It keeps mock/live, endpoint,
-              profile, token, and full-mode state in one place without adding backend dependencies.
+              此页是当前桌面客户端的轻量项目/上下文中枢，将 Mock/真实后端、Agent 端点、画像、令牌和完整模式状态放在同一处，
+              不新增后端依赖。
             </p>
           </section>
         </div>

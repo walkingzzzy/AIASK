@@ -271,6 +271,7 @@ class _StrategyCrudQualityMixin:
             self,
             strategy_id: Optional[str] = None,
             aggregate_type: Optional[str] = None,
+            aggregate_id: Optional[str] = None,
             event_type: Optional[str] = None,
             source: Optional[str] = None,
             correlation_id: Optional[str] = None,
@@ -287,6 +288,10 @@ class _StrategyCrudQualityMixin:
                 if aggregate_type:
                     sql += f" AND aggregate_type = ${idx}"
                     params.append(aggregate_type)
+                    idx += 1
+                if aggregate_id:
+                    sql += f" AND aggregate_id = ${idx}"
+                    params.append(aggregate_id)
                     idx += 1
                 if event_type:
                     sql += f" AND event_type = ${idx}"

@@ -37,8 +37,8 @@ export function buildTaskArtifacts({
     artifacts.push({
       id: `thread:${selectedThread.id}`,
       kind: "note",
-      title: selectedThread.title || "Current thread",
-      description: selectedThread.prompt || "Thread is ready for follow-up work.",
+      title: selectedThread.title || "当前线程",
+      description: selectedThread.prompt || "线程已就绪，可以继续后续工作。",
       status: selectedThread.status,
       source: selectedThread.sessionId || selectedThread.id,
       createdAt: selectedThread.createdAt,
@@ -51,8 +51,8 @@ export function buildTaskArtifacts({
     artifacts.push({
       id: `response:${response.id}`,
       kind: "report",
-      title: "Agent response summary",
-      description: response.output_text || "Response payload captured for review.",
+      title: "Agent 回复摘要",
+      description: response.output_text || "已捕获回复 payload，等待复核。",
       status: response.status,
       source: response.metadata?.run_id || response.metadata?.session_id || response.id,
       sourceView: "workbench",
@@ -64,8 +64,8 @@ export function buildTaskArtifacts({
       artifacts.push({
         id: `tools:${response.id}`,
         kind: "json",
-        title: "Tool call evidence",
-        description: `${response.metadata.tool_calls.length} tool call records`,
+        title: "工具调用证据",
+        description: `${response.metadata.tool_calls.length} 条工具调用记录`,
         status: "ready",
         source: response.id,
         sourceView: "tools-intents-approvals",
@@ -79,8 +79,8 @@ export function buildTaskArtifacts({
     artifacts.push({
       id: `run:${run.run_id}`,
       kind: "run",
-      title: `Run ${run.run_id}`,
-      description: `Tools ${run.tool_call_count ?? 0} / approvals ${run.approval_count ?? 0} / errors ${run.error_count ?? 0}`,
+      title: `运行 ${run.run_id}`,
+      description: `工具 ${run.tool_call_count ?? 0} / 审批 ${run.approval_count ?? 0} / 错误 ${run.error_count ?? 0}`,
       status: run.status,
       source: run.run_id,
       sourceView: "runs-events",
@@ -94,8 +94,8 @@ export function buildTaskArtifacts({
     artifacts.push({
       id: `approval:${event.id}`,
       kind: "approval",
-      title: event.title || "Approval event",
-      description: event.body || "Approval event captured in the current timeline.",
+      title: event.title || "审批事件",
+      description: event.body || "当前时间线中捕获到审批事件。",
       status: "approval_required",
       source: event.id,
       sourceView: "tools-intents-approvals",
@@ -108,8 +108,8 @@ export function buildTaskArtifacts({
     artifacts.push({
       id: "empty:guide",
       kind: "note",
-      title: "No artifacts yet",
-      description: "Run a task or select a thread to collect responses, tool evidence, approvals, screenshots, and reports here.",
+      title: "暂无产物",
+      description: "运行任务或选择线程后，这里会收集回复、工具证据、审批、截图和报告。",
       status: "idle",
       sourceView: "workbench",
       severity: "info"
@@ -125,7 +125,7 @@ export function buildTaskReviewComments(artifacts: TaskArtifact[]): TaskReviewCo
       id: `review:${artifact.id}:${index}`,
       targetId: artifact.id,
       targetType: artifact.kind === "screenshot" ? "screenshot" : artifact.kind === "run" ? "run" : "artifact",
-      body: `Review ${artifact.title}: ${artifact.description || "needs attention before the thread is complete."}`,
+      body: `复核 ${artifact.title}：${artifact.description || "线程完成前需要处理。"}`,
       status: "open",
       targetPath: artifact.targetPath,
       severity: artifact.severity === "critical" ? "critical" : "warning"
@@ -184,8 +184,8 @@ export function ArtifactsPanel({
     <section className={`task-panel ${compact ? "compact" : ""}`}>
       <div className="section-header">
         <div>
-          <span>{artifacts.length} artifacts</span>
-          <h3>Task artifacts</h3>
+          <span>{artifacts.length} 个产物</span>
+          <h3>任务产物</h3>
         </div>
         <ClipboardCheck size={18} />
       </div>
@@ -207,8 +207,8 @@ export function ReviewPanel({
     <section className={`task-panel ${compact ? "compact" : ""}`}>
       <div className="section-header">
         <div>
-          <span>{comments.length} comments</span>
-          <h3>Review queue</h3>
+          <span>{comments.length} 条评论</span>
+          <h3>审查队列</h3>
         </div>
         <MessageSquare size={18} />
       </div>
@@ -218,9 +218,9 @@ export function ReviewPanel({
         </div>
       ) : (
         <EmptyState
-          body="Artifacts, approvals, screenshots, and run results that need attention will appear here."
+          body="需要处理的产物、审批、截图和运行结果会出现在这里。"
           icon={<ClipboardCheck size={24} />}
-          title="No review comments"
+          title="暂无审查评论"
         />
       )}
     </section>

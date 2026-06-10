@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from datetime import date, datetime, timezone
 from typing import Any, Optional
@@ -20,6 +21,46 @@ def _regime_lifecycle_enabled() -> bool:
     return str(
         os.getenv("STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED") or ""
     ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_float(value: Any, default: Any = 0.0) -> Any:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return numeric
+    if default is None:
+        return None
+    fallback = _finite_float(default)
+    return fallback if fallback is not None else 0.0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
+
+
+def _json_safe(value: Any) -> Any:
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, dict):
+        return {key: _json_safe(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_json_safe(item) for item in value]
+    if isinstance(value, tuple):
+        return [_json_safe(item) for item in value]
+    return value
 
 
 class MetricsRecorder:
@@ -144,6 +185,41 @@ class MetricsRecorder:
         account_id: str,
         metric_date: date,
     ) -> dict[str, Any]:
+        verification = dict(verification or {})
+        nav_info = dict(nav_info or {})
+        for field in (
+            "primary_hit_rate",
+            "primary_skill_lcb",
+            "recent_primary_skill_lcb",
+            "secondary_hit_rate",
+            "secondary_skill_lcb",
+            "stability_gap",
+            "coverage_ratio",
+            "forward_sharpe",
+            "forward_ic",
+            "recent_primary_hit_rate",
+        ):
+            if field in verification:
+                verification[field] = _safe_float(verification.get(field), 0.0)
+        for field in (
+            "primary_effective_n",
+            "secondary_effective_n",
+            "total_signals",
+            "min_days_remaining",
+            "min_trades_remaining",
+        ):
+            if field in verification:
+                verification[field] = _safe_int(verification.get(field), 0)
+        for field, default in (
+            ("total_value", 0.0),
+            ("cash", 0.0),
+            ("market_value", 0.0),
+            ("nav", 1.0),
+            ("daily_return", 0.0),
+            ("max_drawdown", 0.0),
+        ):
+            if field in nav_info:
+                nav_info[field] = _safe_float(nav_info.get(field), default)
         """构建孵化指标记录。"""
         # 从验证结果提取
         primary_hit_rate = float(verification.get("primary_hit_rate") or 0.0)
@@ -195,7 +271,7 @@ class MetricsRecorder:
         )
         diagnostic_observation = intake_stage == "diagnostic"
 
-        return {
+        return _json_safe({
             "account_id": account_id,
             "stage": intake_stage,
             "total_value": total_value,
@@ -241,7 +317,7 @@ class MetricsRecorder:
                 "min_trades_remaining": verification.get("min_trades_remaining"),
                 "recorded_at": datetime.now(timezone.utc).isoformat(),
             },
-        }
+        })
 
     def _derive_decision(
         self,
@@ -328,12 +404,11 @@ class MetricsRecorder:
 
     @staticmethod
     def _safe_float(value: Any, default: Any = 0.0) -> Any:
-        try:
-            if value is None:
-                return default
-            return float(value)
-        except (TypeError, ValueError):
-            return default
+        return _safe_float(value, default)
+
+    @staticmethod
+    def _safe_int(value: Any, default: int = 0) -> int:
+        return _safe_int(value, default)
 
     @classmethod
     def _compute_max_drawdown(cls, nav_rows: list[dict[str, Any]]) -> float:

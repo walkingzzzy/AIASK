@@ -14,6 +14,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from contextlib import suppress
 from typing import Any
 
 from .session_store import now_iso
@@ -73,6 +74,9 @@ class ConnectorHealthMonitor:
 
     async def start(self):
         """Start periodic health checking."""
+        if self._running and self._task is not None and not self._task.done():
+            logger.info("ConnectorHealthMonitor: already running")
+            return
         self._running = True
         self._task = asyncio.create_task(self._check_loop(), name="connector-health-monitor")
         logger.info("ConnectorHealthMonitor: started (interval=%ds)", self._interval)
@@ -80,9 +84,17 @@ class ConnectorHealthMonitor:
     async def stop(self):
         """Stop health checking."""
         self._running = False
-        if self._task:
-            self._task.cancel()
-            self._task = None
+        task = self._task
+        self._task = None
+        if task is None:
+            return
+        if not task.done():
+            task.cancel()
+            with suppress(asyncio.CancelledError):
+                await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
 
     async def check_all(self) -> HealthReport:
         """Run health checks on all connectors."""
@@ -121,7 +133,10 @@ class ConnectorHealthMonitor:
                 break
             except Exception as exc:
                 logger.debug("ConnectorHealthMonitor check error: %s", exc)
-            await asyncio.sleep(self._interval)
+            try:
+                await asyncio.sleep(self._interval)
+            except asyncio.CancelledError:
+                break
 
     async def _check_mcp_servers(self) -> list[HealthCheckResult]:
         """Check health of all registered MCP servers."""

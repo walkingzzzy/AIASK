@@ -183,7 +183,7 @@ export function IntegrationsManagementPanel({
         </div>
       </div>
 
-      {!controlToken.trim() && <div className="notice warn">应用集成详情需要 Control token；请先在“令牌与权限”中填写。</div>}
+      {!controlToken.trim() && <div className="notice warn">应用集成详情需要控制令牌；请先在“令牌与权限”中填写。</div>}
 
       <section className="capability-section">
         <div className="section-header">
@@ -213,7 +213,7 @@ export function IntegrationsManagementPanel({
               </div>
             </article>
           ))}
-          {!connectors.length && <p className="muted">尚未加载连接器；请填写 Control token 后刷新。</p>}
+          {!connectors.length && <p className="muted">尚未加载连接器；请填写控制令牌后刷新。</p>}
         </div>
       </section>
 

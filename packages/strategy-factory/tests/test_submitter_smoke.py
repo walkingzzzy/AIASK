@@ -23,6 +23,40 @@ def test_submitter_mro_chain():
     assert "_StrategySubmitterActionsMixin" in mro_names
 
 
+def test_submitter_birth_regime_includes_compact_market_temperature_context():
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    birth_regime = StrategySubmitter._extract_birth_regime(
+        {
+            "date": "2026-06-08",
+            "fg_level": "neutral",
+            "market_internals": {
+                "market_temperature": {
+                    "as_of": "2026-06-08",
+                    "market_temperature": 52.4,
+                    "market_state": "neutral",
+                    "quality_status": "healthy",
+                    "readiness_status": "ready",
+                    "staleness_days": 0,
+                    "stock_count": 988,
+                    "industry_count": 31,
+                    "source_chain": ["market_temperature_snapshots", "market_temperature.service"],
+                }
+            },
+        }
+    )
+
+    context = birth_regime["market_temperature_context"]
+    assert context["as_of"] == "2026-06-08"
+    assert context["temperature"] == 52.4
+    assert context["state"] == "neutral"
+    assert context["quality_status"] == "healthy"
+    assert context["readiness_status"] == "ready"
+    assert context["stock_count"] == 988
+    assert context["industry_count"] == 31
+    assert "market" not in context
+
+
 def test_submission_quality_gate_importable():
     from strategy_factory.application.submission_gate import run_submission_quality_gate
 

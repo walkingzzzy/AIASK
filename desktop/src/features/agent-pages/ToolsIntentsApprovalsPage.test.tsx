@@ -59,7 +59,7 @@ describe("ToolsIntentsApprovalsPage", () => {
 
   it("应该渲染页面标题", () => {
     render(<ToolsIntentsApprovalsPage {...mockProps} />);
-    expect(screen.getByText("Tools / Intents / Approvals")).toBeInTheDocument();
+    expect(screen.getByText("工具 / 意图 / 审批")).toBeInTheDocument();
   });
 
   it("应该显示工具目录", () => {
@@ -82,8 +82,8 @@ describe("ToolsIntentsApprovalsPage", () => {
     expect(screen.getByText("所有工具")).toBeInTheDocument();
     expect(screen.getByText("金融安全")).toBeInTheDocument();
     expect(screen.getByText("Intent")).toBeInTheDocument();
-    expect(screen.getByText("Approval")).toBeInTheDocument();
-    expect(screen.getByText("Blocked")).toBeInTheDocument();
+    expect(screen.getByText("需审批")).toBeInTheDocument();
+    expect(screen.getAllByText("已阻塞").length).toBeGreaterThan(0);
   });
 
   it("应该显示 Intents 区域", () => {
@@ -95,10 +95,10 @@ describe("ToolsIntentsApprovalsPage", () => {
     render(<ToolsIntentsApprovalsPage {...mockProps} />);
 
     expect(screen.getByText("agent_test")).toBeInTheDocument();
-    expect(screen.getAllByText("finance_safe").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("read_only").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("金融安全").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("只读").length).toBeGreaterThan(0);
     expect(screen.getAllByText("full_mode_only").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("blocked").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("已阻塞").length).toBeGreaterThan(0);
     expect(screen.queryByText("可用操作与安全探测")).not.toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/Hermes full 工具只作为契约对照数据读取/)).toBeInTheDocument());
   });

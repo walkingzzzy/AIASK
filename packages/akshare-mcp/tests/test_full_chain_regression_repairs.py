@@ -311,6 +311,47 @@ def test_live_trading_dry_run_still_returns_preview(monkeypatch):
     assert result["data"]["mode"] == "dry_run"
 
 
+def test_live_trading_rejects_non_finite_order_numbers(monkeypatch):
+    from akshare_mcp.tools.managers import live_trading_manager
+
+    class Adapter:
+        provider_name = "fake"
+        config = SimpleNamespace(read_only=True, paper=False)
+
+        def can_write(self):
+            return False
+
+        def capabilities(self):
+            return {}
+
+        async def close(self):
+            return None
+
+    monkeypatch.setattr(live_trading_manager, "get_live_broker_adapter", lambda: Adapter())
+
+    qty_result = asyncio.run(
+        live_trading_manager._dispatch_action(
+            "submit_order",
+            {"symbol": "AAPL", "qty": "nan", "dry_run": True},
+        )
+    )
+    notional_result = asyncio.run(
+        live_trading_manager._dispatch_action(
+            "submit_order",
+            {"symbol": "AAPL", "notional": float("inf"), "dry_run": True},
+        )
+    )
+
+    assert qty_result["success"] is False
+    assert qty_result["error_code"] == "INVALID_ORDER_INPUT"
+    assert qty_result["meta"]["side_effect"]["level"] == "trade_risk"
+    assert "qty" in qty_result["data"]["invalid_fields"]
+
+    assert notional_result["success"] is False
+    assert notional_result["error_code"] == "INVALID_ORDER_INPUT"
+    assert "notional" in notional_result["data"]["invalid_fields"]
+
+
 def test_paper_archive_account_rejects_non_empty_and_archives_empty(monkeypatch):
     from akshare_mcp.tools.managers import paper_trading_manager
 

@@ -162,6 +162,202 @@ export interface TradePredictionMatrix {
   [key: string]: unknown;
 }
 
+export interface MarketTemperatureSummary {
+  stock_count?: number;
+  trend_known_count?: number;
+  above_ma20_count?: number;
+  ma20_breadth?: number | null;
+  advance_count?: number;
+  decline_count?: number;
+  flat_count?: number;
+  advance_ratio?: number | null;
+  avg_pct_change?: number | null;
+  weighted_pct_change?: number | null;
+  amount?: number | null;
+  market_cap?: number | null;
+  temperature?: number | null;
+  state?: string;
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureIndustry extends MarketTemperatureSummary {
+  code?: string;
+  name?: string;
+  date?: string;
+  market_cap_weight?: number | null;
+}
+
+export interface MarketTemperatureQuality {
+  status?: string;
+  warnings?: string[];
+  input_rows?: number;
+  valid_stock_count?: number;
+  invalid_stock_rows?: number;
+  industry_count?: number;
+  unknown_industry_count?: number;
+  trend_coverage?: number | null;
+  universe_limit?: number;
+  universe_count?: number;
+  loaded_stock_rows?: number;
+  missing_kline_rows?: number;
+  contract_version?: string;
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureSnapshot {
+  contract_version?: string;
+  as_of?: string;
+  market?: MarketTemperatureSummary;
+  industries?: MarketTemperatureIndustry[];
+  hot_industries?: MarketTemperatureIndustry[];
+  cold_industries?: MarketTemperatureIndustry[];
+  quality?: MarketTemperatureQuality;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureCacheReadiness {
+  ready?: boolean;
+  status?: string;
+  read_only?: boolean;
+  as_of?: string | null;
+  requested_as_of?: string | null;
+  max_stale_days?: number;
+  staleness_days?: number | null;
+  quality_status?: string;
+  degraded?: boolean;
+  warnings?: string[];
+  market_temperature?: number | null;
+  market_state?: string | null;
+  stock_count?: number;
+  industry_count?: number;
+  cache?: {
+    created_at?: string | null;
+    updated_at?: string | null;
+    source?: string;
+    [key: string]: unknown;
+  };
+  blockers?: string[];
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureCacheHistoryItem {
+  as_of?: string;
+  contract_version?: string;
+  market_temperature?: number | null;
+  market_state?: string | null;
+  stock_count?: number;
+  industry_count?: number;
+  quality_status?: string;
+  warnings?: string[];
+  created_at?: string | null;
+  updated_at?: string | null;
+  snapshot?: MarketTemperatureSnapshot;
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureCacheHistory {
+  items?: MarketTemperatureCacheHistoryItem[];
+  count?: number;
+  limit?: number;
+  include_snapshot?: boolean;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureIndustryHistoryItem {
+  as_of?: string;
+  code?: string;
+  name?: string;
+  temperature?: number | null;
+  state?: string;
+  ma20_breadth?: number | null;
+  advance_count?: number;
+  decline_count?: number;
+  flat_count?: number;
+  stock_count?: number;
+  market_cap_weight?: number | null;
+  market_temperature?: number | null;
+  market_state?: string | null;
+  quality_status?: string;
+  warnings?: string[];
+  updated_at?: string | null;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureIndustryHistory {
+  items?: MarketTemperatureIndustryHistoryItem[];
+  count?: number;
+  limit?: number;
+  top_n?: number;
+  industry?: string | null;
+  match_mode?: string;
+  include_source_chain?: boolean;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureIndustryConstituent {
+  code?: string;
+  name?: string;
+  industry_code?: string | null;
+  industry?: string;
+  sector?: string;
+  market?: string | null;
+  market_cap?: number | null;
+  pe_ratio?: number | null;
+  pb_ratio?: number | null;
+  list_date?: string | null;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureIndustryConstituents {
+  items?: MarketTemperatureIndustryConstituent[];
+  count?: number;
+  total_matches?: number;
+  limit?: number;
+  offset?: number;
+  industry?: string;
+  match_mode?: string;
+  include_source_chain?: boolean;
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureForwardValidationCell {
+  sample_n?: number;
+  direction_hits?: number;
+  reliable?: boolean;
+  avg_forward_return?: number | null;
+  hit_rate?: number | null;
+  min_forward_return?: number | null;
+  max_forward_return?: number | null;
+  [key: string]: unknown;
+}
+
+export interface MarketTemperatureForwardValidation {
+  matrix?: Record<string, Record<string, MarketTemperatureForwardValidationCell>>;
+  states?: string[];
+  horizons?: number[];
+  count?: number;
+  snapshot_count?: number;
+  limit?: number;
+  target_field?: string;
+  requested_target_field?: string;
+  benchmark_code?: string | null;
+  benchmark_status?: string;
+  benchmark_bar_count?: number;
+  min_samples?: number;
+  neutral_band_pct?: number;
+  include_samples?: boolean;
+  samples?: Record<string, unknown>[];
+  source_chain?: string[];
+  [key: string]: unknown;
+}
+
 export interface AgentToolCall {
   id?: string;
   name?: string;
@@ -216,6 +412,7 @@ export type MainView =
   | "plugins-skills"
   | "extensions-pilot"
   | "financial-manager"
+  | "market-temperature"
   | "automation"
   | "data"
   | "factor-factory"
@@ -925,12 +1122,31 @@ export interface FinancialReadinessGate {
   evidence?: Record<string, unknown>;
 }
 
+export interface FinancialNextAction {
+  action_id: string;
+  title: string;
+  detail: string;
+  priority: "critical" | "recommended" | "optional" | string;
+  target_page: MainView | string;
+  endpoint?: string;
+  env_vars?: string[];
+  gate?: string;
+}
+
 export interface FinancialSystemReadiness {
   object: string;
   status: string;
   production_ready: boolean;
   required_gates: FinancialReadinessGate[];
   optional_gates: FinancialReadinessGate[];
+  next_actions?: FinancialNextAction[];
+  live_smoke?: {
+    object?: string;
+    status?: string;
+    script?: string;
+    checks?: Array<{ name?: string; method?: string; path?: string; observes?: string[] }>;
+    [key: string]: unknown;
+  };
   summary: Record<string, number>;
   parity?: Record<string, unknown>;
   disclaimer?: string;

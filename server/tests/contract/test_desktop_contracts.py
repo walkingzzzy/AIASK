@@ -326,6 +326,9 @@ CONTRACT_CHECKLIST = {
         "/v1/desktop/runs/{run_id}/events → List[NormalizedRunEvent]",
     ],
     "hermes_apis": [
+        "/v1/hermes/readiness → HermesReadiness",
+        "/v1/hermes/toolsets → List[HermesToolset]",
+        "/v1/hermes/tools → List[ToolCatalogItem]",
         "/v1/hermes/sessions → List[RecentSessionSummary]",
         "/v1/hermes/sessions/{session_id}/messages → List[Message]",
         "/v1/hermes/intents → List[IntentRecord]",

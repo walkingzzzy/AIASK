@@ -35,7 +35,7 @@ class OpenAIChatClient:
     def __init__(self, *, api_key: str | None = None, base_url: str | None = None) -> None:
         from openai import AsyncOpenAI
 
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        self.client = AsyncOpenAI(api_key=api_key, base_url=_openai_compatible_api_base(base_url))
 
     async def aclose(self) -> None:
         closer = getattr(self.client, "close", None)
@@ -57,17 +57,26 @@ class OpenAIChatClient:
             tools=tools or None,
             tool_choice="auto" if tools else None,
         )
-        choice = response.choices[0]
-        message = choice.message
+        if isinstance(response, str):
+            if _looks_like_html(response):
+                raise RuntimeError("model provider returned HTML instead of a chat completion response")
+            return ModelResponse(content=response, raw=response)
+        if isinstance(response, dict):
+            return self._model_response_from_mapping(response)
+        choices = list(getattr(response, "choices", []) or [])
+        if not choices:
+            return ModelResponse(content=str(response or ""), raw=response)
+        choice = choices[0]
+        message = getattr(choice, "message", None) or {}
         tool_calls: list[dict[str, Any]] = []
-        for call in list(message.tool_calls or []):
+        for call in list(getattr(message, "tool_calls", None) or []):
             tool_calls.append(
                 {
-                    "id": call.id,
-                    "type": call.type,
+                    "id": getattr(call, "id", ""),
+                    "type": getattr(call, "type", "function"),
                     "function": {
-                        "name": call.function.name,
-                        "arguments": call.function.arguments or "{}",
+                        "name": getattr(getattr(call, "function", None), "name", ""),
+                        "arguments": getattr(getattr(call, "function", None), "arguments", "") or "{}",
                     },
                 }
             )
@@ -79,11 +88,73 @@ class OpenAIChatClient:
         else:
             usage = {}
         return ModelResponse(
-            content=message.content or "",
+            content=getattr(message, "content", "") or "",
             tool_calls=tool_calls,
             usage=usage,
             raw=response,
         )
+
+    @staticmethod
+    def _model_response_from_mapping(response: dict[str, Any]) -> ModelResponse:
+        choices = list(response.get("choices") or [])
+        message: dict[str, Any] = {}
+        if choices and isinstance(choices[0], dict):
+            message = dict(choices[0].get("message") or {})
+        content = message.get("content")
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    text = item.get("text") or item.get("content")
+                    if text not in (None, ""):
+                        parts.append(str(text))
+                elif item not in (None, ""):
+                    parts.append(str(item))
+            content_text = "\n".join(parts)
+        else:
+            content_text = str(content or response.get("content") or "")
+        tool_calls: list[dict[str, Any]] = []
+        for call in list(message.get("tool_calls") or []):
+            if not isinstance(call, dict):
+                continue
+            function = dict(call.get("function") or {})
+            tool_calls.append(
+                {
+                    "id": str(call.get("id") or ""),
+                    "type": str(call.get("type") or "function"),
+                    "function": {
+                        "name": str(function.get("name") or call.get("name") or ""),
+                        "arguments": str(function.get("arguments") or call.get("arguments") or "{}"),
+                    },
+                }
+            )
+        usage = dict(response.get("usage") or {}) if isinstance(response.get("usage"), dict) else {}
+        return ModelResponse(content=content_text, tool_calls=tool_calls, usage=usage, raw=response)
+
+
+def _openai_compatible_api_base(base_url: str | None) -> str | None:
+    base = str(base_url or "").strip().rstrip("/")
+    if not base:
+        return None
+    lowered = base.lower()
+    if lowered.endswith("/chat/completions"):
+        base = base.rsplit("/", 2)[0]
+        lowered = base.lower()
+    if lowered.endswith("/models"):
+        base = base.rsplit("/", 1)[0]
+        lowered = base.lower()
+    if lowered.endswith("/v1"):
+        return base
+    remainder = base.split("://", 1)[1] if "://" in base else base
+    path = remainder.split("/", 1)[1] if "/" in remainder else ""
+    if not path:
+        return f"{base}/v1"
+    return base
+
+
+def _looks_like_html(value: str) -> bool:
+    prefix = value.lstrip()[:80].lower()
+    return prefix.startswith("<!doctype html") or prefix.startswith("<html")
 
 
 def _anthropic_messages_api_base(base_url: str | None) -> str:

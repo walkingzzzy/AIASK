@@ -162,7 +162,7 @@ export function AgentWorkspace({
               <div className="section-header">
                 <div>
                   <span>Hermes full</span>
-                  <h3>Full mode 能力分组</h3>
+                  <h3>完整模式能力分组</h3>
                 </div>
                 <Boxes size={18} />
               </div>

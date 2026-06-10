@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from typing import Any
@@ -51,9 +52,16 @@ def _safe_float(value: Any) -> float | None:
     try:
         if value in (None, ""):
             return None
-        return float(value)
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            return None
+        return parsed
     except Exception:
         return None
+
+
+def _raw_number_present(value: Any) -> bool:
+    return value not in (None, "")
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -136,6 +144,43 @@ def _trade_guard_reject(message: str, *, action: str, target: str | None, adapte
             "idempotent": False,
         },
         "explicit_token_required": True,
+    }
+    return payload
+
+
+def _invalid_order_input_reject(
+    message: str,
+    *,
+    target: str | None,
+    invalid_fields: list[str],
+    adapter,
+) -> dict:
+    payload = fail(
+        message,
+        error_code="INVALID_ORDER_INPUT",
+        data={
+            "accepted": False,
+            "submitted": False,
+            "mode": "invalid_input",
+            "target": target,
+            "invalid_fields": invalid_fields,
+        },
+        source="live_broker.input_validation",
+        source_chain=["live_trading_manager"],
+        quality_flags=["invalid_input"],
+        degraded=False,
+    )
+    payload["meta"] = {
+        **_adapter_meta(adapter),
+        "side_effect": {
+            "level": "trade_risk",
+            "target": target or "live_order",
+            "confirmation_required": False,
+            "confirmation_policy": "input_validation",
+            "explicit_token_required": False,
+            "dry_run": False,
+            "idempotent": True,
+        },
     }
     return payload
 
@@ -270,6 +315,23 @@ async def _dispatch_action(action: str, kwargs: dict[str, Any]) -> dict:
             preview = _preview_submit_payload(kwargs)
             if not preview["symbol"]:
                 return fail("symbol/code is required")
+            invalid_fields: list[str] = []
+            qty_raw = kwargs.get("qty") if kwargs.get("qty") not in (None, "") else kwargs.get("quantity")
+            if _raw_number_present(qty_raw) and preview["qty"] is None:
+                invalid_fields.append("qty")
+            if _raw_number_present(kwargs.get("notional")) and preview["notional"] is None:
+                invalid_fields.append("notional")
+            if _raw_number_present(kwargs.get("limit_price")) and preview["limit_price"] is None:
+                invalid_fields.append("limit_price")
+            if _raw_number_present(kwargs.get("stop_price")) and preview["stop_price"] is None:
+                invalid_fields.append("stop_price")
+            if invalid_fields:
+                return _invalid_order_input_reject(
+                    "invalid numeric order input",
+                    target=preview["symbol"],
+                    invalid_fields=invalid_fields,
+                    adapter=adapter,
+                )
             if preview["qty"] in (None, 0) and preview["notional"] in (None, 0):
                 return fail("qty/quantity or notional is required")
             dry_run = bool(preview["dry_run"])

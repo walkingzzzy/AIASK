@@ -33,7 +33,7 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { RawEvidencePanel, StatusBadge, compact, shortText } from "../../components/shared";
+import { RawEvidencePanel, StatusBadge, compact, shortText, statusLabel } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { ToolEnvelope } from "../../types";
 
@@ -136,6 +136,13 @@ const SOURCE_OPTIONS = ["", "manual", "news_llm", "macro_shock", "market_anomaly
 const TYPE_OPTIONS = ["", "policy_shock", "earnings", "guidance", "regulation", "macro_data", "other"];
 const DIRECTION_OPTIONS = ["bullish", "bearish", "neutral"];
 const OUTCOME_OPTIONS = ["positive", "negative", "mixed", "no_effect"] as const;
+const RADAR_TIER_OPTIONS = [
+  { value: "", label: "全部级别" },
+  { value: "alert", label: "警报" },
+  { value: "watch", label: "观察" },
+  { value: "observe", label: "跟踪" },
+  { value: "reject", label: "排除" }
+];
 
 const HIGH_INTENSITY_THRESHOLD = 0.8;
 
@@ -272,6 +279,10 @@ function latestRunId(value: Record<string, unknown> | null): string {
     ? value.latest_run as Record<string, unknown>
     : {};
   return compact(latest.run_id || "");
+}
+
+function radarTierLabel(value: string) {
+  return RADAR_TIER_OPTIONS.find((option) => option.value === value)?.label || value || "全部级别";
 }
 
 function outboxCount(value: Record<string, unknown> | null, status: string): number {
@@ -470,9 +481,13 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const filtered = useMemo(() => {
     const needle = query.trim().toLowerCase();
-    if (!needle) return events;
-    return events.filter((event) => JSON.stringify(event).toLowerCase().includes(needle));
-  }, [events, query]);
+    return events.filter((event) => {
+      if (statusFilter && event.status !== statusFilter) return false;
+      if (sourceFilter && event.event_source !== sourceFilter) return false;
+      if (typeFilter && event.event_type !== typeFilter) return false;
+      return !needle || JSON.stringify(event).toLowerCase().includes(needle);
+    });
+  }, [events, query, sourceFilter, statusFilter, typeFilter]);
 
   const selectedEvent = useMemo(
     () => filtered.find((event) => event.event_id === selectedEventId) || null,
@@ -510,7 +525,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const requireControlToken = useCallback(() => {
     if (!hasControlToken) {
-      appendLog("缺少控制令牌 Control token，写操作需要确认。", false);
+      appendLog("缺少控制令牌，写操作需要确认。", false);
       return false;
     }
     return true;
@@ -734,7 +749,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         const confirmed = await client.confirmIntent(intentId);
         if (confirmed.success) {
           appendLog(`${label} 意图 ${intentId} 已确认。`, true);
-          if (label.includes("Bootstrap")) {
+          if (label === "初始化引导" || label.includes("Bootstrap")) {
             setBootstrapStatus("BOOTSTRAP_CONFIRMED");
           }
           await Promise.all([loadMaintenanceStatus(), loadLineage()]);
@@ -752,7 +767,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
 
   const handleBootstrap = useCallback(() => {
     setBootstrapStatus("BOOTSTRAP_PENDING");
-    createAndConfirmMaintenanceIntent("初始化 Bootstrap", () =>
+    createAndConfirmMaintenanceIntent("初始化引导", () =>
       client.factoryEventBootstrapIntent({ batch_size: 1000, refresh_exposure: true })
     );
   }, [client, createAndConfirmMaintenanceIntent]);
@@ -764,7 +779,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   }, [client, createAndConfirmMaintenanceIntent]);
 
   const handleOutboxDrain = useCallback(() => {
-    createAndConfirmMaintenanceIntent("排空 outbox", () =>
+    createAndConfirmMaintenanceIntent("排空出站队列", () =>
       client.factoryEventOutboxDrainIntent({ limit: 20 })
     );
   }, [client, createAndConfirmMaintenanceIntent]);
@@ -776,12 +791,13 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   }, [client, createAndConfirmMaintenanceIntent]);
 
   const handleRadarRun = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Stock Radar run", () =>
+    createAndConfirmMaintenanceIntent("股票雷达运行", () =>
       client.stockRadarRunIntent({
         mode: "run_once",
         days: 3,
         limit: 80,
         allow_network: false,
+        allow_llm: false,
         ingest_market_text: true,
         parse_pdf: true
       })
@@ -789,7 +805,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   }, [client, createAndConfirmMaintenanceIntent, loadRadar]);
 
   const handleRadarPushPreview = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Stock Radar push preview", () =>
+    createAndConfirmMaintenanceIntent("股票雷达推送预览", () =>
       client.stockRadarPushDigestIntent({
         run_id: latestRunId(radarStatus),
         channels: ["wecom", "telegram"],
@@ -799,7 +815,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   }, [client, createAndConfirmMaintenanceIntent, loadRadar, radarStatus]);
 
   const handleRadarSchedulePreview = useCallback(() => {
-    createAndConfirmMaintenanceIntent("Stock Radar schedule", () =>
+    createAndConfirmMaintenanceIntent("股票雷达调度预览", () =>
       client.stockRadarScheduleUpdateIntent({
         schedule: "manual",
         enabled: false
@@ -807,19 +823,55 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     ).then(() => loadRadar());
   }, [client, createAndConfirmMaintenanceIntent, loadRadar]);
 
+  const renderActionLogPanel = () => (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>操作日志</span>
+          <h3>最近意图派发</h3>
+        </div>
+        <Workflow size={18} />
+      </div>
+      <div className="event-list">
+        {actionLog.map((entry, index) => (
+          <article className="event-card" key={`${entry.stamp}_${index}`}>
+            <div className="event-card-main">
+              <div className="event-card-icon">
+                {entry.ok ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
+              </div>
+              <div>
+                <span>{entry.stamp}</span>
+                <strong>{entry.text}</strong>
+              </div>
+            </div>
+            <div className="event-card-meta">
+              <StatusBadge status={entry.ok ? "implemented" : "warning"} label={entry.ok ? "成功" : "已阻塞"} />
+            </div>
+          </article>
+        ))}
+        {!actionLog.length && (
+          <div className="empty-mini">
+            <ClipboardCheck size={24} />
+            <span>尚未创建或确认任何意图。</span>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+
   const renderMaintenancePanel = () => (
     <section className="capability-section">
       <div className="section-header">
         <div>
-          <span>{maintenanceMessage}</span>
-          <h3>暴露与 outbox 状态</h3>
+          <span>{statusLabel(maintenanceMessage)}</span>
+          <h3>暴露与出站队列状态</h3>
         </div>
         <RefreshCw size={18} className={maintenanceLoading ? "spin" : ""} />
       </div>
       <div className="status-cluster">
         <StatusBadge status="info" label={`${numericStatus(exposureStatus, "row_count")} 行暴露`} />
         <StatusBadge status="info" label={`${numericStatus(exposureStatus, "theme_count")} 个主题`} />
-        <StatusBadge status={outboxCount(outboxStatus, "failed") ? "warning" : "implemented"} label={`${outboxCount(outboxStatus, "failed")} 条 outbox 失败`} />
+        <StatusBadge status={outboxCount(outboxStatus, "failed") ? "warning" : "implemented"} label={`${outboxCount(outboxStatus, "failed")} 条出站失败`} />
         <StatusBadge status="info" label={`${outboxCount(outboxStatus, "processed")} 条已处理`} />
         <StatusBadge status={bootstrapStatus === "BOOTSTRAP_CONFIRMED" ? "implemented" : "info"} label={bootstrapStatus} />
       </div>
@@ -830,7 +882,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         </button>
         <button className="small-button" type="button" onClick={handleBootstrap} disabled={!hasControlToken || maintenanceLoading}>
           <Compass size={13} />
-          初始化 Bootstrap
+          初始化引导
         </button>
         <button className="small-button" type="button" onClick={handleExposureRefresh} disabled={!hasControlToken || maintenanceLoading}>
           <Target size={13} />
@@ -838,7 +890,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         </button>
         <button className="small-button" type="button" onClick={handleOutboxDrain} disabled={!hasControlToken || maintenanceLoading}>
           <Workflow size={13} />
-          排空 outbox
+          排空出站队列
         </button>
         <button className="small-button" type="button" onClick={handleRegressionRun} disabled={!hasControlToken || maintenanceLoading}>
           <Compass size={13} />
@@ -848,7 +900,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       {!hasControlToken && (
         <div className="notice warn">
           <AlertTriangle size={15} />
-          维护类写操作需要控制令牌 Control token；只读状态仍可查看。
+          维护类写操作需要控制令牌；只读状态仍可查看。
         </div>
       )}
     </section>
@@ -867,55 +919,55 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         <section className="capability-section">
           <div className="section-header">
             <div>
-              <span>{radarMessage}</span>
-              <h3>Stock Radar observation pool</h3>
+              <span>状态：{statusLabel(radarMessage)}</span>
+              <h3>股票雷达观察池</h3>
             </div>
             <Target size={18} />
           </div>
           <div className="status-cluster">
-            <StatusBadge status={radarMessage.startsWith("AIASK_") ? "warning" : "implemented"} label={String(radarStatus?.status || "unknown")} />
-            <StatusBadge status="info" label={`${Number(counts.alert || 0)} alert`} />
-            <StatusBadge status="info" label={`${Number(counts.watch || 0)} watch`} />
-            <StatusBadge status={degradedFlags.length ? "warning" : "implemented"} label={`${degradedFlags.length} degraded`} />
-            <StatusBadge status="info" label={`run ${latestRunId(radarStatus) || "-"}`} />
+            <StatusBadge status={radarMessage.startsWith("AIASK_") ? "warning" : "implemented"} label={`状态 ${String(radarStatus?.status || "unknown")}`} />
+            <StatusBadge status="info" label={`警报 ${Number(counts.alert || 0)}`} />
+            <StatusBadge status="info" label={`观察 ${Number(counts.watch || 0)}`} />
+            <StatusBadge status={degradedFlags.length ? "warning" : "implemented"} label={`降级 ${degradedFlags.length}`} />
+            <StatusBadge status="info" label={`运行 ${latestRunId(radarStatus) || "-"}`} />
           </div>
           <div className="event-filter-grid">
             <label>
-              <span>Tier</span>
+              <span>级别</span>
               <select value={radarTierFilter} onChange={(event) => setRadarTierFilter(event.target.value)}>
-                {["", "alert", "watch", "observe", "reject"].map((value) => (
-                  <option key={value || "all"} value={value}>{value || "all"}</option>
+                {RADAR_TIER_OPTIONS.map((option) => (
+                  <option key={option.value || "all"} value={option.value}>{option.label}</option>
                 ))}
               </select>
             </label>
-            <label>
+            <div className="field-row action-field">
               <span>&nbsp;</span>
-              <button className="small-button" type="button" onClick={loadRadar} disabled={radarLoading}>
+              <button aria-label="刷新雷达" className="small-button" type="button" onClick={loadRadar} disabled={radarLoading}>
                 <RefreshCw size={13} className={radarLoading ? "spin" : ""} />
-                Refresh radar
+                刷新雷达
               </button>
-            </label>
-            <label>
+            </div>
+            <div className="field-row action-field">
               <span>&nbsp;</span>
-              <button className="small-button" type="button" onClick={handleRadarRun} disabled={!hasControlToken || radarLoading}>
+              <button aria-label="创建雷达运行意图" className="small-button" type="button" onClick={handleRadarRun} disabled={!hasControlToken || radarLoading}>
                 <Compass size={13} />
-                Run once
+                创建雷达运行意图
               </button>
-            </label>
-            <label>
+            </div>
+            <div className="field-row action-field">
               <span>&nbsp;</span>
-              <button className="small-button" type="button" onClick={handleRadarPushPreview} disabled={!hasControlToken || radarLoading}>
+              <button aria-label="创建推送预览意图" className="small-button" type="button" onClick={handleRadarPushPreview} disabled={!hasControlToken || radarLoading}>
                 <ClipboardCheck size={13} />
-                Push preview
+                创建推送预览意图
               </button>
-            </label>
-            <label>
+            </div>
+            <div className="field-row action-field">
               <span>&nbsp;</span>
-              <button className="small-button" type="button" onClick={handleRadarSchedulePreview} disabled={!hasControlToken || radarLoading}>
+              <button aria-label="创建调度意图" className="small-button" type="button" onClick={handleRadarSchedulePreview} disabled={!hasControlToken || radarLoading}>
                 <Workflow size={13} />
-                Schedule
+                创建调度意图
               </button>
-            </label>
+            </div>
           </div>
           {degradedFlags.length > 0 && (
             <div className="notice warn">
@@ -926,7 +978,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           {!hasControlToken && (
             <div className="notice warn">
               <AlertTriangle size={15} />
-              Radar run and push actions require a control token; read-only status remains available.
+              雷达运行、推送预览和调度更新需要控制令牌；状态、候选和推送预览仍可只读查看。
             </div>
           )}
         </section>
@@ -934,8 +986,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         <section className="capability-section">
           <div className="section-header">
             <div>
-              <span>{radarCandidates.length} candidates</span>
-              <h3>Evidence-ranked candidates</h3>
+              <span>{radarCandidates.length} 个候选</span>
+              <h3>证据排序候选</h3>
             </div>
             <Workflow size={18} />
           </div>
@@ -955,11 +1007,11 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                   </div>
                 </div>
                 <div className="event-card-meta">
-                  <StatusBadge status={candidate.tier === "alert" ? "implemented" : candidate.tier === "watch" ? "info" : "warning"} label={`${candidate.tier} ${candidate.radar_score.toFixed(1)}`} />
-                  <small>{candidate.source_doc_uids.length} sources</small>
+                  <StatusBadge status={candidate.tier === "alert" ? "implemented" : candidate.tier === "watch" ? "info" : "warning"} label={`${radarTierLabel(candidate.tier)} ${candidate.radar_score.toFixed(1)}`} />
+                  <small>{candidate.source_doc_uids.length} 条来源</small>
                 </div>
                 <RawEvidencePanel
-                  title="Evidence and confirmations"
+                  title="证据、确认与风险标记"
                   value={{ source_chain: candidate.source_chain, extraction: candidate.extraction, confirmations: candidate.confirmations, risk_flags: candidate.risk_flags }}
                 />
               </article>
@@ -967,7 +1019,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             {!radarCandidates.length && (
               <div className="empty-mini">
                 <ClipboardCheck size={24} />
-                <span>No radar candidates for the current filter.</span>
+                <span>当前筛选条件下没有雷达候选。</span>
               </div>
             )}
           </div>
@@ -976,17 +1028,19 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         <section className="capability-section">
           <div className="section-header">
             <div>
-              <span>Digest preview</span>
-              <h3>WeCom / Telegram payload preview</h3>
+              <span>推送预览</span>
+              <h3>企微 / Telegram 载荷预览</h3>
             </div>
             <ClipboardCheck size={18} />
           </div>
-          <pre className="json-panel">{digestPreview || "No digest preview yet."}</pre>
+          <pre className="json-panel">{digestPreview || "暂无推送预览。"}</pre>
           <div className="notice">
             <ShieldAlert size={15} />
-            Observation pool only. Digest text does not include buy or sell instructions.
+            仅用于观察池和消息预览，文案不包含买入或卖出指令。
           </div>
         </section>
+
+        {renderActionLogPanel()}
       </>
     );
   };
@@ -1100,7 +1154,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                   </button>
                 )}
               </div>
-              <RawEvidencePanel title="证据 payload" value={event} />
+              <RawEvidencePanel title="证据载荷" value={event} />
             </article>
           ))}
           {!filtered.length && (
@@ -1111,6 +1165,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           )}
         </div>
       </section>
+
+      {renderActionLogPanel()}
     </>
   );
 
@@ -1126,7 +1182,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
       {!hasControlToken && (
         <div className="notice warn">
           <AlertTriangle size={15} />
-          缺少控制令牌 Control token。读取仍可使用，但“创建”/“批准”/“暂停”无法派发意图。
+          缺少控制令牌。读取仍可使用，但“创建”/“批准”/“暂停”无法派发意图。
         </div>
       )}
       <div className="event-filter-grid">
@@ -1385,7 +1441,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
                 />
                 <small>{formatTime(row.generated_at)}</small>
               </div>
-              <RawEvidencePanel title="血缘 payload" value={row} />
+              <RawEvidencePanel title="血缘载荷" value={row} />
             </article>
           ))}
           {!lineage.length && (
@@ -1397,56 +1453,25 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         </div>
       </section>
 
-      <section className="capability-section">
-      <div className="section-header">
-        <div>
-          <span>操作日志</span>
-          <h3>最近意图派发</h3>
-        </div>
-        <Workflow size={18} />
-      </div>
-      <div className="event-list">
-        {actionLog.map((entry, index) => (
-          <article className="event-card" key={`${entry.stamp}_${index}`}>
-            <div className="event-card-main">
-              <div className="event-card-icon">
-                {entry.ok ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-              </div>
-              <div>
-                <span>{entry.stamp}</span>
-                <strong>{entry.text}</strong>
-              </div>
-            </div>
-            <div className="event-card-meta">
-              <StatusBadge status={entry.ok ? "implemented" : "warning"} label={entry.ok ? "成功" : "已阻塞"} />
-            </div>
-          </article>
-        ))}
-        {!actionLog.length && (
-          <div className="empty-mini">
-            <ClipboardCheck size={24} />
-            <span>暂无派发记录。创建或批准事件后可在这里查看血缘记录。</span>
-          </div>
-        )}
-      </div>
+      {renderActionLogPanel()}
       <div className="notice">
         <Workflow size={15} />
         持久化血缘（event -&gt; task -&gt; gate -&gt; strategy/outcome）通过 `factory_event_lineage`
         读取 `strategy_factory_event_task_lineage`。
       </div>
-      </section>
     </>
   );
 
   // ── Render ───────────────────────────────────────────────────────────
 
   const tabs: Array<{ id: TabId; label: string }> = [
-    { id: "radar", label: "Radar" },
+    { id: "radar", label: "雷达" },
     { id: "events", label: "事件" },
     { id: "create", label: "创建" },
     { id: "preview", label: "预览" },
     { id: "lineage", label: "血缘" }
   ];
+  const activeTabLabel = tabs.find((entry) => entry.id === tab)?.label || tab;
 
   return (
     <section className="capabilities-workspace" data-testid="factory-event-trigger-panel">
@@ -1477,7 +1502,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             </div>
             <div className="status-cluster">
               <StatusBadge status={hasControlToken ? "implemented" : "warning"} label={hasControlToken ? "控制令牌已就绪" : "只读模式（无控制令牌）"} />
-              <StatusBadge status="info" label={`Tab: ${tab}`} />
+              <StatusBadge status="info" label={`当前页：${activeTabLabel}`} />
             </div>
           </section>
 

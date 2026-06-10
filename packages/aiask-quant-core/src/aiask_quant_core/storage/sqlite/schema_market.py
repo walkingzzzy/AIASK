@@ -18,6 +18,7 @@ from ._schema_market_phase_6 import init_market_tables_phase_6
 from ._schema_market_phase_7 import init_market_tables_phase_7
 from ._schema_market_phase_8 import init_market_tables_phase_8
 from ._schema_market_phase_9 import init_market_tables_phase_9
+from ._schema_market_phase_10 import init_market_tables_phase_10
 
 
 async def init_market_tables(conn) -> None:
@@ -31,4 +32,5 @@ async def init_market_tables(conn) -> None:
     await init_market_tables_phase_7(conn)
     await init_market_tables_phase_8(conn)
     await init_market_tables_phase_9(conn)
+    await init_market_tables_phase_10(conn)
     logger.info("Market tables initialized")

@@ -42,17 +42,17 @@ describe("WorkbenchView", () => {
 
   it("renders the task object header", () => {
     render(<WorkbenchView {...mockProps} />);
-    expect(screen.getByText("AIASK Workbench")).toBeInTheDocument();
+    expect(screen.getByText("AIASK 工作台")).toBeInTheDocument();
     expect(screen.getByText("http://127.0.0.1:8767")).toBeInTheDocument();
-    expect(screen.getAllByText("mock").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Mock").length).toBeGreaterThan(0);
     expect(screen.getAllByText(/Test user/).length).toBeGreaterThan(0);
   });
 
   it("shows current mode and access summary", () => {
     render(<WorkbenchView {...mockProps} />);
     expect(screen.getAllByText("finance_safe").length).toBeGreaterThan(0);
-    expect(screen.getByText("Access")).toBeInTheDocument();
-    expect(screen.getByText("safe mode")).toBeInTheDocument();
+    expect(screen.getByText("权限")).toBeInTheDocument();
+    expect(screen.getByText("安全模式")).toBeInTheDocument();
   });
 
   it("shows recent sessions and runs", () => {
@@ -86,9 +86,9 @@ describe("WorkbenchView", () => {
     ];
 
     render(<WorkbenchView {...mockProps} summary={summaryWithSessions} recentRuns={runs} />);
-    expect(screen.getByText("Recent sessions")).toBeInTheDocument();
+    expect(screen.getByText("最近会话")).toBeInTheDocument();
     expect(screen.getByText("Test session")).toBeInTheDocument();
-    expect(screen.getByText("Recent runs")).toBeInTheDocument();
+    expect(screen.getByText("最近运行")).toBeInTheDocument();
     expect(screen.getAllByText("run_001").length).toBeGreaterThan(0);
   });
 
@@ -108,17 +108,17 @@ describe("WorkbenchView", () => {
     };
 
     render(<WorkbenchView {...mockProps} summary={summaryWithQueues} />);
-    expect(screen.getByText("Operational queue")).toBeInTheDocument();
-    expect(screen.getByText("Intents")).toBeInTheDocument();
-    expect(screen.getAllByText("Approvals").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Projects / Contexts").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Finance Lab").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("Integrations").length).toBeGreaterThan(0);
+    expect(screen.getByText("操作队列")).toBeInTheDocument();
+    expect(screen.getByText("意图")).toBeInTheDocument();
+    expect(screen.getAllByText("审批").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("项目 / 上下文").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("金融实验室").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("集成").length).toBeGreaterThan(0);
   });
 
   it("shows Hermes full guidance when control token is missing", () => {
     render(<WorkbenchView {...mockProps} agentMode="hermes_full" controlToken="" />);
-    expect(screen.getByText(/Hermes full requires a Control token/)).toBeInTheDocument();
+    expect(screen.getByText(/Hermes full 需要先在 Settings 中填写控制令牌/)).toBeInTheDocument();
   });
 
   it("shows artifact and review panels", () => {
@@ -133,8 +133,8 @@ describe("WorkbenchView", () => {
     };
 
     render(<WorkbenchView {...mockProps} selectedThread={thread} />);
-    expect(screen.getByText("Task artifacts")).toBeInTheDocument();
-    expect(screen.getByText("Review queue")).toBeInTheDocument();
+    expect(screen.getByText("任务产物")).toBeInTheDocument();
+    expect(screen.getByText("审查队列")).toBeInTheDocument();
     expect(screen.getAllByText("Review a strategy").length).toBeGreaterThan(0);
   });
 
@@ -149,6 +149,6 @@ describe("WorkbenchView", () => {
     ];
 
     render(<WorkbenchView {...mockProps} tools={tools} />);
-    expect(screen.getByText("1 tools available")).toBeInTheDocument();
+    expect(screen.getByText("1 个工具可用")).toBeInTheDocument();
   });
 });

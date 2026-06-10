@@ -16,7 +16,7 @@ export function SecurityPanel({ apiToken, controlToken, endpoint }: { apiToken: 
     event.preventDefault();
     setBusy(true);
     try {
-      const payload = await api.hermesToolCall("agent_security_scan", text.trim() ? { text } : { path, include_env: false });
+      const payload = await api.hermesToolCall("agent_security_scan", text.trim() ? { text, include_env: false } : { path, include_env: false });
       setResult(payload);
       setMessage(payload.success ? "SECURITY_SCAN_COMPLETED" : payload.error || "SECURITY_SCAN_FAILED");
     } catch (error) {

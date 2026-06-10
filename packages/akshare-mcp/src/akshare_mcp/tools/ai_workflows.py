@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from typing import Any
 from uuid import uuid4
@@ -62,9 +63,7 @@ def _safe_float(value: Any) -> float | None:
         parsed = float(value)
     except (TypeError, ValueError):
         return None
-    if parsed != parsed:
-        return None
-    return parsed
+    return parsed if math.isfinite(parsed) else None
 
 
 _BINARY_LABEL_TRUE = {"1", "true", "t", "yes", "y", "hit", "correct", "success", "positive"}
@@ -303,7 +302,8 @@ def _budget_fail_response(
         "data": {"step": step, "degraded": True},
     }
     if timeout_sec is not None:
-        payload["data"]["timeout_sec"] = round(float(timeout_sec), 3)
+        safe_timeout = _safe_float(timeout_sec)
+        payload["data"]["timeout_sec"] = round(safe_timeout if safe_timeout is not None else 0.0, 3)
     return payload
 
 
@@ -318,7 +318,8 @@ async def _run_workflow_stage(
     if remaining <= 0.5:
         return _budget_fail_response(step=step, message="workflow_budget_exhausted", timeout_sec=0.0)
 
-    timeout_sec = max(0.5, min(float(stage_timeout), remaining))
+    safe_stage_timeout = _safe_float(stage_timeout)
+    timeout_sec = max(0.5, min(safe_stage_timeout if safe_stage_timeout is not None else remaining, remaining))
     try:
         return await asyncio.wait_for(coro, timeout=timeout_sec)
     except asyncio.TimeoutError:

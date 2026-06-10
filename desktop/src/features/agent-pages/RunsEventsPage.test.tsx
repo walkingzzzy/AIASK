@@ -21,7 +21,7 @@ describe("RunsEventsPage", () => {
 
   it("应该渲染页面标题", () => {
     render(<RunsEventsPage {...mockProps} />);
-    expect(screen.getByText("Runs / Events")).toBeInTheDocument();
+    expect(screen.getByText("运行 / 事件")).toBeInTheDocument();
   });
 
   it("应该显示运行摘要区域", () => {
@@ -43,8 +43,8 @@ describe("RunsEventsPage", () => {
 
   it("应该显示视图模式切换", () => {
     render(<RunsEventsPage {...mockProps} />);
-    expect(screen.getByText("Timeline")).toBeInTheDocument();
-    expect(screen.getByText("List")).toBeInTheDocument();
+    expect(screen.getByText("时间线")).toBeInTheDocument();
+    expect(screen.getByText("列表")).toBeInTheDocument();
   });
 
   it("应该展示归一化事件字段和固定跳转目标", async () => {

@@ -97,7 +97,7 @@ function Overview({ payload, message }: { payload: CapabilityWorkbenchPayload | 
       {payload && (
         <div className="capability-section compact-section">
           <div className="kv-grid">
-            <span>Full mode 模式</span>
+            <span>完整模式</span>
             <strong>{control?.full_mode_enabled ? "已开启" : "未开启"}</strong>
             <span>控制令牌</span>
             <strong>{control?.control_token_configured ? "已配置" : "未配置"}</strong>

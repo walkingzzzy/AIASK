@@ -2,6 +2,7 @@
 
 from typing import Any
 import json
+import math
 from datetime import datetime, timedelta, timezone
 from ...services.market_data_access import FALLBACK_DB_ONLY, get_quote_snapshot_sync
 from ...utils import ok, fail, normalize_code
@@ -11,6 +12,13 @@ from ..manager_protocol import normalize_manager_payload
 MAX_SINGLE_ORDER_SHARES = 1_000_000
 MAX_SINGLE_ORDER_AMOUNT = 50_000_000.0
 MIN_LOT_SIZE = 100
+
+
+def _finite_float(value: Any) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError("non-finite number")
+    return parsed
 
 
 def _normalize_kwargs(kwargs: dict) -> dict:
@@ -204,14 +212,17 @@ def evaluate_order_compliance(code: str, direction: str, quantity_raw, price_raw
     quantity = None
     if quantity_raw is not None:
         try:
-            quantity = int(float(quantity_raw))
+            quantity_value = _finite_float(quantity_raw)
+            if not quantity_value.is_integer():
+                raise ValueError("quantity must be an integer")
+            quantity = int(quantity_value)
         except Exception:
             violations.append('quantity 格式无效，需为正整数')
 
     price = None
     if price_raw is not None:
         try:
-            price = float(price_raw)
+            price = _finite_float(price_raw)
         except Exception:
             violations.append('price 格式无效，需为正数')
 

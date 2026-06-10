@@ -15,6 +15,7 @@ from typing import Any
 from uuid import uuid4
 
 from .approvals import ApprovalStore, command_requires_approval
+from .numeric import bounded_float, bounded_int
 from .plugin_runtime import NativePluginManager
 from .process_registry import ProcessRegistry
 from .terminal_backends import TerminalBackendError, TerminalBackendManager, TerminalInvocation, backend_status, command_targets_aiask_runtime
@@ -77,7 +78,7 @@ class WorkspaceGuard:
 
 
 def _limit_bytes(value: bytes, limit: int) -> tuple[str, bool]:
-    limited = max(1, min(int(limit or 65536), 1024 * 1024))
+    limited = bounded_int(limit, default=65536, minimum=1, maximum=1024 * 1024)
     truncated = len(value) > limited
     return value[:limited].decode("utf-8", errors="replace"), truncated
 
@@ -242,7 +243,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
             raw = path.read_bytes()
             if _is_binary(raw):
                 raise ValueError("binary file reads are blocked by AIASK file safety")
-            content, truncated = _limit_bytes(raw, int(arguments.get("max_bytes") or 262144))
+            content, truncated = _limit_bytes(raw, bounded_int(arguments.get("max_bytes"), default=262144, minimum=1, maximum=1024 * 1024))
             return _envelope(
                 True,
                 data={"path": str(path), "content": content, "bytes": len(raw), "truncated": truncated},
@@ -282,7 +283,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         tool = "agent_file_list"
         try:
             root = guard.resolve(arguments.get("path"), must_exist=True)
-            limit = max(1, min(int(arguments.get("limit") or 200), 1000))
+            limit = bounded_int(arguments.get("limit"), default=200, minimum=1, maximum=1000)
             iterator = root.rglob("*") if bool(arguments.get("recursive", False)) else root.iterdir()
             items: list[dict[str, Any]] = []
             for item in iterator:
@@ -309,7 +310,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
             query = str(arguments.get("query") or "")
             if not query:
                 raise ValueError("query is required")
-            limit = max(1, min(int(arguments.get("limit") or 50), 200))
+            limit = bounded_int(arguments.get("limit"), default=50, minimum=1, maximum=200)
             files = [root] if root.is_file() else list(root.rglob("*"))
             matches: list[dict[str, Any]] = []
             for file_path in files:
@@ -338,7 +339,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
             new = str(arguments.get("new") or "")
             if not old:
                 raise ValueError("old text is required")
-            count = max(1, int(arguments.get("count") or 1))
+            count = bounded_int(arguments.get("count"), default=1, minimum=1)
             text = path.read_text(encoding="utf-8")
             if old not in text:
                 candidates = difflib.get_close_matches(old, text.splitlines(), n=1, cutoff=0.75)
@@ -418,8 +419,8 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
                 cwd_value = str(cwd_raw or ".")
             if session_id:
                 session_cwds[session_id] = cwd_value
-            timeout = max(1.0, min(float(arguments.get("timeout_seconds") or 30), 300.0))
-            max_output = max(1, min(int(arguments.get("max_output_bytes") or 65536), 1024 * 1024))
+            timeout = bounded_float(arguments.get("timeout_seconds"), default=30.0, minimum=1.0, maximum=300.0)
+            max_output = bounded_int(arguments.get("max_output_bytes"), default=65536, minimum=1, maximum=1024 * 1024)
             env = _sanitized_env()
             for key in list(arguments.get("env_allowlist") or []):
                 key = str(key or "").strip()
@@ -475,14 +476,14 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
                 data = {
                     "items": processes.list(
                         session_id=arguments.get("session_id"),
-                        limit=int(arguments.get("limit") or 100),
+                        limit=bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=1000),
                     )
                 }
             elif action == "read":
                 process_id = str(arguments.get("process_id") or "").strip()
                 data = processes.read_output(
                     process_id,
-                    max_bytes=int(arguments.get("max_output_bytes") or 65536),
+                    max_bytes=bounded_int(arguments.get("max_output_bytes"), default=65536, minimum=1, maximum=1024 * 1024),
                     tail=bool(arguments.get("tail", True)),
                 )
             elif action == "kill":
@@ -623,7 +624,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         tool = "agent_browser_scroll"
         try:
             page = await ensure_page()
-            amount = max(1, min(int(arguments.get("amount") or 600), 5000))
+            amount = bounded_int(arguments.get("amount"), default=600, minimum=1, maximum=5000)
             direction = str(arguments.get("direction") or "down").lower()
             dx = amount if direction == "right" else -amount if direction == "left" else 0
             dy = amount if direction == "down" else -amount if direction == "up" else 0
@@ -661,7 +662,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         tool = "agent_browser_get_images"
         try:
             page = await ensure_page()
-            limit = max(1, min(int(arguments.get("limit") or 30), 100))
+            limit = bounded_int(arguments.get("limit"), default=30, minimum=1, maximum=100)
             images = await page.locator("img").evaluate_all(
                 "(imgs, limit) => imgs.slice(0, limit).map((img) => ({src: img.currentSrc || img.src, alt: img.alt || '', width: img.naturalWidth || img.width, height: img.naturalHeight || img.height}))",
                 limit,
@@ -686,7 +687,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
 
     async def browser_console(arguments: dict[str, Any]) -> dict[str, Any]:
         tool = "agent_browser_console"
-        limit = max(1, min(int(arguments.get("limit") or 100), 500))
+        limit = bounded_int(arguments.get("limit"), default=100, minimum=1, maximum=500)
         return _envelope(True, data={"messages": list(browser_state["console"])[-limit:]}, tool_name=tool, level="read_only")
 
     async def browser_cdp(arguments: dict[str, Any]) -> dict[str, Any]:

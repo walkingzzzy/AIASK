@@ -134,6 +134,15 @@ def _generic_factor_ic_candidates(candidates: list) -> list:
     ]
 
 
+def test_env_float_rejects_non_finite_values(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_BACKTEST_CODE_TIMEOUT_SEC", "inf")
+    StrategySpawner = _reload_spawner()
+    import strategy_factory.domain.constants as constants
+
+    assert StrategySpawner is not None
+    assert constants.BACKTEST_CODE_TIMEOUT_SEC == 30.0
+
+
 def test_factor_ic_generic_intake_off_is_zero_change(monkeypatch):
     """默认 OFF：泛因子不进入生成链，行为与历史一致。"""
     monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_IC_GENERIC_INTAKE_ENABLED", "0")

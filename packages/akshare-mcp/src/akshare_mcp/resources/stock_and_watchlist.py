@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Any
 
 from ..services.market_data_access import FALLBACK_DB_ONLY, get_quote_snapshot_response
@@ -19,7 +20,10 @@ def _safe_float(value: Any) -> float | None:
     try:
         if value is None:
             return None
-        return float(value)
+        parsed = float(value)
+        if not math.isfinite(parsed):
+            return None
+        return parsed
     except Exception:
         return None
 
@@ -80,9 +84,11 @@ async def build_stock_profile_resource_payload(code: str) -> dict[str, Any]:
             "industry": stock_info.get("industry") or stock_info.get("sector") or "",
             "market": stock_info.get("market"),
             "list_date": stock_info.get("list_date"),
-            "market_cap": stock_info.get("market_cap")
-            if stock_info.get("market_cap") is not None
-            else _safe_float(stock_info.get("total_market_cap")),
+            "market_cap": _safe_float(
+                stock_info.get("market_cap")
+                if stock_info.get("market_cap") is not None
+                else stock_info.get("total_market_cap")
+            ),
             "pe_ratio": _safe_float(stock_info.get("pe_ratio")),
             "pb_ratio": _safe_float(stock_info.get("pb_ratio")),
         },

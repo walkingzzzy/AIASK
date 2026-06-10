@@ -335,7 +335,12 @@ def extract_radar_event(doc: dict[str, Any]) -> RadarExtraction | None:
             positive_hits.append((event_type, themes, importance))
     if not positive_hits:
         return None
-    event_type, themes, importance = max(positive_hits, key=lambda item: item[2])
+    has_stock_entity = bool(_stock_code_from_doc(doc))
+    policy_hit = next((item for item in positive_hits if item[0] == "policy_news"), None)
+    if not has_stock_entity and policy_hit is not None:
+        event_type, themes, importance = policy_hit
+    else:
+        event_type, themes, importance = max(positive_hits, key=lambda item: item[2])
     all_themes: list[str] = []
     for _, hit_themes, _ in positive_hits:
         for theme in hit_themes:
@@ -412,7 +417,18 @@ def _validated_llm_extraction(raw: dict[str, Any], fallback: RadarExtraction, do
     }
 
 
-async def enhance_radar_event_with_llm(doc: dict[str, Any], fallback: RadarExtraction) -> tuple[dict[str, Any], dict[str, Any] | None]:
+async def enhance_radar_event_with_llm(
+    doc: dict[str, Any],
+    fallback: RadarExtraction,
+    *,
+    allow_llm: bool = True,
+) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    if not allow_llm:
+        extraction = fallback.as_dict()
+        extraction["llm_status"] = "unavailable"
+        extraction["status"] = "provisional"
+        return extraction, {"status": "unavailable", "reason": "llm_disabled_by_network_policy"}
+
     try:
         from .strategy_llm_provider import StrategyLLMRequestError, get_strategy_llm_provider
     except Exception as exc:
@@ -1066,7 +1082,15 @@ def _late_session_from_bars(rows: list[dict[str, Any]], extraction: dict[str, An
 
     def _time_of(row: dict[str, Any]) -> str:
         raw = _clean(row.get("trade_time") or row.get("time") or row.get("datetime") or row.get("date"), 32)
-        return raw[-8:][:5] if ":" in raw else raw[-4:-2] + ":" + raw[-2:] if len(raw) >= 4 else raw
+        match = re.search(r"(?<!\d)([01]?\d|2[0-3]):([0-5]\d)(?::[0-5]\d)?(?!\d)", raw)
+        if match:
+            return f"{int(match.group(1)):02d}:{match.group(2)}"
+        digits = "".join(ch for ch in raw if ch.isdigit())
+        if len(digits) >= 12:
+            return f"{digits[-4:-2]}:{digits[-2:]}"
+        if len(digits) == 4:
+            return f"{digits[:2]}:{digits[2:]}"
+        return raw
 
     late: list[dict[str, Any]] = []
     prev: list[dict[str, Any]] = []
@@ -1223,6 +1247,7 @@ async def run_stock_radar(
     limit: Any = 80,
     stock_codes: Any = None,
     allow_network: Any = False,
+    allow_llm: Any = False,
     embed: Any = False,
     parse_pdf: Any = True,
     include_rss: Any = True,
@@ -1232,6 +1257,8 @@ async def run_stock_radar(
     resolved_days = _positive_int(days, 3, minimum=1, maximum=10)
     resolved_limit = _positive_int(limit, 80, minimum=1, maximum=500)
     resolved_allow_network = _as_bool(allow_network, False)
+    requested_allow_llm = _as_bool(allow_llm, False)
+    resolved_allow_llm = bool(resolved_allow_network and requested_allow_llm)
     resolved_embed = _as_bool(embed, False)
     resolved_parse_pdf = _as_bool(parse_pdf, True)
     resolved_include_rss = _as_bool(include_rss, True)
@@ -1246,6 +1273,7 @@ async def run_stock_radar(
                 "days": resolved_days,
                 "limit": resolved_limit,
                 "allow_network": resolved_allow_network,
+                "allow_llm": resolved_allow_llm,
                 "stock_codes": _normalize_codes(stock_codes),
             },
             "degraded_flags": [] if resolved_allow_network else ["network_disabled"],
@@ -1330,7 +1358,11 @@ async def run_stock_radar(
                 except Exception as exc:
                     degraded_flags.append("pdf_metadata_persist_failed")
                     errors.append({"source": "market_documents", "error": f"{type(exc).__name__}: {exc}"})
-            extraction, llm_meta = await enhance_radar_event_with_llm(doc, extraction_obj)
+            extraction, llm_meta = await enhance_radar_event_with_llm(
+                doc,
+                extraction_obj,
+                allow_llm=resolved_allow_llm,
+            )
             if llm_meta and llm_meta.get("status") != "ok":
                 degraded_flags.append("llm_unavailable_rules_only" if llm_meta.get("status") == "unavailable" else "llm_failed_rules_only")
                 errors.append({"source": "llm", **llm_meta})
@@ -1386,6 +1418,9 @@ async def run_stock_radar(
                     },
                     "rss": rss_saved,
                     "source_policy": "local_first_explicit_external_ingest",
+                    "allow_network": resolved_allow_network,
+                    "allow_llm": resolved_allow_llm,
+                    "allow_llm_requested": requested_allow_llm,
                 },
                 "degraded_flags": sorted(dict.fromkeys(degraded_flags)),
                 "error": None,
@@ -1393,6 +1428,8 @@ async def run_stock_radar(
                     "event_types": sorted(RADAR_EVENT_TYPES),
                     "no_trade_instructions": True,
                     "allow_network": resolved_allow_network,
+                    "allow_llm": resolved_allow_llm,
+                    "allow_llm_requested": requested_allow_llm,
                 },
             }
         )
@@ -1419,7 +1456,12 @@ async def run_stock_radar(
                 "status": "failed",
                 "started_at": started_at,
                 "completed_at": datetime.now(timezone.utc).isoformat(),
-                "summary": {"errors": errors},
+                "summary": {
+                    "errors": errors,
+                    "allow_network": resolved_allow_network,
+                    "allow_llm": resolved_allow_llm,
+                    "allow_llm_requested": requested_allow_llm,
+                },
                 "degraded_flags": sorted(dict.fromkeys(degraded_flags)),
                 "error": f"{type(exc).__name__}: {exc}",
                 "metadata": {"schema": "stock_radar_v1"},

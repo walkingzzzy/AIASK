@@ -59,7 +59,7 @@ export interface InternalExtensionSlot {
 export const INTERNAL_EXTENSION_PAGES: InternalExtensionPage[] = [
   {
     id: "extensions-pilot",
-    label: "Extensions Pilot",
+    label: "扩展注册表",
     group: "internal",
     icon: Braces,
     route: "/extensions-pilot",
@@ -72,7 +72,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
   {
     id: "aiask.sessions.sidebar-top",
     slot: "sidebar-top",
-    label: "Sessions",
+    label: "会话",
     group: "agent",
     icon: MessageSquareText,
     route: "/sessions",
@@ -82,15 +82,15 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     render: ({ controlToken, fullModeActive, onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("sessions")} type="button">
         <MessageSquareText size={13} />
-        Sessions
-        <StatusBadge status={controlToken.trim() && fullModeActive ? "ready" : "gated"} label={controlToken.trim() && fullModeActive ? "ready" : "gated"} />
+        会话
+        <StatusBadge status={controlToken.trim() && fullModeActive ? "ready" : "gated"} />
       </button>
     ),
   },
   {
     id: "aiask.readiness.header-left",
     slot: "header-left",
-    label: "Readiness",
+    label: "准备度 / 健康",
     group: "ops",
     icon: CircleGauge,
     route: "/readiness-health",
@@ -98,7 +98,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     render: ({ onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("readiness-health")} type="button">
         <CircleGauge size={13} />
-        Readiness
+        准备度
       </button>
     ),
   },
@@ -115,14 +115,14 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
       <button className="small-button" onClick={() => onOpenView("gateway")} type="button">
         <Cable size={13} />
         Gateway
-        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "ready" : "gated"} />
+        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} />
       </button>
     ),
   },
   {
     id: "aiask.plugins-skills.quick-action",
     slot: "workbench.quick-actions",
-    label: "Plugins / Skills lifecycle",
+    label: "插件 / 技能生命周期",
     group: "ops",
     icon: Puzzle,
     route: "/plugins-skills",
@@ -131,15 +131,15 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     render: ({ controlToken, onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("plugins-skills")} type="button">
         <Puzzle size={13} />
-        Plugins / Skills
-        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "ready" : "gated"} />
+        插件 / 技能
+        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} />
       </button>
     ),
   },
   {
     id: "aiask.extension-registry.sidebar-secondary",
     slot: "sidebar-secondary",
-    label: "Internal extension registry",
+    label: "内部扩展注册表",
     group: "internal",
     icon: Braces,
     route: "/extensions-pilot",
@@ -148,15 +148,15 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     render: ({ controlToken, onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("extensions-pilot")} type="button">
         <Braces size={13} />
-        Extensions
-        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label="internal" />
+        扩展
+        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label="内部" technicalLabel="internal" />
       </button>
     ),
   },
   {
     id: "aiask.extension-registry.workbench-quick-action",
     slot: "workbench.quick-actions",
-    label: "Internal extension registry",
+    label: "内部扩展注册表",
     group: "internal",
     icon: Braces,
     route: "/extensions-pilot",
@@ -165,8 +165,8 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     render: ({ controlToken, onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("extensions-pilot")} type="button">
         <Braces size={13} />
-        Extensions
-        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label="internal" />
+        扩展
+        <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label="内部" technicalLabel="internal" />
       </button>
     ),
   },
@@ -201,12 +201,16 @@ export function ExtensionsPilotPage({ controlToken, fullModeActive }: { controlT
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Internal</span>
-          <h1>Extensions Pilot</h1>
+          <span>内部扩展</span>
+          <h1>扩展注册表</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "control ready" : "control token required"} />
-          <StatusBadge status={fullModeActive ? "ready" : "gated"} label={fullModeActive ? "full mode" : "finance_safe"} />
+          <StatusBadge
+            status={controlToken.trim() ? "ready" : "gated"}
+            label={controlToken.trim() ? "控制已就绪" : "缺少控制令牌"}
+            technicalLabel={controlToken.trim() ? "control ready" : "control token required"}
+          />
+          <StatusBadge status={fullModeActive ? "ready" : "gated"} label={fullModeActive ? "完整模式" : "金融安全模式"} />
         </div>
       </header>
 
@@ -214,9 +218,9 @@ export function ExtensionsPilotPage({ controlToken, fullModeActive }: { controlT
         <div className="capability-stack">
           <div className="capability-banner">
             <div>
-              <span>AIASK-native static registry</span>
-              <h2>Internal pages and slots only</h2>
-              <p>No external JavaScript is loaded or executed. Registered content must be a React component from this repository.</p>
+              <span>AIASK 原生静态注册表</span>
+              <h2>仅展示仓库内页面与插槽</h2>
+              <p>这里不会加载或执行外部 JavaScript；注册内容必须是当前仓库中的 React 组件。</p>
             </div>
             <ShieldCheck size={22} />
           </div>
@@ -225,23 +229,23 @@ export function ExtensionsPilotPage({ controlToken, fullModeActive }: { controlT
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{INTERNAL_EXTENSION_PAGES.length} pages</span>
-                  <h3>Page registry</h3>
+                  <span>{INTERNAL_EXTENSION_PAGES.length} 个页面</span>
+                  <h3>页面注册表</h3>
                 </div>
               </div>
               <div className="data-table">
                 <div className="table-head">
                   <span>id</span>
-                  <span>route</span>
-                  <span>mount</span>
-                  <span>gates</span>
+                  <span>路由</span>
+                  <span>挂载</span>
+                  <span>门控</span>
                 </div>
                 {INTERNAL_EXTENSION_PAGES.map((page) => (
                   <div className="table-row" key={page.id}>
                     <strong>{page.id}</strong>
                     <span>{page.route}</span>
                     <span>{page.mountPosition}</span>
-                    <span>{page.requiresControlToken ? "control" : "none"}{page.requiresFullMode ? " + full" : ""}</span>
+                    <span>{page.requiresControlToken ? "控制令牌" : "无"}{page.requiresFullMode ? " + 完整模式" : ""}</span>
                   </div>
                 ))}
               </div>
@@ -250,16 +254,16 @@ export function ExtensionsPilotPage({ controlToken, fullModeActive }: { controlT
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{INTERNAL_EXTENSION_SLOTS.length} entries / {EXTENSION_SLOT_IDS.length} slots</span>
-                  <h3>Slot registry</h3>
+                  <span>{INTERNAL_EXTENSION_SLOTS.length} 个入口 / {EXTENSION_SLOT_IDS.length} 个插槽</span>
+                  <h3>插槽注册表</h3>
                 </div>
               </div>
               <div className="data-table">
                 <div className="table-head">
                   <span>id</span>
                   <span>slot</span>
-                  <span>route</span>
-                  <span>mount</span>
+                  <span>路由</span>
+                  <span>挂载</span>
                 </div>
                 {INTERNAL_EXTENSION_SLOTS.map((entry) => (
                   <div className="table-row" key={entry.id}>
@@ -275,15 +279,15 @@ export function ExtensionsPilotPage({ controlToken, fullModeActive }: { controlT
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{EXTENSION_SLOT_IDS.length} supported</span>
-                  <h3>Supported slots</h3>
+                  <span>{EXTENSION_SLOT_IDS.length} 个可用插槽</span>
+                  <h3>支持的插槽</h3>
                 </div>
               </div>
               <div className="mini-list">
                 {EXTENSION_SLOT_IDS.map((slot) => (
                   <article key={slot}>
                     <strong>{slot}</strong>
-                    <span>{getInternalSlots(slot).length} registered entries</span>
+                    <span>{getInternalSlots(slot).length} 个已注册入口</span>
                   </article>
                 ))}
               </div>

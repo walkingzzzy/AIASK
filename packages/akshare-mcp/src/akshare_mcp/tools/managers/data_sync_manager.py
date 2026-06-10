@@ -40,6 +40,7 @@ _factor_context_script_path = _data_sync_core_mod._factor_context_script_path
 _sync_klines_now = _data_sync_sync_mod._sync_klines_now
 _sync_quotes_now = _data_sync_sync_mod._sync_quotes_now
 _sync_financials_check = _data_sync_sync_mod._sync_financials_check
+_sync_market_temperature_snapshot_cache_now = _data_sync_sync_mod._sync_market_temperature_snapshot_cache_now
 _sync_core_market_now = _data_sync_sync_mod._sync_core_market_now
 _sync_factor_context_now = _data_sync_sync_mod._sync_factor_context_now
 _sync_market_text_source_ingest_now = _data_sync_sync_mod._sync_market_text_source_ingest_now
@@ -62,6 +63,7 @@ def _sync_data_sync_support_overrides() -> None:
     _data_sync_core_mod._sync_klines_now = _sync_klines_now
     _data_sync_core_mod._sync_quotes_now = _sync_quotes_now
     _data_sync_core_mod._sync_financials_check = _sync_financials_check
+    _data_sync_core_mod._sync_market_temperature_snapshot_cache_now = _sync_market_temperature_snapshot_cache_now
     _data_sync_core_mod._sync_core_market_now = _sync_core_market_now
     _data_sync_core_mod._sync_factor_context_now = _sync_factor_context_now
     _data_sync_core_mod._sync_market_text_source_ingest_now = _sync_market_text_source_ingest_now
@@ -332,6 +334,7 @@ def register_data_sync_manager(mcp):
                 if task_type not in {
                     'core_market',
                     'factor_context',
+                    'market_temperature_snapshot_cache',
                     'market_text_source_ingest',
                     'vector_backfill_market_docs',
                     'vector_backfill_kline_patterns',
@@ -533,6 +536,7 @@ def register_data_sync_manager(mcp):
                 if task_type not in {
                     'core_market',
                     'factor_context',
+                    'market_temperature_snapshot_cache',
                     'market_text_source_ingest',
                     'vector_backfill_market_docs',
                     'vector_backfill_kline_patterns',

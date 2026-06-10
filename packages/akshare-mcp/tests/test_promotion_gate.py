@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from akshare_mcp.services.incubation_factory.promotion_gate import (
     PromotionGate,
     PromotionGateVerdict,
@@ -85,3 +87,30 @@ def test_real_dsr_fn_runs_end_to_end():
     assert verdict.dsr is not None
     assert 0.0 <= verdict.dsr <= 1.0
     assert verdict.sample_size == 80
+
+
+def test_non_finite_forward_returns_and_dsr_outputs_are_sanitized():
+    def _bad_dsr(arr, **kw):
+        return {
+            "available": True,
+            "dsr": float("inf"),
+            "observed_sharpe": "nan",
+            "effective_trials": "-inf",
+            "sample_size": int(len(arr)),
+        }
+
+    gate = PromotionGate(dsr_min=0.60, min_sample_size=3)
+    verdict = gate.evaluate(
+        [0.01, "nan", float("inf"), 0.02, "-inf", 0.03],
+        n_trials=float("inf"),
+        benchmark_sharpe=float("nan"),
+        dsr_fn=_bad_dsr,
+    )
+
+    assert verdict.sample_size == 3
+    assert verdict.eligible is True
+    assert verdict.passed is False
+    assert verdict.dsr == 0.0
+    assert verdict.observed_sharpe == 0.0
+    assert verdict.effective_trials == 0.0
+    json.dumps(verdict.to_dict(), allow_nan=False)

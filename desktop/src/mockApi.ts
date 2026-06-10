@@ -22,6 +22,12 @@ const financeTools: ToolCatalogItem[] = [
   { name: "agent_analyze_stock", capability: "stock_analysis", category: "financial_read", side_effect: "read_only", description: "Run a stock analysis workflow.", input_schema: { type: "object", properties: { code: { type: "string" }, include_decision: { type: "boolean" } } }, examples: [{ arguments: { code: "600519", include_decision: false } }] },
   { name: "agent_data_validation", capability: "data_validation", category: "financial_read", side_effect: "read_only", description: "Validate financial datasets.", input_schema: { type: "object", properties: { action: { type: "string" } } }, examples: [{ arguments: { action: "backend" } }] },
   { name: "agent_quant_data_gate", capability: "quant_data_gate", category: "financial_read", side_effect: "read_only", description: "Check local market data readiness.", input_schema: { type: "object", properties: { codes: { type: "array" }, max_stale_days: { type: "integer" } } }, examples: [{ arguments: { codes: ["600519", "000001"], max_stale_days: 5 } }] },
+  { name: "agent_market_temperature_snapshot", capability: "market_temperature_snapshot", category: "financial_read", side_effect: "read_only", description: "Read the market temperature and industry breadth snapshot.", input_schema: { type: "object", properties: { limit: { type: "integer" }, top_n: { type: "integer" }, as_of: { type: "string" }, min_bars: { type: "integer" }, use_cache: { type: "boolean" } } }, examples: [{ arguments: { limit: 300, top_n: 8, min_bars: 20, use_cache: true } }] },
+  { name: "agent_market_temperature_cache_readiness", capability: "market_temperature_cache_readiness", category: "financial_read", side_effect: "read_only", description: "Read freshness and quality readiness for the durable market temperature cache.", input_schema: { type: "object", properties: { as_of: { type: "string" }, max_stale_days: { type: "integer" } } }, examples: [{ arguments: { max_stale_days: 1 } }] },
+  { name: "agent_market_temperature_cache_history", capability: "market_temperature_cache_history", category: "financial_read", side_effect: "read_only", description: "List recent durable market temperature cache entries.", input_schema: { type: "object", properties: { limit: { type: "integer" }, include_snapshot: { type: "boolean" } } }, examples: [{ arguments: { limit: 10, include_snapshot: false } }] },
+  { name: "agent_market_temperature_industry_history", capability: "market_temperature_industry_history", category: "financial_read", side_effect: "read_only", description: "List cached industry temperature history.", input_schema: { type: "object", properties: { industry: { type: "string" }, limit: { type: "integer" }, top_n: { type: "integer" }, match_mode: { type: "string" }, include_source_chain: { type: "boolean" } } }, examples: [{ arguments: { industry: "801780", limit: 60 } }] },
+  { name: "agent_market_temperature_industry_constituents", capability: "market_temperature_industry_constituents", category: "financial_read", side_effect: "read_only", description: "List local stock-universe constituents for one market temperature industry.", input_schema: { type: "object", properties: { industry: { type: "string" }, limit: { type: "integer" }, offset: { type: "integer" }, match_mode: { type: "string" }, include_source_chain: { type: "boolean" } }, required: ["industry"] }, examples: [{ arguments: { industry: "801780", limit: 50 } }] },
+  { name: "agent_market_temperature_forward_validation", capability: "market_temperature_forward_validation", category: "financial_read", side_effect: "read_only", description: "Read PIT forward-validation matrix for cached market temperature states.", input_schema: { type: "object", properties: { limit: { type: "integer" }, horizons: { type: "array" }, target_field: { type: "string" }, benchmark_code: { type: "string" }, min_samples: { type: "integer" }, neutral_band_pct: { type: "number" }, include_samples: { type: "boolean" } } }, examples: [{ arguments: { limit: 180, horizons: [1, 3, 5], target_field: "benchmark_return", benchmark_code: "000300" } }] },
   { name: "agent_factor_validation", capability: "factor_validation", category: "financial_read", side_effect: "read_only", description: "Validate factor signals.", input_schema: { type: "object", properties: { codes: { type: "array" }, factors: { type: "array" } } }, examples: [{ arguments: { codes: ["600519", "000001"], factors: ["momentum"] } }] },
   { name: "agent_backtest_suite", capability: "backtest_suite", category: "financial_read", side_effect: "read_only", description: "Run strategy backtests.", input_schema: { type: "object", properties: { codes: { type: "array" }, strategy: { type: "string" } } }, examples: [{ arguments: { codes: ["600519", "000001"], strategy: "ma_cross" } }] },
   { name: "agent_portfolio_risk", capability: "portfolio_risk", category: "financial_read", side_effect: "read_only", description: "Analyze portfolio risk.", input_schema: { type: "object", properties: { codes: { type: "array" }, weights: { type: "array" } } }, examples: [{ arguments: { codes: ["600519", "000001"], weights: [0.5, 0.5] } }] },
@@ -30,9 +36,9 @@ const financeTools: ToolCatalogItem[] = [
   { name: "agent_factory_runs", capability: "strategy_factory_runs", category: "financial_read", side_effect: "read_only", description: "List strategy factory runs.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
   { name: "agent_strategy_review_snapshot", capability: "strategy_review_snapshot", category: "financial_read", side_effect: "read_only", description: "Read strategy review snapshots.", input_schema: { type: "object", properties: { limit: { type: "integer" } } } },
   { name: "agent_strategy_domain_events", capability: "strategy_domain_events", category: "financial_read", side_effect: "read_only", description: "List strategy domain events.", input_schema: { type: "object", properties: { event_type: { type: "string" }, limit: { type: "integer" } } } },
-  { name: "agent_factory_event_list", capability: "factory_event_list", category: "financial_read", side_effect: "read_only", description: "List Strategy Factory events." },
-  { name: "agent_factory_event_preview_tasks", capability: "factory_event_preview_tasks", category: "financial_read", side_effect: "read_only", description: "Preview Strategy Factory event tasks." },
-  { name: "agent_factory_event_lineage", capability: "factory_event_lineage", category: "financial_read", side_effect: "read_only", description: "Read Strategy Factory event lineage." },
+  { name: "agent_factory_event_list", capability: "factory_event_list", category: "financial_read", side_effect: "read_only", description: "列出策略工厂事件。" },
+  { name: "agent_factory_event_preview_tasks", capability: "factory_event_preview_tasks", category: "financial_read", side_effect: "read_only", description: "预览策略工厂事件任务。" },
+  { name: "agent_factory_event_lineage", capability: "factory_event_lineage", category: "financial_read", side_effect: "read_only", description: "读取策略工厂事件血缘。" },
   { name: "agent_factory_theme_exposure_status", capability: "factory_theme_exposure_status", category: "financial_read", side_effect: "read_only", description: "Read theme exposure status." },
   { name: "agent_factory_event_outbox_status", capability: "factory_event_outbox_status", category: "financial_read", side_effect: "read_only", description: "Read factory event outbox status." },
   { name: "agent_incubation_factory_status", capability: "incubation_factory_status", category: "financial_read", side_effect: "read_only", description: "Read incubation factory status." },
@@ -42,7 +48,7 @@ const financeTools: ToolCatalogItem[] = [
   { name: "agent_stock_radar_status", capability: "stock_radar_status", category: "financial_read", side_effect: "read_only", description: "Read stock radar status." },
   { name: "agent_stock_radar_candidates", capability: "stock_radar_candidates", category: "financial_read", side_effect: "read_only", description: "List stock radar candidates." },
   { name: "agent_stock_radar_digest", capability: "stock_radar_digest", category: "financial_read", side_effect: "read_only", description: "Preview stock radar digest." },
-  { name: "agent_action_intent_create", capability: "action_intent_create", category: "financial_stateful", side_effect: "durable_intent", description: "Create an approval intent." },
+  { name: "agent_action_intent_create", capability: "action_intent_create", category: "financial_stateful", side_effect: "durable_intent", description: "创建审批意图。" },
   { name: "agent_action_intent_get", capability: "action_intent_get", category: "financial_read", side_effect: "read_only", description: "Read an approval intent." },
   { name: "agent_memory_search", capability: "memory_search", category: "financial_read", side_effect: "read_only", description: "Search financial memory.", input_schema: { type: "object", properties: { query: { type: "string" }, user_id: { type: "string" } } } },
   { name: "agent_session_search", capability: "session_search", category: "financial_read", side_effect: "read_only", description: "Search sessions and responses.", input_schema: { type: "object", properties: { query: { type: "string" }, user_id: { type: "string" } } } }
@@ -58,8 +64,8 @@ const hermesTools: ToolCatalogItem[] = [
   { name: "agent_skill_list", capability: "skill_list", category: "skills", side_effect: "read_only", description: "List native skills." },
   { name: "agent_plugin_list", capability: "plugin_list", category: "plugins", side_effect: "read_only", description: "List native plugins." },
   { name: "agent_mcp_manage", capability: "mcp_manage", category: "mcp_admin", side_effect: "stateful", description: "Manage MCP servers." },
-  { name: "agent_model_manage", capability: "model_manage", category: "model_provider", side_effect: "stateful", description: "Inspect model providers." },
-  { name: "agent_memory_manage", capability: "memory_manage", category: "memory_admin", side_effect: "stateful", description: "Manage memory providers." },
+  { name: "agent_model_manage", capability: "model_manage", category: "model_provider", side_effect: "stateful", description: "查看模型提供方。" },
+  { name: "agent_memory_manage", capability: "memory_manage", category: "memory_admin", side_effect: "stateful", description: "管理记忆提供方。" },
   { name: "agent_gateway_status", capability: "platform_gateway_status", category: "platform_gateway", side_effect: "read_only", description: "Read gateway status." },
   { name: "agent_gateway_platforms", capability: "platform_gateway_platforms", category: "platform_gateway", side_effect: "read_only", description: "List gateway platforms." },
   { name: "agent_learning_status", capability: "learning_status", category: "learning", side_effect: "read_only", description: "Read learning loop status." },
@@ -67,8 +73,8 @@ const hermesTools: ToolCatalogItem[] = [
   { name: "agent_rl_list_environments", capability: "rl_list_environments", category: "rl_training", side_effect: "read_only", description: "List RL environments." },
   { name: "agent_rl_get_config", capability: "rl_get_config", category: "rl_training", side_effect: "read_only", description: "Read RL config." },
   { name: "agent_job_list", capability: "cron_list", category: "cron_admin", side_effect: "read_only", description: "List background jobs." },
-  { name: "agent_job_create", capability: "cron_create", category: "cron_admin", side_effect: "stateful", description: "Create background jobs." },
-  { name: "agent_session_handoff", capability: "session_handoff", category: "memory_admin", side_effect: "stateful", description: "Manage session handoffs." }
+  { name: "agent_job_create", capability: "cron_create", category: "cron_admin", side_effect: "stateful", description: "创建后台任务。" },
+  { name: "agent_session_handoff", capability: "session_handoff", category: "memory_admin", side_effect: "stateful", description: "管理会话交接。" }
 ];
 
 let profile = {
@@ -147,7 +153,7 @@ const mockRunSummaries: DesktopRunSummary[] = [
 const mockSessionSummaries: RecentSessionSummary[] = [
   {
     session_id: "sess_mock",
-    title: "Mock research session",
+    title: "Mock 研究会话",
     user_id: profile.user_id,
     created_at: "2026-05-22T09:00:00Z",
     updated_at: "2026-05-22T09:00:02Z",
@@ -183,24 +189,24 @@ function mockWorkbenchSummary(): DesktopWorkbenchSummary {
 
 function financialManagerCatalog() {
   const groups = [
-    { id: "overview", label: "Overview", description: "Readiness and safety state" },
-    { id: "market-research", label: "Market & Research", description: "Stock, research, sector, sentiment, technical and options" },
-    { id: "portfolio-watchlist", label: "Portfolio & Watchlist", description: "Portfolio and watchlist reads plus intents" },
-    { id: "risk-performance", label: "Risk & Performance", description: "Risk, VaR, exposure, attribution and decision support" },
-    { id: "quant-backtest", label: "Quant & Backtest", description: "Quant research and backtest suite" },
-    { id: "paper-execution", label: "Paper & Execution", description: "Paper trading and execution planning" },
-    { id: "broker-readonly", label: "Broker Read-only", description: "Broker account and order queries only" }
+    { id: "overview", label: "总览", description: "准备度与安全状态" },
+    { id: "market-research", label: "市场与研究", description: "个股、研究、板块、情绪、技术面和期权" },
+    { id: "portfolio-watchlist", label: "组合与自选", description: "组合与自选只读查询，以及审批意图" },
+    { id: "risk-performance", label: "风险与绩效", description: "风险、VaR、暴露、归因和决策支持" },
+    { id: "quant-backtest", label: "量化与回测", description: "量化研究和回测套件" },
+    { id: "paper-execution", label: "纸上交易与执行", description: "纸上交易和执行计划" },
+    { id: "broker-readonly", label: "券商只读", description: "仅查询券商账户和订单" }
   ];
   const actions = [
-    { capability_id: "stock-analysis", action_id: "analyze_stock", group: "market-research", label: "Analyze stock", mode: "read_only", status: "ready", available: true, tool: "agent_analyze_stock", default_params: { code: "600519", include_decision: false } },
-    { capability_id: "portfolio", action_id: "risk", group: "risk-performance", label: "Portfolio risk", mode: "read_only", status: "ready", available: true, tool: "agent_portfolio_risk", default_params: { codes: ["600519", "000001"], weights: [0.5, 0.5] } },
-    { capability_id: "quant", action_id: "data_gate", group: "quant-backtest", label: "Quant data gate", mode: "read_only", status: "ready", available: true, tool: "agent_quant_data_gate", default_params: { codes: ["600519"], max_stale_days: 5 } },
-    { capability_id: "backtest", action_id: "suite", group: "quant-backtest", label: "Backtest suite", mode: "read_only", status: "ready", available: true, tool: "agent_backtest_suite", default_params: { codes: ["600519"], strategy: "ma_cross" } },
-    { capability_id: "portfolio", action_id: "create", group: "portfolio-watchlist", label: "Create portfolio intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "portfolio_manager.create", default_params: { name: "Desktop portfolio" } },
-    { capability_id: "watchlist", action_id: "add", group: "portfolio-watchlist", label: "Add watchlist stock intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "watchlist_manager.add", default_params: { group: "default", code: "600519" } },
-    { capability_id: "paper", action_id: "submit_order", group: "paper-execution", label: "Paper order intent", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "paper_trading_manager.submit_order", default_params: { code: "600519", side: "buy", quantity: 100, dry_run: true } },
-    { capability_id: "broker-ths", action_id: "positions", group: "broker-readonly", label: "THS positions", mode: "read_only", status: "missing_mcp_tool", available: false, mcp_tool: "ths_query_position", default_params: {} },
-    { capability_id: "broker-live", action_id: "place_order", group: "broker-readonly", label: "Live place order", mode: "blocked", status: "blocked", available: false, blocked_reason: "Live broker order placement is disabled in Financial Manager V1." }
+    { capability_id: "stock-analysis", action_id: "analyze_stock", group: "market-research", label: "个股分析", mode: "read_only", status: "ready", available: true, tool: "agent_analyze_stock", default_params: { code: "600519", include_decision: false } },
+    { capability_id: "portfolio", action_id: "risk", group: "risk-performance", label: "组合风险", mode: "read_only", status: "ready", available: true, tool: "agent_portfolio_risk", default_params: { codes: ["600519", "000001"], weights: [0.5, 0.5] } },
+    { capability_id: "quant", action_id: "data_gate", group: "quant-backtest", label: "量化数据门禁", mode: "read_only", status: "ready", available: true, tool: "agent_quant_data_gate", default_params: { codes: ["600519"], max_stale_days: 5 } },
+    { capability_id: "backtest", action_id: "suite", group: "quant-backtest", label: "回测套件", mode: "read_only", status: "ready", available: true, tool: "agent_backtest_suite", default_params: { codes: ["600519"], strategy: "ma_cross" } },
+    { capability_id: "portfolio", action_id: "create", group: "portfolio-watchlist", label: "创建组合意图", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "portfolio_manager.create", default_params: { name: "Desktop portfolio" } },
+    { capability_id: "watchlist", action_id: "add", group: "portfolio-watchlist", label: "添加自选股意图", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "watchlist_manager.add", default_params: { group: "default", code: "600519" } },
+    { capability_id: "paper", action_id: "submit_order", group: "paper-execution", label: "纸上交易下单意图", mode: "stateful_intent", status: "intent_ready", available: true, intent_action: "paper_trading_manager.submit_order", default_params: { code: "600519", side: "buy", quantity: 100, dry_run: true } },
+    { capability_id: "broker-ths", action_id: "positions", group: "broker-readonly", label: "同花顺持仓只读", mode: "read_only", status: "missing_mcp_tool", available: false, mcp_tool: "ths_query_position", default_params: {} },
+    { capability_id: "broker-live", action_id: "place_order", group: "broker-readonly", label: "实盘下单", mode: "blocked", status: "blocked", available: false, blocked_reason: "金融经理台 V1 固定禁用实盘券商下单。" }
   ];
   return {
     object: "aiask.desktop.financial_manager.catalog",
@@ -271,6 +277,396 @@ function dataStatus() {
     missing_count: 0,
     stale_count: 0,
     secrets_redacted: true
+  };
+}
+
+function marketTemperatureSnapshot(body: Record<string, unknown> = {}) {
+  const topN = Math.max(1, Math.min(Number(body.top_n || 8), 12));
+  const asOf = String(body.as_of || "2026-06-08");
+  const industries = [
+    {
+      code: "801750",
+      name: "计算机",
+      date: asOf,
+      stock_count: 48,
+      trend_known_count: 48,
+      above_ma20_count: 37,
+      ma20_breadth: 0.7708,
+      advance_count: 34,
+      decline_count: 11,
+      flat_count: 3,
+      advance_ratio: 0.7083,
+      avg_pct_change: 1.28,
+      weighted_pct_change: 1.16,
+      amount: 428.35,
+      market_cap: 18342.5,
+      market_cap_weight: 0.118,
+      temperature: 74.42,
+      state: "warm"
+    },
+    {
+      code: "801080",
+      name: "电子",
+      date: asOf,
+      stock_count: 62,
+      trend_known_count: 61,
+      above_ma20_count: 45,
+      ma20_breadth: 0.7377,
+      advance_count: 41,
+      decline_count: 18,
+      flat_count: 3,
+      advance_ratio: 0.6613,
+      avg_pct_change: 0.94,
+      weighted_pct_change: 1.02,
+      amount: 512.9,
+      market_cap: 22640.2,
+      market_cap_weight: 0.146,
+      temperature: 71.83,
+      state: "warm"
+    },
+    {
+      code: "801780",
+      name: "银行",
+      date: asOf,
+      stock_count: 34,
+      trend_known_count: 34,
+      above_ma20_count: 18,
+      ma20_breadth: 0.5294,
+      advance_count: 17,
+      decline_count: 15,
+      flat_count: 2,
+      advance_ratio: 0.5,
+      avg_pct_change: 0.18,
+      weighted_pct_change: 0.12,
+      amount: 216.72,
+      market_cap: 31200.8,
+      market_cap_weight: 0.201,
+      temperature: 53.27,
+      state: "neutral"
+    },
+    {
+      code: "801120",
+      name: "食品饮料",
+      date: asOf,
+      stock_count: 42,
+      trend_known_count: 41,
+      above_ma20_count: 14,
+      ma20_breadth: 0.3415,
+      advance_count: 12,
+      decline_count: 28,
+      flat_count: 2,
+      advance_ratio: 0.2857,
+      avg_pct_change: -0.84,
+      weighted_pct_change: -0.71,
+      amount: 148.42,
+      market_cap: 17420.1,
+      market_cap_weight: 0.112,
+      temperature: 32.06,
+      state: "cool"
+    },
+    {
+      code: "801730",
+      name: "电力设备",
+      date: asOf,
+      stock_count: 55,
+      trend_known_count: 52,
+      above_ma20_count: 13,
+      ma20_breadth: 0.25,
+      advance_count: 15,
+      decline_count: 37,
+      flat_count: 3,
+      advance_ratio: 0.2727,
+      avg_pct_change: -1.12,
+      weighted_pct_change: -1.28,
+      amount: 276.54,
+      market_cap: 20680.7,
+      market_cap_weight: 0.133,
+      temperature: 27.34,
+      state: "cool"
+    }
+  ];
+  return {
+    contract_version: "market_temperature.v1",
+    as_of: asOf,
+    market: {
+      stock_count: 300,
+      trend_known_count: 296,
+      above_ma20_count: 162,
+      ma20_breadth: 0.5473,
+      advance_count: 151,
+      decline_count: 136,
+      flat_count: 13,
+      advance_ratio: 0.5033,
+      avg_pct_change: 0.12,
+      weighted_pct_change: 0.18,
+      amount: 4280.6,
+      market_cap: 155080.4,
+      temperature: 55.84,
+      state: "neutral"
+    },
+    industries,
+    hot_industries: industries.slice(0, topN),
+    cold_industries: [...industries].sort((left, right) => Number(left.temperature) - Number(right.temperature)).slice(0, topN),
+    quality: {
+      status: "healthy",
+      warnings: [],
+      input_rows: 300,
+      valid_stock_count: 300,
+      invalid_stock_rows: 0,
+      industry_count: industries.length,
+      unknown_industry_count: 0,
+      trend_coverage: 0.9867,
+      universe_limit: Number(body.limit || 300),
+      universe_count: 300,
+      loaded_stock_rows: 300,
+      missing_kline_rows: 0,
+      contract_version: "market_temperature.v1"
+    },
+    source_chain: ["desktop.mockApi", "market_temperature.fixture"]
+  };
+}
+
+function marketTemperatureCacheReadiness(body: Record<string, unknown> = {}) {
+  const snapshot = marketTemperatureSnapshot(body);
+  const asOf = String(body.as_of || snapshot.as_of || "2026-06-08");
+  const maxStaleDays = Math.max(0, Math.trunc(Number(body.max_stale_days ?? 1)));
+  return {
+    ready: true,
+    status: "fresh",
+    read_only: true,
+    as_of: asOf,
+    requested_as_of: body.as_of ? asOf : null,
+    max_stale_days: maxStaleDays,
+    staleness_days: 1,
+    quality_status: snapshot.quality.status,
+    degraded: false,
+    warnings: [],
+    market_temperature: snapshot.market.temperature,
+    market_state: snapshot.market.state,
+    stock_count: snapshot.market.stock_count,
+    industry_count: snapshot.quality.industry_count,
+    cache: {
+      created_at: `${asOf}T15:00:00Z`,
+      updated_at: `${asOf}T15:05:00Z`,
+      source: "market_temperature_snapshots"
+    },
+    blockers: [],
+    source_chain: ["desktop.mockApi", "market_temperature.cache_readiness.fixture"]
+  };
+}
+
+function marketTemperatureCacheHistory(body: Record<string, unknown> = {}) {
+  const limit = Math.max(1, Math.min(Math.trunc(Number(body.limit || 10)), 365));
+  const includeSnapshot = Boolean(body.include_snapshot);
+  const rows = [
+    {
+      as_of: "2026-06-08",
+      market_temperature: 55.84,
+      market_state: "neutral",
+      stock_count: 300,
+      industry_count: 5,
+      quality_status: "healthy",
+      warnings: [],
+      created_at: "2026-06-08T15:00:00Z",
+      updated_at: "2026-06-08T15:05:00Z"
+    },
+    {
+      as_of: "2026-06-07",
+      market_temperature: 47.2,
+      market_state: "neutral",
+      stock_count: 298,
+      industry_count: 5,
+      quality_status: "healthy",
+      warnings: [],
+      created_at: "2026-06-07T15:00:00Z",
+      updated_at: "2026-06-07T15:04:00Z"
+    },
+    {
+      as_of: "2026-06-06",
+      market_temperature: 32.4,
+      market_state: "cool",
+      stock_count: 294,
+      industry_count: 5,
+      quality_status: "degraded",
+      warnings: ["partial_kline_coverage"],
+      created_at: "2026-06-06T15:00:00Z",
+      updated_at: "2026-06-06T15:03:00Z"
+    }
+  ].slice(0, limit);
+  const items = includeSnapshot
+    ? rows.map((row) => ({ ...row, snapshot: marketTemperatureSnapshot({ ...body, as_of: row.as_of }) }))
+    : rows;
+  return {
+    items,
+    count: items.length,
+    limit,
+    include_snapshot: includeSnapshot,
+    source_chain: ["desktop.mockApi", "market_temperature.cache_history.fixture"]
+  };
+}
+
+function marketTemperatureIndustryHistory(body: Record<string, unknown> = {}) {
+  const limit = Math.max(1, Math.min(Math.trunc(Number(body.limit || 3)), 365));
+  const topN = Math.max(1, Math.min(Math.trunc(Number(body.top_n || 3)), 50));
+  const query = String(body.industry || "").trim().toLowerCase();
+  const matchMode = String(body.match_mode || "exact").toLowerCase() === "contains" ? "contains" : "exact";
+  const includeSourceChain = Boolean(body.include_source_chain);
+  const dateRows = [
+    { as_of: "2026-06-06", offset: -8, market_temperature: 32.4, market_state: "cool" },
+    { as_of: "2026-06-07", offset: -3, market_temperature: 47.2, market_state: "neutral" },
+    { as_of: "2026-06-08", offset: 0, market_temperature: 55.84, market_state: "neutral" }
+  ].slice(-limit);
+  const matchesQuery = (item: Record<string, unknown>) => {
+    if (!query) return true;
+    const tokens = [item.code, item.name].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+    return matchMode === "contains" ? tokens.some((token) => token.includes(query)) : tokens.some((token) => token === query);
+  };
+  const items = dateRows.flatMap((dateRow) => {
+    const snapshot = marketTemperatureSnapshot({ ...body, as_of: dateRow.as_of });
+    const industries = (snapshot.industries || []).filter(matchesQuery);
+    const selected = query ? industries : industries.slice(0, topN);
+    return selected.map((industry) => ({
+      as_of: dateRow.as_of,
+      code: industry.code,
+      name: industry.name,
+      temperature: Number(industry.temperature || 0) + dateRow.offset,
+      state: industry.state,
+      ma20_breadth: industry.ma20_breadth,
+      advance_count: industry.advance_count,
+      decline_count: industry.decline_count,
+      flat_count: industry.flat_count,
+      stock_count: industry.stock_count,
+      market_cap_weight: industry.market_cap_weight,
+      market_temperature: dateRow.market_temperature,
+      market_state: dateRow.market_state,
+      quality_status: snapshot.quality.status,
+      warnings: snapshot.quality.warnings,
+      updated_at: `${dateRow.as_of}T15:05:00Z`,
+      ...(includeSourceChain ? { source_chain: snapshot.source_chain } : {})
+    }));
+  });
+  return {
+    items,
+    count: items.length,
+    limit,
+    top_n: topN,
+    industry: query || null,
+    match_mode: matchMode,
+    include_source_chain: includeSourceChain,
+    source_chain: ["desktop.mockApi", "market_temperature.industry_history.fixture"]
+  };
+}
+
+function marketTemperatureIndustryConstituents(body: Record<string, unknown> = {}) {
+  const limit = Math.max(1, Math.min(Math.trunc(Number(body.limit || 50)), 1000));
+  const offset = Math.max(0, Math.min(Math.trunc(Number(body.offset || 0)), 10000));
+  const query = String(body.industry || "").trim().toLowerCase();
+  const matchMode = String(body.match_mode || "contains").toLowerCase() === "exact" ? "exact" : "contains";
+  const includeSourceChain = Boolean(body.include_source_chain);
+  const snapshot = marketTemperatureSnapshot(body);
+  const industryRows = snapshot.industries || [];
+  const rows = industryRows.flatMap((industry, industryIndex) => {
+    const baseCode = String(industry.code || `801${industryIndex}`);
+    const industryName = String(industry.name || baseCode);
+    return [
+      {
+        code: industryIndex === 2 ? "000001" : `${industryIndex + 1}00001`,
+        name: industryIndex === 2 ? "Ping An Bank" : `${industryName} Leader`,
+        industry: industryName,
+        sector: industryName,
+        market: industryIndex === 2 ? "SZ" : "SH",
+        market_cap: Number(industry.market_cap || 1000) * 0.18,
+        pe_ratio: 8.4 + industryIndex,
+        pb_ratio: 0.7 + industryIndex / 10,
+        list_date: "2001-01-01",
+        industry_code: baseCode
+      },
+      {
+        code: industryIndex === 2 ? "600036" : `${industryIndex + 1}00002`,
+        name: industryIndex === 2 ? "CMB" : `${industryName} Growth`,
+        industry: industryName,
+        sector: industryName,
+        market: "SH",
+        market_cap: Number(industry.market_cap || 1000) * 0.12,
+        pe_ratio: 11.2 + industryIndex,
+        pb_ratio: 1.1 + industryIndex / 10,
+        list_date: "2004-01-01",
+        industry_code: baseCode
+      }
+    ];
+  });
+  const matchesQuery = (item: Record<string, unknown>) => {
+    if (!query) return false;
+    const tokens = [item.industry, item.sector, item.industry_code].map((value) => String(value || "").trim().toLowerCase()).filter(Boolean);
+    return matchMode === "exact" ? tokens.some((token) => token === query) : tokens.some((token) => token.includes(query));
+  };
+  const matches = rows.filter(matchesQuery);
+  const items = matches.slice(offset, offset + limit).map((item) => ({
+    code: item.code,
+    name: item.name,
+    industry_code: item.industry_code,
+    industry: item.industry,
+    sector: item.sector,
+    market: item.market,
+    market_cap: item.market_cap,
+    pe_ratio: item.pe_ratio,
+    pb_ratio: item.pb_ratio,
+    list_date: item.list_date,
+    ...(includeSourceChain ? { source_chain: ["desktop.mockApi", "market_temperature.industry_constituents.fixture"] } : {})
+  }));
+  return {
+    items,
+    count: items.length,
+    total_matches: matches.length,
+    limit,
+    offset,
+    industry: String(body.industry || ""),
+    match_mode: matchMode,
+    include_source_chain: includeSourceChain,
+    source_chain: ["desktop.mockApi", "market_temperature.industry_constituents.fixture"]
+  };
+}
+
+function marketTemperatureForwardValidation(body: Record<string, unknown> = {}) {
+  const limit = Math.max(2, Math.min(Math.trunc(Number(body.limit || 180)), 365));
+  const rawHorizons = Array.isArray(body.horizons) ? body.horizons : [1, 3, 5];
+  const horizons = rawHorizons.map((item) => Math.max(1, Math.min(Math.trunc(Number(item || 1)), 20))).filter((item, index, items) => items.indexOf(item) === index);
+  const targetField = String(body.target_field || "benchmark_return");
+  const benchmarkCode = String(body.benchmark_code || "000300");
+  const matrix = {
+    warm: {
+      "1d": { sample_n: 18, direction_hits: 12, reliable: true, avg_forward_return: 0.42, hit_rate: 0.6667, min_forward_return: -1.1, max_forward_return: 1.8 },
+      "3d": { sample_n: 16, direction_hits: 10, reliable: true, avg_forward_return: 0.76, hit_rate: 0.625, min_forward_return: -1.6, max_forward_return: 2.7 },
+      "5d": { sample_n: 12, direction_hits: 7, reliable: true, avg_forward_return: 0.94, hit_rate: 0.5833, min_forward_return: -2.2, max_forward_return: 3.5 }
+    },
+    neutral: {
+      "1d": { sample_n: 24, direction_hits: 15, reliable: true, avg_forward_return: 0.06, hit_rate: 0.625, min_forward_return: -0.8, max_forward_return: 0.9 },
+      "3d": { sample_n: 22, direction_hits: 12, reliable: true, avg_forward_return: 0.18, hit_rate: 0.5455, min_forward_return: -1.2, max_forward_return: 1.3 },
+      "5d": { sample_n: 18, direction_hits: 10, reliable: true, avg_forward_return: 0.25, hit_rate: 0.5556, min_forward_return: -1.9, max_forward_return: 2.0 }
+    },
+    cool: {
+      "1d": { sample_n: 14, direction_hits: 8, reliable: true, avg_forward_return: -0.31, hit_rate: 0.5714, min_forward_return: -1.7, max_forward_return: 1.0 },
+      "3d": { sample_n: 12, direction_hits: 8, reliable: true, avg_forward_return: -0.64, hit_rate: 0.6667, min_forward_return: -2.3, max_forward_return: 1.4 },
+      "5d": { sample_n: 9, direction_hits: 6, reliable: true, avg_forward_return: -0.72, hit_rate: 0.6667, min_forward_return: -2.8, max_forward_return: 1.9 }
+    }
+  };
+  return {
+    matrix,
+    states: Object.keys(matrix),
+    horizons,
+    count: 145,
+    snapshot_count: 72,
+    limit,
+    target_field: targetField,
+    requested_target_field: targetField,
+    benchmark_code: benchmarkCode,
+    benchmark_status: targetField === "benchmark_return" ? "available" : "not_requested",
+    benchmark_bar_count: targetField === "benchmark_return" ? 76 : 0,
+    min_samples: Number(body.min_samples || 3),
+    neutral_band_pct: Number(body.neutral_band_pct ?? 0.2),
+    include_samples: Boolean(body.include_samples),
+    samples: [],
+    source_chain: ["desktop.mockApi", "market_temperature.forward_validation.fixture"]
   };
 }
 
@@ -663,7 +1059,17 @@ function capabilities(): CapabilityWorkbenchPayload {
       ],
       issues: [],
       providers: { status: "ready", configured_count: 1 },
-      memory: { status: "ready", provider: "sqlite" },
+      memory: {
+        object: "aiask.memory_provider_status",
+        status: "implemented",
+        active_provider: "sqlite",
+        default_provider: "sqlite",
+        providers: [
+          { name: "sqlite", type: "sqlite", configured: true, status: "implemented", capabilities: ["save", "search", "status"] },
+          { name: "vector", type: "semantic_memory", configured: false, status: "skipped_missing_credentials", required_env: ["AIASK_VECTOR_MEMORY_URL"] }
+        ],
+        secrets_redacted: true
+      },
       acp: { status: "ready" },
       security: { status: "ready" },
       skill_packs: { object: "skill_packs", status: "ready", available_count: 2, packs: [{ name: "finance" }, { name: "desktop" }] }
@@ -686,14 +1092,14 @@ function capabilities(): CapabilityWorkbenchPayload {
       detail: null,
       servers: [{ name: "akshare-local", domain: "finance", transport: "streamable_http", configured: true }],
       tools: [
-        { server: "akshare-local", name: "get_realtime_quote", wrapped_name: "agent_mcp_akshare_get_realtime_quote", domain: "quote", description: "Realtime quote" },
-        { server: "akshare-local", name: "get_kline", wrapped_name: "agent_mcp_akshare_get_kline", domain: "kline", description: "K-line data" },
-        { server: "akshare-local", name: "get_macro_indicator", wrapped_name: "agent_mcp_akshare_get_macro_indicator", domain: "macro", description: "Macro indicator" },
-        { server: "akshare-local", name: "get_option_chain", wrapped_name: "agent_mcp_akshare_get_option_chain", domain: "options", description: "Option chain" }
+        { server: "akshare-local", name: "get_realtime_quote", wrapped_name: "agent_mcp_akshare_get_realtime_quote", domain: "quote", description: "实时行情" },
+        { server: "akshare-local", name: "get_kline", wrapped_name: "agent_mcp_akshare_get_kline", domain: "kline", description: "K 线数据" },
+        { server: "akshare-local", name: "get_macro_indicator", wrapped_name: "agent_mcp_akshare_get_macro_indicator", domain: "macro", description: "宏观指标" },
+        { server: "akshare-local", name: "get_option_chain", wrapped_name: "agent_mcp_akshare_get_option_chain", domain: "options", description: "期权链" }
       ],
-      resources: [{ uri: "aiask://quotes", name: "quote resource" }],
-      prompts: [{ name: "risk-review", description: "Risk review prompt" }],
-      oauth: [{ server: "akshare-local", status: "missing", error: "authorization required" }]
+      resources: [{ uri: "aiask://quotes", name: "行情资源" }],
+      prompts: [{ name: "risk-review", description: "风险复盘提示词" }],
+      oauth: [{ server: "akshare-local", status: "missing", error: "需要授权" }]
     },
     strategy_factory: strategyFactory(),
     quant: { data_status: { status: "ready" }, status: "ready" },
@@ -701,16 +1107,94 @@ function capabilities(): CapabilityWorkbenchPayload {
       object: "aiask.financial_readiness",
       status: "ready",
       production_ready: false,
-      required_gates: [{ name: "approval_intents", status: "ready", required: true, detail: "Mock intent gate ready" }],
-      optional_gates: [],
+      required_gates: [
+        { name: "approval_intents", status: "ready", required: true, detail: "Mock intent gate ready" },
+        {
+          name: "semantic_search",
+          status: "ready",
+          required: true,
+          detail: "Memory search and session search probes are callable",
+          evidence: {
+            active_provider: "sqlite",
+            memory_tool_registered: true,
+            session_tool_registered: true,
+            memory_probe_success: true,
+            session_probe_success: true
+          }
+        }
+      ],
+      optional_gates: [
+        {
+          name: "vector_provider",
+          status: "degraded",
+          required: false,
+          detail: "External vector memory provider is optional; built-in SQLite memory/session search remains the readiness baseline",
+          evidence: {
+            active_provider: "sqlite",
+            configured: false,
+            required_env: ["AIASK_VECTOR_MEMORY_URL"]
+          }
+        }
+      ],
+      next_actions: [
+        {
+          action_id: "run_live_financial_workflow",
+          title: "运行一次只读金融工作流",
+          detail: "先运行金融经理台只读查询，再运行量化研究，确认报告完成或明确被数据新鲜度阻塞。",
+          priority: "recommended",
+          target_page: "financial-manager",
+          endpoint: "/v1/desktop/financial-manager/query"
+        },
+        {
+          action_id: "configure_mcp_auth",
+          title: "配置 MCP 授权变量",
+          detail: "Mock AKShare MCP 已注册但缺少授权变量；真实环境中请在 Agent 进程配置后刷新发现。",
+          priority: "recommended",
+          target_page: "mcp-connectors",
+          endpoint: "/v1/mcp/tools",
+          env_vars: ["AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION"],
+          gate: "mcp_aggregation"
+        }
+      ],
+      live_smoke: {
+        object: "aiask.live_smoke_checklist",
+        status: "ready",
+        script: "scripts/ops/live_readiness_smoke.py",
+        checks: [
+          { name: "health", method: "GET", path: "/health/detailed" },
+          { name: "tools", method: "GET", path: "/v1/tools" },
+          { name: "financial_readiness", method: "GET", path: "/v1/financial-system/readiness" },
+          { name: "memory_status", method: "GET", path: "/v1/desktop/settings/status" },
+          { name: "session_search", method: "GET", path: "/v1/search?query=AIASK&limit=5" },
+          { name: "memory_search", method: "POST", path: "/v1/tools/agent_memory_search" },
+          { name: "mcp_servers", method: "GET", path: "/v1/mcp/servers" },
+          { name: "mcp_tools", method: "GET", path: "/v1/mcp/tools" },
+          { name: "financial_manager_catalog", method: "GET", path: "/v1/desktop/financial-manager/catalog" },
+          { name: "financial_manager_query", method: "POST", path: "/v1/desktop/financial-manager/query" },
+          { name: "data_status", method: "GET", path: "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5" },
+          { name: "market_temperature_cache", method: "POST", path: "/v1/tools/agent_market_temperature_cache_readiness", observes: ["ready", "status", "blockers", "warnings"] },
+          { name: "market_temperature_forward_validation", method: "POST", path: "/v1/tools/agent_market_temperature_forward_validation", observes: ["benchmark_status", "quality_status", "warnings", "sample_count"] },
+          { name: "quant_research", method: "POST", path: "/v1/desktop/quant/research-runs" }
+        ]
+      },
       summary: { ready: 1 },
       disclaimer: "MOCK_NOT_INVESTMENT_ADVICE"
     },
-    skills: { gated: false, root: "mock://aiask/skills", skills: [{ name: "risk-review", description: "Risk review", path: "mock://skills/risk-review" }] },
+    skills: { gated: false, root: "mock://aiask/skills", skills: [{ name: "risk-review", description: "风险复盘", path: "mock://skills/risk-review" }] },
     skill_packs: { object: "skill_packs", status: "ready", available_count: 2, packs: [{ name: "finance" }] },
-    plugins: [{ name: "audit-plugin", enabled: true, source: "mock", description: "Audit hooks", tools: [{ name: "ping" }], commands: [], hooks: [] }],
+    plugins: [{ name: "audit-plugin", enabled: true, source: "mock", description: "审计钩子", tools: [{ name: "ping" }], commands: [], hooks: [] }],
     providers: { status: "ready" },
-    memory: { status: "ready" },
+    memory: {
+      object: "aiask.memory_provider_status",
+      status: "implemented",
+      active_provider: "sqlite",
+      default_provider: "sqlite",
+      providers: [
+        { name: "sqlite", type: "sqlite", configured: true, status: "implemented", capabilities: ["save", "search", "status"] },
+        { name: "vector", type: "semantic_memory", configured: false, status: "skipped_missing_credentials", required_env: ["AIASK_VECTOR_MEMORY_URL"] }
+      ],
+      secrets_redacted: true
+    },
     acp: { status: "ready" },
     security: { status: "ready" },
     ai: aiStatus(),
@@ -734,7 +1218,17 @@ function settingsStatus() {
       ai_status: aiStatus(),
       providers: { status: "ready", configured_count: 1, providers: [{ name: "project-root-api", type: "openai_compatible", model: "gpt-5.4", configured: true, status: "ready" }] }
     },
-    memory: { status: "ready", provider: "sqlite", path: "mock://aiask/agent_state.sqlite3" },
+    memory: {
+      object: "aiask.memory_provider_status",
+      status: "implemented",
+      active_provider: "sqlite",
+      default_provider: "sqlite",
+      providers: [
+        { name: "sqlite", type: "sqlite", configured: true, status: "implemented", path: "mock://aiask/agent_state.sqlite3", capabilities: ["save", "search", "status"] },
+        { name: "vector", type: "semantic_memory", configured: false, status: "skipped_missing_credentials", required_env: ["AIASK_VECTOR_MEMORY_URL"] }
+      ],
+      secrets_redacted: true
+    },
     databases: {
       agent_state: { path: "mock://aiask/agent_state.sqlite3", writable: true },
       intent_state: { path: "mock://aiask/intents.sqlite3", writable: true },
@@ -765,10 +1259,26 @@ function createIntent(body: Record<string, unknown>) {
 function toolResult(tool: string, body: Record<string, unknown>) {
   if (tool === "agent_tool_catalog") return envelope(tool, { tools: [...financeTools, ...hermesTools] });
   if (tool === "agent_quant_data_gate") return envelope(tool, { status: "passed", codes: body.codes || ["600519"], missing: [], stale: [] });
+  if (tool === "agent_market_temperature_snapshot") return envelope(tool, marketTemperatureSnapshot(body));
+  if (tool === "agent_market_temperature_cache_readiness") return envelope(tool, marketTemperatureCacheReadiness(body));
+  if (tool === "agent_market_temperature_cache_history") return envelope(tool, marketTemperatureCacheHistory(body));
+  if (tool === "agent_market_temperature_industry_history") return envelope(tool, marketTemperatureIndustryHistory(body));
+  if (tool === "agent_market_temperature_industry_constituents") return envelope(tool, marketTemperatureIndustryConstituents(body));
+  if (tool === "agent_market_temperature_forward_validation") return envelope(tool, marketTemperatureForwardValidation(body));
   if (tool === "agent_factor_validation") return envelope(tool, { status: "passed", ic_mean: 0.04, factors: body.factors || ["momentum"] });
   if (tool === "agent_backtest_suite") return envelope(tool, { status: "completed", sharpe: 1.2, max_drawdown: -0.08 });
   if (tool === "agent_portfolio_risk") return envelope(tool, { status: "completed", var_95: -0.021, stress: "passed" });
-  if (tool === "agent_analyze_stock") return envelope(tool, { code: body.code || "600519", rating: "mock_watch", risk: "medium" });
+  if (tool === "agent_analyze_stock") {
+    const code = String(body.code || body.stock_code || body.symbol || "600519");
+    return envelope(tool, {
+      status: "ready",
+      code,
+      rating: "mock_watch",
+      risk: "medium",
+      decision: body.include_decision ? "observe_only" : "not_requested",
+      summary: { signal: "watch", source: "desktop.mockApi", investment_advice: false }
+    });
+  }
   if (tool === "agent_factory_status") return strategyFactory().status;
   if (tool === "agent_factory_runs") return strategyFactory().runs;
   if (tool === "agent_strategy_review_snapshot") return strategyFactory().review_snapshot;
@@ -916,8 +1426,48 @@ function toolResult(tool: string, body: Record<string, unknown>) {
   if (tool === "agent_learning_review") return envelope(tool, { proposals: [{ proposal_id: "learn_mock", status: "pending_review" }] });
   if (tool === "agent_rl_list_environments") return envelope(tool, { environments: [{ id: "finance_safe_eval", status: "ready" }] });
   if (tool === "agent_rl_get_config") return envelope(tool, { status: "configured", secrets_redacted: true });
+  if (tool === "agent_security_scan") {
+    return envelope(tool, {
+      status: "completed",
+      target: body.text ? "text" : body.path || ".",
+      include_env: false,
+      findings: [],
+      secrets_redacted: true,
+      arguments: body
+    });
+  }
   if (tool === "agent_job_list") return envelope(tool, { jobs });
   return envelope(tool, { status: "mock_ok", arguments: body });
+}
+
+function quantResearchArtifact(researchId = "research_mock") {
+  const stages = [
+    { name: "definition", status: "completed", output: { universe: ["600519", "000001"], factors: ["momentum", "volatility"], benchmark: "000300" }, error: null },
+    { name: "data_gate", status: "completed", output: { status: "ready", ready: true, missing: [], stale: [], coverage: { requested: 2, ready: 2 } }, error: null },
+    { name: "factor_validation", status: "completed", output: { status: "passed", ic_mean: 0.041, coverage: 0.92, redundant_factors: [] }, error: null },
+    { name: "backtest_suite", status: "completed", output: { status: "completed", oos_sharpe: 1.12, max_drawdown: -0.082, turnover: 0.18 }, error: null },
+    { name: "portfolio_risk", status: "completed", output: { status: "completed", var_95: -0.021, concentration: "medium", stress: "passed" }, error: null },
+    { name: "strategy_factory_review", status: "completed", output: { status: "reviewing", recommendation: "observe", decision: "not_promoted" }, error: null }
+  ];
+  return {
+    research_id: researchId,
+    status: "completed",
+    payload: { stages },
+    report: {
+      object: "aiask.quant_research_report",
+      research_id: researchId,
+      status: "completed",
+      summary: { benchmark: "000300", universe_size: 2, factor_count: 2, failed_stage: null },
+      universe: ["600519", "000001"],
+      backtest_assumptions: { cost_bps: 3, slippage_bps: 1, benchmark: "000300", rebalance_frequency: "monthly" },
+      backtest: { oos_sharpe: 1.12, walk_forward_score: 0.68, max_drawdown: -0.082 },
+      portfolio_risk: { var_95: -0.021, concentration: "medium", stress: "passed" },
+      strategy_factory: { status: "reviewing", recommendation: "observe", decision: "not_promoted" },
+      limitations: ["Mock research is decision support only."],
+      stages,
+      disclaimer: "MOCK_NOT_INVESTMENT_ADVICE"
+    }
+  };
 }
 
 function parsePath(path: string): { cleanPath: string; query: URLSearchParams } {
@@ -956,8 +1506,15 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
       status: "ready",
       data_status: dataStatus(),
       intent_request: {
-        action: "data_sync.run_once",
-        params: { codes: body.codes || ["600519"], task_type: body.task_type || "kline", period: body.period || "daily" },
+        action: "data_sync.sync",
+        params: {
+          codes: body.codes || ["600519"],
+          task_type: body.task_type || "kline",
+          period: body.period || "daily",
+          limit: body.task_type === "market_temperature_snapshot_cache" ? 1000 : undefined,
+          top_n: body.task_type === "market_temperature_snapshot_cache" ? 20 : undefined,
+          min_bars: body.task_type === "market_temperature_snapshot_cache" ? 20 : undefined
+        },
         rationale: "Mock sync plan approval."
       },
       side_effect: { level: "stateful", confirmation_required: true },
@@ -1010,7 +1567,7 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/runs/run_mock/events" || cleanPath === "/v1/runs/run_mock/events/stream") {
     return ok({ object: "list", data: mockRunEvents } as T);
   }
-  if (cleanPath === "/v1/search") return ok({ object: "list", data: [{ kind: "response", object_id: "resp_mock", session_id: "sess_mock", user_id: profile.user_id, content: "mock response hit" }] } as T);
+  if (cleanPath === "/v1/search") return ok({ object: "list", data: [{ kind: "response", object_id: "resp_mock", session_id: "sess_mock", user_id: profile.user_id, content: "Mock 回复命中" }] } as T);
   if (cleanPath === "/v1/hermes/sessions") return ok({ object: "list", data: mockSessionSummaries } as T);
   if (cleanPath.startsWith("/v1/sessions/") && cleanPath.endsWith("/messages")) {
     return ok({ object: "list", data: [{ message_id: "msg_user", role: "user", content: "mock question" }, { message_id: "msg_assistant", role: "assistant", content: "mock answer" }] } as T);
@@ -1048,6 +1605,25 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/terminal/backends") {
     return ok({ object: "list", data: [{ name: "local-powershell", shell: "powershell", status: "ready", read_only_probe: true }] } as T);
   }
+  const terminalBackendSessionsMatch = cleanPath.match(/^\/v1\/terminal\/backends\/([^/]+)\/sessions$/);
+  if (terminalBackendSessionsMatch) {
+    const backend = decodeURIComponent(terminalBackendSessionsMatch[1]);
+    const limit = Number(query.get("limit") || 200);
+    return ok({
+      object: "list",
+      backend,
+      data: [
+        {
+          session_id: "terminal_mock",
+          backend,
+          status: "idle",
+          user_id: profile.user_id,
+          shell: backend.includes("powershell") ? "powershell" : "terminal",
+          updated_at: "2026-05-22T09:00:00Z"
+        }
+      ].slice(0, limit)
+    } as T);
+  }
   if (cleanPath === "/v1/terminal/sessions") {
     return ok({ object: "list", data: [{ session_id: "terminal_mock", backend: "local-powershell", status: "idle", user_id: profile.user_id }] } as T);
   }
@@ -1074,7 +1650,7 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
           platform: "discord",
           target: "ops-alerts",
           status: "failed",
-          content: "Mock failed gateway delivery",
+          content: "Mock Gateway 投递失败",
           error_message: "missing DISCORD_BOT_TOKEN",
           retry_count: 1,
           created_at: "2026-05-22T09:00:00Z"
@@ -1096,7 +1672,7 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     return ok({ object: "aiask.learning_status", status: "ready", proposal_count: 1, apply_requires_control: true } as T);
   }
   if (cleanPath === "/v1/learning/review") {
-    return ok({ object: "list", data: [{ proposal_id: "learn_mock", status: "pending_review", summary: "Mock prompt improvement proposal" }] } as T);
+    return ok({ object: "list", data: [{ proposal_id: "learn_mock", status: "pending_review", summary: "Mock 提示词改进建议" }] } as T);
   }
   if (cleanPath === "/v1/learning/apply") {
     return ok({ object: "learning.proposal", data: { proposal_id: body.proposal_id, status: "applied" } } as T);
@@ -1121,7 +1697,7 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   }
   if (cleanPath === "/v1/webhooks") {
     if (method === "POST") return ok({ object: "webhook", data: { webhook_id: `webhook_mock_${Date.now()}`, ...body, enabled: true } } as T);
-    return ok({ object: "list", data: [{ webhook_id: "webhook_mock", name: "Mock webhook", events: ["MCP UI smoke test"], prompt: "mock", enabled: true, status: "ready" }] } as T);
+    return ok({ object: "list", data: [{ webhook_id: "webhook_mock", name: "Mock Webhook", events: ["MCP UI 冒烟测试"], prompt: "mock", enabled: true, status: "ready" }] } as T);
   }
   const webhookMatch = cleanPath.match(/^\/v1\/webhooks\/([^/]+)(?:\/trigger)?$/);
   if (webhookMatch) {
@@ -1234,6 +1810,75 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     const action = financialManagerCatalog().actions.find((item) => item.capability_id === body.capability_id && item.action_id === body.action_id);
     if (action?.mode === "blocked") return ok({ object: "aiask.desktop.financial_manager.query", success: false, data: { reason: action.blocked_reason }, error: action.blocked_reason, error_code: "FINANCIAL_ACTION_BLOCKED", secrets_redacted: true } as T);
     if (action?.mode === "stateful_intent") return ok({ object: "aiask.desktop.financial_manager.query", success: false, data: { required_endpoint: "/v1/desktop/financial-manager/intent" }, error: "stateful financial actions must be created as ActionIntent", error_code: "FINANCIAL_ACTION_REQUIRES_INTENT", secrets_redacted: true } as T);
+    if (body.capability_id === "stock-analysis" && body.action_id === "analyze_stock") {
+      const params = body.params && typeof body.params === "object" && !Array.isArray(body.params)
+        ? body.params as Record<string, unknown>
+        : {};
+      const code = String(params.code || params.stock_code || params.symbol || "600519");
+      return ok({
+        object: "aiask.desktop.financial_manager.query",
+        capability_id: body.capability_id,
+        action_id: body.action_id,
+        tool: "agent_analyze_stock",
+        success: true,
+        data: {
+          status: "ready",
+          code,
+          rating: "mock_watch",
+          risk: "medium",
+          decision: params.include_decision ? "observe_only" : "not_requested",
+          analysis: {
+            signal: "watch",
+            confidence: 0.72,
+            data_source: "desktop.mockApi",
+            investment_advice: false
+          }
+        },
+        error: null,
+        meta: { side_effect: { level: "read_only", target: "agent_analyze_stock", confirmation_required: false, idempotent: true } },
+        secrets_redacted: true
+      } as T);
+    }
+    if (body.capability_id === "portfolio" && body.action_id === "risk") {
+      return ok({
+        object: "aiask.desktop.financial_manager.query",
+        capability_id: body.capability_id,
+        action_id: body.action_id,
+        tool: "agent_portfolio_risk",
+        success: true,
+        data: {
+          status: "ready",
+          params: body.params || action?.default_params || {},
+          portfolio_risk: { var_95: -0.021, stress: "passed", concentration: "medium" }
+        },
+        error: null,
+        meta: { side_effect: { level: "read_only", target: "agent_portfolio_risk", confirmation_required: false, idempotent: true } },
+        secrets_redacted: true
+      } as T);
+    }
+    if (body.capability_id === "quant" && body.action_id === "data_gate") {
+      const params = body.params && typeof body.params === "object" && !Array.isArray(body.params)
+        ? body.params as Record<string, unknown>
+        : {};
+      return ok({
+        object: "aiask.desktop.financial_manager.query",
+        capability_id: body.capability_id,
+        action_id: body.action_id,
+        tool: "agent_quant_data_gate",
+        success: true,
+        data: {
+          status: "ready",
+          ready: true,
+          codes: Array.isArray(params.codes) ? params.codes : ["600519", "000001"],
+          max_stale_days: params.max_stale_days || 5,
+          coverage: { requested: 2, missing_count: 0, stale_count: 0 },
+          blocking_reason: null
+        },
+        error: null,
+        meta: { side_effect: { level: "read_only", target: "agent_quant_data_gate", confirmation_required: false, idempotent: true } },
+        secrets_redacted: true
+      } as T);
+    }
     return ok({ object: "aiask.desktop.financial_manager.query", capability_id: body.capability_id, action_id: body.action_id, tool: action?.tool || "mock_tool", success: true, data: { status: "ready", params: body.params || action?.default_params || {}, rows: [{ code: "600519", signal: "watch", risk: "medium" }] }, error: null, meta: { side_effect: { level: "read_only", confirmation_required: false } }, secrets_redacted: true } as T);
   }
   if (cleanPath === "/v1/desktop/financial-manager/intent") {
@@ -1246,7 +1891,7 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
       target_action: action?.intent_action || "mock",
       status: "awaiting_confirmation",
       params: body.params || action?.default_params || {},
-      rationale: body.rationale || "Financial Manager mock intent"
+      rationale: body.rationale || "金融经理台 mock 意图"
     };
     intents.set(intent.intent_id, intent);
     return ok({ object: "aiask.desktop.financial_manager.intent", capability_id: body.capability_id, action_id: body.action_id, success: true, data: { intent }, error: null, meta: { side_effect: { level: "stateful", confirmation_required: true } }, secrets_redacted: true } as T);
@@ -1262,10 +1907,10 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     } as T);
   }
   if (cleanPath === "/v1/desktop/quant/research-runs") {
-    return ok(envelope("agent_quant_research_run", { research: { research_id: "research_mock", status: "completed", payload: { stages: [] }, report: { object: "report", research_id: "research_mock", status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, stages: [], disclaimer: "MOCK_NOT_INVESTMENT_ADVICE" } } }) as T);
+    return ok(envelope("agent_quant_research_run", { research: quantResearchArtifact() }) as T);
   }
   const quantReportMatch = cleanPath.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)\/report$/);
-  if (quantReportMatch) return ok({ object: "report", research_id: decodeURIComponent(quantReportMatch[1]), status: "completed", summary: { benchmark: "000300", universe_size: 2, factor_count: 2 }, disclaimer: "MOCK_NOT_INVESTMENT_ADVICE", stages: [] } as T);
+  if (quantReportMatch) return ok(quantResearchArtifact(decodeURIComponent(quantReportMatch[1])).report as T);
   if (cleanPath === "/v1/desktop/stock-radar/status") return ok(envelope("agent_stock_radar_status", stockRadarPayload()) as T);
   if (cleanPath === "/v1/desktop/stock-radar/candidates") {
     const filters = queryRecord(query);

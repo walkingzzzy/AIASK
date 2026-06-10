@@ -147,6 +147,14 @@ def _build_bootstrap_lineage_fallback(
     }
 
 
+def _is_bootstrap_proxy_lineage_id(value: Any) -> bool:
+    token = str(value or "").strip().lower()
+    return token in {
+        "wide_intake_observe_proxy_claim",
+        "wide_intake_observe_proxy_step",
+    }
+
+
 def _merge_bootstrap_lineage(
     strategy: dict,
     *,
@@ -169,7 +177,7 @@ def _merge_bootstrap_lineage(
         "runtime_action_reason",
         "runtime_action_source",
     ):
-        if not str(resolved.get(key) or "").strip():
+        if not str(resolved.get(key) or "").strip() or _is_bootstrap_proxy_lineage_id(resolved.get(key)):
             resolved[key] = fallback[key]
             fallback_applied = True
     lineage_status = str(resolved.get("lineage_status") or "").strip().lower()

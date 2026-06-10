@@ -11,11 +11,11 @@ describe("IncubationFactoryPanel trade prediction observability", () => {
   it("renders read-only trade prediction status, outcomes, and matrix data", async () => {
     render(<IncubationFactoryPanel endpoint="mock://aiask" apiToken="api-token" controlToken="" />);
 
-    await waitFor(() => expect(screen.getByText("Trade Prediction Observability")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("交易预测可观测性")).toBeInTheDocument());
 
-    expect(screen.getByText("Predictions")).toBeInTheDocument();
-    expect(screen.getByText("Sample n")).toBeInTheDocument();
-    expect(screen.getByText("Score Versions")).toBeInTheDocument();
+    expect(screen.getByText("预测数")).toBeInTheDocument();
+    expect(screen.getByText("样本数")).toBeInTheDocument();
+    expect(screen.getByText("评分版本")).toBeInTheDocument();
     expect(screen.getByText("score_version")).toBeInTheDocument();
     expect(screen.getAllByText(/trade_prediction_score_v2/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/partial_intraday_missing/).length).toBeGreaterThan(0);

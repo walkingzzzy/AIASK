@@ -1,5 +1,6 @@
 """策略工厂常量与配置"""
 
+import math
 import os
 from typing import Dict, List, Optional
 
@@ -334,7 +335,9 @@ def _env_int(name: str | tuple[str, ...] | list[str], default: int, *, minimum: 
 def _env_float(name: str | tuple[str, ...] | list[str], default: float, *, minimum: float, maximum: float) -> float:
     try:
         value = float(_env_raw(name, str(default)) or default)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
+        value = default
+    if not math.isfinite(value):
         value = default
     return max(minimum, min(maximum, value))
 

@@ -17,7 +17,9 @@ from uuid import uuid4
 from .context import ContextManager
 from .env_config import load_project_env
 from .general_tools import WorkspaceGuard, _limit_bytes, _sanitized_env
+from .json_utils import dumps_json
 from .model_client import ModelClient, ModelResponse, build_model_client_from_env
+from .numeric import bounded_float, bounded_int
 from .planner import TaskPlanner
 from .plugin_runtime import NativePluginManager
 from .recovery import retry_async
@@ -85,10 +87,28 @@ class AgentRuntime:
         )
         self.planner = planner or TaskPlanner(todo_store=FinancialTodoStore(self.session_store.path))
         self.model = model or os.getenv("AIASK_AGENT_MODEL", "gpt-4.1-mini")
-        self.max_iterations = max(1, int(max_iterations or os.getenv("AIASK_AGENT_MAX_ITERATIONS", "8")))
-        self.model_timeout_seconds = float(model_timeout_seconds or os.getenv("AIASK_AGENT_MODEL_TIMEOUT", "120"))
-        self.tool_timeout_seconds = float(tool_timeout_seconds or os.getenv("AIASK_AGENT_TOOL_TIMEOUT", "120"))
-        self.retry_attempts = max(1, int(retry_attempts or os.getenv("AIASK_AGENT_RETRY_ATTEMPTS", "3")))
+        self.max_iterations = bounded_int(
+            max_iterations if max_iterations is not None else os.getenv("AIASK_AGENT_MAX_ITERATIONS", "8"),
+            default=8,
+            minimum=1,
+        )
+        self.model_timeout_seconds = bounded_float(
+            model_timeout_seconds if model_timeout_seconds is not None else os.getenv("AIASK_AGENT_MODEL_TIMEOUT", "120"),
+            default=120.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self.tool_timeout_seconds = bounded_float(
+            tool_timeout_seconds if tool_timeout_seconds is not None else os.getenv("AIASK_AGENT_TOOL_TIMEOUT", "120"),
+            default=120.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
+        self.retry_attempts = bounded_int(
+            retry_attempts if retry_attempts is not None else os.getenv("AIASK_AGENT_RETRY_ATTEMPTS", "3"),
+            default=3,
+            minimum=1,
+        )
         self.job_store = AgentJobStore(self.session_store.path)
         self.scheduler = BackgroundScheduler(runtime=self, store=self.job_store)
         self.plugin_manager = NativePluginManager()
@@ -330,7 +350,7 @@ class AgentRuntime:
                                 "role": "tool",
                                 "tool_call_id": tool_call_record["id"],
                                 "name": tool_name,
-                                "content": json.dumps(result, ensure_ascii=False),
+                                "content": dumps_json(result, ensure_ascii=False),
                             }
                         )
                         self.session_store.append_message(sid, working_messages[-1])
@@ -427,7 +447,7 @@ class AgentRuntime:
                         "role": "tool",
                         "tool_call_id": tool_call_record["id"],
                         "name": tool_name,
-                        "content": json.dumps(result, ensure_ascii=False, sort_keys=True),
+                        "content": dumps_json(result, ensure_ascii=False, sort_keys=True),
                     }
                     working_messages.append(tool_message)
                     self.session_store.append_message(sid, tool_message)
@@ -554,7 +574,7 @@ class AgentRuntime:
             "type": "function",
             "function": {
                 "name": tool_name,
-                "arguments": json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+                "arguments": dumps_json(arguments, ensure_ascii=False, sort_keys=True),
             },
         }
 
@@ -680,9 +700,9 @@ class AgentRuntime:
                 source_chain=["aiask_agent.code_execution"],
                 error_code="INVALID_CWD",
             )
-        max_output = max(1, min(int(arguments.get("max_output_bytes") or 65536), 1024 * 1024))
-        timeout = max(1.0, min(float(arguments.get("timeout_seconds") or 30), 300.0))
-        max_tool_calls = max(0, min(int(arguments.get("max_tool_calls") or 20), 50))
+        max_output = bounded_int(arguments.get("max_output_bytes"), default=65536, minimum=1, maximum=1024 * 1024)
+        timeout = bounded_float(arguments.get("timeout_seconds"), default=30.0, minimum=1.0, maximum=300.0)
+        max_tool_calls = bounded_int(arguments.get("max_tool_calls"), default=20, minimum=0, maximum=50)
         allowed_tools = self._code_rpc_allowed_tools()
         tool_call_log: list[dict[str, Any]] = []
         tool_call_count = 0
@@ -737,7 +757,7 @@ class AgentRuntime:
                                         "latency_ms": int((time.perf_counter() - started) * 1000),
                                     }
                                 )
-                        writer.write((json.dumps(response, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
+                        writer.write((dumps_json(response, ensure_ascii=False, sort_keys=True) + "\n").encode("utf-8"))
                         await writer.drain()
                 finally:
                     writer.close()
@@ -914,7 +934,12 @@ def retry(fn, max_attempts=3, delay=1.0):
             tool_registry=child_registry,
             session_store=self.session_store,
             model=self.model,
-            max_iterations=int(arguments.get("max_iterations") or min(self.max_iterations, 4)),
+            max_iterations=bounded_int(
+                arguments.get("max_iterations"),
+                default=min(self.max_iterations, 4),
+                minimum=1,
+                maximum=self.max_iterations,
+            ),
             model_timeout_seconds=self.model_timeout_seconds,
             tool_timeout_seconds=self.tool_timeout_seconds,
             retry_attempts=self.retry_attempts,

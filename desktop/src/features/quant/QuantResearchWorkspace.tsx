@@ -3,7 +3,9 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
-import type { QuantPresetPayload, QuantResearchRun } from "../../types";
+import type { QuantPresetPayload, QuantResearchReport, QuantResearchRun } from "../../types";
+
+type QuantStage = NonNullable<QuantResearchReport["stages"]>[number];
 
 function splitList(value: string): string[] {
   return value
@@ -24,20 +26,152 @@ function firstTemplate(presets: QuantPresetPayload | null) {
   };
 }
 
+function stageLabel(name?: string): string {
+  const labels: Record<string, string> = {
+    backtest_suite: "回测套件",
+    data_gate: "数据闸门",
+    definition: "研究定义",
+    factor_validation: "因子验证",
+    portfolio_risk: "组合风险",
+    strategy_factory_review: "策略工厂评审"
+  };
+  return labels[name || ""] || (name || "unknown").replace(/_/g, " ");
+}
+
+function stageExplanation(stage: QuantStage): string {
+  const explanations: Record<string, string> = {
+    backtest_suite: "检验成本、滑点和调仓假设下的收益、回撤与样本外稳定性。",
+    data_gate: "确认本地行情库、证券覆盖和新鲜度是否足够支撑完整研究。",
+    definition: "固定股票池、因子、基准和风险约束，避免后续结果口径漂移。",
+    factor_validation: "检查因子 IC、覆盖率、衰减和冗余，判断信号是否值得进入回测。",
+    portfolio_risk: "评估集中度、VaR、压力场景和风险限制是否可接受。",
+    strategy_factory_review: "以只读方式交给策略工厂复核晋级建议和生产化限制。"
+  };
+  return explanations[stage.name] || "Agent 返回了该阶段的结构化证据，可展开查看原始 payload。";
+}
+
+function stageBlockingReason(stage: QuantStage): string {
+  const output = unknownRecord(stage.output);
+  const reason = stage.error || output.blocking_reason || output.error_code || output.reason || output.status;
+  return reason ? compact(reason) : "";
+}
+
+function stageNextAction(stage: QuantStage, report?: QuantResearchReport): string {
+  const status = stage.status.toLowerCase();
+  const reason = stageBlockingReason(stage);
+  if (stage.name === "data_gate" && (status === "blocked" || reason.includes("LOCAL_DATABASE_REQUIRED"))) {
+    return "配置可写 SQLite 数据库并完成行情同步，然后重新运行研究。";
+  }
+  if (stage.name === "data_gate" && status !== "completed" && status !== "passed") {
+    return "先在 Data & Sync 页面复核缺失、过期证券，并生成同步审批。";
+  }
+  if (stage.name === "factor_validation" && (status === "blocked" || status === "failed")) {
+    return "收窄因子集合，补充 IC/覆盖率证据，避免把弱信号推进回测。";
+  }
+  if (stage.name === "backtest_suite" && (status === "blocked" || status === "failed")) {
+    return "检查样本窗口、成本滑点和基准设置，再比较样本内外稳定性。";
+  }
+  if (stage.name === "portfolio_risk" && (status === "blocked" || status === "failed")) {
+    return "下调集中度或权重上限，重新评估 VaR 与压力测试。";
+  }
+  if (stage.name === "strategy_factory_review" && (status === "blocked" || status === "failed")) {
+    return "保留研究产物为观察状态，等待策略工厂只读评审通过后再进入孵化。";
+  }
+  if (status === "completed" || status === "passed") {
+    return report?.summary?.failed_stage
+      ? "该阶段已通过，继续处理后续失败阶段。"
+      : "证据已通过，可进入下一层复核，但仍不是交易指令。";
+  }
+  if (status === "running" || status === "in_progress") return "等待 Agent 完成该阶段并刷新报告。";
+  return "展开原始证据，确认阻塞字段和后续操作。";
+}
+
+function stageStatusClass(status: string): string {
+  const normalized = status.toLowerCase();
+  if (["completed", "passed", "success", "ready"].includes(normalized)) return "ok";
+  if (["blocked", "failed", "error", "missing"].includes(normalized)) return "bad";
+  if (["partial", "running", "in_progress", "queued", "unconfigured"].includes(normalized)) return "warn";
+  return "neutral";
+}
+
+function normalizeStages(run: QuantResearchRun | null): QuantStage[] {
+  const reportStages = run?.report?.stages || [];
+  const payloadStages = run?.payload?.stages || [];
+  const stages = reportStages.length ? reportStages : payloadStages;
+  return stages.filter((stage) => stage && stage.name);
+}
+
 function StageList({ run }: { run: QuantResearchRun | null }) {
-  const stages = run?.report?.stages || run?.payload?.stages || [];
+  const stages = normalizeStages(run);
   return (
     <div className="quant-stage-list">
       {stages.map((stage) => (
         <article key={stage.name}>
           <div>
-            <strong>{stage.name.replace(/_/g, " ")}</strong>
+            <strong>{stageLabel(stage.name)}</strong>
             <span>{stage.error || compact(stage.output).slice(0, 140)}</span>
           </div>
           <StatusBadge status={stage.status} />
         </article>
       ))}
       {!stages.length && <p className="muted">运行研究工作流后会生成阶段证据。</p>}
+    </div>
+  );
+}
+
+function StageDecisionPanel({ run }: { run: QuantResearchRun | null }) {
+  const stages = normalizeStages(run);
+  const failedStage = run?.report?.summary?.failed_stage || "";
+  const completedCount = stages.filter((stage) => ["completed", "passed", "success"].includes(stage.status.toLowerCase())).length;
+  const blockedCount = stages.filter((stage) => ["blocked", "failed", "error"].includes(stage.status.toLowerCase())).length;
+  return (
+    <div className="capability-section quant-stage-decision">
+      <div className="section-header">
+        <div>
+          <span>Agent 流水线决策</span>
+          <h3>阶段结论与下一步</h3>
+        </div>
+        <Database size={18} />
+      </div>
+      {stages.length ? (
+        <>
+          <div className="quant-stage-summary">
+            <MetricCard label="通过阶段" value={completedCount} status={completedCount ? "completed" : "not_loaded"} />
+            <MetricCard label="阻塞阶段" value={blockedCount} status={blockedCount ? "blocked" : "completed"} />
+            <MetricCard label="失败阶段" value={failedStage ? stageLabel(failedStage) : "-"} status={failedStage ? "blocked" : "completed"} />
+          </div>
+          <div className="quant-stage-decision-grid">
+            {stages.map((stage) => {
+              const blocker = stageBlockingReason(stage);
+              return (
+                <article className={`quant-stage-decision-card ${stageStatusClass(stage.status)}`} key={stage.name}>
+                  <div className="quant-stage-card-head">
+                    <div>
+                      <span>{stage.name}</span>
+                      <strong>{stageLabel(stage.name)}</strong>
+                    </div>
+                    <StatusBadge status={stage.status} />
+                  </div>
+                  <p>{stageExplanation(stage)}</p>
+                  {blocker && (
+                    <div className="quant-stage-blocker">
+                      <span>阻塞原因</span>
+                      <strong>{blocker}</strong>
+                    </div>
+                  )}
+                  <div className="quant-stage-next">
+                    <span>下一步</span>
+                    <strong>{stageNextAction(stage, run?.report)}</strong>
+                  </div>
+                  <RawEvidencePanel title={`${stageLabel(stage.name)} 原始证据`} value={stage} />
+                </article>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <p className="muted">运行研究或加载历史报告后，会在这里显示每个阶段的结论、阻塞原因和下一步。</p>
+      )}
     </div>
   );
 }
@@ -244,11 +378,16 @@ export function QuantResearchWorkspace({
     if (!researchId) return;
     setBusy(true);
     try {
-      const report = await client.quantResearchReport(researchId);
+      const [detail, report] = await Promise.all([
+        client.quantResearchGet(researchId).catch(() => null),
+        client.quantResearchReport(researchId)
+      ]);
+      const research = detail?.data?.research || detail?.research || null;
       setRun({
+        ...research,
         research_id: report.research_id || researchId,
-        status: report.status,
-        payload: { stages: report.stages || [] },
+        status: report.status || research?.status || "loaded",
+        payload: research?.payload || { stages: report.stages || [] },
         report
       });
       setMessage("RESEARCH_REPORT_LOADED");
@@ -282,31 +421,31 @@ export function QuantResearchWorkspace({
         <form className="quant-params-panel" onSubmit={submit}>
           <div className="section-header">
             <div>
-              <span>Research setup</span>
+              <span>研究配置</span>
               <h3>实验卡片</h3>
             </div>
             <FlaskConical size={18} />
           </div>
 
           <label className="field-row">
-            <span>股票池 Universe</span>
+            <span>股票池</span>
             <textarea value={universe} onChange={(event) => setUniverse(event.target.value)} />
           </label>
           <label className="field-row">
-            <span>因子 Factors</span>
+            <span>因子</span>
             <input value={factors} onChange={(event) => setFactors(event.target.value)} />
           </label>
           <div className="quant-form-grid">
             <label className="field-row">
-              <span>基准 Benchmark</span>
+              <span>基准</span>
               <input value={benchmark} onChange={(event) => setBenchmark(event.target.value)} />
             </label>
             <label className="field-row">
               <span>调仓频率</span>
               <select value={rebalanceFrequency} onChange={(event) => setRebalanceFrequency(event.target.value)}>
-                <option value="weekly">weekly</option>
-                <option value="monthly">monthly</option>
-                <option value="quarterly">quarterly</option>
+                <option value="weekly">每周</option>
+                <option value="monthly">每月</option>
+                <option value="quarterly">每季度</option>
               </select>
             </label>
             <label className="field-row">
@@ -361,6 +500,7 @@ export function QuantResearchWorkspace({
 
           <ResearchConfidencePanel run={run} />
           <FactorHealthPanel selectedFactors={splitList(factors)} library={presets?.factor_library || []} />
+          <StageDecisionPanel run={run} />
 
           <div className="capability-section">
             <div className="section-header">

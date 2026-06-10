@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { formatApiError } from "./api";
 import { AppContextPanel } from "./components/AppContextPanel";
 import { AppSidebar } from "./components/AppSidebar";
@@ -7,40 +7,54 @@ import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { InspectorPanel } from "./components/InspectorPanel";
 import { ToolCatalog } from "./components/InspectorPanels";
 import { WorkbenchView } from "./components/WorkbenchView";
-import { EventConsolePanel } from "./features/event-console/EventConsolePanel";
-import { AgentWorkspace } from "./features/agent/AgentWorkspace";
-import { GatewayPage } from "./features/agent-pages/GatewayPage";
-import { LegacyViewShell } from "./features/agent-pages/LegacyViewShell";
-import { McpConnectorsPage } from "./features/agent-pages/McpConnectorsPage";
-import { ReadinessHealthPage } from "./features/agent-pages/ReadinessHealthPage";
-import { RunsEventsPage } from "./features/agent-pages/RunsEventsPage";
-import { SessionsPage } from "./features/agent-pages/SessionsPage";
-import { PluginsSkillsPage } from "./features/agent-pages/PluginsSkillsPage";
-import { ToolsIntentsApprovalsPage } from "./features/agent-pages/ToolsIntentsApprovalsPage";
 import { ExtensionsPilotPage, SlotRenderer } from "./extensions/extensionRegistry";
-import { AutomationWorkspace } from "./features/automation/AutomationWorkspace";
-import { CapabilitiesWorkspace } from "./features/capabilities/CapabilitiesWorkspace";
-import { CoverageWorkspace } from "./features/coverage/CoverageWorkspace";
-import { DataSyncWorkspace } from "./features/data/DataSyncWorkspace";
-import { FactoryEventTriggerPanel } from "./features/factory-events/FactoryEventTriggerPanel";
-import { FactorFactoryPanel } from "./features/factor/FactorFactoryPanel";
-import { FinancialManagerWorkspace } from "./features/financial-manager/FinancialManagerWorkspace";
-import { IncubationFactoryPanel } from "./features/incubation/IncubationFactoryPanel";
-import { ModelsWorkspace } from "./features/models/ModelsWorkspace";
-import { OverviewWorkspace } from "./features/overview/OverviewWorkspace";
-import { QuantResearchWorkspace } from "./features/quant/QuantResearchWorkspace";
-import { SettingsWorkspace } from "./features/settings/SettingsWorkspace";
-import { SkillsPanel } from "./features/skills/SkillsPanel";
-import { LocalUserWorkspace } from "./features/user/LocalUserWorkspace";
-import { WorkflowsWorkspace } from "./features/workflows/WorkflowsWorkspace";
-import { FinanceLabPage } from "./features/workspace/FinanceLabPage";
-import { IntegrationsPage } from "./features/workspace/IntegrationsPage";
-import { ProjectsContextsPage } from "./features/workspace/ProjectsContextsPage";
 import { useAppConnectionSettings } from "./hooks/useAppConnectionSettings";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
 import type { InspectorTab, MainView, SkillView } from "./types";
 import { getViewItem, VIEW_GROUPS } from "./views";
+
+const AgentWorkspace = lazy(() => import("./features/agent/AgentWorkspace").then((module) => ({ default: module.AgentWorkspace })));
+const AutomationWorkspace = lazy(() => import("./features/automation/AutomationWorkspace").then((module) => ({ default: module.AutomationWorkspace })));
+const CapabilitiesWorkspace = lazy(() => import("./features/capabilities/CapabilitiesWorkspace").then((module) => ({ default: module.CapabilitiesWorkspace })));
+const CoverageWorkspace = lazy(() => import("./features/coverage/CoverageWorkspace").then((module) => ({ default: module.CoverageWorkspace })));
+const DataSyncWorkspace = lazy(() => import("./features/data/DataSyncWorkspace").then((module) => ({ default: module.DataSyncWorkspace })));
+const EventConsolePanel = lazy(() => import("./features/event-console/EventConsolePanel").then((module) => ({ default: module.EventConsolePanel })));
+const FactoryEventTriggerPanel = lazy(() => import("./features/factory-events/FactoryEventTriggerPanel").then((module) => ({ default: module.FactoryEventTriggerPanel })));
+const FactorFactoryPanel = lazy(() => import("./features/factor/FactorFactoryPanel").then((module) => ({ default: module.FactorFactoryPanel })));
+const FinanceLabPage = lazy(() => import("./features/workspace/FinanceLabPage").then((module) => ({ default: module.FinanceLabPage })));
+const FinancialManagerWorkspace = lazy(() => import("./features/financial-manager/FinancialManagerWorkspace").then((module) => ({ default: module.FinancialManagerWorkspace })));
+const GatewayPage = lazy(() => import("./features/agent-pages/GatewayPage").then((module) => ({ default: module.GatewayPage })));
+const IncubationFactoryPanel = lazy(() => import("./features/incubation/IncubationFactoryPanel").then((module) => ({ default: module.IncubationFactoryPanel })));
+const IntegrationsPage = lazy(() => import("./features/workspace/IntegrationsPage").then((module) => ({ default: module.IntegrationsPage })));
+const LegacyViewShell = lazy(() => import("./features/agent-pages/LegacyViewShell").then((module) => ({ default: module.LegacyViewShell })));
+const LocalUserWorkspace = lazy(() => import("./features/user/LocalUserWorkspace").then((module) => ({ default: module.LocalUserWorkspace })));
+const MarketTemperatureWorkspace = lazy(() => import("./features/market-temperature/MarketTemperatureWorkspace").then((module) => ({ default: module.MarketTemperatureWorkspace })));
+const McpConnectorsPage = lazy(() => import("./features/agent-pages/McpConnectorsPage").then((module) => ({ default: module.McpConnectorsPage })));
+const ModelsWorkspace = lazy(() => import("./features/models/ModelsWorkspace").then((module) => ({ default: module.ModelsWorkspace })));
+const OverviewWorkspace = lazy(() => import("./features/overview/OverviewWorkspace").then((module) => ({ default: module.OverviewWorkspace })));
+const PluginsSkillsPage = lazy(() => import("./features/agent-pages/PluginsSkillsPage").then((module) => ({ default: module.PluginsSkillsPage })));
+const ProjectsContextsPage = lazy(() => import("./features/workspace/ProjectsContextsPage").then((module) => ({ default: module.ProjectsContextsPage })));
+const QuantResearchWorkspace = lazy(() => import("./features/quant/QuantResearchWorkspace").then((module) => ({ default: module.QuantResearchWorkspace })));
+const ReadinessHealthPage = lazy(() => import("./features/agent-pages/ReadinessHealthPage").then((module) => ({ default: module.ReadinessHealthPage })));
+const RunsEventsPage = lazy(() => import("./features/agent-pages/RunsEventsPage").then((module) => ({ default: module.RunsEventsPage })));
+const SessionsPage = lazy(() => import("./features/agent-pages/SessionsPage").then((module) => ({ default: module.SessionsPage })));
+const SettingsWorkspace = lazy(() => import("./features/settings/SettingsWorkspace").then((module) => ({ default: module.SettingsWorkspace })));
+const SkillsPanel = lazy(() => import("./features/skills/SkillsPanel").then((module) => ({ default: module.SkillsPanel })));
+const ToolsIntentsApprovalsPage = lazy(() => import("./features/agent-pages/ToolsIntentsApprovalsPage").then((module) => ({ default: module.ToolsIntentsApprovalsPage })));
+const WorkflowsWorkspace = lazy(() => import("./features/workflows/WorkflowsWorkspace").then((module) => ({ default: module.WorkflowsWorkspace })));
+
+function ViewLoading() {
+  return (
+    <section className="capabilities-workspace" aria-busy="true" aria-label="Loading view">
+      <div className="capabilities-body">
+        <div className="capability-stack">
+          <div className="notice info compact">Loading view...</div>
+        </div>
+      </div>
+    </section>
+  );
+}
 
 function legacyMeta(view: MainView): {
   title: string;
@@ -50,48 +64,48 @@ function legacyMeta(view: MainView): {
 } {
   const item = getViewItem(view);
   const replacement = item?.replacementView ? getViewItem(item.replacementView) : undefined;
-  const replacementLabel = replacement ? `Open ${replacement.label}` : undefined;
+  const replacementLabel = replacement ? `前往 ${replacement.label}` : undefined;
 
   switch (view) {
     case "tools":
       return {
-        title: "旧入口：Tools",
-        description: "主路径已迁移到 Approvals，此页仅保留为高级工具目录诊断。",
+        title: "旧入口：工具",
+        description: "主路径已迁移到审批，此页仅保留为高级工具目录诊断。",
         replacementView: "tools-intents-approvals",
         replacementLabel,
       };
     case "mcp":
       return {
         title: "旧入口：MCP",
-        description: "主路径已迁移到 Integrations，此页仅保留为 MCP 高级诊断快捷入口。",
+        description: "主路径已迁移到集成，此页仅保留为 MCP 高级诊断快捷入口。",
         replacementView: "integrations",
-        replacementLabel: "Open Integrations",
+        replacementLabel,
       };
     case "diagnostics":
       return {
-        title: "旧入口：Diagnostics",
-        description: "主路径已迁移到 Readiness / Health，此页保留为旧诊断快照。",
+        title: "旧入口：诊断",
+        description: "主路径已迁移到准备度 / 健康，此页保留为旧诊断快照。",
         replacementView: "readiness-health",
         replacementLabel,
       };
     case "event-console":
       return {
-        title: "旧入口：Event Console",
-        description: "主路径已迁移到 Runs / Events，此页保留为高级事件控制台。",
+        title: "旧入口：事件控制台",
+        description: "主路径已迁移到运行 / 事件，此页保留为高级事件控制台。",
         replacementView: "runs-events",
         replacementLabel,
       };
     case "agent":
       return {
-        title: "旧入口：Agent",
-        description: "Workbench 已成为 Agent 默认工作面，此页仅保留旧运行时上下文。",
+        title: "旧入口：智能体",
+        description: "工作台已成为 Agent 默认工作面，此页仅保留旧运行时上下文。",
         replacementView: "workbench",
         replacementLabel,
       };
     case "user":
       return {
-        title: "旧入口：User",
-        description: "Settings 已承载画像与模式配置，此页仅保留本地用户旧详情。",
+        title: "旧入口：本地用户",
+        description: "设置已承载画像与模式配置，此页仅保留本地用户旧详情。",
         replacementView: "settings",
         replacementLabel,
       };
@@ -221,7 +235,7 @@ export function App() {
 
   function applySkillToChat(skill: SkillView | null) {
     if (!skill) return;
-    const nextPrompt = `Please use the ${skill.name} skill to help with this task: ${skill.description || "analyze the current request and propose actionable next steps."}`;
+    const nextPrompt = `请使用 ${skill.name} 技能协助我完成：${skill.description || "分析当前请求并给出可执行下一步。"}`;
     workbench.setPrompt(nextPrompt);
     setMainView("workbench");
     setInspectorTab("details");
@@ -266,7 +280,14 @@ export function App() {
         userId={userId}
       />
     ),
-    "finance-lab": () => <FinanceLabPage onOpenView={selectView} />,
+    "finance-lab": () => (
+      <FinanceLabPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        onOpenView={selectView}
+      />
+    ),
     integrations: () => (
       <IntegrationsPage
         controlToken={controlToken}
@@ -337,13 +358,14 @@ export function App() {
         userId={userId}
       />
     ),
+    "market-temperature": () => <MarketTemperatureWorkspace apiToken={apiToken} endpoint={normalizedEndpoint} />,
     "strategy-factory": () => <CapabilitiesWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} initialTab="factory" />,
     "factor-factory": () => (
       <section className="capabilities-workspace">
         <header className="capabilities-header">
           <div>
-            <span>Factor Factory</span>
-            <h1>Factor mining and active pool</h1>
+            <span>因子工厂</span>
+            <h1>因子挖掘与活跃池</h1>
           </div>
         </header>
         <div className="capabilities-body">
@@ -357,8 +379,8 @@ export function App() {
       <section className="capabilities-workspace">
         <header className="capabilities-header">
           <div>
-            <span>Incubation Factory</span>
-            <h1>Lifecycle and hit-rate control</h1>
+            <span>孵化工厂</span>
+            <h1>生命周期与命中率控制</h1>
           </div>
         </header>
         <div className="capabilities-body">
@@ -390,8 +412,10 @@ export function App() {
       renderLegacyShell(
         "diagnostics",
         <DiagnosticsPanel
+          apiToken={apiToken}
           busy={busy}
           controlToken={controlToken}
+          endpoint={normalizedEndpoint}
           fullConsole={hermes.fullConsole}
           health={health}
           hermesStatus={hermes.hermesStatus}
@@ -422,7 +446,7 @@ export function App() {
           onApplyToChat={applySkillToChat}
           skillsPayload={
             (hermes.fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
-            (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要 Control token 才能查看技能。" })
+            (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
           }
         />
       ),
@@ -548,8 +572,10 @@ export function App() {
 
   function renderMainView() {
     const item = getViewItem(mainView);
-    if (item?.render) return item.render();
-    return (viewRenderers[item?.id || mainView] || viewRenderers.workbench)?.();
+    const content = item?.render
+      ? item.render()
+      : (viewRenderers[item?.id || mainView] || viewRenderers.workbench)?.();
+    return <Suspense fallback={<ViewLoading />}>{content}</Suspense>;
   }
 
   return (

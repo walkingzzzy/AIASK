@@ -29,6 +29,12 @@ import type {
   JobRunRecord,
   LearningProposal,
   LocalProfile,
+  MarketTemperatureCacheHistory,
+  MarketTemperatureForwardValidation,
+  MarketTemperatureIndustryConstituents,
+  MarketTemperatureIndustryHistory,
+  MarketTemperatureCacheReadiness,
+  MarketTemperatureSnapshot,
   PluginCommand,
   NormalizedRunEvent,
   QuantPresetPayload,
@@ -359,6 +365,30 @@ export class AiaskApi {
 
   readOnlyTool<T = unknown>(tool: string, body: Record<string, unknown>): Promise<ToolEnvelope & { data: T }> {
     return this.callTool<T>(tool, body, this.apiToken);
+  }
+
+  marketTemperatureSnapshot(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureSnapshot }> {
+    return this.readOnlyTool<MarketTemperatureSnapshot>("agent_market_temperature_snapshot", body);
+  }
+
+  marketTemperatureCacheReadiness(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureCacheReadiness }> {
+    return this.readOnlyTool<MarketTemperatureCacheReadiness>("agent_market_temperature_cache_readiness", body);
+  }
+
+  marketTemperatureCacheHistory(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureCacheHistory }> {
+    return this.readOnlyTool<MarketTemperatureCacheHistory>("agent_market_temperature_cache_history", body);
+  }
+
+  marketTemperatureIndustryHistory(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureIndustryHistory }> {
+    return this.readOnlyTool<MarketTemperatureIndustryHistory>("agent_market_temperature_industry_history", body);
+  }
+
+  marketTemperatureIndustryConstituents(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureIndustryConstituents }> {
+    return this.readOnlyTool<MarketTemperatureIndustryConstituents>("agent_market_temperature_industry_constituents", body);
+  }
+
+  marketTemperatureForwardValidation(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureForwardValidation }> {
+    return this.readOnlyTool<MarketTemperatureForwardValidation>("agent_market_temperature_forward_validation", body);
   }
 
   hermesToolCall<T = unknown>(tool: string, body: Record<string, unknown>): Promise<ToolEnvelope & { data: T }> {
@@ -1022,6 +1052,22 @@ export class AiaskApi {
     return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/logs`, { token: controlOrApiToken(this) });
   }
 
+  terminalBackends(): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(
+      this.endpoint,
+      "/v1/terminal/backends",
+      { token: this.controlToken }
+    );
+  }
+
+  terminalBackendSessions(name: string, limit = 200): Promise<{ object: string; backend: string; data: Array<Record<string, unknown>> }> {
+    return requestJson<{ object: string; backend: string; data: Array<Record<string, unknown>> }>(
+      this.endpoint,
+      `/v1/terminal/backends/${encodeURIComponent(name)}/sessions?limit=${encodeURIComponent(String(limit))}`,
+      { token: this.controlToken }
+    );
+  }
+
   quantPresets(): Promise<QuantPresetPayload> {
     return requestJson<QuantPresetPayload>(this.endpoint, "/v1/desktop/quant/presets", { token: this.apiToken });
   }
@@ -1035,6 +1081,14 @@ export class AiaskApi {
         token: this.apiToken,
         body
       }
+    );
+  }
+
+  quantResearchGet(researchId: string): Promise<{ object?: string; research?: QuantResearchRun; data?: { research?: QuantResearchRun } }> {
+    return requestJson<{ object?: string; research?: QuantResearchRun; data?: { research?: QuantResearchRun } }>(
+      this.endpoint,
+      `/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}`,
+      { token: this.apiToken }
     );
   }
 

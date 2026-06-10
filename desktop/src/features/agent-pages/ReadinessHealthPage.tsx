@@ -1,10 +1,10 @@
-import { Activity, AlertTriangle, RefreshCw } from "lucide-react";
+import { Activity, AlertTriangle, ArrowRight, CheckCircle2, ListChecks, PlayCircle, RefreshCw } from "lucide-react";
 import { useEffect, useMemo } from "react";
 import { DiagnosticsPanel } from "../../components/DiagnosticsPanel";
 import { JsonPanel, MetricCard, StatusBadge } from "../../components/shared";
 import { ReadinessDiagnostic } from "../../components/ReadinessDiagnostic";
 import { useCapabilityWorkbench } from "../../hooks/useCapabilityWorkbench";
-import type { FullModeConsoleData, HealthDetailed, HermesStatus, MainView } from "../../types";
+import type { FinancialNextAction, FinancialReadinessGate, FullModeConsoleData, HealthDetailed, HermesStatus, MainView } from "../../types";
 import "../../components/AgentEnhancements.css";
 
 interface DiagnosticResult {
@@ -16,10 +16,127 @@ interface DiagnosticResult {
   related_page?: string;
 }
 
+type SafeRunPathStep = {
+  id: string;
+  label: string;
+  detail: string;
+  status: string;
+  target_page: MainView | string;
+  evidence: string;
+};
+
+const STATUS_TEXT: Record<string, string> = {
+  blocked: "阻塞",
+  completed: "已完成",
+  degraded: "降级",
+  discovered: "已发现",
+  gated: "受限",
+  healthy: "健康",
+  implemented: "已实现",
+  missing: "缺失",
+  not_loaded: "未加载",
+  not_required: "无需处理",
+  ok: "正常",
+  partial: "部分就绪",
+  ready: "就绪",
+  registered: "已注册",
+  warning: "警告",
+};
+
+function statusText(status?: unknown): string {
+  const value = String(status || "not_loaded");
+  return STATUS_TEXT[value.toLowerCase()] || value;
+}
+
+function messageText(message: string): string {
+  if (!message) return "就绪";
+  if (message === "CAPABILITIES_SYNCED") return "能力已同步";
+  return message;
+}
+
 function readinessStatus(value: unknown): string {
   if (!value || typeof value !== "object") return "not_loaded";
   const record = value as Record<string, unknown>;
   return String(record.status || record.live_status || record.object || "ready");
+}
+
+function priorityLabel(priority?: string) {
+  if (priority === "critical") return "关键";
+  if (priority === "recommended") return "建议";
+  if (priority === "optional") return "可选";
+  return priority || "建议";
+}
+
+function priorityStatus(priority?: string) {
+  if (priority === "critical") return "blocked";
+  if (priority === "recommended") return "partial";
+  if (priority === "optional") return "not_required";
+  return "partial";
+}
+
+function actionTitle(action: FinancialNextAction): string {
+  const fallback = action.title || action.action_id;
+  const titles: Record<string, string> = {
+    configure_mcp_auth: "配置 MCP 授权变量",
+    configure_model_provider: "配置真实模型提供方",
+    configure_writable_database: "配置可写本地数据库",
+    enable_full_mode_when_needed: "按需开启完整模式",
+    inspect_strategy_factory: "检查策略工厂准备度",
+    register_or_discover_mcp: "注册或发现金融 MCP 服务",
+    run_live_financial_workflow: "运行一次只读金融工作流",
+    set_control_token: "设置 Agent 控制令牌",
+    verify_semantic_search: "验证记忆和会话搜索",
+  };
+  return titles[action.action_id] || fallback;
+}
+
+function actionDetail(action: FinancialNextAction): string {
+  const fallback = action.detail || "";
+  const details: Record<string, string> = {
+    configure_mcp_auth: "MCP 已注册但缺少授权变量；请在 Agent 进程中配置后刷新发现。",
+    configure_model_provider: "设置 OpenAI 兼容模型提供方，并通过 /v1/ai/smoke 验证。",
+    configure_writable_database: "设置 AIASK_SQLITE_PATH 或 AKSHARE_MCP_SQLITE_PATH 到可写 SQLite 文件。",
+    enable_full_mode_when_needed: "默认 finance_safe 模式较窄；只有高级工具需要时再开启完整模式。",
+    inspect_strategy_factory: "打开策略工厂面板检查状态、运行记录、快照和数据库/runtime 错误。",
+    register_or_discover_mcp: "在 MCP / 连接器页面注册本地 AKShare MCP 服务并刷新工具发现。",
+    run_live_financial_workflow: "先运行金融经理台只读查询，再运行量化研究，确认报告完成或被数据新鲜度明确阻塞。",
+    set_control_token: "状态变更、MCP 管理、完整模式操作和审批流需要控制令牌。",
+    verify_semantic_search: "运行只读记忆/会话搜索 smoke，再依赖 Agent 回忆和运行历史搜索。",
+  };
+  return details[action.action_id] || fallback;
+}
+
+function gateByName(
+  financial: { required_gates?: FinancialReadinessGate[]; optional_gates?: FinancialReadinessGate[] } | undefined,
+  name: string
+): FinancialReadinessGate | undefined {
+  return [...(financial?.required_gates || []), ...(financial?.optional_gates || [])].find((gate) => gate.name === name);
+}
+
+function envelopeStatus(value: unknown): string {
+  if (!value || typeof value !== "object") return "not_loaded";
+  const record = value as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : {};
+  if (record.success === false) return String(record.error_code || data.status || "failed");
+  return String(data.status || record.status || (record.success === true ? "ready" : "not_loaded"));
+}
+
+function countItems(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function pageDisplayName(page?: MainView | string): string {
+  if (!page) return "相关页面";
+  const normalized = String(page).toLowerCase();
+  if (normalized.includes("setting")) return "设置";
+  if (normalized.includes("mcp")) return "MCP / 连接器";
+  if (normalized.includes("gateway")) return "Gateway";
+  if (normalized.includes("financial-manager") || normalized.includes("financial manager")) return "金融经理台";
+  if (normalized.includes("finance-lab") || normalized.includes("finance")) return "金融实验室";
+  if (normalized.includes("data")) return "数据";
+  if (normalized.includes("user")) return "本地用户 / 记忆";
+  if (normalized.includes("readiness") || normalized.includes("health")) return "准备度 / 健康";
+  return String(page);
 }
 
 export function ReadinessHealthPage({
@@ -53,92 +170,149 @@ export function ReadinessHealthPage({
   const gatewayStatus = readinessStatus(fullConsole.gatewayStatus);
   const pluginStatus = fullConsole.plugins?.length ? "ready" : controlToken.trim() ? "not_loaded" : "gated";
   const modeTokenStatus = controlToken.trim() ? "ready" : "gated";
+  const semanticGate = gateByName(financial, "semantic_search");
+  const vectorGate = gateByName(financial, "vector_provider");
+  const memoryPayload = payload?.memory || fullConsole.memory;
+  const memoryRecord = memoryPayload && typeof memoryPayload === "object" ? memoryPayload as Record<string, unknown> : {};
+  const memoryProvider = String(
+    memoryRecord.active_provider ||
+    memoryRecord.provider ||
+    memoryRecord.default_provider ||
+    semanticGate?.evidence?.active_provider ||
+    "not_loaded"
+  );
+  const memorySearchStatus = semanticGate?.status || readinessStatus(memoryPayload);
+  const nextActions = financial?.next_actions || [];
+  const liveSmoke = financial?.live_smoke;
+  const mcpReady = !payload?.mcp?.gated && (mcpStatus === "discovered" || mcpStatus === "registered" || mcpStatus === "ready");
+  const strategyStatus = envelopeStatus(payload?.strategy_factory?.status);
+  const requiredReady = financial?.required_gates?.filter((gate) => gate.status === "ready").length || 0;
+  const requiredTotal = financial?.required_gates?.length || 0;
+  const marketSmokeCovered = liveSmoke?.checks?.some((check) => check.name === "market_temperature_forward_validation");
 
-  // 生成诊断结果
+  const safeRunPath: SafeRunPathStep[] = [
+    {
+      id: "mode_model",
+      label: "1. 模式与模型",
+      detail: "确认 Agent 端点、模型提供方、工具集和控制令牌状态，再进入金融流程。",
+      status: providerStatus === "ready" || providerStatus === "ok" ? modeTokenStatus : providerStatus,
+      target_page: "settings",
+      evidence: `${health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe"} / 控制 ${statusText(modeTokenStatus)}`
+    },
+    {
+      id: "mcp_connectors",
+      label: "2. MCP 与连接器",
+      detail: "确认 MCP 注册、发现、资源、提示词和连接器认证，再依赖真实金融数据。",
+      status: mcpReady ? "ready" : mcpStatus,
+      target_page: "mcp-connectors",
+      evidence: `${countItems(payload?.mcp?.servers)} 个服务 / ${countItems(payload?.mcp?.tools)} 个工具 / ${payload?.mcp?.missing_auth_env_vars?.length || 0} 个授权缺口`
+    },
+    {
+      id: "memory_search",
+      label: "3. 记忆与搜索",
+      detail: "确认会话搜索和金融记忆搜索能取回历史上下文。",
+      status: memorySearchStatus,
+      target_page: "user",
+      evidence: `${memoryProvider} / 向量 ${statusText(vectorGate?.status || "not_loaded")}`
+    },
+    {
+      id: "financial_agent",
+      label: "4. 金融 Agent 流程",
+      detail: "先跑金融经理台只读证据链，再创建任何 ActionIntent。",
+      status: financial?.status || "not_loaded",
+      target_page: "financial-manager",
+      evidence: `${requiredReady}/${requiredTotal} 个必需门控就绪`
+    },
+    {
+      id: "data_quant",
+      label: "5. 数据与量化研究",
+      detail: "用数据新鲜度、市场温度和量化研究阶段证明流程已就绪，或明确说明被哪里阻塞。",
+      status: payload?.quant?.data_status?.status || payload?.quant?.status || "not_loaded",
+      target_page: "data",
+      evidence: marketSmokeCovered ? "联调 smoke 覆盖市场温度与 quant_research" : "市场温度 smoke 待确认"
+    },
+    {
+      id: "factory_relay",
+      label: "6. 工厂接力",
+      detail: "在数据和金融只读门控清晰后，再检查因子、策略、孵化的接力链路。",
+      status: strategyStatus,
+      target_page: "finance-lab",
+      evidence: "因子 / 策略 / 孵化接力"
+    }
+  ];
+
   const diagnosticResults = useMemo((): DiagnosticResult[] => {
     const results: DiagnosticResult[] = [];
 
-    // AI Provider 检查
     if (providerStatus !== "ready" && providerStatus !== "ok") {
       results.push({
-        category: "AI Provider",
+        category: "AI 提供方",
         status: "error",
-        title: "AI Provider 连接异常",
-        message: `当前状态: ${providerStatus}。无法调用 AI 模型。`,
-        fix_suggestions: [
-          "检查 API 端点配置",
-          "验证 API Token 是否有效",
-          "确认后端服务正在运行",
-          "查看后端日志了解详细错误"
-        ],
-        related_page: "Settings / Connection"
+        title: "AI 提供方连接异常",
+        message: `当前状态：${statusText(providerStatus)}。无法可靠调用 AI 模型。`,
+        fix_suggestions: ["检查 API 端点配置", "验证 API 令牌是否有效", "确认后端服务正在运行", "查看后端日志了解详细错误"],
+        related_page: "settings"
       });
     }
 
-    // MCP 授权检查
     if (payload?.mcp?.missing_auth_env_vars?.length) {
       results.push({
         category: "MCP",
         status: "warning",
-        title: "MCP 服务需要重新认证",
-        message: `以下服务缺少认证: ${payload.mcp.missing_auth_env_vars.join(", ")}`,
-        fix_suggestions: [
-          "前往 MCP / Connectors 页面",
-          "找到未认证的服务",
-          "点击 OAuth 认证按钮",
-          "完成授权流程"
-        ],
-        related_page: "MCP / Connectors"
+        title: "MCP 服务需要补齐授权变量",
+        message: `缺少授权变量：${payload.mcp.missing_auth_env_vars.join(", ")}`,
+        fix_suggestions: ["前往 MCP / 连接器页面", "确认本地 AKShare MCP 注册状态", "在 Agent 进程中配置缺失环境变量", "刷新 MCP 发现"],
+        related_page: "mcp-connectors"
       });
     }
 
-    // Control Token 检查
     if (!controlToken.trim()) {
       results.push({
-        category: "Control Token",
+        category: "控制令牌",
         status: "warning",
-        title: "Control Token 未配置",
-        message: "部分管理功能需要 Control Token 才能使用。",
-        fix_suggestions: [
-          "前往 Settings 页面",
-          "填写 Control Token",
-          "保存配置"
-        ],
-        related_page: "Settings"
+        title: "控制令牌未配置",
+        message: "部分管理功能、审批流和完整模式能力需要控制令牌。",
+        fix_suggestions: ["前往设置页面", "填写控制令牌", "保存配置后刷新健康页"],
+        related_page: "settings"
       });
     }
 
-    // Gateway 检查
     if (gatewayStatus !== "ready" && gatewayStatus !== "ok") {
       results.push({
         category: "Gateway",
         status: "error",
-        title: "Gateway 连接失败",
-        message: `当前状态: ${gatewayStatus}。消息投递可能受影响。`,
-        fix_suggestions: [
-          "检查 Gateway 服务状态",
-          "验证网络连接",
-          "查看 Gateway 错误日志"
-        ],
-        related_page: "Gateway"
+        title: "Gateway 连接异常",
+        message: `当前状态：${statusText(gatewayStatus)}。跨平台消息投递可能受影响。`,
+        fix_suggestions: ["检查 Gateway 服务状态", "验证网络连接", "查看 Gateway 错误日志"],
+        related_page: "gateway"
       });
     }
 
-    // Financial System 检查
-    if (financial?.required_gates?.some(gate => gate.status !== "ready")) {
-      const failedGates = financial.required_gates.filter(gate => gate.status !== "ready");
+    if (financial?.required_gates?.some((gate) => gate.status !== "ready")) {
+      const failedGates = financial.required_gates.filter((gate) => gate.status !== "ready");
       results.push({
         category: "Financial System",
         status: "warning",
-        title: "金融系统门控未就绪",
-        message: `${failedGates.length} 个门控需要配置: ${failedGates.map(g => g.name).join(", ")}`,
-        fix_suggestions: failedGates.map(g => `配置 ${g.name}: ${g.detail || "查看文档"}`),
-        related_page: "Financial Manager"
+        title: "金融系统门控未全部就绪",
+        message: `${failedGates.length} 个门控需要处理：${failedGates.map((gate) => gate.name).join(", ")}`,
+        fix_suggestions: failedGates.map((gate) => `配置 ${gate.name}: ${gate.detail || "查看 readiness payload"}`),
+        related_page: "financial-manager"
+      });
+    }
+
+    if (semanticGate && semanticGate.status !== "ready") {
+      results.push({
+        category: "Memory/Search",
+        status: "warning",
+        title: "记忆与会话搜索探针失败",
+        message: `${semanticGate.name}: ${semanticGate.detail}`,
+        fix_suggestions: ["运行 scripts/ops/live_readiness_smoke.py --self-test", "检查 agent_memory_search 与 /v1/search", "确认 Agent 状态数据库可写"],
+        related_page: "readiness-health"
       });
     }
 
     return results;
-  }, [payload, controlToken, providerStatus, mcpStatus, gatewayStatus, pluginStatus, financial]);
+  }, [payload, controlToken, providerStatus, gatewayStatus, financial, semanticGate]);
 
   function handleNavigate(page?: string) {
     if (!page) return;
@@ -150,10 +324,10 @@ export function ReadinessHealthPage({
       <header className="capabilities-header">
         <div>
           <span>运维与连接</span>
-          <h1>Readiness / Health</h1>
+          <h1>准备度 / 健康</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={message.startsWith("AIASK_") ? "gated" : "ready"} label={message || "ready"} />
+          <StatusBadge status={message.startsWith("AIASK_") ? "gated" : "ready"} label={messageText(message)} />
           <button className="small-button" disabled={busy} onClick={() => refresh()} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
             刷新
@@ -165,34 +339,141 @@ export function ReadinessHealthPage({
         <div className="capability-stack">
           <div className="capability-banner">
             <div>
-              <span>Readiness</span>
+              <span>准备度诊断</span>
               <h2>10-20 秒定位主要问题层</h2>
-              <p>优先看 AI provider、gateway、plugins、MCP、financial system、mode-token 六个面，快速判断是配置、授权还是后端离线问题。</p>
+              <p>优先检查 AI 提供方、Gateway、插件、MCP、金融系统、记忆搜索、模式与令牌，快速判断是配置、授权还是后端离线问题。</p>
             </div>
             <Activity size={22} />
           </div>
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="AI Provider" value={providerStatus} status={providerStatus} />
-            <MetricCard label="Gateway" value={gatewayStatus} status={gatewayStatus} />
-            <MetricCard label="Plugins" value={pluginStatus} status={pluginStatus} />
-            <MetricCard label="MCP" value={mcpStatus} status={mcpStatus} />
-            <MetricCard label="Financial" value={financial?.status || "not_loaded"} status={financial?.status} />
-            <MetricCard label="Mode / Token" value={modeTokenStatus === "ready" ? "ready" : "gated"} status={modeTokenStatus} />
+            <MetricCard label="AI 提供方" value={statusText(providerStatus)} status={providerStatus} />
+            <MetricCard label="Gateway" value={statusText(gatewayStatus)} status={gatewayStatus} />
+            <MetricCard label="插件" value={statusText(pluginStatus)} status={pluginStatus} />
+            <MetricCard label="MCP" value={statusText(mcpStatus)} status={mcpStatus} />
+            <MetricCard label="金融系统" value={statusText(financial?.status || "not_loaded")} status={financial?.status} />
+            <MetricCard label="记忆 / 搜索" value={statusText(memorySearchStatus)} status={memorySearchStatus} />
+            <MetricCard label="模式 / 令牌" value={modeTokenStatus === "ready" ? "就绪" : "受限"} status={modeTokenStatus} />
           </div>
 
-          {/* 健康诊断详情 */}
-          {diagnosticResults.length > 0 && (
-            <ReadinessDiagnostic
-              results={diagnosticResults}
-              onNavigate={handleNavigate}
-            />
-          )}
+          {!!diagnosticResults.length && <ReadinessDiagnostic results={diagnosticResults} onNavigate={handleNavigate} />}
+
+          <section className="capability-section">
+            <div className="section-header">
+              <div>
+                <span>运行前检查</span>
+                <h3>真实金融流程前置检查</h3>
+              </div>
+              <PlayCircle size={18} />
+            </div>
+            <div className="capability-grid three">
+              {safeRunPath.map((step) => (
+                <article className={`capability-row ${step.status === "ready" || step.status === "ok" ? "ok" : "warn"}`} key={step.id}>
+                  <div>
+                    <span>{step.evidence}</span>
+                    <strong>{step.label}</strong>
+                  </div>
+                  <StatusBadge status={step.status} label={statusText(step.status)} />
+                  <small>{step.detail}</small>
+                  <button
+                    aria-label={`打开${pageDisplayName(step.target_page)}：${step.label}`}
+                    className="small-button"
+                    onClick={() => handleNavigate(step.target_page)}
+                    type="button"
+                  >
+                    <ArrowRight size={13} />
+                    打开{pageDisplayName(step.target_page)}
+                  </button>
+                </article>
+              ))}
+            </div>
+            <div className="notice info compact">
+              <CheckCircle2 size={14} />
+              <span>这些步骤都是只读导航检查；涉及状态变更或交易风险的动作仍必须经过 ActionIntent 和后端防护。</span>
+            </div>
+          </section>
+
+          <div className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>下一步行动</span>
+                  <h3>现在最该做什么</h3>
+                </div>
+                <ListChecks size={18} />
+              </div>
+              <div className="mini-list">
+                {nextActions.map((action: FinancialNextAction) => (
+                  <article className="capability-row" key={action.action_id}>
+                    <div>
+                      <span>{action.endpoint || action.gate || action.action_id}</span>
+                      <strong>{actionTitle(action)}</strong>
+                    </div>
+                    <StatusBadge status={priorityStatus(action.priority)} label={priorityLabel(action.priority)} />
+                    <small>{actionDetail(action)}</small>
+                    {action.env_vars?.length ? <small>环境变量：{action.env_vars.join(", ")}</small> : null}
+                    <button
+                      aria-label={`前往 ${pageDisplayName(action.target_page)}：${actionTitle(action)}`}
+                      className="small-button"
+                      onClick={() => handleNavigate(action.target_page)}
+                      type="button"
+                    >
+                      <ArrowRight size={13} />
+                      前往 {pageDisplayName(action.target_page)}
+                    </button>
+                  </article>
+                ))}
+                {!nextActions.length && (
+                  <article className="capability-row ok">
+                    <div>
+                      <span>ready</span>
+                      <strong>没有阻塞项</strong>
+                    </div>
+                    <StatusBadge status="ready" label="就绪" />
+                    <small>可以从金融实验室开始执行只读验证。</small>
+                  </article>
+                )}
+              </div>
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>联调 smoke</span>
+                  <h3>真实联调检查清单</h3>
+                </div>
+                <StatusBadge status={liveSmoke?.status || "not_loaded"} label={statusText(liveSmoke?.status || "not_loaded")} />
+              </div>
+              <div className="kv-grid">
+                <span>脚本</span>
+                <strong>{liveSmoke?.script || "scripts/ops/live_readiness_smoke.py"}</strong>
+                <span>检查数</span>
+                <strong>{liveSmoke?.checks?.length || 0}</strong>
+                <span>状态</span>
+                <strong>{statusText(liveSmoke?.status || "not_loaded")}</strong>
+              </div>
+              <div className="mini-list">
+                {(liveSmoke?.checks || []).slice(0, 16).map((check, index) => (
+                  <article key={`${check.name || "check"}-${index}`}>
+                    <strong>{check.name || `check-${index + 1}`}</strong>
+                    <p>{check.method || "GET"} {check.path || "-"}</p>
+                    {!!check.observes?.length && <small>观测字段：{check.observes.join(", ")}</small>}
+                  </article>
+                ))}
+                {!liveSmoke?.checks?.length && (
+                  <article>
+                    <strong>等待后端 readiness payload</strong>
+                    <p>刷新后会显示真实联调脚本需要验证的端点。</p>
+                  </article>
+                )}
+              </div>
+            </section>
+          </div>
 
           {!controlToken.trim() && (
             <div className="notice warn">
               <AlertTriangle size={14} />
-              <span>当前缺少 control token，Sessions、Gateway、插件、MCP 管理和 full mode 运维数据会被锁定。</span>
+              <span>当前缺少控制令牌，会话、Gateway、插件、MCP 管理和完整模式运维数据会被锁定。</span>
             </div>
           )}
 
@@ -206,17 +487,23 @@ export function ReadinessHealthPage({
               </div>
               <div className="kv-grid">
                 <span>Agent</span>
-                <strong>{health?.status || "not_loaded"}</strong>
-                <span>Toolset</span>
+                <strong>{statusText(health?.status || "not_loaded")}</strong>
+                <span>工具集</span>
                 <strong>{health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe"}</strong>
-                <span>Full mode</span>
-                <strong>{health?.hermes?.full_mode_active ? "active" : health?.hermes?.full_mode_enabled ? "enabled" : "off"}</strong>
-                <span>Control token</span>
-                <strong>{health?.control?.token_configured ? "configured" : "missing"}</strong>
-                <span>MCP auth missing</span>
+                <span>完整模式</span>
+                <strong>{health?.hermes?.full_mode_active ? "已激活" : health?.hermes?.full_mode_enabled ? "已开启" : "关闭"}</strong>
+                <span>控制令牌</span>
+                <strong>{health?.control?.token_configured ? "已配置" : "缺失"}</strong>
+                <span>MCP 缺少授权</span>
                 <strong>{payload?.mcp?.missing_auth_env_vars?.join(", ") || "-"}</strong>
-                <span>Financial gates</span>
-                <strong>{financial?.required_gates?.length || 0}</strong>
+                <span>金融门控</span>
+                <strong>{requiredTotal}</strong>
+                <span>记忆提供方</span>
+                <strong>{memoryProvider}</strong>
+                <span>语义搜索</span>
+                <strong>{statusText(semanticGate?.status || "not_loaded")}</strong>
+                <span>向量提供方</span>
+                <strong>{statusText(vectorGate?.status || "not_loaded")}</strong>
               </div>
             </section>
 
@@ -231,7 +518,7 @@ export function ReadinessHealthPage({
                 {!health?.status || health.status === "ok" || health.status === "healthy" ? null : (
                   <article>
                     <strong>Agent 连接异常</strong>
-                    <p>先检查 endpoint、后端进程和健康检查。</p>
+                    <p>先检查 Agent 端点、后端进程和健康检查。</p>
                   </article>
                 )}
                 {payload?.mcp?.missing_auth_env_vars?.length ? (
@@ -242,8 +529,8 @@ export function ReadinessHealthPage({
                 ) : null}
                 {!controlToken.trim() ? (
                   <article>
-                    <strong>Control token 未填写</strong>
-                    <p>full mode 管理面与审批流无法完整工作。</p>
+                    <strong>控制令牌未填写</strong>
+                    <p>完整模式管理面与审批流无法完整工作。</p>
                   </article>
                 ) : null}
                 {financial?.required_gates?.filter((item) => item.status !== "ready").map((item) => (
@@ -260,16 +547,18 @@ export function ReadinessHealthPage({
             <div className="section-header">
               <div>
                 <span>深度诊断</span>
-                <h3>Hermes / Full console</h3>
+                <h3>完整模式控制台</h3>
               </div>
               <button className="small-button" disabled={busy} onClick={onRefreshHermes} type="button">
                 <RefreshCw size={14} />
-                刷新 full console
+                刷新完整控制台
               </button>
             </div>
             <DiagnosticsPanel
+              apiToken={apiToken}
               busy={busy}
               controlToken={controlToken}
+              endpoint={endpoint}
               fullConsole={fullConsole}
               health={health}
               hermesStatus={hermesStatus}
@@ -280,7 +569,7 @@ export function ReadinessHealthPage({
           </section>
 
           <details className="raw-details">
-            <summary>原始 readiness payload</summary>
+            <summary>原始准备度载荷</summary>
             <JsonPanel value={{ payload, health, hermesStatus }} />
           </details>
         </div>
@@ -291,6 +580,13 @@ export function ReadinessHealthPage({
 
 function pageToView(page: string): MainView {
   const normalized = page.toLowerCase();
+  if (normalized === "user" || normalized.includes("memory") || normalized.includes("local user")) return "user";
+  if (normalized.includes("finance-lab") || normalized.includes("finance lab")) return "finance-lab";
+  if (normalized.includes("quant")) return "quant";
+  if (normalized.includes("data")) return "data";
+  if (normalized.includes("strategy")) return "strategy-factory";
+  if (normalized.includes("factor")) return "factor-factory";
+  if (normalized.includes("incubation")) return "incubation";
   if (normalized.includes("mcp") || normalized.includes("connector")) return "mcp-connectors";
   if (normalized.includes("gateway")) return "gateway";
   if (normalized.includes("tool") || normalized.includes("approval") || normalized.includes("intent")) return "tools-intents-approvals";

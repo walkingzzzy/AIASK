@@ -280,10 +280,32 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
     assert gates["ai_model"]["status"] == "degraded"
     assert gates["control_plane"]["status"] == "blocked"
     assert gates["database"]["status"] == "blocked"
+    assert gates["semantic_search"]["status"] == "ready"
+    assert gates["semantic_search"]["evidence"]["memory_probe_success"] is True
+    assert gates["semantic_search"]["evidence"]["session_probe_success"] is True
     assert gates["hermes_code_parity"]["status"] == "ready"
+    optional_gates = {item["name"]: item for item in payload["optional_gates"]}
+    assert optional_gates["vector_provider"]["status"] == "degraded"
+    assert optional_gates["vector_provider"]["evidence"]["required_env"] == ["AIASK_VECTOR_MEMORY_URL"]
     assert payload["parity"]["core_code_status"] == "present"
     assert payload["parity"]["code_status"] == "present"
     assert payload["parity"]["v014_delta"]["missing_count"] == 0
+    actions = {item["action_id"]: item for item in payload["next_actions"]}
+    assert actions["set_control_token"]["priority"] == "critical"
+    assert actions["configure_writable_database"]["target_page"] == "data"
+    assert payload["live_smoke"]["script"] == "scripts/ops/live_readiness_smoke.py"
+    assert payload["live_smoke"]["status"] == "blocked"
+    smoke_checks = {item["name"] for item in payload["live_smoke"]["checks"]}
+    assert {
+        "memory_status",
+        "session_search",
+        "memory_search",
+        "market_temperature_cache",
+        "market_temperature_forward_validation",
+    } <= smoke_checks
+    smoke_check_details = {item["name"]: item for item in payload["live_smoke"]["checks"]}
+    assert "warnings" in smoke_check_details["market_temperature_cache"]["observes"]
+    assert "quality_status" in smoke_check_details["market_temperature_forward_validation"]["observes"]
 
 
 def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp_path, monkeypatch) -> None:
@@ -323,4 +345,10 @@ def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp
     assert payload["production_ready"] is True
     gates = {item["name"]: item for item in payload["required_gates"]}
     assert all(item["status"] == "ready" for item in gates.values())
+    optional_gates = {item["name"]: item for item in payload["optional_gates"]}
+    assert optional_gates["vector_provider"]["status"] == "degraded"
     assert payload["summary"]["required_blocked"] == 0
+    actions = {item["action_id"]: item for item in payload["next_actions"]}
+    assert "run_live_financial_workflow" in actions
+    assert actions["run_live_financial_workflow"]["target_page"] == "financial-manager"
+    assert payload["live_smoke"]["status"] == "ready"

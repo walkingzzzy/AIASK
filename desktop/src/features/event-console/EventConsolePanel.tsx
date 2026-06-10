@@ -193,7 +193,7 @@ export function EventConsolePanel({ endpoint, apiToken }: Props) {
                 <span>搜索</span>
                 <div className="search-field">
                   <Search size={14} />
-                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="payload 文本" />
+                  <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="载荷文本" />
                 </div>
               </label>
             </div>

@@ -10,7 +10,7 @@
     "test": "vitest run src --environment jsdom",
     "test:e2e": "playwright test",
     "test:e2e:mock": "playwright test",
-    "test:e2e:live": "AIASK_DESKTOP_RUN_LIVE=1 playwright test --grep \"optional live desktop smoke\"",
+    "test:e2e:live": "node scripts/test-e2e-live.mjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

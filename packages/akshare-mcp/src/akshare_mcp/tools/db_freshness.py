@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -67,6 +68,24 @@ def _safe_int(value: Any) -> int:
         return int(value or 0)
     except (TypeError, ValueError):
         return 0
+
+
+def _safe_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if math.isfinite(parsed) else None
+
+
+def _first_safe_float(*values: Any) -> float | None:
+    for value in values:
+        parsed = _safe_float(value)
+        if parsed is not None:
+            return parsed
+    return None
 
 
 def _date_text(value: Any) -> str:
@@ -387,6 +406,118 @@ async def _load_factor_ic_storage_summary(db: Any) -> dict[str, Any]:
         }
 
 
+async def assess_market_temperature_cache_readiness(
+    *,
+    as_of: str | None = None,
+    max_stale_days: int = 1,
+    db: Any | None = None,
+) -> dict[str, Any]:
+    """Read-only readiness check for the market-temperature snapshot cache."""
+
+    resolved_db = db or get_db()
+    reader = getattr(resolved_db, "get_market_temperature_snapshot_cache", None)
+    source_chain = [
+        "tools.db_freshness.assess_market_temperature_cache_readiness",
+        "storage.market_temperature_snapshots",
+    ]
+    if not callable(reader):
+        return {
+            "ready": False,
+            "status": "unavailable",
+            "read_only": True,
+            "as_of": as_of,
+            "max_stale_days": max_stale_days,
+            "staleness_days": None,
+            "blockers": ["market_temperature_cache_storage_unavailable"],
+            "source_chain": source_chain,
+        }
+
+    try:
+        cached = await reader(as_of)
+    except Exception as exc:
+        return {
+            "ready": False,
+            "status": "failed",
+            "read_only": True,
+            "as_of": as_of,
+            "max_stale_days": max_stale_days,
+            "staleness_days": None,
+            "blockers": ["market_temperature_cache_read_failed"],
+            "error": str(exc),
+            "source_chain": source_chain,
+        }
+
+    if not cached:
+        return {
+            "ready": False,
+            "status": "missing",
+            "read_only": True,
+            "as_of": as_of,
+            "max_stale_days": max_stale_days,
+            "staleness_days": None,
+            "blockers": ["market_temperature_cache_missing"],
+            "source_chain": source_chain,
+        }
+
+    snapshot = _row_value(cached, "snapshot", {}) or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    quality = snapshot.get("quality") if isinstance(snapshot, dict) else {}
+    if not isinstance(quality, dict):
+        quality = {}
+    cache_as_of = _date_text(_row_value(cached, "as_of") or (snapshot or {}).get("as_of"))
+    staleness_days = _calc_date_staleness(cache_as_of)
+    quality_status = str(_row_value(cached, "quality_status") or quality.get("status") or "unknown").strip().lower()
+    stock_count = _safe_int(_row_value(cached, "stock_count") or (snapshot or {}).get("market", {}).get("stock_count"))
+    industry_count = _safe_int(_row_value(cached, "industry_count") or quality.get("industry_count"))
+    warnings = _row_value(cached, "warnings") or quality.get("warnings") or []
+    warnings = list(warnings) if isinstance(warnings, list) else []
+
+    blockers: list[str] = []
+    status = "fresh"
+    if staleness_days is None:
+        blockers.append("market_temperature_cache_date_invalid")
+        status = "invalid"
+    elif staleness_days > max_stale_days:
+        blockers.append("market_temperature_cache_stale")
+        status = "stale"
+    if stock_count <= 0:
+        blockers.append("market_temperature_cache_empty")
+    if quality_status in {"empty", "failed", "unknown"}:
+        blockers.append(f"market_temperature_quality_{quality_status}")
+    if blockers and status == "fresh":
+        status = "not_ready"
+
+    degraded = quality_status == "degraded" or bool(warnings)
+    ready = not blockers
+    return {
+        "ready": ready,
+        "status": status if ready or status != "fresh" else "fresh_degraded" if degraded else "fresh",
+        "read_only": True,
+        "as_of": cache_as_of or as_of,
+        "requested_as_of": as_of,
+        "max_stale_days": max_stale_days,
+        "staleness_days": staleness_days,
+        "quality_status": quality_status,
+        "degraded": degraded,
+        "warnings": warnings,
+        "market_temperature": _first_safe_float(
+            _row_value(cached, "market_temperature"),
+            (snapshot or {}).get("market", {}).get("temperature"),
+        ),
+        "market_state": _row_value(cached, "market_state") or (snapshot or {}).get("market", {}).get("state"),
+        "stock_count": stock_count,
+        "industry_count": industry_count,
+        "cache": {
+            "created_at": _row_value(cached, "created_at"),
+            "updated_at": _row_value(cached, "updated_at"),
+            "source": "market_temperature_snapshots",
+        },
+        "blockers": blockers,
+        "source_chain": source_chain,
+    }
+
+
 async def assess_p0_1_data_readiness(
     codes: list[str] | None = None,
     *,
@@ -563,6 +694,25 @@ def register(mcp):
             max_stale_days=max_stale_days,
             factor_ic_max_stale_days=factor_ic_max_stale_days,
             max_codes=max_codes,
+        )
+        return ok(result)
+
+    @mcp.tool()
+    async def check_market_temperature_cache_readiness(
+        as_of: str | None = None,
+        max_stale_days: int = 1,
+    ):
+        """Read-only freshness check for the durable market-temperature cache."""
+        max_stale_days, stale_error = validate_int_range(max_stale_days, field_name="max_stale_days", minimum=0)
+        if stale_error:
+            return fail(stale_error)
+        normalized_as_of = str(as_of or "").strip() or None
+        if normalized_as_of and _calc_date_staleness(normalized_as_of) is None:
+            return fail(f"Invalid as_of date: {normalized_as_of}")
+
+        result = await assess_market_temperature_cache_readiness(
+            as_of=normalized_as_of,
+            max_stale_days=max_stale_days,
         )
         return ok(result)
 

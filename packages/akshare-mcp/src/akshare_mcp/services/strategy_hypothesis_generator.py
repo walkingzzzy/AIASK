@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -51,9 +52,10 @@ def _safe_float(value: Any) -> Optional[float]:
     try:
         if value in _EMPTY_VALUES:
             return None
-        return float(value)
+        parsed = float(value)
     except (TypeError, ValueError):
         return None
+    return parsed if math.isfinite(parsed) else None
 
 
 def _as_dict(value: Any) -> dict[str, Any]:

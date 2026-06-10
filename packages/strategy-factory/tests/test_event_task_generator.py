@@ -169,6 +169,132 @@ def _mock_active_event_db(*, claim_result=None, lineage_side_effect=None):
     return db
 
 
+class _VerifiedSignalFallbackDb:
+    def __init__(self) -> None:
+        self.list_event_injections = AsyncMock(return_value=[])
+        self.claim_event_outbox = AsyncMock(return_value={
+            "claimed": True,
+            "status": "processing",
+            "attempts": 1,
+            "dedupe_key": "mevt_cninfo_001:order_contract:000001",
+        })
+        self.upsert_event_task_lineage = AsyncMock(return_value=None)
+        self.mark_event_outbox_processed = AsyncMock(return_value={"status": "processed"})
+        self.mark_event_outbox_failed = AsyncMock(return_value={"status": "failed"})
+
+    def list_factory_event_clusters(self, status: str | None = None, limit: int = 200):
+        if status == "diagnostic":
+            return []
+        if status not in (None, "active"):
+            return []
+        validation_summary = {
+            "event_signature": "sig-cninfo-001",
+            "official_anchor_count": 1,
+            "cross_source_count": 1,
+            "conflict_count": 0,
+            "occurrence_status": "verified_single_anchor",
+            "alpha_confirmation_status": "single_anchor_unconfirmed",
+        }
+        return [
+            {
+                "event_id": "mevt_cninfo_001",
+                "event_type": "order_contract",
+                "event_name": "official contract announcement",
+                "summary": "official disclosure anchored event",
+                "direction": "positive",
+                "confidence": 0.65,
+                "intensity": 0.65,
+                "horizon": "swing_1_5d",
+                "source_types": ["market_events_normalized", "cninfo"],
+                "themes": [
+                    {
+                        "theme_code": "order_contract",
+                        "theme_name": "order contract",
+                        "direction": "positive",
+                    }
+                ],
+                "evidence": {
+                    "source": "market_events_normalized",
+                    "event_anchor_id": "mevt_cninfo_001",
+                    "source_doc_uids": ["cninfo:000001:2026-06-06:001"],
+                    "source_tier": "tier_a",
+                    "provider_chain": ["cninfo"],
+                    "reliability_score": 0.65,
+                    "normalized_event_status": "verified",
+                    "evidence_time": "2026-06-06T10:00:00+08:00",
+                    "verified_event_anchor": True,
+                    "validation_summary": validation_summary,
+                    "occurrence_status": "verified_single_anchor",
+                    "alpha_confirmation_status": "single_anchor_unconfirmed",
+                    "needs_alpha_confirmation": True,
+                    "conflict_count": 0,
+                },
+                "status": "active",
+            }
+        ][:limit]
+
+    def list_factory_event_signals(self, event_id: str | None = None, limit: int = 24):
+        if event_id != "mevt_cninfo_001":
+            return []
+        return [
+            {
+                "event_id": "mevt_cninfo_001",
+                "symbol": "000001",
+                "theme_code": "order_contract",
+                "direction": "positive",
+                "final_score": 0.92,
+                "theme_score": 0.92,
+                "exposure_score": 0.88,
+                "rationale": "official disclosure",
+            }
+        ][:limit]
+
+    def list_factory_theme_definitions(self, active_only: bool = True, limit: int = 256):
+        return []
+
+
+@pytest.mark.asyncio
+async def test_verified_event_cluster_fallback_claims_outbox_without_injections():
+    import importlib
+    import strategy_factory.application.research.event_task_generator as mod
+
+    with patch.dict(os.environ, {
+        "STRATEGY_FACTORY_MANUAL_EVENT_ENABLED": "1",
+        "STRATEGY_FACTORY_THEME_GRAPH_ENABLED": "1",
+    }):
+        importlib.reload(mod)
+        db = _VerifiedSignalFallbackDb()
+
+        result = await mod.generate_tasks_from_active_events(
+            db,
+            {"date": "2026-06-06"},
+            claim_outbox=True,
+        )
+
+        assert result["event_source_mode"] == "verified_event_clusters"
+        assert result["active_injection_event_count"] == 0
+        assert result["event_count"] == 1
+        assert result["task_count"] == 1
+        assert result["lineage_count"] == 1
+        assert result["outbox_claimed"] == 1
+        assert result["outbox_processed"] == 1
+        assert result["outbox_failed"] == 0
+        task = result["tasks"][0]
+        assert task["event_source"] == "market_events_normalized"
+        assert task["event_context"]["dedupe_key"] == "mevt_cninfo_001:order_contract:000001"
+        assert result["lineage_records"][0]["dedupe_key"] == "mevt_cninfo_001:order_contract:000001"
+        db.claim_event_outbox.assert_awaited_once()
+        claim_payload = db.claim_event_outbox.call_args.args[0]
+        assert claim_payload["source_event_id"] == "mevt_cninfo_001"
+        assert claim_payload["theme_code"] == "order_contract"
+        db.upsert_event_task_lineage.assert_awaited_once()
+        db.mark_event_outbox_processed.assert_awaited_once_with(
+            "mevt_cninfo_001:order_contract:000001"
+        )
+        db.mark_event_outbox_failed.assert_not_awaited()
+        importlib.reload(mod)
+
+
 @pytest.mark.asyncio
 async def test_claim_outbox_success_is_required_before_emit():
     import importlib

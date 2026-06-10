@@ -18,12 +18,15 @@ so those are guarded by ``os.name``.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import sys
 
 import pytest
 
 from aiask_agent import terminal_backends as tb
+from aiask_agent.general_tools import build_general_tool_handlers
+from aiask_agent.tools.policy import GENERAL_FULL_TOOLSET, ToolPolicy
 
 
 def test_shell_prefers_powershell_over_cmd_on_windows(monkeypatch) -> None:
@@ -92,3 +95,24 @@ def test_wrapper_backend_uses_direct_python(monkeypatch) -> None:
     args, meta = backend.build_command(invocation)
     assert meta.get("direct_command") == "python_c", "modal backend should use direct python exec"
     assert args[1] == "-c"
+
+
+def test_general_terminal_bounds_invalid_numeric_inputs(tmp_path) -> None:
+    handlers = build_general_tool_handlers(
+        ToolPolicy(GENERAL_FULL_TOOLSET, True, (str(tmp_path),)),
+        state_path=tmp_path / "state.sqlite3",
+    )
+
+    result = asyncio.run(
+        handlers["agent_terminal"](
+            {
+                "command": f'{sys.executable} -c "print(123)"',
+                "cwd": str(tmp_path),
+                "timeout_seconds": "nan",
+                "max_output_bytes": "not-an-int",
+            }
+        )
+    )
+
+    assert result["success"] is True
+    assert result["data"]["stdout"].strip() == "123"

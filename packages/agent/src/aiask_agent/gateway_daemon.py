@@ -38,6 +38,7 @@ from .gateway import (
     GatewayRuntime,
     normalize_platform,
 )
+from .numeric import bounded_float, bounded_int
 from .session_store import AgentSessionStore, now_iso
 
 
@@ -93,24 +94,39 @@ class GatewayDaemon:
         self._status = DaemonStatus()
 
         # Configuration
-        self._reconnect_delay = float(
-            os.getenv("AIASK_GATEWAY_RECONNECT_DELAY", "30")
+        self._reconnect_delay = bounded_float(
+            os.getenv("AIASK_GATEWAY_RECONNECT_DELAY", "30"),
+            default=30.0,
+            minimum=1.0,
+            maximum=3600.0,
         )
-        self._max_retries = int(os.getenv("AIASK_GATEWAY_MAX_RETRIES", "10"))
-        self._response_timeout = float(
-            os.getenv("AIASK_GATEWAY_RESPONSE_TIMEOUT", "120")
+        self._max_retries = bounded_int(os.getenv("AIASK_GATEWAY_MAX_RETRIES", "10"), default=10, minimum=0, maximum=1000)
+        self._response_timeout = bounded_float(
+            os.getenv("AIASK_GATEWAY_RESPONSE_TIMEOUT", "120"),
+            default=120.0,
+            minimum=1.0,
+            maximum=3600.0,
         )
         # Concurrency control: max parallel agent calls
-        self._max_concurrent_agents = int(
-            os.getenv("AIASK_GATEWAY_MAX_CONCURRENT", "5")
+        self._max_concurrent_agents = bounded_int(
+            os.getenv("AIASK_GATEWAY_MAX_CONCURRENT", "5"),
+            default=5,
+            minimum=1,
+            maximum=1000,
         )
         self._agent_semaphore = asyncio.Semaphore(self._max_concurrent_agents)
         # Rate limiting: per-user message rate
-        self._rate_limit_window = float(
-            os.getenv("AIASK_GATEWAY_RATE_LIMIT_WINDOW", "60")
+        self._rate_limit_window = bounded_float(
+            os.getenv("AIASK_GATEWAY_RATE_LIMIT_WINDOW", "60"),
+            default=60.0,
+            minimum=1.0,
+            maximum=86400.0,
         )
-        self._rate_limit_max = int(
-            os.getenv("AIASK_GATEWAY_RATE_LIMIT_MAX", "20")
+        self._rate_limit_max = bounded_int(
+            os.getenv("AIASK_GATEWAY_RATE_LIMIT_MAX", "20"),
+            default=20,
+            minimum=1,
+            maximum=100000,
         )
         self._user_message_times: dict[str, list[float]] = {}
 
@@ -608,7 +624,7 @@ class GatewayDaemon:
         username = str(os.getenv("IMAP_USERNAME") or "").strip()
         password = str(os.getenv("IMAP_PASSWORD") or "").strip()
         folder = str(os.getenv("IMAP_FOLDER") or "INBOX").strip()
-        interval = int(os.getenv("IMAP_POLL_INTERVAL") or "60")
+        interval = bounded_int(os.getenv("IMAP_POLL_INTERVAL"), default=60, minimum=1, maximum=3600)
 
         if not host or not username or not password:
             raise RuntimeError("IMAP credentials not configured (IMAP_HOST, IMAP_USERNAME, IMAP_PASSWORD)")
@@ -726,7 +742,7 @@ class GatewayDaemon:
                 data = json.loads(resp.read().decode("utf-8"))
             if data.get("access_token"):
                 access_token = data["access_token"]
-                token_expires_at = time.time() + int(data.get("expires_in", 7200))
+                token_expires_at = time.time() + bounded_int(data.get("expires_in"), default=7200, minimum=60, maximum=86400 * 30)
                 return access_token
             raise RuntimeError(f"iLink token error: {data}")
 

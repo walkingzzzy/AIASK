@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from akshare_mcp.services.incubation_factory.accelerator import IncubationAccelerator
 from akshare_mcp.services.incubation_factory.metrics_recorder import MetricsRecorder
 from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
 from akshare_mcp.services.incubation_pipeline import StrategyIncubationPipelineService
@@ -94,6 +96,65 @@ def test_metrics_recorder_uses_diagnostic_intake_stage():
     assert metric["stage"] == "diagnostic"
     assert metric["metadata"]["intake_stage"] == "diagnostic"
     assert metric["metadata"]["diagnostic_observation"] is True
+
+
+def test_metrics_recorder_sanitizes_non_finite_values():
+    metric = MetricsRecorder()._build_metric(
+        strategy={"id": "s1", "status": "submitted", "_intake_stage": "diagnostic"},
+        verification={
+            "primary_hit_rate": "nan",
+            "primary_skill_lcb": float("inf"),
+            "recent_primary_skill_lcb": "-inf",
+            "secondary_hit_rate": float("nan"),
+            "secondary_skill_lcb": "inf",
+            "stability_gap": "nan",
+            "coverage_ratio": "-inf",
+            "forward_sharpe": float("inf"),
+            "forward_ic": float("nan"),
+            "primary_effective_n": float("inf"),
+            "secondary_effective_n": "nan",
+            "total_signals": "-inf",
+            "profile": float("nan"),
+            "min_days_remaining": float("inf"),
+        },
+        nav_info={
+            "total_value": "inf",
+            "cash": float("nan"),
+            "market_value": "-inf",
+            "nav": "nan",
+            "daily_return": float("inf"),
+            "max_drawdown": "-inf",
+        },
+        account_id="acct-1",
+        metric_date=date(2026, 5, 29),
+    )
+
+    assert metric["decision"] == "observe"
+    assert metric["primary_effective_n"] == 0
+    assert metric["metadata"]["profile"] is None
+    json.dumps(metric, allow_nan=False)
+
+
+@pytest.mark.asyncio
+async def test_accelerator_rejects_non_finite_verification_metrics():
+    class Db:
+        async def list_strategy_incubation_metrics(self, strategy_id, limit):
+            return [{"decision": "promote"} for _ in range(limit)]
+
+    result = await IncubationAccelerator()._evaluate_single(
+        Db(),
+        {"id": "s1", "name": "bad"},
+        {
+            "primary_skill_lcb": float("inf"),
+            "recent_primary_skill_lcb": "inf",
+            "stability_gap": "-inf",
+            "coverage_ratio": "inf",
+            "primary_effective_n": 100,
+        },
+    )
+
+    assert result["eligible"] is False
+    assert result["reason"] == "skill_lcb_too_low"
 
 
 @pytest.mark.asyncio

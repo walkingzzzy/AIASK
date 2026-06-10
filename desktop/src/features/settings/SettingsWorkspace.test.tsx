@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { SettingsWorkspace } from "./SettingsWorkspace";
 
@@ -7,6 +7,7 @@ describe("SettingsWorkspace", () => {
   afterEach(() => {
     cleanup();
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
   });
 
   it("renders the settings shell and section-driven connection fields", () => {
@@ -107,5 +108,91 @@ describe("SettingsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "令牌与权限" }));
     expect(screen.getAllByText(/AIASK_AGENT_TOOLSET=general_full/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/AIASK_LOCAL_CONTROL_TOKEN/).length).toBeGreaterThan(0);
+  });
+
+  it("loads read-only model settings through Agent HTTP, opens the model page, and redacts raw secrets", async () => {
+    const onOpenView = vi.fn();
+    const onProfileChange = vi.fn();
+    const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      if (url.pathname === "/v1/desktop/settings/status") {
+        return new Response(
+          JSON.stringify({
+            object: "aiask.desktop_settings_status",
+            agent: {
+              control_authorized: true,
+              control_reason: "authorized"
+            },
+            llm: {
+              ai_status: {
+                provider: "aiask_mock",
+                model: "mock-live-model",
+                configured: true,
+                api_key_configured: true,
+                api_key: "sk-settings-secret-value-1234567890",
+                base_url_configured: true,
+                config_source: { loaded: true, source: "project" },
+                secrets_redacted: true
+              },
+              providers: {
+                status: "ready",
+                configured_count: 1,
+                providers: [
+                  {
+                    name: "project-root-api",
+                    configured: true,
+                    status: "ready",
+                    token: "settings-provider-token-1234567890"
+                  }
+                ]
+              }
+            },
+            memory: {},
+            databases: {},
+            profile: { user_id: "settings-user", profile_name: "Settings Operator" },
+            secrets_redacted: true
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        );
+      }
+      return new Response(JSON.stringify({ error: url.pathname }), { status: 404 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <SettingsWorkspace
+        agentMode="finance_safe"
+        apiToken="api-token"
+        busy={false}
+        connectionStatus="AIASK_ONLINE"
+        controlToken="control-token"
+        endpoint="http://127.0.0.1:8767"
+        health={{ status: "ok", service: "aiask", hermes: { full_mode_enabled: true }, tools: { toolset: "general_full" }, control: { token_configured: true } }}
+        onAgentModeChange={vi.fn()}
+        onApiTokenChange={vi.fn()}
+        onBackToApp={vi.fn()}
+        onControlTokenChange={vi.fn()}
+        onEndpointChange={vi.fn()}
+        onOpenView={onOpenView}
+        onProfileChange={onProfileChange}
+        onRefresh={vi.fn()}
+        profileName="Local"
+        userId="local"
+      />
+    );
+
+    await waitFor(() => expect(onProfileChange).toHaveBeenCalledWith({ user_id: "settings-user", profile_name: "Settings Operator" }));
+    expect((fetchMock.mock.calls[0]?.[1]?.headers as Record<string, string>).Authorization).toBe("Bearer control-token");
+
+    fireEvent.click(screen.getByRole("button", { name: "模型状态" }));
+    expect(screen.getByText("aiask_mock")).toBeInTheDocument();
+    expect(screen.getByText("mock-live-model")).toBeInTheDocument();
+    expect(document.body.textContent || "").not.toContain("sk-settings-secret-value");
+    fireEvent.click(screen.getByRole("button", { name: /打开模型状态页/ }));
+    expect(onOpenView).toHaveBeenCalledWith("models");
+
+    fireEvent.click(screen.getByRole("button", { name: "关于" }));
+    expect(document.body.textContent || "").toContain("[redacted]");
+    expect(document.body.textContent || "").not.toContain("settings-provider-token");
   });
 });

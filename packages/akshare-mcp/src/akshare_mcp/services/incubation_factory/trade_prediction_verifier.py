@@ -8,6 +8,7 @@ replay only writes v2 metrics when real intraday bars are available.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass
 from datetime import date, datetime, time, timezone
 from typing import Any, Iterable, Optional
@@ -23,12 +24,37 @@ def _string(value: Any) -> str:
 
 
 def _safe_float(value: Any, default: float | None = None) -> float | None:
+    fallback = _finite_float(default)
     try:
         if value in (None, ""):
-            return default
-        return float(value)
+            return fallback
+        numeric = float(value)
     except Exception:
-        return default
+        return fallback
+    return numeric if math.isfinite(numeric) else fallback
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    fallback = _finite_float(default)
+    try:
+        if value in (None, ""):
+            return int(fallback if fallback is not None else 0)
+        numeric = float(value)
+    except Exception:
+        return int(fallback if fallback is not None else 0)
+    if not math.isfinite(numeric):
+        return int(fallback if fallback is not None else 0)
+    return int(numeric)
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except Exception:
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 
 def _safe_bool(value: Any) -> bool | None:
@@ -209,12 +235,15 @@ async def _find_daily_bar(db: Any, code: str, target_date: date) -> tuple[dict[s
 
 
 def _ohlc_status(bar: dict[str, Any]) -> str:
+    raw_values = [bar.get("open"), bar.get("high"), bar.get("low"), bar.get("close")]
+    if any(value in (None, "") for value in raw_values):
+        return "daily_bar_missing"
     open_ = _safe_float(bar.get("open"))
     high = _safe_float(bar.get("high"))
     low = _safe_float(bar.get("low"))
     close = _safe_float(bar.get("close"))
     if open_ is None or high is None or low is None or close is None:
-        return "daily_bar_missing"
+        return "invalid_ohlc"
     if high < max(open_, low, close) or low > min(open_, high, close):
         return "invalid_ohlc"
     return "ok"
@@ -391,6 +420,8 @@ def _window_hit(bars: list[dict[str, Any]], contract: dict[str, Any], direction:
 def _bar_quality_status(bars: list[dict[str, Any]]) -> str:
     if not bars:
         return "intraday_missing"
+    if any(_ohlc_status(dict(bar or {})) != "ok" for bar in bars):
+        return "invalid_ohlc"
     if any(_string(bar.get("data_quality_status")).lower() == "invalid_ohlc" for bar in bars):
         return "invalid_ohlc"
     if any(_string(bar.get("data_quality_status")).lower() not in {"", "ok"} for bar in bars):
@@ -639,26 +670,38 @@ async def sync_minute_kline_to_storage(
     period: str = "5m",
     limit: int = 300,
     adjust: str = "",
+    bars: Iterable[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Fetch minute bars through the market tool and persist them into Quant Core storage."""
+    """Persist already-supplied local minute bars into Quant Core storage.
+
+    Incubation runtime is DB-only: market acquisition happens in explicit sync
+    jobs/tools, while verification only consumes bars that are already local.
+    """
 
     if not hasattr(db, "save_intraday_bars"):
         return {"status": "degraded", "reason": "intraday_storage_unavailable", "accepted_count": 0}
-    from akshare_mcp.tools.market.kline import get_minute_kline
 
-    response = get_minute_kline(code=code, period=period, limit=limit)
-    bars = _extract_bars(response)
-    source_chain = list((response or {}).get("source_chain") or [])
+    supplied_bars = list(bars or [])
+    if not supplied_bars:
+        return {
+            "status": "source_unavailable",
+            "reason": "intraday_source_unavailable_db_only",
+            "accepted_count": 0,
+            "code": code,
+            "period": period,
+        }
+
+    source_chain = [{"source": "local_intraday_bars", "mode": "db_only"}]
     normalized: list[dict[str, Any]] = []
-    for bar in bars:
+    for bar in supplied_bars[: max(1, _safe_int(limit, 1))]:
         item = dict(bar)
         item.setdefault("code", code)
         item.setdefault("period", period)
         item.setdefault("timestamp", item.get("date") or item.get("time"))
         item.setdefault("source_chain", source_chain)
-        item.setdefault("source", (response or {}).get("source") or item.get("source"))
+        item.setdefault("source", item.get("source") or "local_intraday_bars")
         normalized.append(item)
-    summary = await db.save_intraday_bars(code, normalized, period=period, adjust=adjust, source=(response or {}).get("source"))
+    summary = await db.save_intraday_bars(code, normalized, period=period, adjust=adjust, source="local_intraday_bars")
     return {"status": "ok", "code": code, "period": period, "source_chain": source_chain, **summary}
 
 

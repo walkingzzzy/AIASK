@@ -46,6 +46,27 @@ class TestGatewayDaemonLifecycle:
         assert status["total_messages"] == 0
         assert status["listeners"] == {}
 
+    def test_numeric_env_config_is_bounded(self):
+        with patch.dict(
+            os.environ,
+            {
+                "AIASK_GATEWAY_RECONNECT_DELAY": "nan",
+                "AIASK_GATEWAY_MAX_RETRIES": "-5",
+                "AIASK_GATEWAY_RESPONSE_TIMEOUT": "inf",
+                "AIASK_GATEWAY_MAX_CONCURRENT": "0",
+                "AIASK_GATEWAY_RATE_LIMIT_WINDOW": "-1",
+                "AIASK_GATEWAY_RATE_LIMIT_MAX": "not-an-int",
+            },
+        ):
+            daemon = GatewayDaemon()
+
+        assert daemon._reconnect_delay == 30.0
+        assert daemon._max_retries == 0
+        assert daemon._response_timeout == 120.0
+        assert daemon._max_concurrent_agents == 1
+        assert daemon._rate_limit_window == 1.0
+        assert daemon._rate_limit_max == 20
+
     @pytest.mark.asyncio
     async def test_start_no_configured_platforms(self, daemon):
         """Start with no configured platforms should succeed with 0 listeners."""

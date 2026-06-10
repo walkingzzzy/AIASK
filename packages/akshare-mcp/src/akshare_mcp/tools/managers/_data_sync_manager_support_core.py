@@ -126,6 +126,12 @@ def _build_schedule_params(task_type: str, kwargs: dict, codes: list[str]) -> di
         params["scope_sources"] = str(
             kwargs.get("scope_sources") or "explicit,representative,active_pool,factory_targets"
         ).strip()
+    elif task_type == "market_temperature_snapshot_cache":
+        params["limit"] = max(1, min(int(kwargs.get("limit", 1000) or 1000), 1000))
+        params["top_n"] = max(0, min(int(kwargs.get("top_n", 20) or 20), 50))
+        params["min_bars"] = max(2, min(int(kwargs.get("min_bars", 20) or 20), 120))
+        if kwargs.get("as_of"):
+            params["as_of"] = str(kwargs.get("as_of")).strip()
     elif task_type == "market_text_source_ingest":
         def _market_text_int(name: str, default: int, minimum: int = 0) -> int:
             raw = kwargs.get(name)
@@ -342,6 +348,12 @@ def _build_task_payload(task_type: str, codes: list[str], payload: dict | None =
             merged["stock_codes"] = stock_codes
     elif task_type == "factor_context":
         merged["codes"] = list(codes)
+    elif task_type == "market_temperature_snapshot_cache":
+        merged["limit"] = max(1, min(int(merged.get("limit", 1000) or 1000), 1000))
+        merged["top_n"] = max(0, min(int(merged.get("top_n", 20) or 20), 50))
+        merged["min_bars"] = max(2, min(int(merged.get("min_bars", 20) or 20), 120))
+        if merged.get("as_of"):
+            merged["as_of"] = str(merged.get("as_of")).strip()
     elif task_type == "market_text_source_ingest":
         stock_codes = _normalize_codes(merged.get("stock_codes") or merged.get("codes"))
         if not stock_codes and codes:
@@ -444,6 +456,7 @@ async def _execute_sync_task(
     if task_type not in {
         "core_market",
         "factor_context",
+        "market_temperature_snapshot_cache",
         "market_text_source_ingest",
         "vector_backfill_market_docs",
         "vector_backfill_kline_patterns",
@@ -483,6 +496,8 @@ async def _execute_sync_task(
             runner = _sync_core_market_now(effective_payload)
         elif task_type == "factor_context":
             runner = _sync_factor_context_now(effective_payload)
+        elif task_type == "market_temperature_snapshot_cache":
+            runner = _sync_market_temperature_snapshot_cache_now(effective_payload)
         elif task_type == "market_text_source_ingest":
             runner = _sync_market_text_source_ingest_now(effective_payload)
         elif task_type == "vector_backfill_market_docs":

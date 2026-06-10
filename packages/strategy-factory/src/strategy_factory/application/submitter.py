@@ -52,6 +52,14 @@ def get_strategy_factory_package():
 
 
 async def _update_strategy_status(*args, **kwargs):
+    try:
+        from ._submitter_actions import runner as submitter_runner
+
+        patched = getattr(submitter_runner, "_update_strategy_status", None)
+        if callable(patched) and patched is not _update_strategy_status:
+            return await patched(*args, **kwargs)
+    except Exception:
+        pass
     return await _local_update_strategy_status(*args, **kwargs)
 
 

@@ -7,8 +7,30 @@ import {
   Search,
   ShieldCheck
 } from "lucide-react";
+import { useMemo, useState } from "react";
+import { formatApiError } from "../api";
+import { AiaskApi } from "../services/aiaskApi";
 import type { CapabilityParity, FullModeConsoleData, HealthDetailed, HermesStatus } from "../types";
 import { CapabilityRow, JsonPanel, MetricCard, StatusBadge } from "./shared";
+
+type TerminalSessionState = {
+  backend?: string;
+  message: string;
+  payload?: unknown;
+  status: "idle" | "loading" | "success" | "error";
+};
+
+type TerminalBackendsState = {
+  items: unknown[];
+  message: string;
+  status: "idle" | "loading" | "success" | "error";
+};
+
+function terminalBackendName(backends?: unknown[]): string {
+  const first = backends?.find((item) => item && typeof item === "object") as Record<string, unknown> | undefined;
+  const name = first?.name || first?.backend || first?.id;
+  return typeof name === "string" ? name : "";
+}
 
 function DiagnosticsSummary({ parity }: { parity?: CapabilityParity }) {
   return (
@@ -22,6 +44,8 @@ function DiagnosticsSummary({ parity }: { parity?: CapabilityParity }) {
 }
 
 export function DiagnosticsPanel({
+  apiToken,
+  endpoint,
   parity,
   hermesStatus,
   fullConsole,
@@ -31,6 +55,8 @@ export function DiagnosticsPanel({
   busy,
   onRefresh
 }: {
+  apiToken: string;
+  endpoint: string;
   parity?: CapabilityParity;
   hermesStatus: HermesStatus | null;
   fullConsole: FullModeConsoleData;
@@ -40,17 +66,77 @@ export function DiagnosticsPanel({
   busy: boolean;
   onRefresh: () => void;
 }) {
+  const [terminalSessions, setTerminalSessions] = useState<TerminalSessionState>({ message: "", status: "idle" });
+  const [terminalBackends, setTerminalBackends] = useState<TerminalBackendsState>({ items: [], message: "", status: "idle" });
   const featureItems = parity?.feature_mapping || [];
   const missingItems = parity?.missing_features || [];
   const matrixItems = parity?.matrix || [];
+  const displayedTerminalBackends = useMemo(
+    () => (fullConsole.terminalBackends?.length ? fullConsole.terminalBackends : terminalBackends.items),
+    [fullConsole.terminalBackends, terminalBackends.items]
+  );
+  const selectedTerminalBackend = terminalBackendName(displayedTerminalBackends);
   const subsystemRows = [
-    ["Gateway", fullConsole.gatewayPlatforms?.length ?? "-", fullConsole.gatewayStatus],
-    ["终端", fullConsole.terminalBackends?.length ?? "-", fullConsole.terminalBackends],
-    ["学习", fullConsole.learningReview?.length ?? "-", fullConsole.learningStatus],
-    ["RL", fullConsole.rlRuns?.length ?? "-", fullConsole.rlReadiness || fullConsole.rlEnvironments],
-    ["插件", fullConsole.plugins?.length ?? "-", fullConsole.pluginHooks],
-    ["MCP", fullConsole.mcpTools?.length ?? "-", fullConsole.mcpTools]
+    { label: "Gateway", count: fullConsole.gatewayPlatforms?.length ?? "-", raw: fullConsole.gatewayStatus },
+    { label: "终端", count: displayedTerminalBackends.length || "-", raw: displayedTerminalBackends },
+    { label: "学习", count: fullConsole.learningReview?.length ?? "-", raw: fullConsole.learningStatus },
+    { label: "RL", count: fullConsole.rlRuns?.length ?? "-", raw: fullConsole.rlReadiness || fullConsole.rlEnvironments },
+    { label: "插件", count: fullConsole.plugins?.length ?? "-", raw: fullConsole.pluginHooks },
+    { label: "MCP", count: fullConsole.mcpTools?.length ?? "-", raw: fullConsole.mcpTools }
   ] as const;
+
+  async function loadTerminalBackends(force = false) {
+    if (!controlToken.trim() || (!force && displayedTerminalBackends.length) || terminalBackends.status === "loading") {
+      return;
+    }
+    setTerminalBackends({ items: [], message: "TERMINAL_BACKENDS_LOADING", status: "loading" });
+    try {
+      const api = new AiaskApi({ endpoint, apiToken, controlToken });
+      const payload = await api.terminalBackends();
+      setTerminalBackends({
+        items: payload.data || [],
+        message: "TERMINAL_BACKENDS_LOADED",
+        status: "success"
+      });
+    } catch (error) {
+      setTerminalBackends({ items: [], message: formatApiError(error), status: "error" });
+    }
+  }
+
+  function refreshDiagnostics() {
+    setTerminalBackends({ items: [], message: "", status: "idle" });
+    setTerminalSessions({ message: "", status: "idle" });
+    onRefresh();
+    void loadTerminalBackends(true);
+  }
+
+  async function loadTerminalSessions() {
+    if (!controlToken.trim()) {
+      setTerminalSessions({ message: "CONTROL_TOKEN_REQUIRED", status: "error" });
+      return;
+    }
+    if (!selectedTerminalBackend) {
+      setTerminalSessions({ message: "TERMINAL_BACKEND_NOT_LOADED", status: "error" });
+      return;
+    }
+    setTerminalSessions({ backend: selectedTerminalBackend, message: "TERMINAL_BACKEND_SESSIONS_LOADING", status: "loading" });
+    try {
+      const api = new AiaskApi({ endpoint, apiToken, controlToken });
+      const payload = await api.terminalBackendSessions(selectedTerminalBackend, 50);
+      setTerminalSessions({
+        backend: selectedTerminalBackend,
+        message: "TERMINAL_BACKEND_SESSIONS_LOADED",
+        payload,
+        status: "success"
+      });
+    } catch (error) {
+      setTerminalSessions({
+        backend: selectedTerminalBackend,
+        message: formatApiError(error),
+        status: "error"
+      });
+    }
+  }
 
   return (
     <div className="inspector-scroll">
@@ -59,7 +145,7 @@ export function DiagnosticsPanel({
           <span>诊断</span>
           <h2>Hermes 原生对齐</h2>
         </div>
-        <button className="small-button" disabled={busy} onClick={onRefresh} type="button">
+        <button className="small-button" disabled={busy} onClick={refreshDiagnostics} type="button">
           <RefreshCw size={14} className={busy ? "spin" : ""} />
           刷新
         </button>
@@ -113,13 +199,42 @@ export function DiagnosticsPanel({
 
       <section className="subsystem-list">
         <h3>子系统</h3>
-        {subsystemRows.map(([label, count, raw]) => (
+        {subsystemRows.map(({ label, count, raw }) => (
           <details className="subsystem-row" key={label}>
-            <summary>
+            <summary onClick={label === "终端" ? () => void loadTerminalBackends() : undefined}>
               <span>{label}</span>
               <strong>{count}</strong>
             </summary>
             <JsonPanel value={raw || { status: "not_loaded" }} />
+            {label === "终端" && (
+              <div className="subsystem-actions">
+                <button
+                  className="small-button"
+                  disabled={terminalSessions.status === "loading" || !controlToken.trim() || !selectedTerminalBackend}
+                  onClick={loadTerminalSessions}
+                  type="button"
+                >
+                  <RefreshCw size={13} className={terminalSessions.status === "loading" ? "spin" : ""} />
+                  加载终端会话
+                </button>
+                <StatusBadge
+                  status={
+                    terminalSessions.status === "success"
+                      ? "ready"
+                      : terminalSessions.status === "error"
+                        ? "gated"
+                        : terminalSessions.status === "loading"
+                          ? "running"
+                          : selectedTerminalBackend
+                            ? "read_only"
+                            : "not_loaded"
+                  }
+                  label={terminalSessions.message || selectedTerminalBackend || "未加载后端"}
+                />
+                {terminalBackends.message ? <p className="status-line">{terminalBackends.message}</p> : null}
+                {terminalSessions.payload ? <JsonPanel value={terminalSessions.payload} /> : null}
+              </div>
+            )}
           </details>
         ))}
       </section>

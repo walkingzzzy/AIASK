@@ -105,3 +105,40 @@ def test_runtime_close_releases_model_client(tmp_path) -> None:
     runtime.close()
     runtime.close()
     assert model.closed is True
+
+
+def test_runtime_numeric_config_rejects_non_finite_values(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIASK_AGENT_MAX_ITERATIONS", "not-an-int")
+    monkeypatch.setenv("AIASK_AGENT_MODEL_TIMEOUT", "nan")
+    monkeypatch.setenv("AIASK_AGENT_TOOL_TIMEOUT", "inf")
+    monkeypatch.setenv("AIASK_AGENT_RETRY_ATTEMPTS", "0")
+
+    runtime = AgentRuntime(
+        model_client=ClosableModel(),
+        tool_registry=AgentToolRegistry(),
+        session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
+    )
+
+    assert runtime.max_iterations == 8
+    assert runtime.model_timeout_seconds == 120.0
+    assert runtime.tool_timeout_seconds == 120.0
+    assert runtime.retry_attempts == 1
+    runtime.close()
+
+
+def test_runtime_explicit_numeric_config_is_bounded(tmp_path) -> None:
+    runtime = AgentRuntime(
+        model_client=ClosableModel(),
+        tool_registry=AgentToolRegistry(),
+        session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
+        max_iterations=0,
+        model_timeout_seconds=float("nan"),
+        tool_timeout_seconds=-5,
+        retry_attempts=0,
+    )
+
+    assert runtime.max_iterations == 1
+    assert runtime.model_timeout_seconds == 120.0
+    assert runtime.tool_timeout_seconds == 1.0
+    assert runtime.retry_attempts == 1
+    runtime.close()

@@ -23,12 +23,12 @@ describe("SessionsPage", () => {
 
   it("应该渲染页面标题", () => {
     render(<SessionsPage {...mockProps} />);
-    expect(screen.getByText("Sessions")).toBeInTheDocument();
+    expect(screen.getByText("会话")).toBeInTheDocument();
   });
 
   it("无权限时应显示锁定提示", () => {
     render(<SessionsPage {...mockProps} fullModeActive={false} controlToken="" />);
-    expect(screen.getByText(/需要 full mode \+ control token/)).toBeInTheDocument();
+    expect(screen.getByText(/需要完整模式和控制令牌/)).toBeInTheDocument();
   });
 
   it("应该显示搜索框", async () => {
@@ -60,8 +60,8 @@ describe("SessionsPage", () => {
     const onResumeSession = vi.fn();
     render(<SessionsPage {...mockProps} onResumeSession={onResumeSession} />);
 
-    await waitFor(() => expect(screen.getByText("Mock research session")).toBeInTheDocument());
-    expect(screen.getAllByText("approval").length).toBeGreaterThan(0);
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
+    expect(screen.getAllByText("有审批").length).toBeGreaterThan(0);
     expect(screen.getByText("run_mock")).toBeInTheDocument();
     expect(screen.getByText("approval.intent_created")).toBeInTheDocument();
 
@@ -72,10 +72,10 @@ describe("SessionsPage", () => {
   it("应该支持有审批筛选", async () => {
     render(<SessionsPage {...mockProps} />);
 
-    await waitFor(() => expect(screen.getByText("Mock research session")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
     fireEvent.change(screen.getByDisplayValue("所有会话"), { target: { value: "has_pending_approval" } });
 
-    expect(screen.getByText("Mock research session")).toBeInTheDocument();
+    expect(screen.getByText("Mock 研究会话")).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 1 个会话/)).toBeInTheDocument();
   });
 });

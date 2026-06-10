@@ -61,6 +61,26 @@ class FactorMiningFactoryScheduler:
             self._task = None
         logger.info("FactorMiningFactoryScheduler stopped")
 
+    async def shutdown(self, grace_sec: float = 3.0) -> None:
+        """Stop the scheduler and wait for the background task before loop exit."""
+        self._running = False
+        task = self._task
+        self._task = None
+        if task is None:
+            logger.info("FactorMiningFactoryScheduler stopped")
+            return
+        if not task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(task), timeout=max(0.0, grace_sec))
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        else:
+            with suppress(asyncio.CancelledError):
+                await task
+        logger.info("FactorMiningFactoryScheduler stopped")
+
     async def run_once(self) -> dict[str, Any]:
         """执行一次完整的挖掘周期（兼容 FactorScheduler.run_once）。"""
         from . import get_factor_mining_factory

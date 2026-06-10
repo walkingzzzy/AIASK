@@ -41,14 +41,14 @@ import type {
 } from "../types";
 
 const inspectorTabs: Array<{ id: InspectorTab; label: string; icon: ElementType }> = [
-  { id: "details", label: "Summary", icon: PanelRight },
-  { id: "artifacts", label: "Artifacts", icon: FileSearch },
-  { id: "review", label: "Review", icon: MessageSquare },
-  { id: "diagnostics", label: "Diagnostics", icon: Activity },
-  { id: "tools", label: "Tools", icon: Wrench },
-  { id: "skills", label: "Skills", icon: Layers3 },
-  { id: "intents", label: "Approvals", icon: ShieldCheck },
-  { id: "settings", label: "Settings", icon: Settings }
+  { id: "details", label: "摘要", icon: PanelRight },
+  { id: "artifacts", label: "产物", icon: FileSearch },
+  { id: "review", label: "审查", icon: MessageSquare },
+  { id: "diagnostics", label: "诊断", icon: Activity },
+  { id: "tools", label: "工具", icon: Wrench },
+  { id: "skills", label: "技能", icon: Layers3 },
+  { id: "intents", label: "审批", icon: ShieldCheck },
+  { id: "settings", label: "设置", icon: Settings }
 ];
 
 function RunDetailsPanel({
@@ -152,20 +152,20 @@ function RunDetailsPanel({
     <div className="inspector-scroll">
       <div className="panel-heading">
         <div>
-          <span>Current task</span>
-          <h2>Review summary</h2>
+          <span>当前任务</span>
+          <h2>复核摘要</h2>
         </div>
       </div>
       {selectedThread ? (
         <>
           <div className="kv-grid">
-            <span>Status</span>
+            <span>状态</span>
             <strong>{selectedThread.status}</strong>
-            <span>Mode</span>
+            <span>模式</span>
             <strong>{selectedResponse?.metadata?.mode || agentMode}</strong>
-            <span>Session</span>
+            <span>会话</span>
             <strong>{selectedThread.sessionId || "-"}</strong>
-            <span>Run</span>
+            <span>运行</span>
             <strong>{selectedRunId || "-"}</strong>
           </div>
           {selectedRunId && (
@@ -179,11 +179,11 @@ function RunDetailsPanel({
                 type="button"
               >
                 <Activity size={15} />
-                Load events
+                加载事件
               </button>
               <button className="small-button" disabled={disabled} onClick={() => runAction("detail")} type="button">
                 <RefreshCw size={14} />
-                Details
+                详情
               </button>
               <ConfirmActionButton
                 actionLabel="取消运行"
@@ -194,7 +194,7 @@ function RunDetailsPanel({
                 onConfirmed={() => runAction("cancel")}
               >
                 <XCircle size={14} />
-                Cancel
+                取消
               </ConfirmActionButton>
               <ConfirmActionButton
                 actionLabel="停止运行"
@@ -205,7 +205,7 @@ function RunDetailsPanel({
                 onConfirmed={() => runAction("stop")}
               >
                 <Square size={14} />
-                Stop
+                停止
               </ConfirmActionButton>
             </div>
           )}
@@ -214,29 +214,29 @@ function RunDetailsPanel({
               <input
                 value={steerInstruction}
                 onChange={(event) => setSteerInstruction(event.target.value)}
-                placeholder="Add a steer instruction to the current run"
+                placeholder="给当前运行追加一条引导指令"
               />
               <button disabled={disabled || !steerInstruction.trim()} onClick={() => runAction("steer")} type="button">
                 <MessageSquare size={14} />
-                Steer
+                引导
               </button>
             </div>
           )}
           <div className="response-summary">
             <div className="kv-grid">
-              <span>Response</span>
+              <span>响应</span>
               <strong>{responseId || "-"}</strong>
-              <span>Model</span>
+              <span>模型</span>
               <strong>{selectedResponseRecord?.model || "-"}</strong>
-              <span>Events</span>
+              <span>事件</span>
               <strong>{selectedAuditEventCount}</strong>
-              <span>Token</span>
+              <span>令牌</span>
               <strong>{selectedResponseRecord?.usage?.total_tokens ?? "-"}</strong>
             </div>
             <div className="button-row">
               <button className="small-button" disabled={disabled || !responseId} onClick={loadResponse} type="button">
                 <RefreshCw size={14} />
-                Reload
+                重新加载
               </button>
               <ConfirmActionButton
                 actionLabel="删除响应"
@@ -247,21 +247,21 @@ function RunDetailsPanel({
                 onConfirmed={deleteResponse}
               >
                 <Trash2 size={14} />
-                Delete
+                删除
               </ConfirmActionButton>
             </div>
           </div>
           <p className="status-line">{message}</p>
           {(runDetail || responseDetail || actionResult) && (
-            <RawEvidencePanel title="Run / Response result" value={{ runDetail, responseDetail, actionResult }} />
+            <RawEvidencePanel title="运行 / 响应结果" value={{ runDetail, responseDetail, actionResult }} />
           )}
-          <RawEvidencePanel title="Raw response" value={selectedResponse} />
+          <RawEvidencePanel title="原始响应" value={selectedResponse} />
         </>
       ) : (
         <EmptyState
-          body="Start a task or select a thread to review responses, model usage, approvals, and events."
+          body="开始任务或选择线程后，这里会展示回复、模型用量、审批和事件。"
           icon={<ClipboardCheck size={24} />}
-          title="No selected thread"
+          title="暂无选中线程"
         />
       )}
     </div>
@@ -406,8 +406,10 @@ export function InspectorPanel({
 
       {inspectorTab === "diagnostics" && (
         <DiagnosticsPanel
+          apiToken={apiToken}
           busy={busy}
           controlToken={controlToken}
+          endpoint={endpoint}
           fullConsole={fullConsole}
           health={health}
           hermesStatus={hermesStatus}
@@ -434,7 +436,7 @@ export function InspectorPanel({
             controlToken={controlToken}
             skillsPayload={
               (fullConsole.skills as { gated?: boolean; reason?: string; skills?: []; root?: string } | undefined) ||
-              (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要 Control token 才能查看技能。" })
+              (controlToken.trim() ? { skills: [], root: "-" } : { gated: true, reason: "需要控制令牌才能查看技能。" })
             }
           />
         </div>

@@ -8,6 +8,8 @@ from copy import deepcopy
 from datetime import datetime, timezone
 from typing import Any
 
+from .background_tasks import track_background_task
+
 logger = logging.getLogger(__name__)
 
 # ── 内存缓存（DB 不可用时降级） ──────────────────────────
@@ -57,7 +59,8 @@ def register_artifact(artifact: dict) -> dict:
     if db is not None and hasattr(db, "save_artifact"):
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(_safe_save(db, payload))
+            if loop.is_running():
+                track_background_task(_safe_save(db, payload), name=f"artifact-save:{aid}")
         except RuntimeError:
             logger.debug("No running event loop; artifact %s cached in memory only", aid)
 
@@ -100,7 +103,9 @@ def get_artifact(artifact_id: str) -> dict | None:
     db = _get_db()
     if db is not None and hasattr(db, "get_artifact_by_id"):
         try:
-            asyncio.ensure_future(_safe_get(db, aid))
+            loop = asyncio.get_running_loop()
+            if loop.is_running():
+                track_background_task(_safe_get(db, aid), name=f"artifact-get:{aid}")
         except RuntimeError:
             pass
 

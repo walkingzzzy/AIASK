@@ -24,13 +24,12 @@ export function ModelsWorkspace({
   async function refresh() {
     setBusy(true);
     try {
-      const [settingsPayload, providerPayload, modelsPayload] = await Promise.all([
+      const [settingsPayload, modelsPayload] = await Promise.all([
         api.settingsStatus(),
-        api.modelProviderStatus(),
         api.aiModels()
       ]);
       setSettings(settingsPayload);
-      setProviderStatus(providerPayload);
+      setProviderStatus(settingsPayload.llm.providers);
       setModels(modelsPayload);
       setMessage("MODEL_STATUS_LOADED");
     } catch (error) {
@@ -83,9 +82,9 @@ export function ModelsWorkspace({
 
           <div className="diagnostics-summary wide">
             <MetricCard label="提供方" value={ai?.provider || "-"} status={ai?.configured ? "ready" : "unconfigured"} />
-            <MetricCard label="API key" value={ai?.api_key_configured ? "已配置" : "缺失/mock"} status={ai?.api_key_configured ? "ready" : "partial"} />
-            <MetricCard label="Base URL" value={ai?.base_url_configured ? "已配置" : "默认"} status="ready" />
-            <MetricCard label="来源" value={ai?.config_source?.loaded ? String(ai.config_source.source || "project") : "process"} status="ready" />
+            <MetricCard label="API 密钥" value={ai?.api_key_configured ? "已配置" : "缺失 / Mock"} status={ai?.api_key_configured ? "ready" : "partial"} />
+            <MetricCard label="基础 URL" value={ai?.base_url_configured ? "已配置" : "默认"} status="ready" />
+            <MetricCard label="来源" value={ai?.config_source?.loaded ? String(ai.config_source.source || "project") : "进程环境"} status="ready" />
             <MetricCard label="池" value={compact(providersRecord.configured_count || 0)} status={(providersRecord.configured_count as number) ? "ready" : "partial"} />
           </div>
 

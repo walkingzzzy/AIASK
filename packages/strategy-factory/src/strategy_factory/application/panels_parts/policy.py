@@ -573,9 +573,9 @@ def _apply_trade_quality_rating_adjustment(
         "base_total_score": baseline_total,
         "base_grade": baseline_grade,
         "recommendation": (
-            "Strong — 交易表现与样本外验证共同支持该策略"
-            if adjusted_grade in {"A", "B"}
-            else "Moderate — 交易表现改善了验证结论，但仍需继续观察"
+            "Strong - trade quality and out-of-sample validation support this strategy"
+            if adjusted_grade in {"SSS", "SS", "S", "A", "B"}
+            else "Moderate - trade quality improved the validation result; continue observation"
         ),
     }
     adjusted_report["trade_quality_adjustment"] = {

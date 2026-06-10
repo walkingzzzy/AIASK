@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import math
+
 from strategy_factory.application.trade_prediction_contract import (
     TRADE_PREDICTION_CONTRACT_READY,
     freeze_trade_prediction_contract,
@@ -9,6 +11,19 @@ from strategy_factory.domain.market_evidence import (
     build_market_evidence_pack,
     summarize_generation_quality,
 )
+
+
+def _assert_all_finite(value) -> None:
+    if isinstance(value, dict):
+        for nested in value.values():
+            _assert_all_finite(nested)
+        return
+    if isinstance(value, list):
+        for nested in value:
+            _assert_all_finite(nested)
+        return
+    if isinstance(value, float):
+        assert math.isfinite(value)
 
 
 def test_positive_factor_ic_resolves_up_with_calibrated_confidence() -> None:
@@ -258,3 +273,38 @@ def test_wide_intake_proxy_without_prediction_direction_is_neutral(monkeypatch) 
     assert records[0]["source_type"] == "wide_intake_observe_proxy"
     assert records[0]["proxy_only"] is True
     assert records[0]["direction"] == "neutral"
+
+
+def test_market_evidence_sanitizes_non_finite_factor_metrics() -> None:
+    candidate = {
+        "id": "non-finite-factor",
+        "strategy_type": "multi_factor",
+        "source": "factor_ic",
+        "target_symbols": ["600000"],
+        "params": {
+            "factor_name": "quality_growth",
+            "factor_ic": "inf",
+            "prediction_as_of": "2026-06-05",
+        },
+        "evidence_chain": {
+            "evidences": [
+                {
+                    "evidence_id": "ev_bad_factor",
+                    "source_type": "factor_ic_validated",
+                    "support_metric": {"ic_value": float("nan")},
+                    "proxy_only": False,
+                }
+            ]
+        },
+    }
+
+    resolved = apply_evidence_first_candidate(candidate, snapshot={"date": "2026-06-05"})
+
+    assert resolved["direction_resolution"]["direction"] == "neutral"
+    assert resolved["direction_resolution"]["direction_source"] in {
+        "neutral_market_evidence",
+        "market_evidence_vote",
+        "template_fallback_diagnostic",
+    }
+    assert resolved["market_evidence_pack"]["factor_backed"] is True
+    _assert_all_finite(resolved)

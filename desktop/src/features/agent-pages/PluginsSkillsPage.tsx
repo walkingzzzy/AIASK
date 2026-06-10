@@ -75,15 +75,15 @@ export function PluginsSkillsPage({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Operations</span>
-          <h1>Plugins / Skills</h1>
+          <span>集成能力</span>
+          <h1>插件 / 技能</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "control ready" : "control token required"} />
-          <StatusBadge status={message || "not_loaded"} label={message || "not loaded"} />
+          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "控制已就绪" : "需要控制令牌"} />
+          <StatusBadge status={message || "not_loaded"} label={message || "未加载"} />
           <button className="small-button" disabled={busy} onClick={() => refresh()} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -92,30 +92,30 @@ export function PluginsSkillsPage({
         <div className="capability-stack">
           <div className="capability-banner">
             <div>
-              <span>Lifecycle</span>
-              <h2>Native plugin and skill operations</h2>
-              <p>Installed, enabled, configured, readiness, failure reason, and tool-command-hook counts come from the Agent API.</p>
+              <span>生命周期</span>
+              <h2>原生插件与技能操作</h2>
+              <p>安装、启用、配置、准备度、失败原因，以及工具/命令/钩子数量都来自 Agent API。</p>
             </div>
             <Puzzle size={22} />
           </div>
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="Skills" value={summary.skills.length} status={summary.skills.length ? "ready" : "not_loaded"} />
-            <MetricCard label="Plugins" value={summary.plugins.length} status={summary.plugins.length ? "ready" : "not_loaded"} />
-            <MetricCard label="Enabled" value={summary.enabledPlugins} status={summary.enabledPlugins ? "ready" : "disabled"} />
-            <MetricCard label="Configured" value={summary.configuredPlugins} status={summary.configuredPlugins ? "ready" : "unconfigured"} />
-            <MetricCard label="Ready" value={summary.readyPlugins} status={summary.readyPlugins ? "ready" : "not_loaded"} />
-            <MetricCard label="Failures" value={summary.failedPlugins} status={summary.failedPlugins ? "failed" : "ready"} />
-            <MetricCard label="Tools" value={summary.toolCount} status={summary.toolCount ? "ready" : "not_loaded"} />
-            <MetricCard label="Commands" value={summary.commandCount} status={summary.commandCount ? "ready" : "not_loaded"} />
-            <MetricCard label="Hooks" value={summary.hookCount} status={summary.hookCount ? "ready" : "not_loaded"} />
+            <MetricCard label="技能" value={summary.skills.length} status={summary.skills.length ? "ready" : "not_loaded"} />
+            <MetricCard label="插件" value={summary.plugins.length} status={summary.plugins.length ? "ready" : "not_loaded"} />
+            <MetricCard label="已启用" value={summary.enabledPlugins} status={summary.enabledPlugins ? "ready" : "disabled"} />
+            <MetricCard label="已配置" value={summary.configuredPlugins} status={summary.configuredPlugins ? "ready" : "unconfigured"} />
+            <MetricCard label="就绪" value={summary.readyPlugins} status={summary.readyPlugins ? "ready" : "not_loaded"} />
+            <MetricCard label="失败" value={summary.failedPlugins} status={summary.failedPlugins ? "failed" : "ready"} />
+            <MetricCard label="工具" value={summary.toolCount} status={summary.toolCount ? "ready" : "not_loaded"} />
+            <MetricCard label="命令" value={summary.commandCount} status={summary.commandCount ? "ready" : "not_loaded"} />
+            <MetricCard label="钩子" value={summary.hookCount} status={summary.hookCount ? "ready" : "not_loaded"} />
           </div>
 
           <section className="agent-management-panel">
             <div className="section-header inline-section-header">
                 <div>
-                  <span>Skill apply-to-chat</span>
-                  <h3>Skills</h3>
+                  <span>应用到对话</span>
+                  <h3>技能</h3>
                 </div>
                 <Sparkles size={18} />
               </div>
@@ -134,7 +134,7 @@ export function PluginsSkillsPage({
             <div className="section-header inline-section-header">
                 <div>
                   <span>{compact(summary.skillPacks.status || summary.skillPacks.object || "skill_packs")}</span>
-                  <h3>Plugins</h3>
+                  <h3>插件</h3>
                 </div>
                 <StatusBadge status={summary.failedPlugins ? "failed" : summary.readyPlugins ? "ready" : "not_loaded"} />
               </div>
@@ -150,28 +150,28 @@ export function PluginsSkillsPage({
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>Failure reasons</span>
-                <h3>Plugin readiness details</h3>
+                <span>失败原因</span>
+                <h3>插件准备度详情</h3>
               </div>
             </div>
-            <div className="data-table">
+            <div className="data-table plugin-readiness-table">
               <div className="table-head">
-                <span>plugin</span>
-                <span>readiness</span>
-                <span>counts</span>
-                <span>failure</span>
+                <span>插件</span>
+                <span>准备度</span>
+                <span>数量</span>
+                <span>失败原因</span>
               </div>
               {summary.plugins.map((plugin, index) => (
                 <div className="table-row" key={`${plugin.name || "plugin"}:${index}`}>
                   <strong>{plugin.name || "unnamed-plugin"}</strong>
                   <span>{readinessOf(plugin)}</span>
                   <span>
-                    tools {(plugin.tools || []).length} / commands {(plugin.commands || []).length} / hooks {(plugin.hooks || []).length}
+                    工具 {(plugin.tools || []).length} / 命令 {(plugin.commands || []).length} / 钩子 {(plugin.hooks || []).length}
                   </span>
                   <span>{String(plugin.failure_reason || plugin.error || plugin.error_code || "-")}</span>
                 </div>
               ))}
-              {!summary.plugins.length && <div className="table-empty">No plugins loaded.</div>}
+              {!summary.plugins.length && <div className="table-empty">暂无插件。</div>}
             </div>
           </section>
         </div>

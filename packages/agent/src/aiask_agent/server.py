@@ -26,11 +26,12 @@ from .capabilities import HERMES_BASELINE, parity_summary
 from .env_config import load_project_env, project_env_status
 from .gateway import ADAPTERS, DeliveryRouter, GatewayChannelDirectoryStore, GatewayConfigStore, GatewayMessageStore, GatewayRuntime, adapter_for, normalize_platform
 from .financial_readiness import financial_system_readiness
+from .json_utils import dumps_json_bytes
 from .learning_loop import LearningLoop
 from .intents import ActionIntentStore, IntentExecutor
 from .mcp_client import MCPAggregator
 from .memory_providers import MemoryProviderManager
-from .model_client import MockModelClient
+from .model_client import MockModelClient, _openai_compatible_api_base
 from .model_providers import ModelProviderRegistry, ProviderUsageStore
 from .plugin_runtime import NativePluginManager
 from .process_registry import ProcessRegistry
@@ -59,7 +60,7 @@ def _load_local_env_file() -> None:
 
 
 def _json_dumps(payload: Any) -> bytes:
-    return json.dumps(payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
+    return dumps_json_bytes(payload, ensure_ascii=False, sort_keys=True)
 
 
 def _exception_messages(exc: BaseException) -> list[str]:
@@ -488,6 +489,26 @@ async def _ai_smoke_payload_for_runtime(runtime: AgentRuntime, payload: dict[str
 async def _ai_models_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any]:
     load_project_env()
     status = _ai_status_payload_for_runtime(runtime)
+
+    def fallback_model_list(error_payload: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "object": "list",
+            "configured": True,
+            "provider": status["provider"],
+            "unsupported": True,
+            "data": [
+                {
+                    "id": status["model"],
+                    "owned_by": status["provider"],
+                    "fallback": True,
+                }
+            ],
+            "warning_code": error_payload.get("error_code"),
+            "warning": error_payload.get("error"),
+            "message": "Provider model listing is not standard; showing the configured runtime model.",
+            "secrets_redacted": True,
+        }
+
     if status["mock"]:
         return {
             "object": "list",
@@ -527,22 +548,14 @@ async def _ai_models_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any
             return {"object": "list", "configured": True, "provider": status["provider"], "unsupported": False, "data": data}
         except Exception as exc:
             result = _ai_error_payload(exc, configured=True)
-            return {
-                "object": "list",
-                "configured": True,
-                "provider": status["provider"],
-                "unsupported": True,
-                "data": [],
-                "error_code": result["error_code"],
-                "error": result["error"],
-            }
+            return fallback_model_list(result)
     client = None
     try:
         from openai import AsyncOpenAI
 
         client = AsyncOpenAI(
             api_key=str(os.getenv("OPENAI_API_KEY", "")).strip(),
-            base_url=str(os.getenv("OPENAI_BASE_URL", "")).strip() or None,
+            base_url=_openai_compatible_api_base(str(os.getenv("OPENAI_BASE_URL", "")).strip() or None),
         )
         response = await client.models.list()
         data = []
@@ -556,15 +569,7 @@ async def _ai_models_payload_for_runtime(runtime: AgentRuntime) -> dict[str, Any
         return {"object": "list", "configured": True, "provider": status["provider"], "unsupported": False, "data": data}
     except Exception as exc:
         result = _ai_error_payload(exc, configured=True)
-        return {
-            "object": "list",
-            "configured": True,
-            "provider": status["provider"],
-            "unsupported": True,
-            "data": [],
-            "error_code": result["error_code"],
-            "error": result["error"],
-        }
+        return fallback_model_list(result)
     finally:
         if client is not None:
             closer = getattr(client, "close", None)
@@ -631,7 +636,12 @@ async def _desktop_data_status_payload_for_runtime(
     presets = quant_adapter.quant_presets()
     templates = list(presets.get("templates") or [])
     default_codes = list((templates[0] if templates else {}).get("universe") or [])
-    raw_codes = payload.get("codes") or payload.get("universe") or default_codes
+    if "codes" in payload:
+        raw_codes = payload.get("codes")
+    elif "universe" in payload:
+        raw_codes = payload.get("universe")
+    else:
+        raw_codes = default_codes
     if isinstance(raw_codes, str):
         codes = [item.strip() for item in raw_codes.replace("\n", ",").split(",") if item.strip()]
     else:
@@ -665,6 +675,21 @@ async def _desktop_data_sync_plan_payload_for_runtime(
     codes = data_status.get("codes") or []
     task_type = str(payload.get("task_type") or payload.get("type") or "kline").strip() or "kline"
     period = str(payload.get("period") or "daily").strip() or "daily"
+    no_code_task_types = {
+        "core_market",
+        "factor_context",
+        "market_temperature_snapshot_cache",
+        "market_text_source_ingest",
+        "vector_backfill_market_docs",
+        "vector_backfill_kline_patterns",
+        "vector_backfill_stock_profiles",
+        "vector_backfill_factor_candidates",
+        "factor_external_research_ingest",
+        "vector_build_snapshot",
+        "vector_benchmark_collection",
+        "vector_optimize_bootstrap",
+        "factor_validation_bootstrap",
+    }
     intent_params = {
         "task_type": task_type,
         "codes": codes,
@@ -672,14 +697,30 @@ async def _desktop_data_sync_plan_payload_for_runtime(
         "priority": payload.get("priority") or "normal",
         "force": bool(payload.get("force", False)),
     }
+    if task_type == "market_temperature_snapshot_cache":
+        intent_params.update(
+            {
+                "limit": max(1, min(int(payload.get("limit") or 1000), 1000)),
+                "top_n": max(0, min(int(payload.get("top_n") or 20), 50)),
+                "min_bars": max(2, min(int(payload.get("min_bars") or 20), 120)),
+            }
+        )
+        if payload.get("as_of"):
+            intent_params["as_of"] = str(payload.get("as_of")).strip()
+    plan_ready = bool(codes) or task_type in no_code_task_types
+    rationale = (
+        f"Sync {task_type} data from Desktop."
+        if task_type in no_code_task_types and not codes
+        else f"Sync {task_type} data for {len(codes)} codes from Desktop."
+    )
     return {
         "object": "aiask.desktop_data_sync_plan",
-        "status": "ready" if codes else "needs_codes",
+        "status": "ready" if plan_ready else "needs_codes",
         "data_status": data_status,
         "intent_request": {
             "action": "data_sync.sync",
             "params": intent_params,
-            "rationale": f"Sync {task_type} data for {len(codes)} codes from Desktop.",
+            "rationale": rationale,
         },
         "commands": [
             {"label": "Create approval intent", "method": "POST", "path": "/intents"},

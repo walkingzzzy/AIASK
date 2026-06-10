@@ -111,6 +111,28 @@ async def _sync_financials_check(codes: list) -> dict:
 
     return results
 
+async def _sync_market_temperature_snapshot_cache_now(kwargs: dict) -> dict:
+    """Refresh the durable market-temperature snapshot cache through the manager plane."""
+    from .. import market_temperature as market_temperature_tools
+
+    result = await market_temperature_tools.refresh_market_temperature_snapshot_cache(
+        limit=int(kwargs.get("limit") or 1000),
+        top_n=int(kwargs.get("top_n") or 20),
+        as_of=str(kwargs.get("as_of") or "").strip() or None,
+        min_bars=int(kwargs.get("min_bars") or 20),
+    )
+    success = bool(result.get("success"))
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    return {
+        "success": 1 if success else 0,
+        "failed": 0 if success else 1,
+        "errors": [] if success else [str(result.get("error") or "market_temperature_cache_refresh_failed")],
+        "cache": data.get("cache"),
+        "snapshot": data.get("snapshot"),
+        "source_chain": result.get("source_chain") or (result.get("meta") or {}).get("source_chain") or [],
+        "message": "market_temperature_snapshot_cache refreshed" if success else "market_temperature_snapshot_cache refresh failed",
+    }
+
 async def _sync_core_market_now(kwargs: dict) -> dict:
     """调用核心市场审查补数脚本，补齐指数/北向/融资融券数据。"""
     script_path = _core_market_script_path()

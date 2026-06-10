@@ -136,14 +136,14 @@ export function RunsEventsPage({
     <section className="capabilities-workspace">
       <header className="capabilities-header">
         <div>
-          <span>Agent</span>
-          <h1>Runs / Events</h1>
+          <span>Agent 运行</span>
+          <h1>运行 / 事件</h1>
         </div>
         <div className="header-actions">
           <StatusBadge status={message} label={message} />
           <button className="small-button" disabled={busy} onClick={() => loadRuns()} type="button">
             <RefreshCw size={14} className={busy ? "spin" : ""} />
-            Refresh
+            刷新
           </button>
         </div>
       </header>
@@ -171,7 +171,7 @@ export function RunsEventsPage({
                   <span>
                     工具 {run.tool_call_count ?? 0} / 审批 {run.approval_count ?? 0} / 错误 {run.error_count ?? 0}
                   </span>
-                  <span>last: {lastEventLabel(run)}</span>
+                  <span>最近事件：{lastEventLabel(run)}</span>
                   <span className="session-flags">
                     {run.has_pending_approval ? <StatusBadge status="queued" label="approval" /> : null}
                     {run.has_errors ? <StatusBadge status="error" label="error" /> : null}
@@ -191,10 +191,10 @@ export function RunsEventsPage({
               <div className="header-actions">
                 <div className="segmented" role="group" aria-label="runs view mode">
                   <button className={viewMode === "timeline" ? "active" : ""} onClick={() => setViewMode("timeline")} type="button">
-                    Timeline
+                    时间线
                   </button>
                   <button className={viewMode === "list" ? "active" : ""} onClick={() => setViewMode("list")} type="button">
-                    List
+                    列表
                   </button>
                 </div>
               </div>

@@ -196,6 +196,178 @@ def resolve_governed_pool_runtime_state(
     return "blocked_by_governed_pool"
 
 
+def _first_present(*values: Any) -> Any:
+    for value in values:
+        if value is not None and value != "":
+            return value
+    return None
+
+
+def _safe_optional_float(value: Any) -> float | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_optional_int(value: Any) -> int | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_status(value: Any) -> str | None:
+    status = str(value or "").strip().lower()
+    return status or None
+
+
+def _safe_text_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    items: list[str] = []
+    for item in value:
+        text = str(item or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def _resolve_market_temperature_payload(snapshot: dict[str, Any]) -> dict[str, Any]:
+    market_internals = (
+        dict(snapshot.get("market_internals") or {})
+        if isinstance(snapshot.get("market_internals"), dict)
+        else {}
+    )
+    candidates = [
+        snapshot.get("market_temperature_context"),
+        snapshot.get("market_temperature"),
+        snapshot.get("market_temperature_snapshot"),
+        market_internals.get("market_temperature"),
+    ]
+    if (
+        not any(candidate is not None and candidate != {} for candidate in candidates)
+        and isinstance(snapshot.get("market"), dict)
+        and (
+            str(snapshot.get("contract_version") or "").startswith("market_temperature")
+            or isinstance(snapshot.get("quality"), dict)
+        )
+    ):
+        candidates.append(snapshot)
+
+    for candidate in candidates:
+        if candidate in (None, ""):
+            continue
+        if isinstance(candidate, dict):
+            payload = dict(candidate)
+        else:
+            payload = {"temperature": candidate}
+        if payload:
+            return payload
+    return {}
+
+
+def resolve_market_temperature_context(snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Normalize optional market-temperature context already present in a snapshot."""
+
+    root = dict(snapshot or {}) if isinstance(snapshot, dict) else {}
+    payload = _resolve_market_temperature_payload(root)
+    if not payload:
+        return {
+            "available": False,
+            "as_of": None,
+            "temperature": None,
+            "state": None,
+            "quality_status": None,
+            "readiness_status": None,
+            "staleness_days": None,
+            "degraded": False,
+            "warnings": [],
+            "source_chain": [],
+        }
+
+    market = dict(payload.get("market") or {}) if isinstance(payload.get("market"), dict) else {}
+    quality = dict(payload.get("quality") or {}) if isinstance(payload.get("quality"), dict) else {}
+    readiness = (
+        dict(payload.get("readiness") or payload.get("cache_readiness") or {})
+        if isinstance(payload.get("readiness") or payload.get("cache_readiness"), dict)
+        else {}
+    )
+    cache = dict(payload.get("cache") or {}) if isinstance(payload.get("cache"), dict) else {}
+
+    temperature = _safe_optional_float(
+        _first_present(payload.get("temperature"), payload.get("market_temperature"), market.get("temperature"))
+    )
+    as_of = _first_present(
+        payload.get("as_of"),
+        payload.get("date"),
+        payload.get("data_timestamp"),
+        cache.get("as_of"),
+        readiness.get("as_of"),
+    )
+    state = _safe_status(
+        _first_present(payload.get("state"), payload.get("market_state"), market.get("state"))
+    )
+    quality_status = _safe_status(
+        _first_present(payload.get("quality_status"), quality.get("status"))
+    )
+    readiness_status = _safe_status(
+        _first_present(
+            payload.get("readiness_status"),
+            readiness.get("readiness_status"),
+            readiness.get("status"),
+        )
+    )
+    staleness_days = _safe_optional_float(
+        _first_present(payload.get("staleness_days"), readiness.get("staleness_days"))
+    )
+    warnings = _safe_text_list(payload.get("warnings"))
+    for warning in _safe_text_list(quality.get("warnings")) + _safe_text_list(readiness.get("warnings")):
+        if warning not in warnings:
+            warnings.append(warning)
+    source_chain = _safe_text_list(payload.get("source_chain"))
+    degraded_statuses = {"degraded", "empty", "failed", "failure", "unavailable", "missing"}
+    stale_statuses = {"stale", "expired"}
+    not_ready_statuses = {"missing", "failed", "failure", "unavailable", "not_ready", "blocked"}
+    degraded = bool(payload.get("degraded")) or quality_status in degraded_statuses
+    stale = readiness_status in stale_statuses or quality_status in stale_statuses
+    not_ready = readiness_status in not_ready_statuses
+
+    available = bool(
+        temperature is not None
+        or as_of
+        or state
+        or quality_status
+        or readiness_status
+        or source_chain
+    )
+    return {
+        "available": available,
+        "as_of": str(as_of).strip() if as_of not in (None, "") else None,
+        "temperature": temperature,
+        "state": state,
+        "quality_status": quality_status,
+        "readiness_status": readiness_status,
+        "staleness_days": staleness_days,
+        "degraded": degraded,
+        "stale": stale,
+        "not_ready": not_ready,
+        "warnings": warnings,
+        "source_chain": source_chain,
+        "stock_count": _safe_optional_int(
+            _first_present(payload.get("stock_count"), payload.get("sample_count"), market.get("stock_count"))
+        ),
+        "industry_count": _safe_optional_int(
+            _first_present(payload.get("industry_count"), quality.get("industry_count"))
+        ),
+        "contract_version": _first_present(payload.get("contract_version"), root.get("contract_version")),
+    }
+
+
 class ReadinessService:
     """Stateless evaluator for factory readiness.
 
@@ -384,6 +556,7 @@ class ReadinessService:
         event_state = dict(snapshot.get("event_driven") or {})
         completion = dict(snapshot.get("completeness") or {})
         completion_ratio = self._safe_float(completion.get("completion_ratio"), default=1.0)
+        market_temperature_context = resolve_market_temperature_context(snapshot)
         hard_block = is_factory_readiness_hard_block_enabled()
         governed_supply_viable = bool(
             governed_candidate_pool_active
@@ -438,6 +611,20 @@ class ReadinessService:
         ):
             warnings.append("event_driven_no_ready_tasks")
             score -= 0.03
+        if bool(market_temperature_context.get("available")):
+            if bool(market_temperature_context.get("degraded")):
+                warnings.append("market_temperature_context_degraded")
+                score -= 0.03
+            market_temperature_staleness = market_temperature_context.get("staleness_days")
+            if bool(market_temperature_context.get("stale")) or (
+                market_temperature_staleness is not None
+                and self._safe_float(market_temperature_staleness, default=0.0) > 3.0
+            ):
+                warnings.append("market_temperature_context_stale")
+                score -= 0.02
+            if bool(market_temperature_context.get("not_ready")):
+                warnings.append("market_temperature_context_not_ready")
+                score -= 0.03
 
         if bool(factor_summary.get("degraded")):
             warnings.append("factor_research_degraded")
@@ -653,6 +840,19 @@ class ReadinessService:
             "critical_blocker_count": len(critical_blockers),
             "snapshot_completion_ratio": completion_ratio,
             "snapshot_degraded": bool(snapshot.get("degraded")),
+            "market_temperature_context": market_temperature_context,
+            "market_temperature_context_available": bool(
+                market_temperature_context.get("available")
+            ),
+            "market_temperature_context_quality_status": market_temperature_context.get(
+                "quality_status"
+            ),
+            "market_temperature_context_readiness_status": market_temperature_context.get(
+                "readiness_status"
+            ),
+            "market_temperature_context_staleness_days": market_temperature_context.get(
+                "staleness_days"
+            ),
             "event_status": event_status,
             "event_task_ready_count": int(event_state.get("tasks_ready_count") or 0),
             "factor_research_stale": bool(factor_summary.get("stale")),
@@ -755,4 +955,5 @@ __all__ = [
     "resolve_factor_refresh_trigger",
     "resolve_governed_pool_runtime_state",
     "resolve_governed_pool_state",
+    "resolve_market_temperature_context",
 ]

@@ -19,6 +19,7 @@ from .quant_mgr_helpers import (
     _compute_scalar_factor_bundle,
     _load_valuation_snapshot,
     _parse_date_value,
+    _safe_float,
     _select_financial_snapshot,
     _sort_klines_ascending,
 )
@@ -151,9 +152,9 @@ async def handle_calculate_factors(
         }
 
     if "value" in factors:
-        pe_ratio = float(valuation_snapshot.get("pe_ratio", 0) or 0)
-        pb_ratio = float(valuation_snapshot.get("pb_ratio", 0) or 0)
-        ps_ratio = float(latest_financial.get("ps_ratio", 0) or 0)
+        pe_ratio = _safe_float(valuation_snapshot.get("pe_ratio"), 0.0)
+        pb_ratio = _safe_float(valuation_snapshot.get("pb_ratio"), 0.0)
+        ps_ratio = _safe_float(latest_financial.get("ps_ratio"), 0.0)
         pe_score = 1.0 / pe_ratio if pe_ratio > 0 else 0.0
         pb_score = 1.0 / pb_ratio if pb_ratio > 0 else 0.0
         value_components = [score for score in (pe_score, pb_score) if score > 0]
@@ -171,10 +172,10 @@ async def handle_calculate_factors(
         }
 
     if "quality" in factors:
-        roe = float(latest_financial.get("roe", 0) or 0)
-        roa = float(latest_financial.get("roa", 0) or 0)
-        gross_margin = float(latest_financial.get("gross_margin", 0) or 0)
-        debt_ratio = float(latest_financial.get("debt_ratio", 0) or 0)
+        roe = _safe_float(latest_financial.get("roe"), 0.0)
+        roa = _safe_float(latest_financial.get("roa"), 0.0)
+        gross_margin = _safe_float(latest_financial.get("gross_margin"), 0.0)
+        debt_ratio = _safe_float(latest_financial.get("debt_ratio"), 1.0)
         quality_score = (
             (roe / 30 if roe > 0 else 0) * 0.4
             + (roa / 15 if roa > 0 else 0) * 0.3
@@ -191,8 +192,8 @@ async def handle_calculate_factors(
         }
 
     if "growth" in factors:
-        revenue_growth = float(latest_financial.get("revenue_growth", 0) or 0)
-        profit_growth = float(latest_financial.get("profit_growth", 0) or 0)
+        revenue_growth = _safe_float(latest_financial.get("revenue_growth"), 0.0)
+        profit_growth = _safe_float(latest_financial.get("profit_growth"), 0.0)
         growth_score = float(max(min((revenue_growth + profit_growth) / 200.0, 1.0), -1.0))
         factor_values["growth"] = {
             "revenue_growth": revenue_growth,

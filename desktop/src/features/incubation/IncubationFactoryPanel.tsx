@@ -323,19 +323,19 @@ function TradePredictionObservability({
     <section className="capability-panel">
       <div className="section-header">
         <div>
-          <span>Trade Prediction Observability</span>
+          <span>交易预测可观测性</span>
           <h3>预测评分、样本和贡献矩阵</h3>
         </div>
         <StatusBadge status={status?.status || "not_loaded"} label={status?.status || "not_loaded"} />
       </div>
 
       <div className="diagnostics-summary wide">
-        <MetricCard label="Predictions" value={status?.prediction_count ?? "-"} status={status?.status || "not_loaded"} />
-        <MetricCard label="Pending" value={status?.pending_count ?? "-"} status={(status?.pending_count || 0) > 0 ? "partial" : "implemented"} />
-        <MetricCard label="Evaluated" value={status?.evaluated_count ?? "-"} status={(status?.evaluated_count || 0) > 0 ? "implemented" : "not_loaded"} />
-        <MetricCard label="Partial" value={status?.partial_count ?? "-"} status={(status?.partial_count || 0) > 0 ? "partial" : "implemented"} />
-        <MetricCard label="Sample n" value={status?.sample_n ?? "-"} status={(status?.sample_n || 0) > 0 ? "implemented" : "partial"} />
-        <MetricCard label="Avg score" value={formatOptionalNumber(status?.score_summary?.avg)} status="partial" />
+        <MetricCard label="预测数" value={status?.prediction_count ?? "-"} status={status?.status || "not_loaded"} />
+        <MetricCard label="待评估" value={status?.pending_count ?? "-"} status={(status?.pending_count || 0) > 0 ? "partial" : "implemented"} />
+        <MetricCard label="已评估" value={status?.evaluated_count ?? "-"} status={(status?.evaluated_count || 0) > 0 ? "implemented" : "not_loaded"} />
+        <MetricCard label="部分缺口" value={status?.partial_count ?? "-"} status={(status?.partial_count || 0) > 0 ? "partial" : "implemented"} />
+        <MetricCard label="样本数" value={status?.sample_n ?? "-"} status={(status?.sample_n || 0) > 0 ? "implemented" : "partial"} />
+        <MetricCard label="平均分" value={formatOptionalNumber(status?.score_summary?.avg)} status="partial" />
       </div>
 
       {(insufficientCount > 0 || dataGapCount > 0) && (
@@ -349,7 +349,7 @@ function TradePredictionObservability({
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>Score Versions</span>
+              <span>评分版本</span>
               <h3>版本、状态与数据质量</h3>
             </div>
             <Activity size={18} />
@@ -369,7 +369,7 @@ function TradePredictionObservability({
         <article className="capability-section">
           <div className="section-header">
             <div>
-              <span>{latestOutcomes.length} outcomes</span>
+              <span>{latestOutcomes.length} 条结果</span>
               <h3>最近预测结果</h3>
             </div>
             <Clock size={18} />
@@ -483,7 +483,7 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       const envelope = await client.factoryIntentCreate(
         `incubation_factory.${action}`,
         { source: "desktop_incubation_factory" },
-        `从 Desktop 创建 Incubation Factory ${action} 审批意图。`
+        `从桌面创建孵化工厂 ${action} 审批意图。`
       );
       setIntentEnvelope(envelope);
       setMessage(envelope.success ? `INCUBATION_${action.toUpperCase()}_INTENT_CREATED` : envelope.error || "INCUBATION_INTENT_FAILED");
@@ -572,8 +572,8 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
         <MetricCard label="错误数" value={status?.error_count ?? "-"} status={(status?.error_count || 0) > 0 ? "failed" : "implemented"} />
         <MetricCard label="最近运行" value={formatTime(status?.last_run_at)} />
         <MetricCard label="命中率" value={overall.hit_rate === undefined ? "-" : percent(overall.hit_rate)} status={asNumber(overall.hit_rate) >= 0.5 ? "implemented" : "partial"} />
-        <MetricCard label="Skill LCB" value={overall.avg_skill_lcb === undefined ? "-" : asNumber(overall.avg_skill_lcb).toFixed(4)} status={asNumber(overall.avg_skill_lcb) > 0 ? "implemented" : "partial"} />
-        <MetricCard label="Forward Sharpe" value={overall.avg_forward_sharpe === undefined ? "-" : asNumber(overall.avg_forward_sharpe).toFixed(2)} />
+        <MetricCard label="技能 LCB" value={overall.avg_skill_lcb === undefined ? "-" : asNumber(overall.avg_skill_lcb).toFixed(4)} status={asNumber(overall.avg_skill_lcb) > 0 ? "implemented" : "partial"} />
+        <MetricCard label="前向夏普" value={overall.avg_forward_sharpe === undefined ? "-" : asNumber(overall.avg_forward_sharpe).toFixed(2)} />
         <MetricCard label="趋势" value={compact(trend.direction || "unknown")} status={trend.direction === "improving" ? "implemented" : trend.direction === "declining" ? "failed" : "partial"} />
       </div>
 

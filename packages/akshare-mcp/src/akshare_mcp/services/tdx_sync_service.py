@@ -1534,8 +1534,8 @@ class TdxSyncService:
             "margin_detail": 10,
             "stock_fund_flow": 10,
             "strategy_factory_market_internals": 10,
-            "sync_sector_basic": 10,
-            "sync_relation": 10,
+            "sync_sector_basic": 365,
+            "sync_relation": 365,
         }
         updated = 0
         snapshots: list[tuple[str, list[dict], int, Any, dict, list[dict]]] = []
@@ -1606,6 +1606,8 @@ class TdxSyncService:
                 detail = {"tables": table_details}
             if source_rows:
                 detail["sources"] = source_rows
+            if key in {"sync_sector_basic", "sync_relation"}:
+                detail["freshness_class"] = "reference"
             if row_count and as_of_date and key in stale_after_days:
                 try:
                     as_of = datetime.strptime(str(as_of_date)[:10], "%Y-%m-%d").date()

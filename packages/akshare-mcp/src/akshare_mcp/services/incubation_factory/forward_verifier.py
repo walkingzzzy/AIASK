@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional
@@ -41,6 +42,16 @@ FORWARD_HORIZONS = _resolve_forward_horizons()
 # 破除 regime-blind（120 天平均）这宗原罪。标签缺失时归入 "unknown"。
 REGIME_DIMENSIONS: tuple[str, ...] = ("trend_regime", "vol_regime", "sentiment_regime")
 _REGIME_UNKNOWN = "unknown"
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
 
 # 孵化周期配置：不同策略类型有不同的孵化特性
 INCUBATION_PROFILES: dict[str, dict[str, Any]] = {
@@ -241,10 +252,10 @@ class ForwardVerifier:
             return 1
         if text in ("down", "short", "sell", "-1"):
             return -1
-        try:
-            return 1 if float(direction) >= 0 else -1
-        except (TypeError, ValueError):
+        numeric = _finite_float(direction)
+        if numeric is None:
             return 1
+        return 1 if numeric >= 0 else -1
 
     def _resolve_regime_labels(self, evidence: dict[str, Any]) -> dict[str, str]:
         """改动D：从一条 evidence 解析市场状态标签。
@@ -303,10 +314,9 @@ class ForwardVerifier:
         ):
             value = forward_returns.get(key)
             if value is not None:
-                try:
-                    return float(value)
-                except (TypeError, ValueError):
-                    continue
+                numeric = _finite_float(value)
+                if numeric is not None:
+                    return numeric
         return None
 
     def _compute_skill_lcb(self, hits: list[float]) -> float:
@@ -317,7 +327,9 @@ class ForwardVerifier:
         """
         if len(hits) < 5:
             return 0.0
-        arr = np.array(hits, dtype=np.float64)
+        arr = np.array([hit for hit in hits if _finite_float(hit) is not None], dtype=np.float64)
+        if len(arr) < 5:
+            return 0.0
         hit_rate = float(np.mean(arr))
         n = len(arr)
         z = 1.96
@@ -337,7 +349,9 @@ class ForwardVerifier:
         """
         if len(hits) < 10:
             return 0.0
-        arr = np.array(hits, dtype=np.float64)
+        arr = np.array([hit for hit in hits if _finite_float(hit) is not None], dtype=np.float64)
+        if len(arr) < 10:
+            return 0.0
         overall = float(np.mean(arr))
         split_point = max(5, len(arr) // 3)
         recent = float(np.mean(arr[-split_point:]))
@@ -354,10 +368,19 @@ class ForwardVerifier:
         if not evidence_list:
             return 0.0
         total = len(evidence_list)
+        horizons = {
+            profile.get("primary_horizon"),
+            profile.get("secondary_horizon"),
+            *FORWARD_HORIZONS,
+        }
         with_returns = sum(
             1
             for e in evidence_list
-            if dict(e.get("forward_returns") or {})
+            if any(
+                self._extract_forward_return(dict(e.get("forward_returns") or {}), int(horizon)) is not None
+                for horizon in horizons
+                if _finite_float(horizon) is not None and int(float(horizon)) > 0
+            )
         )
         return with_returns / total if total > 0 else 0.0
 
@@ -369,25 +392,36 @@ class ForwardVerifier:
         """Compute signal-direction IC with directional mean fallback."""
         if len(directions) < 5 or len(returns) < 5:
             return 0.0
-        dir_arr = np.array(directions, dtype=np.float64)
-        ret_arr = np.array(returns, dtype=np.float64)
+        pairs = [
+            (direction, ret)
+            for direction, ret in zip(directions, returns)
+            if _finite_float(direction) is not None and _finite_float(ret) is not None
+        ]
+        if len(pairs) < 5:
+            return 0.0
+        dir_arr = np.array([item[0] for item in pairs], dtype=np.float64)
+        ret_arr = np.array([item[1] for item in pairs], dtype=np.float64)
         if float(np.std(dir_arr)) > 1e-10 and float(np.std(ret_arr)) > 1e-10:
             corr = float(np.corrcoef(dir_arr, ret_arr)[0, 1])
             if np.isfinite(corr):
                 return corr
-        return float(np.mean(dir_arr * ret_arr))
+        fallback = float(np.mean(dir_arr * ret_arr))
+        return fallback if math.isfinite(fallback) else 0.0
 
     def _compute_forward_sharpe(self, returns: list[float], horizon_days: int = 1) -> float:
         """计算前向 Sharpe ratio。"""
         if len(returns) < 5:
             return 0.0
-        arr = np.array(returns, dtype=np.float64)
+        arr = np.array([ret for ret in returns if _finite_float(ret) is not None], dtype=np.float64)
+        if len(arr) < 5:
+            return 0.0
         mean_return = float(np.mean(arr))
         std_return = float(np.std(arr, ddof=1))
-        if std_return < 1e-10:
+        if not math.isfinite(mean_return) or not math.isfinite(std_return) or std_return < 1e-10:
             return 0.0
         annualization = np.sqrt(252.0 / max(1, int(horizon_days or 1)))
-        return float(mean_return / std_return * annualization)
+        result = float(mean_return / std_return * annualization)
+        return result if math.isfinite(result) else 0.0
 
     def _empty_result(self, strategy_id: str, profile: dict[str, Any]) -> dict[str, Any]:
         """无信号时的空结果。"""

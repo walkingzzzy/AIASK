@@ -209,18 +209,27 @@ def test_stock_radar_push_digest_non_dry_run_sends_gateway(tmp_path, monkeypatch
         desktop_ops.execute_confirmed_action(
             "stock_radar",
             "push_digest",
-            {"channels": ["local"], "dry_run": False, "target": "radar"},
+            {"channels": ["wecom", "telegram"], "dry_run": False, "target": "radar"},
         )
     )
 
     assert result["success"] is True
     assert result["data"]["gateway_status"] == "delivered"
-    assert result["data"]["gateway_delivered_count"] == 1
-    assert result["data"]["gateway_push_logs"][0]["status"] == "delivered"
+    assert result["data"]["gateway_delivered_count"] == 2
+    assert [item["status"] for item in result["data"]["gateway_push_logs"]] == ["delivered", "delivered"]
     assert fake_db.logs[0]["metadata"]["gateway_message_id"] == "m1"
+    assert fake_db.logs[1]["metadata"]["gateway_message_id"] == "m2"
     assert calls == [
         {
-            "platform": "local",
+            "platform": "wecom",
+            "target": "radar",
+            "message": "Stock Radar Digest",
+            "thread_id": None,
+            "session_id": None,
+            "user_id": None,
+        },
+        {
+            "platform": "telegram",
             "target": "radar",
             "message": "Stock Radar Digest",
             "thread_id": None,

@@ -6,11 +6,38 @@
 from __future__ import annotations
 
 import logging
+import math
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return numeric
+    fallback = _finite_float(default)
+    return fallback if fallback is not None else 0.0
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
 
 
 class HitRateReporter:
@@ -82,9 +109,9 @@ class HitRateReporter:
                 "total_with_signals": sum(
                     1
                     for v in verifications.values()
-                    if int(v.get("primary_effective_n") or 0) > 0
+                    if _safe_int(v.get("primary_effective_n"), 0) > 0
                 ),
-                "auto_promoted": int(pipeline_result.get("auto_promoted") or 0),
+                "auto_promoted": _safe_int(pipeline_result.get("auto_promoted"), 0),
                 "stage_counts": dict(pipeline_result.get("stage_counts") or {}),
             },
             "hit_rate_dashboard": {
@@ -135,11 +162,11 @@ class HitRateReporter:
                 "object": "trade_prediction.status",
                 "prediction_count": None,
                 "outcome_count": None,
-                "sample_n": int(phase_result.get("evaluated") or 0),
+                "sample_n": _safe_int(phase_result.get("evaluated"), 0),
                 "pending_count": None,
-                "evaluated_count": int(phase_result.get("evaluated") or 0),
-                "partial_count": int(status_counts.get("partial_daily_only", 0))
-                + int(status_counts.get("partial_intraday_missing", 0)),
+                "evaluated_count": _safe_int(phase_result.get("evaluated"), 0),
+                "partial_count": _safe_int(status_counts.get("partial_daily_only"), 0)
+                + _safe_int(status_counts.get("partial_intraday_missing"), 0),
                 "score_status_counts": status_counts,
                 "data_quality_status_counts": dict(phase_result.get("data_quality_status_counts") or {}),
                 "score_version_counts": {},
@@ -153,8 +180,8 @@ class HitRateReporter:
                 "status": phase_result.get("status"),
                 "score_version": phase_result.get("score_version"),
                 "intraday_score_version": phase_result.get("intraday_score_version"),
-                "evaluated": int(phase_result.get("evaluated") or 0),
-                "intraday_evaluated": int(phase_result.get("intraday_evaluated") or 0),
+                "evaluated": _safe_int(phase_result.get("evaluated"), 0),
+                "intraday_evaluated": _safe_int(phase_result.get("intraday_evaluated"), 0),
                 "score_status_counts": dict(phase_result.get("score_status_counts") or {}),
                 "data_quality_status_counts": dict(phase_result.get("data_quality_status_counts") or {}),
                 "intraday_sync": dict(phase_result.get("intraday_sync") or {}),
@@ -170,8 +197,8 @@ class HitRateReporter:
         summary = dict((dashboard or {}).get("summary") or {})
         matrix = dict((dashboard or {}).get("matrix") or {})
         rows = list(matrix.get("rows") or [])
-        sample_n = int(summary.get("sample_n") or 0)
-        partial_count = int(summary.get("partial_count") or 0)
+        sample_n = _safe_int(summary.get("sample_n"), 0)
+        partial_count = _safe_int(summary.get("partial_count"), 0)
         suggestions: list[dict[str, Any]] = []
         if sample_n < 30:
             suggestions.append({
@@ -190,10 +217,14 @@ class HitRateReporter:
                 continue
             score = row.get("score_avg")
             lcb = row.get("score_lcb_95")
-            sample = int(row.get("sample_n") or 0)
+            sample = _safe_int(row.get("sample_n"), 0)
             if sample < 10 or score is None:
                 continue
-            action = "boost" if float(score) >= 0.70 and float(lcb or 0.0) >= 0.55 else "cool"
+            score_value = _finite_float(score)
+            lcb_value = _safe_float(lcb, 0.0)
+            if score_value is None:
+                continue
+            action = "boost" if score_value >= 0.70 and lcb_value >= 0.55 else "cool"
             suggestions.append({
                 "action": action,
                 "dimension": row.get("dimension"),
@@ -246,14 +277,14 @@ class HitRateReporter:
         all_sharpes: list[float] = []
 
         for v in verifications.values():
-            n = int(v.get("primary_effective_n") or 0)
-            hit_rate = float(v.get("primary_hit_rate") or 0.0)
-            skill_lcb = float(v.get("primary_skill_lcb") or 0.0)
-            forward_sharpe = float(v.get("forward_sharpe") or 0.0)
+            n = _safe_int(v.get("primary_effective_n"), 0)
+            hit_rate = _safe_float(v.get("primary_hit_rate"), 0.0)
+            skill_lcb = _safe_float(v.get("primary_skill_lcb"), 0.0)
+            forward_sharpe = _safe_float(v.get("forward_sharpe"), 0.0)
 
             if n > 0:
                 total_signals += n
-                total_hits += int(round(hit_rate * n))
+                total_hits += _safe_int(round(hit_rate * n), 0)
                 all_skill_lcbs.append(skill_lcb)
                 all_sharpes.append(forward_sharpe)
 
@@ -272,7 +303,7 @@ class HitRateReporter:
             "avg_skill_lcb": round(avg_skill_lcb, 4),
             "avg_forward_sharpe": round(avg_sharpe, 4),
             "strategy_count": len(
-                [v for v in verifications.values() if int(v.get("primary_effective_n") or 0) > 0]
+                [v for v in verifications.values() if _safe_int(v.get("primary_effective_n"), 0) > 0]
             ),
         }
 
@@ -292,17 +323,17 @@ class HitRateReporter:
                 strategy.get("strategy_type") or strategy.get("candidate_family") or "unknown"
             ).strip().lower()
             v = verifications.get(sid, {})
-            n = int(v.get("primary_effective_n") or 0)
+            n = _safe_int(v.get("primary_effective_n"), 0)
             if n > 0:
                 family_data[family]["hit_rates"].append(
-                    float(v.get("primary_hit_rate") or 0.0)
+                    _safe_float(v.get("primary_hit_rate"), 0.0)
                 )
                 family_data[family]["skill_lcbs"].append(
-                    float(v.get("primary_skill_lcb") or 0.0)
+                    _safe_float(v.get("primary_skill_lcb"), 0.0)
                 )
                 family_data[family]["ns"].append(n)
                 family_data[family]["sharpes"].append(
-                    float(v.get("forward_sharpe") or 0.0)
+                    _safe_float(v.get("forward_sharpe"), 0.0)
                 )
 
         result = {}
@@ -353,13 +384,13 @@ class HitRateReporter:
             sid = str(strategy.get("id") or "").strip()
             stage = stage_map.get(sid, "unknown")
             v = verifications.get(sid, {})
-            n = int(v.get("primary_effective_n") or 0)
+            n = _safe_int(v.get("primary_effective_n"), 0)
             if n > 0:
                 stage_data[stage]["hit_rates"].append(
-                    float(v.get("primary_hit_rate") or 0.0)
+                    _safe_float(v.get("primary_hit_rate"), 0.0)
                 )
                 stage_data[stage]["skill_lcbs"].append(
-                    float(v.get("primary_skill_lcb") or 0.0)
+                    _safe_float(v.get("primary_skill_lcb"), 0.0)
                 )
 
         result = {}
@@ -399,12 +430,14 @@ class HitRateReporter:
                     older = metrics[7:]
                     for m in recent:
                         lcb = m.get("skill_lcb_5d")
-                        if lcb is not None:
-                            recent_skill_lcbs.append(float(lcb))
+                        numeric = _finite_float(lcb)
+                        if numeric is not None:
+                            recent_skill_lcbs.append(numeric)
                     for m in older:
                         lcb = m.get("skill_lcb_5d")
-                        if lcb is not None:
-                            older_skill_lcbs.append(float(lcb))
+                        numeric = _finite_float(lcb)
+                        if numeric is not None:
+                            older_skill_lcbs.append(numeric)
             except Exception:
                 continue
 
@@ -434,9 +467,9 @@ class HitRateReporter:
         families_to_freeze: list[str] = []
 
         for family, data in by_family.items():
-            skill_lcb = float(data.get("avg_skill_lcb") or 0.0)
-            hit_rate = float(data.get("hit_rate") or 0.0)
-            n = int(data.get("total_n") or 0)
+            skill_lcb = _safe_float(data.get("avg_skill_lcb"), 0.0)
+            hit_rate = _safe_float(data.get("hit_rate"), 0.0)
+            n = _safe_int(data.get("total_n"), 0)
 
             # 样本不足时不做判断
             if n < 15:

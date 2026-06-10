@@ -1,4 +1,4 @@
-import { CheckCircle, XCircle, AlertTriangle, ArrowRight, Info } from "lucide-react";
+import { AlertTriangle, ArrowRight, CheckCircle, Info, XCircle } from "lucide-react";
 
 interface DiagnosticResult {
   category: string;
@@ -16,8 +16,8 @@ interface ReadinessDiagnosticProps {
 
 export function ReadinessDiagnostic({ results, onNavigate }: ReadinessDiagnosticProps) {
   const healthScore = calculateHealthScore(results);
-  const criticalIssues = results.filter(r => r.status === "error");
-  const warnings = results.filter(r => r.status === "warning");
+  const criticalIssues = results.filter((result) => result.status === "error");
+  const warnings = results.filter((result) => result.status === "warning");
 
   return (
     <div className="readiness-diagnostic">
@@ -42,29 +42,33 @@ export function ReadinessDiagnostic({ results, onNavigate }: ReadinessDiagnostic
         </div>
       </div>
 
-      {criticalIssues.length > 0 && (
+      {!!criticalIssues.length && (
         <div className="diagnostic-section critical">
-          <h4><XCircle size={16} /> 严重问题（需立即处理）</h4>
-          {criticalIssues.map((result, idx) => (
-            <DiagnosticCard key={idx} result={result} onNavigate={onNavigate} />
+          <h4>
+            <XCircle size={16} /> 严重问题
+          </h4>
+          {criticalIssues.map((result, index) => (
+            <DiagnosticCard key={`${result.category}-${index}`} result={result} onNavigate={onNavigate} />
           ))}
         </div>
       )}
 
-      {warnings.length > 0 && (
+      {!!warnings.length && (
         <div className="diagnostic-section warnings">
-          <h4><AlertTriangle size={16} /> 警告（建议处理）</h4>
-          {warnings.map((result, idx) => (
-            <DiagnosticCard key={idx} result={result} onNavigate={onNavigate} />
+          <h4>
+            <AlertTriangle size={16} /> 建议处理
+          </h4>
+          {warnings.map((result, index) => (
+            <DiagnosticCard key={`${result.category}-${index}`} result={result} onNavigate={onNavigate} />
           ))}
         </div>
       )}
 
-      {results.every(r => r.status === "healthy") && (
+      {results.every((result) => result.status === "healthy") && (
         <div className="diagnostic-section healthy">
           <CheckCircle size={20} />
           <h4>系统运行正常</h4>
-          <p>所有检查项均通过，无需采取行动。</p>
+          <p>所有检查项均通过，暂无需要处理的事项。</p>
         </div>
       )}
     </div>
@@ -78,6 +82,8 @@ function DiagnosticCard({
   result: DiagnosticResult;
   onNavigate?: (page: string) => void;
 }) {
+  const relatedPageLabel = result.related_page ? readinessPageLabel(result.related_page) : "";
+
   return (
     <div className={`diagnostic-card ${result.status}`}>
       <div className="diagnostic-header">
@@ -87,40 +93,48 @@ function DiagnosticCard({
 
       <p className="diagnostic-message">{result.message}</p>
 
-      {result.fix_suggestions.length > 0 && (
+      {!!result.fix_suggestions.length && (
         <div className="fix-suggestions">
-          <h5><Info size={13} /> 修复建议：</h5>
+          <h5>
+            <Info size={13} /> 修复建议
+          </h5>
           <ol>
-            {result.fix_suggestions.map((suggestion, idx) => (
-              <li key={idx}>{suggestion}</li>
+            {result.fix_suggestions.map((suggestion, index) => (
+              <li key={`${suggestion}-${index}`}>{suggestion}</li>
             ))}
           </ol>
         </div>
       )}
 
       {result.related_page && onNavigate && (
-        <button
-          className="small-button"
-          onClick={() => onNavigate(result.related_page!)}
-          type="button"
-        >
+        <button className="small-button" onClick={() => onNavigate(result.related_page!)} type="button">
           <ArrowRight size={13} />
-          前往 {result.related_page}
+          前往 {relatedPageLabel}
         </button>
       )}
     </div>
   );
 }
 
+function readinessPageLabel(page: string): string {
+  const normalized = page.toLowerCase();
+  if (normalized.includes("mcp") || normalized.includes("connector")) return "MCP / 连接器";
+  if (normalized.includes("gateway")) return "Gateway";
+  if (normalized.includes("tool") || normalized.includes("approval") || normalized.includes("intent")) return "工具 / 意图 / 审批";
+  if (normalized.includes("financial manager")) return "金融经理台";
+  if (normalized.includes("financial") || normalized.includes("finance")) return "金融实验室";
+  if (normalized.includes("plugin") || normalized.includes("skill")) return "插件 / 技能";
+  if (normalized.includes("setting") || normalized.includes("connection") || normalized.includes("control token")) return "设置";
+  if (normalized.includes("readiness") || normalized.includes("health")) return "准备度 / 健康";
+  return page;
+}
+
 function calculateHealthScore(results: DiagnosticResult[]): number {
   if (results.length === 0) return 100;
 
-  const totalWeight = results.length;
-  const healthyWeight = results.filter(r => r.status === "healthy").length;
-  const warningWeight = results.filter(r => r.status === "warning").length * 0.7;
-  const errorWeight = results.filter(r => r.status === "error").length * 0;
-
-  return Math.round(((healthyWeight + warningWeight + errorWeight) / totalWeight) * 100);
+  const healthyWeight = results.filter((result) => result.status === "healthy").length;
+  const warningWeight = results.filter((result) => result.status === "warning").length * 0.7;
+  return Math.round(((healthyWeight + warningWeight) / results.length) * 100);
 }
 
 function getScoreClass(score: number): string {

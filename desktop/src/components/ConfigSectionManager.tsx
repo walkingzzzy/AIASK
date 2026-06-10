@@ -103,7 +103,7 @@ export const DEFAULT_CONFIG_SECTIONS: ConfigSection[] = [
     id: "connection",
     title: "连接配置",
     icon: <Globe size={16} />,
-    description: "API 端点、Token 配置",
+    description: "API 端点、令牌配置",
     priority: "essential"
   },
   {

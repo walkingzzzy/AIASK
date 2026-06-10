@@ -11,6 +11,7 @@ import uuid
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from copy import deepcopy
 from datetime import datetime, timezone
+from threading import Lock
 from typing import Any
 
 from ...services.artifact_registry import (
@@ -34,12 +35,31 @@ _EXECUTION_ARTIFACT_SCAN_LIMIT = 400
 _RUNTIME_CONFIG_LOADED = False
 _REALTIME_QUOTE_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 _REALTIME_QUOTE_SKIP_UNTIL: dict[str, float] = {}
-_REALTIME_QUOTE_EXECUTOR = ThreadPoolExecutor(
-    max_workers=max(1, int(os.getenv("EXECUTION_MANAGER_REALTIME_ENRICH_MAX_WORKERS", "4") or "4")),
-    thread_name_prefix="execution-realtime",
-)
+_REALTIME_QUOTE_EXECUTOR: ThreadPoolExecutor | None = None
+_REALTIME_QUOTE_EXECUTOR_LOCK = Lock()
 
 logger = logging.getLogger(__name__)
+
+
+def _get_realtime_quote_executor() -> ThreadPoolExecutor:
+    global _REALTIME_QUOTE_EXECUTOR
+    with _REALTIME_QUOTE_EXECUTOR_LOCK:
+        if _REALTIME_QUOTE_EXECUTOR is None:
+            _REALTIME_QUOTE_EXECUTOR = ThreadPoolExecutor(
+                max_workers=max(1, int(os.getenv("EXECUTION_MANAGER_REALTIME_ENRICH_MAX_WORKERS", "4") or "4")),
+                thread_name_prefix="execution-realtime",
+            )
+        return _REALTIME_QUOTE_EXECUTOR
+
+
+def shutdown_realtime_quote_executor(*, wait: bool = False) -> None:
+    global _REALTIME_QUOTE_EXECUTOR
+    with _REALTIME_QUOTE_EXECUTOR_LOCK:
+        executor = _REALTIME_QUOTE_EXECUTOR
+        _REALTIME_QUOTE_EXECUTOR = None
+    _REALTIME_QUOTE_SKIP_UNTIL.clear()
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 
 _SOFT_GATE_PROFILES: dict[str, dict[str, float | int]] = {
@@ -644,7 +664,7 @@ def _load_realtime_quote_with_timeout(code: str) -> dict[str, Any] | None:
         return None
 
     try:
-        future = _REALTIME_QUOTE_EXECUTOR.submit(
+        future = _get_realtime_quote_executor().submit(
             get_quote_snapshot_sync,
             code,
             fallback_mode=FALLBACK_DB_ONLY,

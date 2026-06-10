@@ -51,6 +51,7 @@ from ..research_protocol_contract import (
 )
 from ..services.submission_coordinator import SubmissionExecutionOptions
 from ..services.admission_authority import SubmissionAdmissionAuthority
+from ..services.readiness_service import resolve_market_temperature_context
 from .._runtime_toggles import (
     diagnostic_observation_batch_limit as _diagnostic_observation_batch_limit,
     diagnostic_observation_dedupe_enabled as _diagnostic_observation_dedupe_enabled,
@@ -101,6 +102,7 @@ def _compact_unique(values: Any, *, limit: int = 12) -> list[str]:
             break
     return items
 
+
 def _quality_summary_validation_grade(quality_summary: dict[str, Any], gate: dict[str, Any] | None = None) -> str:
     payload = dict(quality_summary or {})
     gate_payload = dict(gate or {})
@@ -138,7 +140,6 @@ def _build_gate3_quality_record_contract(
         "production_quality_recorded": qualified,
         "gate3_record_diagnostic_only": bool(recorded and not qualified),
     }
-
 
 
 def _candidate_trace_ids(candidate: dict[str, Any]) -> list[str]:

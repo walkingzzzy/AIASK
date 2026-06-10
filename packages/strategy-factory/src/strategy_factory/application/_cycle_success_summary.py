@@ -8,7 +8,20 @@ from __future__ import annotations
 
 from typing import Any
 
-from .services.readiness_service import resolve_governed_pool_state
+from .services.readiness_service import (
+    resolve_governed_pool_state,
+    resolve_market_temperature_context,
+)
+
+_VALIDATION_GRADE_ORDER: dict[str, int] = {
+    "D": 0,
+    "C": 1,
+    "B": 2,
+    "A": 3,
+    "S": 4,
+    "SS": 5,
+    "SSS": 6,
+}
 
 
 def _walk_dict_values(value: Any):
@@ -25,15 +38,66 @@ def _aggregate_validation_grade_counts(submit_result: dict[str, Any]) -> dict[st
     counts: dict[str, int] = {}
     for strategy in list(submit_result.get("strategies") or []):
         payload = dict(strategy or {})
-        grade = str(
-            payload.get("effective_validation_grade")
-            or payload.get("validation_grade")
-            or payload.get("raw_validation_grade")
-            or ""
-        ).strip().upper()
+        grade = _strategy_validation_grade(payload)
         if grade:
             counts[grade] = counts.get(grade, 0) + 1
     return counts
+
+
+def _strategy_validation_grade(payload: dict[str, Any]) -> str:
+    return str(
+        payload.get("effective_validation_grade")
+        or payload.get("validation_grade")
+        or payload.get("raw_validation_grade")
+        or ""
+    ).strip().upper()
+
+
+def _is_quality_production_record(payload: dict[str, Any]) -> bool:
+    item = dict(payload or {})
+    if item.get("gate3_quality_recorded") or item.get("gate3_record_quality_qualified"):
+        return True
+    if item.get("created_strategy_pool") or item.get("submitted"):
+        return True
+    status = str(item.get("status") or "").strip().lower()
+    return status in {"submitted", "incubating", "listed"} and not bool(
+        item.get("record_only") or item.get("gate3_record_only") or item.get("created_audit_only")
+    )
+
+
+def _aggregate_quality_validation_grade_counts(submit_result: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for strategy in list(submit_result.get("strategies") or []):
+        payload = dict(strategy or {})
+        if not _is_quality_production_record(payload):
+            continue
+        grade = _strategy_validation_grade(payload)
+        if grade:
+            counts[grade] = counts.get(grade, 0) + 1
+    return counts
+
+
+def _aggregate_diagnostic_validation_grade_counts(submit_result: dict[str, Any]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for strategy in list(submit_result.get("strategies") or []):
+        payload = dict(strategy or {})
+        if _is_quality_production_record(payload):
+            continue
+        grade = _strategy_validation_grade(payload)
+        if grade:
+            counts[grade] = counts.get(grade, 0) + 1
+    return counts
+
+
+def _top_validation_grade(counts: dict[str, int]) -> str | None:
+    grades = [
+        str(grade or "").strip().upper()
+        for grade, count in dict(counts or {}).items()
+        if _safe_int(count) > 0 and str(grade or "").strip().upper() in _VALIDATION_GRADE_ORDER
+    ]
+    if not grades:
+        return None
+    return max(grades, key=lambda grade: _VALIDATION_GRADE_ORDER.get(grade, -1))
 
 
 def _aggregate_statistical_metric_missing_counts(submit_result: dict[str, Any]) -> dict[str, int]:
@@ -207,6 +271,10 @@ def build_success_run_summary(
     backtest_summary = dict(backtest_report.get("summary") or {})
     gate_3_failure_topn = list(submit_result.get("gate_3_failure_reason_topn") or [])
     validation_grade_counts = _aggregate_validation_grade_counts(submit_result)
+    qualified_validation_grade_counts = _aggregate_quality_validation_grade_counts(submit_result)
+    diagnostic_validation_grade_counts = _aggregate_diagnostic_validation_grade_counts(submit_result)
+    latest_qualified_validation_grade = _top_validation_grade(qualified_validation_grade_counts)
+    latest_diagnostic_validation_grade = _top_validation_grade(diagnostic_validation_grade_counts)
     statistical_metric_missing_counts = _aggregate_statistical_metric_missing_counts(submit_result)
     metric_source_audit = _aggregate_metric_source_audit(submit_result)
     submission_lane_counts = _aggregate_submission_lane_counts(submit_result)
@@ -240,6 +308,11 @@ def build_success_run_summary(
         observe_incubation_count + diagnostic_observation_count,
     )
     llm_status_counts = _build_llm_status_counts(autonomy_summary)
+    market_temperature_context = dict(readiness_summary.get("market_temperature_context") or {})
+    if not market_temperature_context:
+        market_temperature_context = resolve_market_temperature_context(snapshot)
+    if not bool(market_temperature_context.get("available")):
+        market_temperature_context = {}
 
     return {
         "trace_id": trace_id,
@@ -269,6 +342,14 @@ def build_success_run_summary(
         "factory_readiness_can_proceed": readiness_summary.get("can_proceed"),
         "factory_readiness_blocker_count": readiness_summary.get("blocker_count", 0),
         "factory_readiness_warning_count": readiness_summary.get("warning_count", 0),
+        "market_temperature_context_available": bool(market_temperature_context),
+        "market_temperature_context": market_temperature_context,
+        "market_temperature": market_temperature_context.get("temperature"),
+        "market_temperature_state": market_temperature_context.get("state"),
+        "market_temperature_as_of": market_temperature_context.get("as_of"),
+        "market_temperature_quality_status": market_temperature_context.get("quality_status"),
+        "market_temperature_readiness_status": market_temperature_context.get("readiness_status"),
+        "market_temperature_staleness_days": market_temperature_context.get("staleness_days"),
         "fear_greed": snapshot.get("fear_greed_index"),
         "listed_count": snapshot.get("listed_count", 0),
         "snapshot_degraded": bool(snapshot.get("degraded")),
@@ -831,6 +912,19 @@ def build_success_run_summary(
             ),
         ),
         "gate_3_provisional_passed": submit_result.get("gate_3_provisional_passed", 0),
+        "gate_3_recorded": submit_result.get("gate_3_recorded", 0),
+        "gate3_quality_recorded": submit_result.get(
+            "gate3_quality_recorded",
+            submit_result.get("gate3_record_quality_qualified_count", 0),
+        ),
+        "gate3_record_quality_qualified_count": submit_result.get(
+            "gate3_record_quality_qualified_count",
+            submit_result.get("gate3_quality_recorded", 0),
+        ),
+        "gate3_record_diagnostic_only_count": submit_result.get(
+            "gate3_record_diagnostic_only_count",
+            0,
+        ),
         "observe_admitted_count": observe_admitted_count,
         "formal_incubation_count": formal_incubation_count,
         "observe_incubation_count": observe_incubation_count,
@@ -843,6 +937,11 @@ def build_success_run_summary(
         "gate_3_failure_reason_topn": gate_3_failure_topn,
         "gate_3_failure_topn": gate_3_failure_topn,
         "validation_grade_counts": validation_grade_counts,
+        "qualified_validation_grade_counts": qualified_validation_grade_counts,
+        "diagnostic_validation_grade_counts": diagnostic_validation_grade_counts,
+        "latest_qualified_validation_grade": latest_qualified_validation_grade,
+        "latest_diagnostic_validation_grade": latest_diagnostic_validation_grade,
+        "latest_validation_grade": latest_qualified_validation_grade,
         "statistical_metric_missing_counts": statistical_metric_missing_counts,
         "metric_source_audit": metric_source_audit,
         "log_compaction_summary": {

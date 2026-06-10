@@ -6,6 +6,8 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+from ..numeric import bounded_float, bounded_int
+
 DEFAULT_SQLITE_PATH = Path.home() / ".aiask" / "akshare_mcp.sqlite3"
 SQLITE_ENV_KEYS = ("AKSHARE_MCP_SQLITE_PATH", "AIASK_SQLITE_PATH", "SQLITE_BUSY_TIMEOUT_MS", "SQLITE_JOURNAL_MODE")
 
@@ -137,7 +139,12 @@ async def _call_db_facade(
 
     try:
         call_params = dict(params or {})
-        timeout = float(call_params.pop("_timeout_seconds", os.getenv("AIASK_STRATEGY_FACTORY_TOOL_TIMEOUT", "15")))
+        timeout = bounded_float(
+            call_params.pop("_timeout_seconds", os.getenv("AIASK_STRATEGY_FACTORY_TOOL_TIMEOUT", "15")),
+            default=15.0,
+            minimum=1.0,
+            maximum=3600.0,
+        )
         db = get_db()
         await db.initialize()
         handler = handler_loader()
@@ -206,11 +213,7 @@ def _load_factory_event_handler(action: str):
 
 
 def _safe_limit(value: Any, *, default: int = 100, maximum: int = 1000) -> int:
-    try:
-        parsed = int(value)
-    except Exception:
-        parsed = default
-    return max(1, min(parsed, maximum))
+    return bounded_int(value, default=default, minimum=1, maximum=maximum)
 
 
 def _string_or_none(value: Any) -> str | None:
@@ -321,12 +324,7 @@ async def strategy_review_snapshot(arguments: dict[str, Any]) -> dict[str, Any]:
 
 async def strategy_domain_events(arguments: dict[str, Any]) -> dict[str, Any]:
     params = dict(arguments or {})
-    raw_limit = params.get("limit")
-    try:
-        limit_int = int(raw_limit) if raw_limit is not None else 50
-    except (TypeError, ValueError):
-        limit_int = 50
-    params["limit"] = max(1, min(limit_int, 200))
+    params["limit"] = _safe_limit(params.get("limit"), default=50, maximum=200)
     result = await _call_db_facade(_load_domain_events_handler, params)
     return _read_only_fallback("domain_events", result)
 

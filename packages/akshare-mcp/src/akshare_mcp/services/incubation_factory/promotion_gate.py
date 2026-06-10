@@ -27,22 +27,30 @@ from typing import Any, Optional, Sequence
 logger = logging.getLogger(__name__)
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _finite_float(value: Any) -> Optional[float]:
+    if value is None:
+        return None
     try:
-        if value is None:
-            return float(default)
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return numeric
+    fallback = _finite_float(default)
+    return fallback if fallback is not None else 0.0
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
 
 
 def _promotion_gate_enabled() -> bool:
@@ -103,11 +111,11 @@ class PromotionGate:
             benchmark_sharpe: 基准 Sharpe（默认 0）。
             dsr_fn: 可注入的 deflated_sharpe_ratio 实现；缺省时惰性 import 生产实现。
         """
-        series = [
-            _safe_float(x)
-            for x in (forward_returns or [])
-            if x is not None and math.isfinite(_safe_float(x, float("nan")))
-        ]
+        series = []
+        for item in forward_returns or []:
+            numeric = _finite_float(item)
+            if numeric is not None:
+                series.append(numeric)
         n = len(series)
         reasons: list[str] = []
 
@@ -129,9 +137,9 @@ class PromotionGate:
 
             result = fn(
                 np.asarray(series, dtype=float),
-                n_trials=max(1, int(n_trials)),
-                benchmark_sharpe=float(benchmark_sharpe),
-                periods_per_year=float(self.periods_per_year),
+                n_trials=max(1, _safe_int(n_trials, 1)),
+                benchmark_sharpe=_safe_float(benchmark_sharpe, 0.0),
+                periods_per_year=max(1.0, _safe_float(self.periods_per_year, 252.0)),
             )
         except Exception as exc:  # 软降级：统计失败不误晋升
             reasons.append(f"dsr_exception:{type(exc).__name__}")
@@ -200,11 +208,12 @@ async def fetch_forward_return_series(
     if callable(getter):
         try:
             rows = await getter(strategy_id, forward_days=horizon_days, lookback_days=lookback_days)
-            return [
-                _safe_float(r.get("actual_return"))
-                for r in (rows or [])
-                if r.get("actual_return") is not None
-            ]
+            values: list[float] = []
+            for row in rows or []:
+                numeric = _finite_float(dict(row or {}).get("actual_return"))
+                if numeric is not None:
+                    values.append(numeric)
+            return values
         except Exception as exc:
             logger.debug("fetch_forward_return_series: list method failed: %s", exc)
     # 回退：用 get_signal_stats 暴露的 per-horizon 序列（若有）。
@@ -215,7 +224,12 @@ async def fetch_forward_return_series(
             series = dict(stats or {}).get("forward_return_series") or {}
             horizon_series = series.get(str(horizon_days)) or series.get(horizon_days)
             if horizon_series:
-                return [_safe_float(x) for x in horizon_series if x is not None]
+                values: list[float] = []
+                for item in horizon_series:
+                    numeric = _finite_float(item)
+                    if numeric is not None:
+                        values.append(numeric)
+                return values
         except Exception as exc:
             logger.debug("fetch_forward_return_series: stats fallback failed: %s", exc)
     return []

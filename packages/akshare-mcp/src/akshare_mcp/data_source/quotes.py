@@ -12,15 +12,34 @@ import os
 import re
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from contextlib import redirect_stdout
+from threading import Lock
 from typing import Optional
 
 from ..date_utils import format_date_dash, get_latest_trading_date
 from ..utils import normalize_code, safe_float, safe_int, safe_stderr_print
 
 _EFINANCE_TIMEOUT = float(os.getenv("EFINANCE_TIMEOUT", "12"))
-_efinance_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="efinance")
+_efinance_executor: ThreadPoolExecutor | None = None
+_efinance_executor_lock = Lock()
 
 logger = logging.getLogger(__name__)
+
+
+def _get_efinance_executor() -> ThreadPoolExecutor:
+    global _efinance_executor
+    with _efinance_executor_lock:
+        if _efinance_executor is None:
+            _efinance_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="efinance")
+        return _efinance_executor
+
+
+def shutdown_efinance_executor(*, wait: bool = False) -> None:
+    global _efinance_executor
+    with _efinance_executor_lock:
+        executor = _efinance_executor
+        _efinance_executor = None
+    if executor is not None:
+        executor.shutdown(wait=wait, cancel_futures=True)
 
 try:
     import efinance as ef
@@ -307,7 +326,7 @@ class QuotesMixin:
         # 3. eFinance（限制超时）
         if ef is not None:
             try:
-                future = _efinance_executor.submit(ef.stock.get_latest_quote, [code])
+                future = _get_efinance_executor().submit(ef.stock.get_latest_quote, [code])
                 df = future.result(timeout=_EFINANCE_TIMEOUT)
                 if df is not None and not df.empty:
                     row = df.iloc[0]
@@ -521,7 +540,7 @@ class QuotesMixin:
         # 4. eFinance（限制超时，防止内部 5 次 HTTP 重试阻塞过久）
         if ef is not None:
             try:
-                future = _efinance_executor.submit(ef.stock.get_quote_history, code)
+                future = _get_efinance_executor().submit(ef.stock.get_quote_history, code)
                 df = future.result(timeout=_EFINANCE_TIMEOUT)
                 if df is not None and not df.empty:
                     results = []

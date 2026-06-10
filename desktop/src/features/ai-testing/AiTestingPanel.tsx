@@ -19,6 +19,7 @@ export function AiTestingPanel({
   const [model, setModel] = useState("");
   const currentStatus = status || payload?.ai || null;
   const runtimeMode = currentStatus?.mock ? "mock" : "live";
+  const runtimeLabel = runtimeMode === "mock" ? "Mock 数据" : "真实后端";
 
   useEffect(() => {
     refreshStatus().catch(() => undefined);
@@ -31,12 +32,12 @@ export function AiTestingPanel({
           <span>AI 测试</span>
           <h2>{currentStatus?.model || "模型运行时"}</h2>
           <p>
-            Provider {currentStatus?.provider || "-"} / {runtimeMode} / base URL{" "}
+            提供方 {currentStatus?.provider || "-"} / {runtimeLabel} / 基础 URL{" "}
             {currentStatus?.base_url_configured ? "已配置" : "默认"}
           </p>
         </div>
         <div className="status-cluster">
-          <StatusBadge status={runtimeMode === "live" ? "live_backend" : "mock_fixture"} label={runtimeMode} />
+          <StatusBadge status={runtimeMode === "live" ? "live_backend" : "mock_fixture"} label={runtimeLabel} />
           <StatusBadge status={currentStatus?.configured ? "implemented" : "unconfigured"} />
         </div>
       </div>
@@ -51,17 +52,17 @@ export function AiTestingPanel({
             <button className="small-button" disabled={busy} onClick={() => refreshStatus()} type="button">刷新</button>
           </div>
           <div className="kv-grid">
-            <span>Provider</span>
+            <span>提供方</span>
             <strong>{currentStatus?.provider || "-"}</strong>
-            <span>Model</span>
+            <span>模型</span>
             <strong>{currentStatus?.model || "-"}</strong>
             <span>Mock 模式</span>
             <strong>{String(currentStatus?.mock ?? "-")}</strong>
             <span>模式</span>
-            <strong>{runtimeMode}</strong>
-            <span>Base URL</span>
+            <strong>{runtimeLabel}</strong>
+            <span>基础 URL</span>
             <strong>{currentStatus?.base_url_configured ? "已配置" : "默认"}</strong>
-            <span>API key</span>
+            <span>API 密钥</span>
             <strong>{currentStatus?.api_key_configured ? "已配置" : "未配置"}</strong>
           </div>
         </div>
@@ -75,7 +76,7 @@ export function AiTestingPanel({
             <StatusBadge status={result?.success ? "implemented" : result ? "failed" : "not_loaded"} />
           </div>
           <label className="field-row">
-            <span>提示词 Prompt</span>
+            <span>提示词</span>
             <input value={prompt} onChange={(event) => setPrompt(event.target.value)} />
           </label>
           <label className="field-row">
@@ -99,7 +100,7 @@ export function AiTestingPanel({
             <span>已配置</span>
             <strong>{String(result?.configured ?? false)}</strong>
             <span>模式</span>
-            <strong>{result ? (result.mock ? "mock" : "live") : "-"}</strong>
+            <strong>{result ? (result.mock ? "Mock 数据" : "真实后端") : "-"}</strong>
             <span>延迟</span>
             <strong>{result?.latency_ms === undefined ? "-" : `${result.latency_ms}ms`}</strong>
             <span>预览</span>

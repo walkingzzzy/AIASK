@@ -271,10 +271,17 @@ def build_factor_research_artifact_payload(
         )
 
     freshness_days = builder_cls._days_since(latest_factor_date, reference_date=snapshot_date)
-    stale = bool(
+    history_stale = bool(
         ("stale" in scheduler_quality_flags)
         or (freshness_days is not None and freshness_days > builder_cls.STALE_AFTER_DAYS)
     )
+    governed_pool_fresh = bool(
+        governed_top_candidates
+        and governed_freshness_days is not None
+        and builder_cls._safe_float(governed_freshness_days, default=999.0)
+        <= builder_cls.STALE_AFTER_DAYS
+    )
+    stale = bool(history_stale and not governed_pool_fresh)
     decay_factors = [
         str(item.get("factor_name") or "")
         for item in ranked_factors
@@ -286,6 +293,8 @@ def build_factor_research_artifact_payload(
         if str(item.get("factor_name") or "")
     }
     quality_flags: list[str] = []
+    if history_stale:
+        quality_flags.append("factor_history_stale")
     if stale:
         quality_flags.append("stale")
     if decay_factors:
@@ -357,6 +366,10 @@ def build_factor_research_artifact_payload(
 
     if not rationale:
         rationale.append("未识别到显著活跃因子，后续阶段回退到原始快照因子摘要逻辑。")
+    if history_stale and not stale:
+        rationale.append(
+            "因子 IC 历史存在 freshness 风险，但治理候选池仍在新鲜窗口内，本轮按治理候选池继续供给。"
+        )
     if stale:
         rationale.append("因子研究数据存在 freshness 风险，后续阶段应降低置信度或触发补算。")
     if decay_factors:
@@ -434,6 +447,8 @@ def build_factor_research_artifact_payload(
         "degraded": degraded,
         "latest_factor_date": latest_factor_date.isoformat() if latest_factor_date else None,
         "freshness_days": freshness_days,
+        "history_stale": history_stale,
+        "governed_pool_fresh": governed_pool_fresh,
         "stale": stale,
         "quality_flags": quality_flags,
         "factor_history": history_meta,
@@ -504,6 +519,7 @@ def build_factor_research_artifact_payload(
             degraded=degraded,
             freshness_days=freshness_days,
             latest_factor_date=latest_factor_date.isoformat() if latest_factor_date else None,
+            history_stale=history_stale,
             stale=stale,
             quality_flags=quality_flags,
             decay_factors=decay_factors,

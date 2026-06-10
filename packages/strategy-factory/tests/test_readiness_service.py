@@ -113,6 +113,75 @@ def test_active_factor_pool_fallback_counts_as_governed_supply(monkeypatch):
     assert readiness["can_proceed"] is True
 
 
+def test_market_temperature_context_is_included_without_changing_readiness(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    snapshot = _healthy_snapshot()
+    snapshot["market_internals"] = {
+        "market_temperature": {
+            "as_of": "2026-06-08",
+            "market_temperature": 47.2,
+            "market_state": "neutral",
+            "quality_status": "healthy",
+            "readiness_status": "ready",
+            "staleness_days": 0,
+            "stock_count": 998,
+            "industry_count": 31,
+            "source_chain": ["market_temperature_snapshots", "market_temperature.service"],
+        }
+    }
+
+    readiness = ReadinessService().evaluate(snapshot, _governed_factor_research())
+
+    assert readiness["can_proceed"] is True
+    assert readiness["blockers"] == []
+    assert readiness["critical_blockers"] == []
+    assert readiness["market_temperature_context_available"] is True
+    assert readiness["market_temperature_context"]["temperature"] == 47.2
+    assert readiness["market_temperature_context"]["quality_status"] == "healthy"
+    assert readiness["market_temperature_context"]["readiness_status"] == "ready"
+    assert readiness["market_temperature_context"]["source_chain"] == [
+        "market_temperature_snapshots",
+        "market_temperature.service",
+    ]
+    assert "market_temperature_context_degraded" not in readiness["warnings"]
+    assert "market_temperature_context_stale" not in readiness["warnings"]
+
+
+def test_stale_market_temperature_context_warns_but_does_not_block(monkeypatch):
+    monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
+
+    from strategy_factory.application.services.readiness_service import ReadinessService
+
+    snapshot = _healthy_snapshot()
+    snapshot["market_temperature"] = {
+        "as_of": "2026-06-01",
+        "market": {"temperature": 18.5, "state": "cold", "stock_count": 512},
+        "quality": {
+            "status": "degraded",
+            "warnings": ["partial_kline_coverage"],
+            "industry_count": 28,
+        },
+        "readiness_status": "stale",
+        "staleness_days": 7,
+        "source_chain": ["market_temperature_snapshots"],
+    }
+
+    readiness = ReadinessService().evaluate(snapshot, _governed_factor_research())
+
+    assert readiness["can_proceed"] is True
+    assert readiness["blockers"] == []
+    assert readiness["critical_blockers"] == []
+    assert "market_temperature_context_degraded" in readiness["warnings"]
+    assert "market_temperature_context_stale" in readiness["warnings"]
+    assert readiness["market_temperature_context"]["temperature"] == 18.5
+    assert readiness["market_temperature_context"]["state"] == "cold"
+    assert readiness["market_temperature_context"]["warnings"] == ["partial_kline_coverage"]
+    assert readiness["readiness_score"] >= readiness["min_score"]
+
+
 def test_paper_observation_backlog_high_warns_without_blocking_healthy_intake(monkeypatch):
     monkeypatch.setenv("STRATEGY_FACTORY_READINESS_HARD_BLOCK", "1")
 

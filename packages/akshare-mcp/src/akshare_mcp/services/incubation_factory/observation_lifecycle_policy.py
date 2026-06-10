@@ -17,26 +17,35 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _finite_float(value: Any) -> float | None:
+    if value is None:
+        return None
     try:
-        if value is None:
-            return float(default)
-        return float(value)
-    except (TypeError, ValueError):
-        return float(default)
+        numeric = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return numeric if math.isfinite(numeric) else None
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return numeric
+    fallback = _finite_float(default)
+    return fallback if fallback is not None else 0.0
 
 
 def _safe_int(value: Any, default: int = 0) -> int:
-    try:
-        if value is None:
-            return int(default)
-        return int(value)
-    except (TypeError, ValueError):
-        return int(default)
+    numeric = _finite_float(value)
+    if numeric is not None:
+        return int(numeric)
+    fallback = _finite_float(default)
+    return int(fallback if fallback is not None else 0)
 
 
 @dataclass(slots=True)

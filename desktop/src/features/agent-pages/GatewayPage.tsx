@@ -59,6 +59,21 @@ function normalizeGatewayMessage(message: ApiGatewayMessage): RetryableGatewayMe
   };
 }
 
+function gatewayMessageLabel(status: string): string {
+  if (status === "NOT_LOADED") return "尚未加载";
+  if (status === "GATEWAY_LOADED") return "Gateway 已加载";
+  if (status === "GATEWAY_DIRECTORY_REFRESHED") return "目录已刷新";
+  if (status === "GATEWAY_PLATFORM_HEALTH_OK") return "平台健康已更新";
+  if (status === "GATEWAY_RETRY_RUNNING") return "正在重试消息";
+  if (status === "GATEWAY_RETRY_OK") return "消息重试已提交";
+  if (status === "GATEWAY_BATCH_RETRY_RUNNING") return "正在批量重试";
+  if (status === "GATEWAY_BATCH_RETRY_OK") return "批量重试已提交";
+  if (status === "GATEWAY_INTENT_CREATING") return "正在创建发送审批";
+  if (status === "GATEWAY_INTENT_CREATED") return "发送审批已创建";
+  if (status === "GATEWAY_INTENT_FAILED") return "发送审批创建失败";
+  return status;
+}
+
 export function GatewayPage({
   endpoint,
   apiToken,
@@ -201,8 +216,16 @@ export function GatewayPage({
           <h1>Gateway</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={controlToken.trim() ? "ready" : "gated"} label={controlToken.trim() ? "control ready" : "control token required"} />
-          <StatusBadge status={messageStatus.startsWith("GATEWAY_") ? "ready" : messageStatus} label={messageStatus} />
+          <StatusBadge
+            status={controlToken.trim() ? "ready" : "gated"}
+            label={controlToken.trim() ? "控制已就绪" : "缺少控制令牌"}
+            technicalLabel={controlToken.trim() ? "control ready" : "control token required"}
+          />
+          <StatusBadge
+            status={messageStatus.startsWith("GATEWAY_") ? "ready" : messageStatus}
+            label={gatewayMessageLabel(messageStatus)}
+            technicalLabel={messageStatus}
+          />
           <button className="small-button" disabled={loading} onClick={loadGatewayState} type="button">
             <RefreshCw size={14} className={loading ? "spin" : ""} />
             刷新
@@ -214,7 +237,7 @@ export function GatewayPage({
         <div className="capability-stack">
           <div className="capability-banner">
             <div>
-              <span>Platform Gateway</span>
+              <span>平台 Gateway</span>
               <h2>平台健康、守护进程、目录、消息与重试</h2>
               <p>消息发送只创建 ActionIntent，投递仍等待审批确认。</p>
             </div>
@@ -222,35 +245,35 @@ export function GatewayPage({
           </div>
 
           {!controlToken.trim() && (
-            <div className="notice warn">Gateway 管理详情需要 Control token；发送预览不会绕过 ActionIntent 审批链路。</div>
+            <div className="notice warn">Gateway 管理详情需要控制令牌；发送预览不会绕过 ActionIntent 审批链路。</div>
           )}
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="Gateway" value={statusText} status={statusText} />
-            <MetricCard label="Daemon" value={daemonRunning ? "running" : daemonStatus ? "stopped" : "not_loaded"} status={daemonRunning ? "ready" : daemonStatus ? "disabled" : "not_loaded"} />
-            <MetricCard label="Platforms" value={platforms.length} status={platforms.length ? "ready" : "not_loaded"} />
-            <MetricCard label="Messages" value={messages.length} status={messages.length ? "ready" : "not_loaded"} />
-            <MetricCard label="Failed Retry" value={failedCount} status={failedCount ? "failed" : "ready"} />
-            <MetricCard label="Directory" value={directory.length} status={directory.length ? "ready" : "not_loaded"} />
+            <MetricCard label="Gateway 状态" value={statusText} status={statusText} />
+            <MetricCard label="守护进程" value={daemonRunning ? "running" : daemonStatus ? "stopped" : "not_loaded"} status={daemonRunning ? "ready" : daemonStatus ? "disabled" : "not_loaded"} />
+            <MetricCard label="平台" value={platforms.length} status={platforms.length ? "ready" : "not_loaded"} />
+            <MetricCard label="消息" value={messages.length} status={messages.length ? "ready" : "not_loaded"} />
+            <MetricCard label="待重试" value={failedCount} status={failedCount ? "failed" : "ready"} />
+            <MetricCard label="目录" value={directory.length} status={directory.length ? "ready" : "not_loaded"} />
           </div>
 
           <section className="capability-grid two">
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{daemonEnabled ? "enabled" : "disabled"}</span>
-                  <h3>Daemon status</h3>
+                  <span>{daemonEnabled ? "已启用" : "已停用"}</span>
+                  <h3>守护进程状态</h3>
                 </div>
-                <StatusBadge status={daemonRunning ? "ready" : "disabled"} label={daemonRunning ? "running" : "stopped"} />
+                <StatusBadge status={daemonRunning ? "ready" : "disabled"} label={daemonRunning ? "运行中" : "已停止"} />
               </div>
               <div className="kv-grid">
-                <span>Enabled</span>
+                <span>已启用</span>
                 <strong>{String(daemonStatus?.data?.enabled ?? "unknown")}</strong>
-                <span>Running</span>
+                <span>运行中</span>
                 <strong>{String(daemonStatus?.data?.running ?? "unknown")}</strong>
-                <span>Listeners</span>
+                <span>监听器</span>
                 <strong>{Object.keys(daemonStatus?.data?.listeners || {}).length}</strong>
-                <span>Status</span>
+                <span>状态</span>
                 <strong>{statusText}</strong>
               </div>
             </div>
@@ -258,8 +281,8 @@ export function GatewayPage({
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{platforms.length} platforms</span>
-                  <h3>Platform health</h3>
+                  <span>{platforms.length} 个平台</span>
+                  <h3>平台健康</h3>
                 </div>
               </div>
               <div className="mini-list">
@@ -272,8 +295,8 @@ export function GatewayPage({
                       <div>
                         <strong>{name}</strong>
                         <span>{compact(platform.status || (platform.enabled ? "enabled" : "unknown"))}</span>
-                        {platform.missing_env?.length ? <p>missing: {platform.missing_env.join(", ")}</p> : null}
-                        {platformHealth[name] ? <p>health: {compact(healthData.status || health.status || health.object)}</p> : null}
+                        {platform.missing_env?.length ? <p>缺少环境变量：{platform.missing_env.join(", ")}</p> : null}
+                        {platformHealth[name] ? <p>健康状态：{compact(healthData.status || health.status || health.object)}</p> : null}
                       </div>
                       <button className="small-button" disabled={loading || !controlToken.trim()} onClick={() => checkPlatformHealth(name)} type="button">
                         健康
@@ -288,10 +311,10 @@ export function GatewayPage({
             <form className="capability-section" onSubmit={createSendIntent}>
               <div className="section-header">
                 <div>
-                  <span>intent only</span>
-                  <h3>Message send preview</h3>
+                  <span>仅创建审批</span>
+                  <h3>消息发送预览</h3>
                 </div>
-                <StatusBadge status="gated" label="approval required" />
+                <StatusBadge status="approval_required" />
               </div>
               <label className="field-row">
                 <span>平台</span>
@@ -314,8 +337,8 @@ export function GatewayPage({
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{directory.length} entries</span>
-                  <h3>Directory refresh</h3>
+                  <span>{directory.length} 个目录项</span>
+                  <h3>目录刷新</h3>
                 </div>
                 <button className="small-button" disabled={loading || !controlToken.trim()} onClick={refreshDirectory} type="button">
                   <FolderSync size={13} />
@@ -337,17 +360,17 @@ export function GatewayPage({
           <section className="capability-section">
             <div className="section-header">
               <div>
-                <span>{messages.length} messages</span>
-                <h3>Messages</h3>
+                <span>{messages.length} 条消息</span>
+                <h3>消息列表</h3>
               </div>
               <MessageSquareWarning size={18} />
             </div>
             <div className="data-table">
               <div className="table-head">
-                <span>message</span>
-                <span>platform</span>
-                <span>status</span>
-                <span>error</span>
+                <span>消息</span>
+                <span>平台</span>
+                <span>状态</span>
+                <span>错误 / 目标</span>
               </div>
               {messages.slice(0, 10).map((message, index) => {
                 const normalized = normalizeGatewayMessage(message);
@@ -360,7 +383,7 @@ export function GatewayPage({
                   </div>
                 );
               })}
-              {!messages.length && <div className="table-empty">No gateway messages loaded.</div>}
+              {!messages.length && <div className="table-empty">暂无 Gateway 消息。</div>}
             </div>
           </section>
 
@@ -373,13 +396,13 @@ export function GatewayPage({
           )}
 
           <details className="raw-details">
-            <summary>Gateway raw payloads</summary>
+            <summary>Gateway 原始载荷</summary>
             <JsonPanel value={{ gatewayStatus, daemonStatus, platforms, platformHealth, messages, directory, result }} />
           </details>
 
           <div className="notice info compact">
             <RotateCcw size={13} />
-            <span>Failed retry calls `/v1/gateway/messages/:id/retry`; message send preview creates `gateway.send_message` ActionIntent only.</span>
+            <span>失败消息重试会调用 `/v1/gateway/messages/:id/retry`；发送预览只创建 `gateway.send_message` ActionIntent。</span>
           </div>
         </div>
       </div>
