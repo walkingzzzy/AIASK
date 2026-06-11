@@ -13,6 +13,30 @@ from .runtime import AgentRuntime
 from .adapters import quant as quant_adapter
 
 
+LIVE_SMOKE_WORKING_DIRECTORY = "packages/agent"
+LIVE_SMOKE_SELF_TEST_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --self-test --pretty"
+LIVE_SMOKE_LIVE_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty"
+LIVE_SMOKE_ENVIRONMENT_NOTE = "Run from packages/agent so the Agent runtime dependencies are loaded; root or system Python may report missing FastAPI/pandas dependencies."
+LIVE_SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
+    {"name": "health", "method": "GET", "path": "/health/detailed"},
+    {"name": "tools", "method": "GET", "path": "/v1/tools"},
+    {"name": "financial_readiness", "method": "GET", "path": "/v1/financial-system/readiness"},
+    {"name": "workbench_summary", "method": "GET", "path": "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"},
+    {"name": "memory_status", "method": "GET", "path": "/v1/desktop/settings/status"},
+    {"name": "session_search", "method": "GET", "path": "/v1/search?query=AIASK&limit=5"},
+    {"name": "memory_search", "method": "POST", "path": "/v1/tools/agent_memory_search"},
+    {"name": "mcp_servers", "method": "GET", "path": "/v1/mcp/servers?all=true"},
+    {"name": "mcp_tools", "method": "GET", "path": "/v1/mcp/tools?all=true"},
+    {"name": "financial_manager_catalog", "method": "GET", "path": "/v1/desktop/financial-manager/catalog"},
+    {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
+    {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
+    {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "configured", "database_configured", "run_count"]},
+    {"name": "market_temperature_cache", "method": "POST", "path": "/v1/tools/agent_market_temperature_cache_readiness", "observes": ["ready", "status", "blockers", "warnings"]},
+    {"name": "market_temperature_forward_validation", "method": "POST", "path": "/v1/tools/agent_market_temperature_forward_validation", "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"]},
+    {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
+)
+
+
 def _env_configured(*keys: str) -> bool:
     return all(str(os.getenv(key, "")).strip() for key in keys)
 
@@ -200,32 +224,11 @@ def _live_smoke_checklist(next_actions: list[dict[str, Any]]) -> dict[str, Any]:
         "object": "aiask.live_smoke_checklist",
         "status": "ready" if not any(item.get("priority") == "critical" for item in next_actions) else "blocked",
         "script": "scripts/ops/live_readiness_smoke.py",
-        "checks": [
-            {"name": "health", "method": "GET", "path": "/health/detailed"},
-            {"name": "tools", "method": "GET", "path": "/v1/tools"},
-            {"name": "financial_readiness", "method": "GET", "path": "/v1/financial-system/readiness"},
-            {"name": "memory_status", "method": "GET", "path": "/v1/desktop/settings/status"},
-            {"name": "session_search", "method": "GET", "path": "/v1/search?query=AIASK&limit=5"},
-            {"name": "memory_search", "method": "POST", "path": "/v1/tools/agent_memory_search"},
-            {"name": "mcp_servers", "method": "GET", "path": "/v1/mcp/servers"},
-            {"name": "mcp_tools", "method": "GET", "path": "/v1/mcp/tools"},
-            {"name": "financial_manager_catalog", "method": "GET", "path": "/v1/desktop/financial-manager/catalog"},
-            {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
-            {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
-            {
-                "name": "market_temperature_cache",
-                "method": "POST",
-                "path": "/v1/tools/agent_market_temperature_cache_readiness",
-                "observes": ["ready", "status", "blockers", "warnings"],
-            },
-            {
-                "name": "market_temperature_forward_validation",
-                "method": "POST",
-                "path": "/v1/tools/agent_market_temperature_forward_validation",
-                "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"],
-            },
-            {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
-        ],
+        "working_directory": LIVE_SMOKE_WORKING_DIRECTORY,
+        "self_test_command": LIVE_SMOKE_SELF_TEST_COMMAND,
+        "live_command": LIVE_SMOKE_LIVE_COMMAND,
+        "environment_note": LIVE_SMOKE_ENVIRONMENT_NOTE,
+        "checks": [dict(item) for item in LIVE_SMOKE_CHECKS],
     }
 
 

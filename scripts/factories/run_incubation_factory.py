@@ -62,6 +62,17 @@ def _configure_stdio_utf8() -> None:
 _configure_stdio_utf8()
 
 _ROOT = Path(__file__).resolve().parents[2]
+_STRATEGY_FACTORY_SRC = _ROOT / "packages" / "strategy-factory" / "src"
+if str(_STRATEGY_FACTORY_SRC) not in sys.path:
+    sys.path.insert(0, str(_STRATEGY_FACTORY_SRC))
+
+from strategy_factory.runtime_bootstrap import ensure_factory_runtime
+
+ensure_factory_runtime(
+    project_root=_ROOT,
+    script_path=Path(__file__).resolve(),
+    argv=sys.argv[1:],
+)
 _TARGET = _ROOT / "packages" / "akshare-mcp" / "scripts" / "run_incubation_factory.py"
 _TARGET_SCRIPT_DIR = _TARGET.parent
 

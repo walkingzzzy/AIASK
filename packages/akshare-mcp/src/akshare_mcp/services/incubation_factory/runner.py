@@ -249,6 +249,14 @@ class IncubationFactoryRunner:
                 timeout=BATCH_TIMEOUT_SEC,
             ) or {}
 
+            # Phase 1.5: observe 池趋势策略重编译 remediation + observe->formal 转正。
+            # toggle OFF 默认时跳过,行为与改造前完全一致。
+            remediation_result = await _run_phase(
+                "recompile_remediation",
+                lambda: self._run_recompile_remediation(db),
+                timeout=BATCH_TIMEOUT_SEC,
+            ) or {}
+
             # Phase 2: 加载所有孵化中的策略 (cheap, no timeout)
             incubating = await self._list_incubating(db)
             # === DEV-V1 P1: 加载 paper observation 策略 ===
@@ -422,6 +430,7 @@ class IncubationFactoryRunner:
                 "started_at": start_time.isoformat(),
                 "elapsed_seconds": round(elapsed, 2),
                 "intake": intake_result,
+                "recompile_remediation": remediation_result,
                 "verification": {
                     "total": len(all_strategies),
                     "incubating_count": len(incubating),
@@ -573,6 +582,49 @@ class IncubationFactoryRunner:
             except Exception as exc:
                 logger.warning("IncubationFactory: paper-trading shutdown failed: %s", exc)
 
+    async def _run_recompile_remediation(self, db: Any) -> dict[str, Any]:
+        """P0-b/P1: 对 observe 池(submitted)趋势策略重编译补 compiled_dsl + 测量
+        instrument_profile,满足 formal readiness 的样本升级到 formal_incubation。
+
+        toggle OFF 默认时直接跳过,返回 skipped,行为与改造前一致。
+        """
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                recompile_remediation_enabled,
+                recompile_remediation_batch_limit,
+            )
+        except Exception:
+            return {"status": "skipped", "reason": "toggle_import_failed"}
+        if not recompile_remediation_enabled():
+            return {"status": "skipped", "reason": "disabled"}
+        try:
+            from akshare_mcp.services.strategy_recompile_backfill import (
+                backfill_historical_trend_strategies,
+            )
+            result = await backfill_historical_trend_strategies(
+                db,
+                statuses=["submitted"],
+                limit=recompile_remediation_batch_limit(),
+                dry_run=bool(self.dry_run),
+                measure_profile=True,
+                promote_ready=True,
+            )
+            result["status"] = "ok"
+            logger.info(
+                "IncubationFactory recompile remediation: scanned=%d recompiled=%d "
+                "promoted_to_formal=%d revision_required=%d updated=%d dry_run=%s",
+                int(result.get("scanned") or 0),
+                int(result.get("recompiled") or 0),
+                int(result.get("promoted_to_formal") or 0),
+                int(result.get("revision_required") or 0),
+                int(result.get("updated") or 0),
+                bool(result.get("dry_run")),
+            )
+            return result
+        except Exception as exc:  # noqa: BLE001 - remediation 失败不得拖垮整轮
+            logger.warning("IncubationFactory recompile remediation failed: %s", exc)
+            return {"status": "error", "reason": f"{type(exc).__name__}:{exc}"}
+
     async def _list_incubating(self, db: Any) -> list[dict[str, Any]]:
         """加载所有孵化中的策略。"""
         if hasattr(db, "list_strategies"):
@@ -594,15 +646,20 @@ class IncubationFactoryRunner:
             return []
         if not paper_intake_enabled():
             return []
-        if not hasattr(db, "list_paper_observation_strategies"):
+        method = None
+        if hasattr(db, "list_active_paper_observation_strategies"):
+            method = getattr(db, "list_active_paper_observation_strategies")
+        elif hasattr(db, "list_paper_observation_strategies"):
+            method = getattr(db, "list_paper_observation_strategies")
+        if not callable(method):
             return []
         try:
-            return await db.list_paper_observation_strategies(
+            return await method(
                 limit=paper_intake_batch_limit(),
             )
         except Exception as exc:
             logger.warning(
-                "IncubationFactory: list_paper_observation_strategies failed: %s", exc,
+                "IncubationFactory: list_active_paper_observation_strategies failed: %s", exc,
             )
             return []
 

@@ -378,3 +378,87 @@ def test_native_hermes_full_mode_is_control_gated(tmp_path, monkeypatch) -> None
         server.shutdown()
         server.server_close()
         thread.join(timeout=5)
+
+
+def test_legacy_http_mcp_inventory_honors_all_query_and_full_gate(tmp_path, monkeypatch) -> None:
+    monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIASK_AGENT_ENABLE_HERMES_FULL", "1")
+    monkeypatch.setenv("AIASK_AGENT_CONTROL_TOKEN", "secret")
+    mcp_config = tmp_path / "mcp_servers.json"
+    mcp_config.write_text(
+        json.dumps(
+            {
+                "servers": [
+                    {
+                        "name": "finance-demo",
+                        "domain": "financial",
+                        "transport": "stdio",
+                        "command": "python",
+                        "tools": [{"name": "quote", "description": "quote tool"}],
+                        "resources": [{"uri": "aiask://quotes"}],
+                        "prompts": [{"name": "risk-review"}],
+                        "auth": "oauth",
+                    },
+                    {
+                        "name": "general-demo",
+                        "domain": "general",
+                        "transport": "http",
+                        "url": "http://localhost:9999/mcp",
+                        "tools": [{"name": "browser", "description": "browser tool"}],
+                    },
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("AIASK_AGENT_MCP_CONFIG", str(mcp_config))
+    runtime = AgentRuntime(
+        model_client=MockModelClient(),
+        tool_registry=AgentToolRegistry(),
+        session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
+        max_iterations=2,
+    )
+    server = build_server("127.0.0.1", 0, runtime=runtime)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    base_url = f"http://127.0.0.1:{server.server_address[1]}"
+
+    try:
+        status, financial_servers = _request("GET", f"{base_url}/v1/mcp/servers")
+        assert status == 200
+        assert {item["name"] for item in financial_servers["data"]} == {"finance-demo"}
+
+        status, all_servers = _request("GET", f"{base_url}/v1/mcp/servers?all=true")
+        assert status == 200
+        assert {item["name"] for item in all_servers["data"]} == {"finance-demo", "general-demo"}
+
+        try:
+            _request("GET", f"{base_url}/v1/mcp/tools?all=true")
+            raise AssertionError("MCP tools inventory should require full-mode control token")
+        except HTTPError as exc:
+            assert exc.code == 401
+
+        headers = {"Authorization": "Bearer secret"}
+        status, financial_tools = _request("GET", f"{base_url}/v1/mcp/tools", headers=headers)
+        assert status == 200
+        assert {item["name"] for item in financial_tools["data"]} == {"quote"}
+
+        status, all_tools = _request("GET", f"{base_url}/v1/mcp/tools?all=true", headers=headers)
+        assert status == 200
+        assert {item["name"] for item in all_tools["data"]} == {"quote", "browser"}
+
+        status, resources = _request("GET", f"{base_url}/v1/mcp/resources?all=true", headers=headers)
+        assert status == 200
+        assert resources["data"][0]["uri"] == "aiask://quotes"
+
+        status, prompts = _request("GET", f"{base_url}/v1/mcp/prompts?all=true", headers=headers)
+        assert status == 200
+        assert prompts["data"][0]["name"] == "risk-review"
+
+        status, oauth = _request("GET", f"{base_url}/v1/mcp/oauth_status?all=true", headers=headers)
+        assert status == 200
+        assert {item["server"] for item in oauth["data"]} == {"finance-demo", "general-demo"}
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=5)

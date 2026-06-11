@@ -63,3 +63,4 @@ reports/
 
 # External/reference checkouts
 OpenBB/
+.env.bak_*

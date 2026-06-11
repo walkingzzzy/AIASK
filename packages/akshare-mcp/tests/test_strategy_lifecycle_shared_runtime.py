@@ -78,7 +78,61 @@ def test_execution_audit_gate_drives_incubation_stage_without_name_errors():
     assert stage == "graduation_ready"
 
 
-def test_execution_audit_gate_supports_bootstrap_ready_family_thresholds():
+def _low_freq_quality(primary_n: int, secondary_n: int) -> dict:
+    return {
+        "primary_effective_n": primary_n,
+        "secondary_effective_n": secondary_n,
+        "primary_skill_lcb": 0.04,
+        "secondary_skill_lcb": 0.02,
+        "recent_primary_skill_lcb": 0.01,
+        "coverage_ratio": 0.85,
+        "stability_gap": 0.03,
+    }
+
+
+def test_long_horizon_graduates_on_lower_sample_floor():
+    """P1: 低频(long)策略 n=32 应可毕业(自适应门 30),而非被短线门 60 卡死。"""
+    passed_audit = {
+        "audit_grade": True,
+        "realized_trade_count": 24,
+        "trade_expectancy": 0.03,
+        "pnl_conversion_efficiency": 0.02,
+        "execution_conversion_efficiency": 1.0,
+    }
+    stage = resolve_incubation_pipeline_stage(
+        _low_freq_quality(32, 16),
+        audit_summary=passed_audit,
+        holding_bucket="long",
+    )
+    assert stage == "graduation_ready"
+
+
+def test_long_horizon_still_blocks_below_adaptive_floor():
+    """低频门是 30,n=10 仍应停在 warmup —— 不是无限放水。"""
+    stage = resolve_incubation_pipeline_stage(
+        _low_freq_quality(10, 5),
+        holding_bucket="long",
+    )
+    assert stage == "warmup"
+
+
+def test_default_bucket_keeps_strict_sixty_floor():
+    """默认(短线/未指定)仍要求 n>=60 —— 不破坏既有严格门。"""
+    stage = resolve_incubation_pipeline_stage(_low_freq_quality(32, 16))
+    # n=32 < 60(短线门),不满足 graduation;skill_lcb>0 且 coverage 高 → candidate(待 audit)
+    assert stage != "graduation_ready"
+
+
+def test_low_freq_does_not_relax_skill_significance():
+    """低频自适应只放宽样本量,不放宽 skill_lcb>0 —— 负 skill 仍不能毕业。"""
+    quality = _low_freq_quality(32, 16)
+    quality["primary_skill_lcb"] = -0.01  # 统计不显著
+    quality["recent_primary_skill_lcb"] = -0.01
+    stage = resolve_incubation_pipeline_stage(
+        quality,
+        holding_bucket="long",
+    )
+    assert stage != "graduation_ready"
     audit_summary = {
         "strategy_type": "margin_divergence",
         "realized_trade_count": 5,

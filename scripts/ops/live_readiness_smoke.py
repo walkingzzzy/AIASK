@@ -20,6 +20,28 @@ from typing import Any
 DEFAULT_ENDPOINT = "http://127.0.0.1:8767"
 DEFAULT_CODES = ("600519", "000001")
 DEFAULT_BENCHMARK_CODE = "000300"
+RECOMMENDED_WORKING_DIRECTORY = "packages/agent"
+SELF_TEST_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --self-test --pretty"
+LIVE_COMMAND_TEMPLATE = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --endpoint {endpoint} --pretty"
+ENVIRONMENT_NOTE = "Run from packages/agent so the Agent runtime dependencies are loaded; root or system Python may report missing FastAPI/pandas dependencies."
+SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
+    {"name": "health", "method": "GET", "path": "/health/detailed"},
+    {"name": "tools", "method": "GET", "path": "/v1/tools"},
+    {"name": "financial_readiness", "method": "GET", "path": "/v1/financial-system/readiness"},
+    {"name": "workbench_summary", "method": "GET", "path": "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"},
+    {"name": "memory_status", "method": "GET", "path": "/v1/desktop/settings/status"},
+    {"name": "session_search", "method": "GET", "path": "/v1/search?query=AIASK&limit=5"},
+    {"name": "memory_search", "method": "POST", "path": "/v1/tools/agent_memory_search"},
+    {"name": "mcp_servers", "method": "GET", "path": "/v1/mcp/servers?all=true"},
+    {"name": "mcp_tools", "method": "GET", "path": "/v1/mcp/tools?all=true"},
+    {"name": "financial_manager_catalog", "method": "GET", "path": "/v1/desktop/financial-manager/catalog"},
+    {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
+    {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
+    {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "runtime_enabled", "event_runtime_mode", "daily_run_count", "cycle_count"]},
+    {"name": "market_temperature_cache", "method": "POST", "path": "/v1/tools/agent_market_temperature_cache_readiness", "observes": ["ready", "status", "blockers", "warnings"]},
+    {"name": "market_temperature_forward_validation", "method": "POST", "path": "/v1/tools/agent_market_temperature_forward_validation", "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"]},
+    {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
+)
 JsonRequester = Callable[[str, str, str, dict[str, Any] | None, float], tuple[int, dict[str, Any]]]
 
 
@@ -93,6 +115,24 @@ def _run_check(name: str, fn) -> CheckResult:
         return CheckResult(name, False, "failed", str(exc)[:500])
 
 
+def plan_payload(endpoint: str = DEFAULT_ENDPOINT) -> dict[str, Any]:
+    return {
+        "object": "aiask.live_readiness_smoke.plan",
+        "endpoint": endpoint,
+        "status": "planned",
+        "working_directory": RECOMMENDED_WORKING_DIRECTORY,
+        "script": "scripts/ops/live_readiness_smoke.py",
+        "self_test_command": SELF_TEST_COMMAND,
+        "live_command": LIVE_COMMAND_TEMPLATE.format(endpoint=endpoint),
+        "environment_note": ENVIRONMENT_NOTE,
+        "checks": [dict(item) for item in SMOKE_CHECKS],
+        "summary": {"total": len(SMOKE_CHECKS)},
+        "network_required": False,
+        "side_effects": "none; plan mode does not contact Agent, MCP, databases, brokers, or external services.",
+        "secrets_redacted": True,
+    }
+
+
 def run_smoke(
     endpoint: str,
     *,
@@ -137,6 +177,29 @@ def run_smoke(
                 "production_ready": payload.get("production_ready"),
                 "required_summary": payload.get("summary"),
                 "next_actions": [item.get("action_id") for item in next_actions if isinstance(item, dict)],
+            },
+        )
+
+    def workbench_summary() -> CheckResult:
+        path = f"/v1/desktop/workbench/summary?{urllib.parse.urlencode({'session_limit': '5', 'run_limit': '5'})}"
+        _, payload = request_json("GET", path, api_token, None, timeout)
+        queues = payload.get("queues") if isinstance(payload.get("queues"), dict) else {}
+        access = payload.get("access") if isinstance(payload.get("access"), dict) else {}
+        recent_sessions = list(payload.get("recent_sessions") or [])
+        recent_runs = list(payload.get("recent_runs") or [])
+        structured = payload.get("object") == "aiask.desktop.workbench.summary" and isinstance(queues, dict) and isinstance(access, dict)
+        return CheckResult(
+            "workbench_summary",
+            structured,
+            "ready" if structured else "invalid",
+            f"sessions={len(recent_sessions)} runs={len(recent_runs)} pending_intents={queues.get('pending_intents', 0)}",
+            {
+                "recent_sessions": len(recent_sessions),
+                "recent_runs": len(recent_runs),
+                "pending_intents": queues.get("pending_intents"),
+                "pending_approvals": queues.get("pending_approvals"),
+                "mcp_degraded": queues.get("mcp_degraded"),
+                "sessions_admin_available": access.get("sessions_admin_available"),
             },
         )
 
@@ -236,6 +299,57 @@ def run_smoke(
         _, payload = request_json("GET", path, api_token, None, timeout)
         status = str(payload.get("status") or _safe_get(payload, ("data_gate", "data", "status"), "unknown"))
         return CheckResult("data_status", status not in {"failed", "error"}, status, f"codes={codes}", {"database": payload.get("database"), "quality_gate": payload.get("quality_gate")})
+
+    def factory_status() -> CheckResult:
+        _, payload = request_json(
+            "POST",
+            "/v1/tools/agent_factory_status",
+            api_token,
+            {"recent_run_limit": 5, "_timeout_seconds": 5},
+            timeout,
+        )
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        diagnostics = data.get("recent_run_diagnostics") if isinstance(data.get("recent_run_diagnostics"), dict) else {}
+        recent_runs = list(diagnostics.get("recent_runs") or [])
+        runtime_enabled = data.get("runtime_enabled")
+        daily_run_count = data.get("daily_run_count", data.get("run_count"))
+        cycle_count = data.get("cycle_count")
+        status_value = data.get("status") or data.get("last_status")
+        if not status_value:
+            if payload.get("success") is False:
+                status_value = payload.get("error_code") or "failed"
+            elif data.get("running") is True:
+                status_value = "running"
+            elif runtime_enabled is False:
+                status_value = "disabled"
+            else:
+                status_value = "ready"
+        status = str(status_value)
+        side_effect = _safe_get(payload, ("meta", "side_effect", "level"))
+        success = payload.get("success") is not False
+        ok = success and side_effect in {None, "read_only"}
+        return CheckResult(
+            "factory_status",
+            ok,
+            status,
+            f"success={payload.get('success')} runtime_enabled={runtime_enabled} daily_runs={daily_run_count}",
+            {
+                "success": payload.get("success"),
+                "runtime_enabled": runtime_enabled,
+                "event_runtime_mode": data.get("event_runtime_mode"),
+                "running": data.get("running"),
+                "daily_run_count": daily_run_count,
+                "cycle_count": cycle_count,
+                "recent_run_count": len(recent_runs),
+                "analyzed_run_count": diagnostics.get("analyzed_run_count"),
+                "last_status": data.get("last_status"),
+                "configured": data.get("configured", runtime_enabled),
+                "database_configured": data.get("database_configured"),
+                "run_count": data.get("run_count", daily_run_count),
+                "side_effect": side_effect,
+                "error_code": payload.get("error_code"),
+            },
+        )
 
     def market_temperature_cache() -> CheckResult:
         _, payload = request_json(
@@ -337,6 +451,7 @@ def run_smoke(
         health,
         tools,
         financial_readiness,
+        workbench_summary,
         memory_status,
         session_search,
         memory_search,
@@ -345,6 +460,7 @@ def run_smoke(
         financial_manager_catalog,
         financial_manager_query,
         data_status,
+        factory_status,
         market_temperature_cache,
         market_temperature_forward_validation,
         quant_research,
@@ -489,16 +605,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--control-token", default="", help="Control token for gated MCP inventory checks")
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--pretty", action="store_true", help="Pretty-print JSON output")
+    parser.add_argument("--plan", action="store_true", help="Print the smoke plan without contacting the Agent")
     parser.add_argument("--self-test", action="store_true", help="Run against an in-process temporary Agent instead of a network endpoint")
     args = parser.parse_args(argv)
 
-    payload = run_self_test(timeout=args.timeout) if args.self_test else run_smoke(
+    if args.plan:
+        payload = plan_payload(args.endpoint)
+    elif args.self_test:
+        payload = run_self_test(timeout=args.timeout)
+    else:
+        payload = run_smoke(
             args.endpoint,
             api_token=args.api_token,
             control_token=args.control_token,
             timeout=args.timeout,
         )
     print(json.dumps(payload, ensure_ascii=False, indent=2 if args.pretty else None))
+    if args.plan:
+        return 0
     return 0 if payload["passed"] else 1
 
 

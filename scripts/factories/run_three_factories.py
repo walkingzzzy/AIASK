@@ -235,6 +235,9 @@ def _python_path(args: argparse.Namespace) -> str:
     configured = str(args.python or os.getenv("AIASK_FACTORY_PYTHON") or "").strip()
     if configured:
         return configured
+    current = str(sys.executable or "").strip()
+    if current:
+        return current
     preferred = Path(r"F:\Python311\python.exe")
     if preferred.exists():
         return str(preferred)

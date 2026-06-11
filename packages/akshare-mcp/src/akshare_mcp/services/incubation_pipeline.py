@@ -195,6 +195,7 @@ class StrategyIncubationPipelineService:
                 signal_quality,
                 open_risk_count=open_risk_count,
                 execution_audit_gate_status=overview.get('execution_audit_gate_status'),
+                holding_bucket=overview.get('holding_period_bucket'),
             )
             if pipeline_stage == 'failed':
                 pipeline_status = 'blocked'

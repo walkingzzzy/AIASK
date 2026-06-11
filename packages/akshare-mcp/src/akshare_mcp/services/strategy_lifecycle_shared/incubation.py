@@ -8,12 +8,18 @@ from typing import Any, Optional
 from .common import _safe_float, _safe_int, _string
 from .confidence import evaluate_execution_audit_gate
 
+# P-1: warmup 长期滞留治理阈值。停留超过此天数且前向有效样本仍低于最低毕业门,
+# 视为信号频率/质量过低,冻结待修以释放 observe 池容量。阈值偏保守,需后续运营校准。
+_WARMUP_STALL_DAYS = 45
+_WARMUP_STALL_MIN_EFFECTIVE_N = 12
+
 def resolve_incubation_pipeline_stage(
     signal_quality: Optional[dict],
     *,
     open_risk_count: int = 0,
     audit_summary: Optional[dict[str, Any]] = None,
     execution_audit_gate_status: Optional[str] = None,
+    holding_bucket: Optional[str] = None,
 ) -> str:
     quality = dict(signal_quality or {})
     primary_effective_n = _safe_int(quality.get("primary_effective_n"))
@@ -28,15 +34,27 @@ def resolve_incubation_pipeline_stage(
     coverage_ratio = _safe_float(quality.get("coverage_ratio")) or 0.0
     stability_gap = _safe_float(quality.get("stability_gap"))
 
-    if primary_effective_n < 20 or coverage_ratio < 0.25:
+    # P1: warmup / graduation 样本门按持有周期自适应。低频策略(中长线)信号稀疏,
+    # 在合理时间内积累不到短线所需样本量,会被不公平地长期卡在 warmup。
+    # 这里仅缩放"样本量"门槛,skill_lcb>0 / coverage / stability 等统计显著性条件保持不变——
+    # 不放水,只是承认低频策略每个样本承载更长持有期信息。skill_lcb 本身已含小样本惩罚。
+    bucket = str(holding_bucket or "").strip().lower()
+    if bucket in {"long", "long_term"}:
+        warmup_min_n, grad_primary_n, grad_secondary_n = 12, 30, 15
+    elif bucket in {"medium", "mid", "medium_term"}:
+        warmup_min_n, grad_primary_n, grad_secondary_n = 15, 45, 22
+    else:
+        warmup_min_n, grad_primary_n, grad_secondary_n = 20, 60, 30
+
+    if primary_effective_n < warmup_min_n or coverage_ratio < 0.25:
         signal_stage_without_execution_gate = "warmup"
     elif (recent_primary_skill_lcb is not None and recent_primary_skill_lcb < -0.03) or (
         stability_gap is not None and stability_gap > 0.10
     ) or open_risk_count >= 3:
         signal_stage_without_execution_gate = "failed"
     elif (
-        primary_effective_n >= 60
-        and secondary_effective_n >= 30
+        primary_effective_n >= grad_primary_n
+        and secondary_effective_n >= grad_secondary_n
         and (primary_skill_lcb or 0.0) > 0.0
         and (secondary_skill_lcb or 0.0) > 0.0
         and (recent_primary_skill_lcb or 0.0) > 0.0
@@ -218,6 +236,21 @@ async def resolve_incubation_action_plan(
             remediation_action = "signal_vacuum_warning"
         else:
             remediation_action = "continue_observe"
+    elif (
+        pipeline_stage == "warmup"
+        and int(total_signals or 0) > 0
+        and stage_clock_days >= _WARMUP_STALL_DAYS
+        and _safe_int(signal_payload.get("primary_effective_n")) < _WARMUP_STALL_MIN_EFFECTIVE_N
+    ):
+        # P-1: warmup 长期滞留治理。样本有信号(区别于 signal_vacuum),但停留
+        # >=45 天后前向有效样本仍 < 12(最低自适应毕业门),说明信号频率/质量过低,
+        # 在合理窗口内无法积累出可晋升证据 → 冻结待修(可逆,非删除),给 observe 池一个出口,
+        # 避免长期滞留样本无限沉淀。阈值偏保守,仅抓真正证据停滞的样本。
+        remediation_action = "freeze_and_revise"
+        remediation_reason = "warmup_stall_low_evidence"
+        budget_action = "freeze_new_budget"
+        runtime_control_mode = "exit_only"
+        revision_required = True
     elif negative_skill_streak >= 5:
         remediation_action = "freeze_and_revise_signal_logic"
         remediation_reason = "prediction_skill_negative"

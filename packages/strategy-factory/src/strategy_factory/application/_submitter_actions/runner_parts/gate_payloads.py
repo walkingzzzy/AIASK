@@ -41,11 +41,22 @@
                 existing_budget = dict(candidate.get("incubation_budget") or {})
                 planned_budget = dict((incubation_budget_plan.get("plans") or {}).get(marker) or {})
                 merged_budget = {**planned_budget, **existing_budget}
-                if bool(candidate.get("observe_first_intake")) or bool(
+                planned_track = str(planned_budget.get("track") or "").strip().lower()
+                observe_first_requested = bool(candidate.get("observe_first_intake")) or bool(
                     dict(candidate.get("params") or {}).get("observe_first_intake")
-                ):
-                    merged_budget["track"] = "observe_incubation"
-                    merged_budget.setdefault("budget_tier", "micro")
+                )
+                if observe_first_requested:
+                    # Observe-first candidates still carry a micro observe placeholder from the
+                    # candidate pipeline, but the budget planner may explicitly reserve a formal
+                    # slot for a strict-ready sample. Preserve that formal plan here so the
+                    # downstream admission authority can actually request formal incubation.
+                    if planned_track == "formal_incubation":
+                        merged_budget["track"] = "formal_incubation"
+                        if planned_budget.get("budget_tier") not in (None, "", [], {}):
+                            merged_budget["budget_tier"] = planned_budget.get("budget_tier")
+                    else:
+                        merged_budget["track"] = "observe_incubation"
+                        merged_budget.setdefault("budget_tier", "micro")
                     merged_budget["observe_first_intake"] = True
                 candidate["incubation_budget"] = merged_budget
             submit_concurrency = int(_compat_setting("SUBMIT_CONCURRENCY", SUBMIT_CONCURRENCY) or SUBMIT_CONCURRENCY)

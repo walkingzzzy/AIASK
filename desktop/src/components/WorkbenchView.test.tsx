@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WorkbenchView } from "./WorkbenchView";
 import type { DesktopRunSummary, DesktopWorkbenchSummary, HealthDetailed, TaskThread, TimelineEvent, ToolCatalogItem } from "../types";
@@ -114,6 +114,53 @@ describe("WorkbenchView", () => {
     expect(screen.getAllByText("项目 / 上下文").length).toBeGreaterThan(0);
     expect(screen.getAllByText("金融实验室").length).toBeGreaterThan(0);
     expect(screen.getAllByText("集成").length).toBeGreaterThan(0);
+  });
+
+  it("surfaces the financial agent safe path from the workbench", () => {
+    const onOpenView = vi.fn();
+    const tools: ToolCatalogItem[] = [
+      {
+        name: "agent_memory_search",
+        capability: "memory_search",
+        description: "Search financial memory.",
+        side_effect: "read_only",
+      },
+      {
+        name: "agent_session_search",
+        capability: "session_search",
+        description: "Search sessions.",
+        side_effect: "read_only",
+      },
+      {
+        name: "agent_portfolio_risk",
+        capability: "portfolio_risk",
+        description: "Portfolio risk.",
+        side_effect: "read_only",
+      },
+      {
+        name: "agent_quant_data_gate",
+        capability: "quant_data_gate",
+        description: "Data gate.",
+        side_effect: "read_only",
+      },
+      {
+        name: "agent_factory_status",
+        capability: "factory_status",
+        description: "Factory status.",
+        side_effect: "read_only",
+      },
+    ];
+
+    render(<WorkbenchView {...mockProps} onOpenView={onOpenView} tools={tools} />);
+    expect(screen.getByRole("region", { name: "金融 Agent 安全链路" })).toBeInTheDocument();
+    expect(screen.getByText("现在可以复核什么")).toBeInTheDocument();
+    expect(screen.getByText("3. 记忆 / 搜索")).toBeInTheDocument();
+    expect(screen.getByText("6. 工厂接力")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "打开金融经理台" }));
+    fireEvent.click(screen.getByRole("button", { name: "打开数据" }));
+    expect(onOpenView).toHaveBeenCalledWith("financial-manager");
+    expect(onOpenView).toHaveBeenCalledWith("data");
   });
 
   it("shows Hermes full guidance when control token is missing", () => {

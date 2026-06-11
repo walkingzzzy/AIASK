@@ -111,15 +111,24 @@
         page_size = max(50, min(page_size, 2000))
         for status in ("listed", "incubating", "submitted"):
             try:
+                submitted_loader = None
+                if status == "submitted" and hasattr(db, "list_submitted_strategies_for_dedup"):
+                    submitted_loader = getattr(db, "list_submitted_strategies_for_dedup")
                 # 优先尝试分页；DB 不支持 offset 时降级到单次拉取
                 offset = 0
                 pages_loaded = 0
                 while len(existing) < max_total:
                     try:
-                        rows = await db.list_strategies(status, limit=page_size, offset=offset)
+                        if callable(submitted_loader):
+                            rows = await submitted_loader(limit=page_size, offset=offset)
+                        else:
+                            rows = await db.list_strategies(status, limit=page_size, offset=offset)
                     except TypeError:
                         # 旧接口不接受 offset
-                        rows = await db.list_strategies(status, limit=page_size) if offset == 0 else []
+                        if callable(submitted_loader):
+                            rows = await submitted_loader(limit=page_size) if offset == 0 else []
+                        else:
+                            rows = await db.list_strategies(status, limit=page_size) if offset == 0 else []
                     rows = list(rows or [])
                     if not rows:
                         break

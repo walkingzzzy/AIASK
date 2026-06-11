@@ -50,12 +50,12 @@ export BROKER_READ_ONLY="1"
 
 if [[ -n "${AIASK_FACTORY_PYTHON:-}" ]]; then
   PYTHON_CMD=("${AIASK_FACTORY_PYTHON}")
-elif [[ -x "/f/Python311/python.exe" ]]; then
-  PYTHON_CMD=("/f/Python311/python.exe")
 elif command -v python >/dev/null 2>&1; then
   PYTHON_CMD=("$(command -v python)")
 elif command -v py >/dev/null 2>&1; then
   PYTHON_CMD=("py" "-3")
+elif [[ -x "/f/Python311/python.exe" ]]; then
+  PYTHON_CMD=("/f/Python311/python.exe")
 else
   echo "Python not found. Set AIASK_FACTORY_PYTHON or install Python." >&2
   exit 127

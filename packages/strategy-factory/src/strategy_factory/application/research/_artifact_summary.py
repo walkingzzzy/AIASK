@@ -167,6 +167,9 @@ def build_factor_research_summary(
         "paper_observation_backlog_count": int(
             paper_observation_backlog.get("paper_observation_backlog_count") or 0
         ),
+        "paper_observation_active_count": int(
+            paper_observation_backlog.get("paper_observation_active_count") or 0
+        ),
         "paper_observation_backlog_status": (
             paper_observation_backlog.get("paper_observation_backlog_status") or "empty"
         ),

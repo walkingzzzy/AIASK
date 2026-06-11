@@ -55,7 +55,10 @@
             live_review_action = dict(lifecycle_payload.get("live_review_action") or {})
             paper_action = dict(lifecycle_payload.get("paper_action") or {})
             diagnostic_action = dict(lifecycle_payload.get("diagnostic_action") or {})
-            action_audit = dict(lifecycle_payload.get("action_audit") or {})
+            action_audit = {
+                **dict(submission_action or {}),
+                **dict(lifecycle_payload.get("action_audit") or {}),
+            }
             final_status = str(lifecycle_payload.get("final_status") or "rejected")
 
             self._apply_submission_action_audit(

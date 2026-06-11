@@ -17,12 +17,24 @@ import asyncio
 import importlib.util
 import os
 from pathlib import Path
+import sys
 import time
 from types import ModuleType
 from typing import Any
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent
+STRATEGY_FACTORY_SRC = PROJECT_ROOT / "packages" / "strategy-factory" / "src"
+if str(STRATEGY_FACTORY_SRC) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_FACTORY_SRC))
+
+from strategy_factory.runtime_bootstrap import ensure_factory_runtime
+
+ensure_factory_runtime(
+    project_root=PROJECT_ROOT,
+    script_path=Path(__file__).resolve(),
+    argv=sys.argv[1:],
+)
 CANONICAL_RUNNER = PROJECT_ROOT / "scripts" / "factories" / "run_strategy_factory.py"
 
 

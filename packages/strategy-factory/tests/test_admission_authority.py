@@ -181,7 +181,12 @@ def _clear_dev_v1_env(monkeypatch):
     yield
 
 
-def _resolve_with_real_resolver(gate: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+def _resolve_with_real_resolver(
+    gate: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    track: str = "formal_incubation",
+) -> dict[str, Any]:
     """直接用真实 _runtime_bootstrap_context (不再 mock)。
 
     这样能完整验证 toggle 与 _runtime_bootstrap_context 的集成。
@@ -196,7 +201,7 @@ def _resolve_with_real_resolver(gate: dict[str, Any], candidate: dict[str, Any])
         candidate=candidate,
         refresh_existing=False,
         existing_status="draft",
-        incubation_budget_track="formal_incubation",
+        incubation_budget_track=track,
         runtime_bootstrap_resolver=StrategySubmitter._runtime_bootstrap_context,
     )
 
@@ -395,6 +400,73 @@ def test_ready_trade_prediction_contract_downgrades_evidence_audit_conflict_rule
     assert result["formal_track_eligible"] is False
 
 
+def test_real_resolver_reuses_gate_runtime_context_for_formal_blockers() -> None:
+    gate = {
+        "passed": True,
+        "validation_grade": "A",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": False,
+        "semantic_runtime_match": False,
+        "runtime_family_data_source": "price_proxy_runtime",
+        "proxy_runtime_used": True,
+        "diagnostic_only": True,
+        "execution_readiness_tier": "observe_diagnostic_only",
+    }
+    candidate = _runtime_ready_candidate(
+        "gate-runtime-context",
+        strategy_type="quality_factor",
+    )
+
+    result = _resolve_with_real_resolver(gate, candidate)
+
+    assert result["submission_lane"] == "observe_incubation"
+    assert result["runtime_bootstrap_reason"] == "proxy_runtime_observe_only"
+    assert result["runtime_family_data_source"] == "price_proxy_runtime"
+    assert result["proxy_runtime_used"] is True
+    assert result["diagnostic_only"] is True
+    assert result["execution_readiness_tier"] == "observe_diagnostic_only"
+    assert result["formal_track_requested"] is True
+    assert result["formal_track_eligible"] is False
+    assert "semantic_runtime_mismatch" in result["formal_track_blockers"]
+    assert "proxy_runtime_not_allowed_for_formal_incubation" in result["formal_track_blockers"]
+    assert "diagnostic_only_runtime" in result["formal_track_blockers"]
+    assert "execution_readiness_tier:observe_diagnostic_only" in result["formal_track_blockers"]
+
+
+def test_observe_first_strict_ready_formal_runtime_auto_corrects_to_formal() -> None:
+    gate = {
+        "passed": True,
+        "validation_grade": "A",
+        "research_candidate_ready": True,
+        "live_candidate_ready": False,
+        "strict_incubation_ready": True,
+        "incubation_pass_mode": "strict",
+        "semantic_runtime_match": True,
+        "runtime_family_data_source": "market_data_runtime",
+        "proxy_runtime_used": False,
+        "diagnostic_only": False,
+        "execution_readiness_tier": "formal_runtime_ready",
+        "trade_prediction_contract_status": "ready",
+        "trade_prediction_contract_observation_gap": False,
+    }
+    candidate = _runtime_ready_candidate(
+        "observe-first-formal-correction",
+        observe_first=True,
+        strategy_type="quality_factor",
+    )
+
+    result = _resolve_with_real_resolver(gate, candidate, track="observe_incubation")
+
+    assert result["submission_lane"] == "formal_incubation"
+    assert result["final_status"] == "incubating"
+    assert result["formal_track_requested"] is True
+    assert result["formal_track_auto_corrected"] is True
+    assert result["formal_track_eligible"] is True
+    assert result["submission_action_trigger"] == "strict_incubation_ready_and_observe_first_formal_correction"
+    assert result["admission_decision"] == "accept"
+
+
 def test_explicit_invalid_trade_prediction_contract_still_blocks_observe_first() -> None:
     gate = {
         "passed": False,
@@ -528,7 +600,15 @@ async def test_submit_one_keeps_wide_intake_in_observe_lane(monkeypatch) -> None
             }
 
         async def save_quality_report(self, *_args: Any, **_kwargs: Any) -> None:
-            self.reports.append({"args": _args, "kwargs": _kwargs})
+            import copy
+
+            self.reports.append(
+                {
+                    "strategy_id": _args[1],
+                    "quality_report": copy.deepcopy(dict(_args[2] or {})),
+                    "kwargs": copy.deepcopy(_kwargs),
+                }
+            )
             return None
 
     class _DB:
@@ -814,6 +894,221 @@ async def test_submit_one_can_opt_out_of_gate3_record_only(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_submit_one_auto_corrects_strict_ready_observe_first_candidate_to_formal(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.delenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", raising=False)
+
+    async def _gate3_strict_ready(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "provisional_pass": False,
+            "validation_grade": "A",
+            "research_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": True,
+            "incubation_pass_mode": "strict",
+            "semantic_runtime_match": True,
+            "runtime_family_data_source": "market_data_runtime",
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+            "execution_readiness_tier": "formal_runtime_ready",
+            "trade_prediction_contract_status": "ready",
+            "trade_prediction_contract_observation_gap": False,
+        }
+
+    class _Gateway:
+        async def run_validation_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        async def run_risk_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _Coordinator:
+        def __init__(self) -> None:
+            self.persisted: list[dict[str, Any]] = []
+            self.handled: list[dict[str, Any]] = []
+            self.reports: list[dict[str, Any]] = []
+
+        async def persist_candidate(self, **kwargs: Any) -> bool:
+            self.persisted.append(dict(kwargs))
+            return True
+
+        async def handle_new_candidate(self, **kwargs: Any) -> dict[str, Any]:
+            self.handled.append(dict(kwargs))
+            action = dict(kwargs.get("submission_action") or {})
+            return {
+                "submission_lane": kwargs.get("submission_lane"),
+                "final_status": action.get("final_status") or "submitted",
+                "submission_action": dict(action.get("submission_action") or {}),
+                "submission_action_type": action.get("submission_action_type"),
+                "submission_action_trigger": action.get("submission_action_trigger"),
+                "submission_action_gaps": list(action.get("submission_action_gaps") or []),
+                "submission_action_fallback_conditions": list(
+                    action.get("submission_action_fallback_conditions") or []
+                ),
+                "submission_action_next_step": action.get("submission_action_next_step"),
+                "submission_action_completed": bool(action.get("submission_action_completed")),
+                "runtime_bootstrap_reason": action.get("runtime_bootstrap_reason"),
+                "wide_intake_admitted": bool(action.get("wide_intake_admitted")),
+                "formal_track_requested": bool(action.get("formal_track_requested")),
+                "formal_track_auto_corrected": bool(action.get("formal_track_auto_corrected")),
+                "formal_track_eligible": bool(action.get("formal_track_eligible")),
+                "formal_track_blockers": list(action.get("formal_track_blockers") or []),
+            }
+
+        async def save_quality_report(self, *_args: Any, **_kwargs: Any) -> None:
+            import copy
+
+            self.reports.append(
+                {
+                    "strategy_id": _args[1],
+                    "quality_report": copy.deepcopy(dict(_args[2] or {})),
+                    "kwargs": copy.deepcopy(_kwargs),
+                }
+            )
+            return None
+
+    class _DB:
+        def __init__(self) -> None:
+            self.evidence: list[dict[str, Any]] = []
+            self.experiments: list[dict[str, Any]] = []
+
+        async def save_factory_task_evidence(self, payload: dict[str, Any]) -> dict[str, Any]:
+            row = {"id": f"ev-{len(self.evidence) + 1}", **payload}
+            self.evidence.append(row)
+            return row
+
+        async def save_strategy_generation_experiment(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.experiments.append(dict(payload))
+            return dict(payload)
+
+    monkeypatch.setattr(submitter_runner, "_local_run_submission_quality_gate", _gate3_strict_ready)
+
+    submitter = StrategySubmitter(validation_gateway=_Gateway(), risk_gateway=_Gateway())
+    coordinator = _Coordinator()
+    submitter._submission_coordinator = coordinator
+    candidate = _runtime_ready_candidate("submit-one-observe-first-formal", observe_first=True)
+    candidate.update(
+        {
+            "name": "observe first strict ready candidate",
+            "dedup_result": {"duplicate": False, "refresh_existing": False},
+            "backtest_metrics": {
+                "trade_count": 12,
+                "trades_count": 12,
+                "max_drawdown": 0.08,
+            },
+            "backtest_outcome": {"passed": True, "reason_code": "passed"},
+        }
+    )
+
+    db = _DB()
+    result = await submitter._submit_one(
+        candidate,
+        {"date": "2026-06-10", "factory_run_id": "run-observe-first-formal"},
+        db,
+    )
+
+    assert coordinator.persisted
+    assert coordinator.handled
+    assert coordinator.handled[0]["submission_lane"] == "formal_incubation"
+    assert result["created_strategy_pool"] is True
+    assert result["submitted"] is False
+    assert result["summary"]["submission_lane"] == "formal_incubation"
+    assert result["summary"]["status"] == "incubating"
+    assert result["summary"]["formal_track_requested"] is True
+    assert result["summary"]["formal_track_auto_corrected"] is True
+    assert result["summary"]["formal_track_eligible"] is True
+    assert result["summary"]["submission_action_trigger"] == "strict_incubation_ready_and_observe_first_formal_correction"
+    assert len(coordinator.reports) == 1
+    persisted_quality_report = dict(coordinator.reports[0]["quality_report"] or {})
+    persisted_summary = dict(persisted_quality_report.get("summary") or {})
+    assert persisted_summary["submission_lane"] == "formal_incubation"
+    assert persisted_summary["incubation_budget_track"] == "observe_incubation"
+    assert persisted_summary["formal_track_requested"] is True
+    assert persisted_summary["formal_track_auto_corrected"] is True
+    assert persisted_summary["observe_first_intake_requested"] is True
+    assert persisted_summary["runtime_family_data_source"] == "market_data_runtime"
+    assert persisted_summary["execution_readiness_tier"] == "formal_runtime_ready"
+    assert persisted_summary["trade_prediction_contract_status"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_submit_preserves_planned_formal_budget_for_observe_first_candidate(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    captured_candidates: list[dict[str, Any]] = []
+
+    def _fake_budget_plan(candidates: list[dict[str, Any]], _snapshot: dict[str, Any]) -> dict[str, Any]:
+        marker = int(id(candidates[0]))
+        return {
+            "plans": {
+                marker: {
+                    "track": "formal_incubation",
+                    "budget_tier": "standard",
+                    "rank": 1,
+                    "priority_score": 99.0,
+                }
+            },
+            "summary": {
+                "track_counts": {
+                    "formal_incubation": 1,
+                    "observe_incubation": 0,
+                    "deferred_budget_queue": 0,
+                }
+            },
+        }
+
+    async def _submit_one(self, candidate: dict[str, Any], snapshot: dict[str, Any], db: Any, *, read_only: bool = False):
+        captured_candidates.append(dict(candidate))
+        return {
+            "created_total": True,
+            "created_strategy_pool": True,
+            "submitted": True,
+            "passed": True,
+            "gate_3": {
+                "passed": True,
+                "provisional_pass": False,
+            },
+            "summary": {
+                "strategy_id": candidate.get("id"),
+                "submission_lane": "formal_incubation",
+                "submission_action_type": "incubation",
+                "admission_decision": "accept",
+                "strict_incubation_ready": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        submitter_runner.IncubationBudgeter,
+        "plan",
+        staticmethod(_fake_budget_plan),
+    )
+    monkeypatch.setattr(StrategySubmitter, "_submit_one", _submit_one)
+
+    submitter = StrategySubmitter()
+    candidate = _runtime_ready_candidate("submit-batch-formal-preserved", observe_first=True)
+
+    result = await submitter.submit(
+        [candidate],
+        {"date": "2026-06-05", "factory_run_id": "run-batch-formal-preserved"},
+        object(),
+    )
+
+    assert captured_candidates
+    merged_budget = dict(captured_candidates[0].get("incubation_budget") or {})
+    assert merged_budget["track"] == "formal_incubation"
+    assert merged_budget["budget_tier"] == "standard"
+    assert merged_budget["observe_first_intake"] is True
+    assert result["formal_incubation_count"] == 1
+    assert result["observe_incubation_count"] == 0
+    assert result["strict_incubation_ready_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_default_observe_handoff_creates_paper_account_and_quality_summary(monkeypatch) -> None:
     from strategy_factory.application._submitter_actions import runner as submitter_runner
     from strategy_factory.application.submitter import StrategySubmitter
@@ -969,7 +1264,8 @@ async def test_default_observe_handoff_creates_paper_account_and_quality_summary
     assert result["summary"]["paper_observation_backlog_status"] == "queued"
     assert result["summary"].get("paper_observation_handoff_warning") is None
     assert result["summary"]["trade_prediction_contract_observation_gap"] is True
-    assert result["summary"]["diagnostic_only"] is False
+    assert result["summary"]["diagnostic_only"] is True
+    assert result["summary"]["execution_readiness_tier"] == "observe_diagnostic_only"
     assert db.strategies and db.strategies[0]["status"] == "submitted"
     assert db.status_updates[-1][1] == "submitted"
     assert incubation_gateway.accounts
@@ -979,3 +1275,325 @@ async def test_default_observe_handoff_creates_paper_account_and_quality_summary
     assert report_summary["paper_lane_ready"] is True
     assert report_summary["paper_account_id"] == result["summary"]["paper_account_id"]
     assert report_summary["incubation_factory_required"] is True
+    assert report_summary["diagnostic_only"] is True
+    assert report_summary["execution_readiness_tier"] == "observe_diagnostic_only"
+
+
+@pytest.mark.asyncio
+async def test_submit_one_persists_gate_runtime_context_into_strategy_and_quality_summary(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.delenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", raising=False)
+
+    async def _gate3_pass_with_runtime_blockers(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "provisional_pass": False,
+            "validation_grade": "A",
+            "research_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": False,
+            "profile": "trade_rule_validation",
+            "validation_focus": "candidate_target_only",
+            "primary_validation_layer": "target",
+            "semantic_runtime_match": False,
+            "runtime_family_data_source": "price_proxy_runtime",
+            "proxy_runtime_used": True,
+            "diagnostic_only": True,
+            "execution_readiness_tier": "observe_diagnostic_only",
+            "admission_block_reasons": [
+                "runtime_family_semantic_mismatch",
+                "proxy_runtime_not_allowed_for_formal_incubation",
+                "diagnostic_only_not_allowed_for_incubation",
+                "execution_readiness_tier:observe_diagnostic_only",
+            ],
+            "hard_fail_reasons": [
+                "runtime_family_semantic_mismatch",
+                "proxy_runtime_not_allowed_for_formal_incubation",
+            ],
+        }
+
+    class _Gateway:
+        async def run_validation_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        async def run_risk_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _IncubationGateway:
+        def __init__(self) -> None:
+            self.accounts: list[dict[str, Any]] = []
+
+        async def ensure_account(self, _db: Any, strategy: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            account = {
+                "account_id": f"paper-{strategy['id']}",
+                "status": "active",
+                "strategy_id": strategy["id"],
+                "kwargs": dict(kwargs),
+            }
+            self.accounts.append(account)
+            return account
+
+        async def update_account_stage(
+            self,
+            _db: Any,
+            *,
+            account_id: str,
+            stage: str,
+            metadata: dict[str, Any] | None = None,
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            return {
+                "account_id": account_id,
+                "stage": stage,
+                "status": "active",
+                "metadata": dict(metadata or {}),
+            }
+
+    class _DB:
+        def __init__(self) -> None:
+            self.strategies: list[dict[str, Any]] = []
+            self.status_updates: list[tuple[str, str]] = []
+            self.quality_reports: list[tuple[str, str, dict[str, Any]]] = []
+
+        async def save_strategy(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.strategies.append(dict(payload))
+            return dict(payload)
+
+        async def save_strategy_metrics(
+            self,
+            strategy_id: str,
+            period: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"strategy_id": strategy_id, "period": period, **dict(payload)}
+
+        async def save_strategy_quality_report(
+            self,
+            strategy_id: str,
+            report_type: str,
+            quality_report: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.quality_reports.append((strategy_id, report_type, dict(quality_report)))
+            return {"strategy_id": strategy_id, "report_type": report_type}
+
+    async def _status_update(db: _DB, strategy_id: str, status: str, **_kwargs: Any) -> dict[str, Any]:
+        db.status_updates.append((strategy_id, status))
+        return {"strategy_id": strategy_id, "status": status}
+
+    monkeypatch.setattr(submitter_runner, "_local_run_submission_quality_gate", _gate3_pass_with_runtime_blockers)
+    monkeypatch.setattr(submitter_runner, "_local_update_strategy_status", _status_update)
+
+    incubation_gateway = _IncubationGateway()
+    submitter = StrategySubmitter(
+        validation_gateway=_Gateway(),
+        risk_gateway=_Gateway(),
+        incubation_gateway=incubation_gateway,
+    )
+    candidate = {
+        "id": "submit-one-runtime-context",
+        "name": "runtime context candidate",
+        "strategy_type": "quality_factor",
+        "target_symbols": ["600000"],
+        "incubation_budget": {
+            "track": "formal_incubation",
+            "budget_tier": "standard",
+        },
+        "params": {
+            "target_symbols": ["600000"],
+            **_ready_trade_prediction_fields("submit-one-runtime-context"),
+            "holding_horizon": {"min_days": 30, "max_days": 84, "cooldown_window_days": 7},
+            "trade_plan": {
+                "entry_bias": "cross_sectional_rank",
+                "exit_bias": "rank_decay_or_periodic_rebalance",
+            },
+            "risk_rules": {
+                "stop_loss_pct": 0.08,
+                "take_profit_pct": 0.18,
+                "max_holding_days": 60,
+                "cooldown_days": 7,
+            },
+            "execution_assumptions": {"order_style": "paper"},
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim-1",
+                        "target_trading_date": "2026-06-08",
+                        "horizon": "next_day",
+                        "evidence_ids": ["ev-1"],
+                    }
+                ]
+            },
+            "evidence_chain": {
+                "evidences": [{"evidence_id": "ev-1", "source": "fundamental_runtime"}]
+            },
+        },
+        "dedup_result": {"duplicate": False, "refresh_existing": False},
+        "backtest_metrics": {"trade_count": 12, "trades_count": 12, "max_drawdown": 0.08},
+        "backtest_outcome": {"passed": True, "reason_code": "passed"},
+    }
+
+    db = _DB()
+    result = await submitter._submit_one(
+        candidate,
+        {"date": "2026-06-05", "factory_run_id": "run-runtime-context"},
+        db,
+    )
+
+    stored_params = dict(db.strategies[-1]["params"] or {})
+    assert stored_params["submission_lane"] == result["summary"]["submission_lane"]
+    assert stored_params["planned_submission_lane"] == result["summary"]["planned_submission_lane"]
+    assert stored_params["final_status"] == result["summary"]["final_status"]
+    assert stored_params["planned_final_status"] == result["summary"]["planned_final_status"]
+    assert stored_params["formal_track_requested"] is True
+    assert stored_params["formal_track_eligible"] is False
+    assert stored_params["incubation_budget_track"] == "formal_incubation"
+    assert stored_params["runtime_family_data_source"] == "price_proxy_runtime"
+    assert stored_params["proxy_runtime_used"] is True
+    assert stored_params["diagnostic_only"] is True
+    assert stored_params["execution_readiness_tier"] == "observe_diagnostic_only"
+    assert result["summary"]["runtime_family_data_source"] == "price_proxy_runtime"
+    assert result["summary"]["proxy_runtime_used"] is True
+    assert result["summary"]["diagnostic_only"] is True
+    assert result["summary"]["execution_readiness_tier"] == "observe_diagnostic_only"
+    assert result["summary"]["runtime_bootstrap_reason"] == "proxy_runtime_observe_only"
+    assert result["summary"]["formal_track_requested"] is True
+    assert result["summary"]["formal_track_eligible"] is False
+    assert "proxy_runtime_not_allowed_for_formal_incubation" in result["summary"]["formal_track_blockers"]
+    report_summary = db.quality_reports[-1][2]["summary"]
+    assert report_summary["runtime_family_data_source"] == "price_proxy_runtime"
+    assert report_summary["proxy_runtime_used"] is True
+    assert report_summary["diagnostic_only"] is True
+    assert report_summary["execution_readiness_tier"] == "observe_diagnostic_only"
+    assert report_summary["trade_prediction_contract_status"] == "ready"
+    assert report_summary["runtime_bootstrap_reason"] == "proxy_runtime_observe_only"
+    assert report_summary["formal_track_requested"] is True
+    assert report_summary["incubation_budget_track"] == "formal_incubation"
+    assert "proxy_runtime_not_allowed_for_formal_incubation" in report_summary["formal_track_blockers"]
+
+
+@pytest.mark.asyncio
+async def test_submit_one_persists_runtime_structural_contract_fields(monkeypatch) -> None:
+    """P0-a: candidate 携带的 runtime 语义/结构字段必须落到 strategies.params,
+    否则 reviewer 重算时读空退化成 missing_executable_contract / price_proxy_runtime。"""
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.delenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", raising=False)
+
+    async def _gate3_pass(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "provisional_pass": False,
+            "validation_grade": "A",
+            "research_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": False,
+            "profile": "trade_rule_validation",
+            "execution_semantic_mode": "compiled_dsl",
+            "dsl_compiled": True,
+            "semantic_runtime_match": True,
+            "runtime_family_data_source": "market_data_runtime",
+        }
+
+    class _Gateway:
+        async def run_validation_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        async def run_risk_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _IncubationGateway:
+        def __init__(self) -> None:
+            self.accounts: list[dict[str, Any]] = []
+
+        async def ensure_account(self, _db: Any, strategy: dict[str, Any], **kwargs: Any) -> dict[str, Any]:
+            account = {
+                "account_id": f"paper-{strategy['id']}",
+                "status": "active",
+                "strategy_id": strategy["id"],
+                "kwargs": dict(kwargs),
+            }
+            self.accounts.append(account)
+            return account
+
+        async def update_account_stage(
+            self,
+            _db: Any,
+            *,
+            account_id: str,
+            stage: str,
+            metadata: dict[str, Any] | None = None,
+            **_kwargs: Any,
+        ) -> dict[str, Any]:
+            return {"account_id": account_id, "stage": stage, "status": "active"}
+
+    class _DB:
+        def __init__(self) -> None:
+            self.strategies: list[dict[str, Any]] = []
+
+        async def save_strategy(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.strategies.append(dict(payload))
+            return dict(payload)
+
+        async def save_strategy_metrics(self, strategy_id, period, payload) -> dict[str, Any]:
+            return {"strategy_id": strategy_id, "period": period, **dict(payload)}
+
+        async def save_strategy_quality_report(self, strategy_id, report_type, quality_report) -> dict[str, Any]:
+            return {"strategy_id": strategy_id, "report_type": report_type}
+
+    async def _status_update(db: _DB, strategy_id: str, status: str, **_kwargs: Any) -> dict[str, Any]:
+        return {"strategy_id": strategy_id, "status": status}
+
+    monkeypatch.setattr(submitter_runner, "_local_run_submission_quality_gate", _gate3_pass)
+    monkeypatch.setattr(submitter_runner, "_local_update_strategy_status", _status_update)
+
+    submitter = StrategySubmitter(
+        validation_gateway=_Gateway(),
+        risk_gateway=_Gateway(),
+        incubation_gateway=_IncubationGateway(),
+    )
+    instrument_profile = {"measurement_source": "measured_runtime", "measured_profile_complete": True}
+    trade_plan_to_dsl_map = {"entry_1": "dsl_node_1", "exit_1": "dsl_node_2"}
+    execution_semantic_contract = {"execution_semantic_mode": "compiled_dsl", "dsl_compiled": True}
+    fundamental_runtime_contract = {"runtime_family_data_source": "fundamental_runtime"}
+    candidate = {
+        "id": "submit-one-structural-fields",
+        "name": "structural fields candidate",
+        "strategy_type": "ma_cross",
+        "target_symbols": ["600000"],
+        "incubation_budget": {"track": "observe_incubation", "budget_tier": "micro"},
+        "instrument_profile": instrument_profile,
+        "trade_plan_to_dsl_map": trade_plan_to_dsl_map,
+        "execution_semantic_contract": execution_semantic_contract,
+        "fundamental_runtime_contract": fundamental_runtime_contract,
+        "params": {
+            "target_symbols": ["600000"],
+            **_ready_trade_prediction_fields("submit-one-structural-fields"),
+            "trade_plan": {"entry_bias": "ma_cross_up", "exit_bias": "ma_cross_down"},
+            "risk_rules": {"stop_loss_pct": 0.06, "take_profit_pct": 0.15},
+        },
+        "dedup_result": {"duplicate": False, "refresh_existing": False},
+        "backtest_metrics": {"trade_count": 12, "trades_count": 12, "max_drawdown": 0.08},
+        "backtest_outcome": {"passed": True, "reason_code": "passed"},
+    }
+
+    db = _DB()
+    await submitter._submit_one(
+        candidate,
+        {"date": "2026-06-05", "factory_run_id": "run-structural-fields"},
+        db,
+    )
+
+    stored_params = dict(db.strategies[-1]["params"] or {})
+    # gate 注入 candidate 的标量 runtime 字段必须落盘
+    assert stored_params["execution_semantic_mode"] == "compiled_dsl"
+    assert stored_params["dsl_compiled"] is True
+    # 结构字段必须从 candidate 顶层落到 params,供 reviewer 重算
+    assert stored_params["instrument_profile"] == instrument_profile
+    assert stored_params["trade_plan_to_dsl_map"] == trade_plan_to_dsl_map
+    assert stored_params["execution_semantic_contract"] == execution_semantic_contract
+    assert stored_params["fundamental_runtime_contract"] == fundamental_runtime_contract

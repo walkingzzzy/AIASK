@@ -447,11 +447,18 @@ export function ReadinessHealthPage({
               <div className="kv-grid">
                 <span>脚本</span>
                 <strong>{liveSmoke?.script || "scripts/ops/live_readiness_smoke.py"}</strong>
+                <span>工作目录</span>
+                <strong>{liveSmoke?.working_directory || "packages/agent"}</strong>
+                <span>Self-test</span>
+                <strong>{liveSmoke?.self_test_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --self-test --pretty"}</strong>
+                <span>Live 命令</span>
+                <strong>{liveSmoke?.live_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty"}</strong>
                 <span>检查数</span>
                 <strong>{liveSmoke?.checks?.length || 0}</strong>
                 <span>状态</span>
                 <strong>{statusText(liveSmoke?.status || "not_loaded")}</strong>
               </div>
+              <p className="muted">{liveSmoke?.environment_note || "请从 packages/agent 目录运行，确保加载 Agent runtime 依赖。"}</p>
               <div className="mini-list">
                 {(liveSmoke?.checks || []).slice(0, 16).map((check, index) => (
                   <article key={`${check.name || "check"}-${index}`}>

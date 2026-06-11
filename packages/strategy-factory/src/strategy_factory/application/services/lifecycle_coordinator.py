@@ -491,6 +491,21 @@ class StrategyLifecycleCoordinator:
             "_closure_trace": trace_context,
         }
         incubation_budget = dict(request.candidate.get("incubation_budget") or {})
+        candidate_params = dict(request.candidate.get("params") or {})
+
+        def _public_runtime_diagnostic_only() -> bool:
+            for source in (
+                dict(request.candidate or {}),
+                candidate_params,
+                dict(request.gate or {}),
+            ):
+                if "diagnostic_only" not in source:
+                    continue
+                value = source.get("diagnostic_only")
+                if value is None:
+                    continue
+                return bool(value)
+            return False
 
         async def _status_update(status: str, reason: str) -> None:
             await _update_strategy_status(
@@ -611,6 +626,7 @@ class StrategyLifecycleCoordinator:
                 **dict(result.paper_action or {}),
                 "final_status": result.final_status,
                 "admission_layer": "observe",
+                "diagnostic_only": _public_runtime_diagnostic_only(),
                 "wide_intake_observe": True,
                 "submission_action_completed": bool(
                     result.paper_action or request.submission_action.get("submission_action_completed")
@@ -734,6 +750,7 @@ class StrategyLifecycleCoordinator:
                 result.action_audit = {
                     **dict(request.submission_action or {}),
                     **dict(result.paper_action or {}),
+                    "diagnostic_only": _public_runtime_diagnostic_only(),
                     "submission_action_completed": bool(
                         result.paper_action or request.submission_action.get("submission_action_completed")
                     ),

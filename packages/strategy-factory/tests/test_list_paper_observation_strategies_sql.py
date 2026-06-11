@@ -48,8 +48,72 @@ WHERE s.status = 'submitted'
       SELECT 1 FROM strategy_incubation_accounts a2
       WHERE a2.strategy_id = s.id
         AND a2.stage IN ('candidate', 'listed')
+      AND a2.status = 'active'
+  )
+"""
+
+_SQL_PAPER_ACTIVE = """
+SELECT s.id, s.strategy_type, a.stage AS observation_stage
+FROM strategies s
+JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+WHERE s.status = 'submitted'
+  AND a.status = 'active'
+  AND a.stage IN ('paper', 'warmup', 'observe')
+  AND COALESCE(pa.status, 'active') = 'active'
+  AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+  AND NOT EXISTS (
+      SELECT 1 FROM strategy_incubation_accounts a2
+      WHERE a2.strategy_id = s.id
+        AND a2.stage IN ('candidate', 'graduation_ready', 'listed', 'promoted')
         AND a2.status = 'active'
   )
+ORDER BY
+  CASE a.stage
+      WHEN 'paper' THEN 0
+      WHEN 'warmup' THEN 1
+      WHEN 'observe' THEN 2
+      ELSE 9
+  END,
+  datetime(COALESCE(a.updated_at, a.bound_at)) DESC
+LIMIT ?
+"""
+
+_SQL_PAPER_ACTIVE_COUNT = """
+SELECT COUNT(*) AS active_count,
+       MAX(datetime(COALESCE(a.updated_at, a.bound_at))) AS latest_active_at
+FROM strategies s
+JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+WHERE s.status = 'submitted'
+  AND a.status = 'active'
+  AND a.stage IN ('paper', 'warmup', 'observe')
+  AND COALESCE(pa.status, 'active') = 'active'
+  AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+  AND NOT EXISTS (
+      SELECT 1 FROM strategy_incubation_accounts a2
+      WHERE a2.strategy_id = s.id
+        AND a2.stage IN ('candidate', 'graduation_ready', 'listed', 'promoted')
+        AND a2.status = 'active'
+  )
+"""
+
+_SQL_SUBMITTED_FOR_DEDUP = """
+SELECT s.id
+FROM strategies s
+WHERE s.status = 'submitted'
+  AND NOT EXISTS (
+      SELECT 1
+      FROM strategy_incubation_accounts a
+      LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+      WHERE a.strategy_id = s.id
+        AND a.status = 'active'
+        AND a.stage IN ('paper', 'warmup', 'observe')
+        AND COALESCE(pa.status, 'active') = 'active'
+        AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+  )
+ORDER BY datetime(s.updated_at) DESC
+LIMIT ? OFFSET ?
 """
 
 _SQL_LATEST_PAPER_RECOGNIZED = """
@@ -93,6 +157,23 @@ def temp_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_type TEXT,
             created_at TEXT
+        );
+        CREATE TABLE paper_accounts (
+            id TEXT PRIMARY KEY,
+            user_id TEXT,
+            name TEXT,
+            initial_capital REAL,
+            current_capital REAL,
+            total_value REAL,
+            risk_rules TEXT,
+            strategy_id TEXT,
+            account_type TEXT,
+            incubation_stage TEXT,
+            promotion_candidate INTEGER,
+            archived_reason TEXT,
+            status TEXT,
+            created_at TEXT,
+            updated_at TEXT
         );
         """
     )
@@ -227,6 +308,55 @@ def test_strategy_with_no_account_excluded(temp_db):
     assert rows == []
 
 
+def test_active_observation_includes_submitted_warmup_after_initial_paper_recognition(temp_db):
+    con, _ = temp_db
+    con.executescript(
+        """
+        INSERT INTO strategies VALUES ('s1', 'n1', 'volatility_breakout', 'submitted', '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'submitted', '{}', '{}', '', '');
+        INSERT INTO strategy_incubation_accounts VALUES
+            (NULL, 's1', 'acc1', 'warmup', 'active', '', '{}', '2026-05-26 10:00:00', '2026-05-26 11:00:00'),
+            (NULL, 's2', 'acc2', 'listed', 'active', '', '{}', '2026-05-26 12:00:00', '2026-05-26 13:00:00');
+        INSERT INTO paper_accounts VALUES
+            ('acc1', 'u1', 'p1', 100000, 100000, 100000, '{}', 's1', 'incubation', 'warmup', 0, '', 'active', '2026-05-26 10:00:00', '2026-05-26 11:00:00'),
+            ('acc2', 'u1', 'p2', 100000, 100000, 100000, '{}', 's2', 'incubation', 'listed', 1, '', 'active', '2026-05-26 12:00:00', '2026-05-26 13:00:00');
+        """
+    )
+
+    rows = con.execute(_SQL_PAPER_ACTIVE, (50,)).fetchall()
+    ids = [r[0] for r in rows]
+
+    assert ids == ["s1"]
+
+
+def test_submitted_dedup_query_excludes_active_observe_backlog_only(temp_db):
+    con, _ = temp_db
+    con.executescript(
+        """
+        INSERT INTO strategies VALUES ('s1', 'n1', 'volatility_breakout', 'submitted', '{}', '{}', '', '2026-05-26 10:00:00');
+        INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'submitted', '{}', '{}', '', '2026-05-26 11:00:00');
+        INSERT INTO strategies VALUES ('s3', 'n3', 'sector_rotation',     'submitted', '{}', '{}', '', '2026-05-26 12:00:00');
+        INSERT INTO strategies VALUES ('s4', 'n4', 'ma_cross',            'submitted', '{}', '{}', '', '2026-05-26 13:00:00');
+        INSERT INTO strategies VALUES ('s5', 'n5', 'trend_follow',        'rejected',  '{}', '{}', '', '2026-05-26 14:00:00');
+        INSERT INTO strategy_incubation_accounts VALUES
+            (NULL, 's1', 'acc1', 'warmup',    'active', '', '{}', '2026-05-26 10:00:00', '2026-05-26 10:30:00'),
+            (NULL, 's2', 'acc2', 'paper',     'active', '', '{}', '2026-05-26 11:00:00', '2026-05-26 11:30:00'),
+            (NULL, 's3', 'acc3', 'observe',   'active', '', '{}', '2026-05-26 12:00:00', '2026-05-26 12:30:00'),
+            (NULL, 's4', 'acc4', 'candidate', 'active', '', '{}', '2026-05-26 13:00:00', '2026-05-26 13:30:00');
+        INSERT INTO paper_accounts VALUES
+            ('acc1', 'u1', 'p1', 100000, 100000, 100000, '{}', 's1', 'incubation', 'warmup', 0, '', 'active', '2026-05-26 10:00:00', '2026-05-26 10:30:00'),
+            ('acc2', 'u1', 'p2', 100000, 100000, 100000, '{}', 's2', 'incubation', 'paper', 0, '', 'active', '2026-05-26 11:00:00', '2026-05-26 11:30:00'),
+            ('acc3', 'u1', 'p3', 100000, 100000, 100000, '{}', 's3', 'incubation', 'observe', 0, '', 'active', '2026-05-26 12:00:00', '2026-05-26 12:30:00'),
+            ('acc4', 'u1', 'p4', 100000, 100000, 100000, '{}', 's4', 'incubation', 'candidate', 0, '', 'active', '2026-05-26 13:00:00', '2026-05-26 13:30:00');
+        """
+    )
+
+    rows = con.execute(_SQL_SUBMITTED_FOR_DEDUP, (50, 0)).fetchall()
+    ids = [r[0] for r in rows]
+
+    assert ids == ["s4"]
+
+
 def test_paper_observation_backlog_status_counts_submitted_active_paper_only(temp_db):
     con, _ = temp_db
     con.executescript(
@@ -235,25 +365,36 @@ def test_paper_observation_backlog_status_counts_submitted_active_paper_only(tem
         INSERT INTO strategies VALUES ('s2', 'n2', 'value_factor',        'submitted', '{}', '{}', '', '');
         INSERT INTO strategies VALUES ('s3', 'n3', 'sector_rotation',     'submitted', '{}', '{}', '', '');
         INSERT INTO strategies VALUES ('s4', 'n4', 'ma_cross',            'rejected',  '{}', '{}', '', '');
+        INSERT INTO strategies VALUES ('s5', 'n5', 'trend_follow',        'submitted', '{}', '{}', '', '');
         INSERT INTO strategy_incubation_accounts VALUES
             (NULL, 's1', 'acc1', 'paper',     'active', '', '{}', '2026-05-26 10:00:00', ''),
             (NULL, 's2', 'acc2', 'paper',     'active', '', '{}', '2026-05-26 14:00:00', ''),
             (NULL, 's2', 'acc2c','candidate', 'active', '', '{}', '2026-05-26 15:00:00', ''),
             (NULL, 's3', 'acc3', 'paper',     'inactive', '', '{}', '2026-05-26 16:00:00', ''),
-            (NULL, 's4', 'acc4', 'paper',     'active', '', '{}', '2026-05-26 17:00:00', '');
+            (NULL, 's4', 'acc4', 'paper',     'active', '', '{}', '2026-05-26 17:00:00', ''),
+            (NULL, 's5', 'acc5', 'warmup',    'active', '', '{}', '2026-05-26 18:00:00', '2026-05-26 19:00:00');
         INSERT INTO strategy_domain_events(event_type, created_at) VALUES
             ('incubation_factory.paper_observation_recognized', '2026-05-26 09:00:00'),
             ('incubation_factory.paper_observation_recognized', '2026-05-26 18:00:00'),
             ('incubation_factory.heartbeat', '2026-05-26 19:00:00');
+        INSERT INTO paper_accounts VALUES
+            ('acc1', 'u1', 'p1', 100000, 100000, 100000, '{}', 's1', 'incubation', 'paper', 0, '', 'active', '2026-05-26 10:00:00', '2026-05-26 10:00:00'),
+            ('acc2', 'u1', 'p2', 100000, 100000, 100000, '{}', 's2', 'incubation', 'paper', 0, '', 'active', '2026-05-26 14:00:00', '2026-05-26 14:00:00'),
+            ('acc3', 'u1', 'p3', 100000, 100000, 100000, '{}', 's3', 'incubation', 'paper', 0, '', 'inactive', '2026-05-26 16:00:00', '2026-05-26 16:00:00'),
+            ('acc4', 'u1', 'p4', 100000, 100000, 100000, '{}', 's4', 'incubation', 'paper', 0, '', 'active', '2026-05-26 17:00:00', '2026-05-26 17:00:00'),
+            ('acc5', 'u1', 'p5', 100000, 100000, 100000, '{}', 's5', 'incubation', 'warmup', 0, '', 'active', '2026-05-26 18:00:00', '2026-05-26 19:00:00');
         """
     )
 
     backlog = dict(zip(["backlog_count", "latest_bound_at"], con.execute(_SQL_PAPER_BACKLOG).fetchone()))
+    active = dict(zip(["active_count", "latest_active_at"], con.execute(_SQL_PAPER_ACTIVE_COUNT).fetchone()))
     recognized = dict(
         zip(["event_type", "created_at"], con.execute(_SQL_LATEST_PAPER_RECOGNIZED).fetchone())
     )
 
     assert backlog["backlog_count"] == 1
     assert backlog["latest_bound_at"] == "2026-05-26 10:00:00"
+    assert active["active_count"] == 2
+    assert active["latest_active_at"] == "2026-05-26 19:00:00"
     assert recognized["event_type"] == "incubation_factory.paper_observation_recognized"
     assert recognized["created_at"] == "2026-05-26 18:00:00"

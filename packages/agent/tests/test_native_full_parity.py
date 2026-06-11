@@ -295,15 +295,25 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
     assert actions["configure_writable_database"]["target_page"] == "data"
     assert payload["live_smoke"]["script"] == "scripts/ops/live_readiness_smoke.py"
     assert payload["live_smoke"]["status"] == "blocked"
+    assert payload["live_smoke"]["working_directory"] == "packages/agent"
+    assert payload["live_smoke"]["self_test_command"].startswith("uv run python")
+    assert "--self-test --pretty" in payload["live_smoke"]["self_test_command"]
+    assert "--endpoint http://127.0.0.1:8767 --pretty" in payload["live_smoke"]["live_command"]
+    assert "packages/agent" in payload["live_smoke"]["environment_note"]
     smoke_checks = {item["name"] for item in payload["live_smoke"]["checks"]}
     assert {
+        "workbench_summary",
         "memory_status",
         "session_search",
         "memory_search",
+        "factory_status",
         "market_temperature_cache",
         "market_temperature_forward_validation",
     } <= smoke_checks
+    assert len(payload["live_smoke"]["checks"]) == 16
     smoke_check_details = {item["name"]: item for item in payload["live_smoke"]["checks"]}
+    assert smoke_check_details["workbench_summary"]["path"] == "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"
+    assert "run_count" in smoke_check_details["factory_status"]["observes"]
     assert "warnings" in smoke_check_details["market_temperature_cache"]["observes"]
     assert "quality_status" in smoke_check_details["market_temperature_forward_validation"]["observes"]
 
@@ -352,3 +362,4 @@ def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp
     assert "run_live_financial_workflow" in actions
     assert actions["run_live_financial_workflow"]["target_page"] == "financial-manager"
     assert payload["live_smoke"]["status"] == "ready"
+    assert len(payload["live_smoke"]["checks"]) == 16

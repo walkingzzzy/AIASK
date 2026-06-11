@@ -61,8 +61,15 @@ describe("ReadinessHealthPage", () => {
     expect(screen.getByText("运行一次只读金融工作流")).toBeInTheDocument();
     expect(screen.getByText("真实联调检查清单")).toBeInTheDocument();
     expect(screen.getByText("scripts/ops/live_readiness_smoke.py")).toBeInTheDocument();
+    expect(screen.getByText("packages/agent")).toBeInTheDocument();
+    expect(screen.getByText("uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --self-test --pretty")).toBeInTheDocument();
+    expect(screen.getByText("uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty")).toBeInTheDocument();
+    expect(screen.getAllByText(/root or system Python may report missing FastAPI\/pandas dependencies/).length).toBeGreaterThan(0);
+    expect(screen.getByText("workbench_summary")).toBeInTheDocument();
+    expect(screen.getByText("factory_status")).toBeInTheDocument();
     expect(screen.getByText("market_temperature_cache")).toBeInTheDocument();
     expect(screen.getByText("market_temperature_forward_validation")).toBeInTheDocument();
+    expect(screen.getByText("观测字段：success, configured, database_configured, run_count")).toBeInTheDocument();
     expect(screen.getByText("观测字段：ready, status, blockers, warnings")).toBeInTheDocument();
     expect(screen.getByText("观测字段：benchmark_status, quality_status, warnings, sample_count")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "真实金融流程前置检查" })).toBeInTheDocument();

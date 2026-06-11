@@ -42,7 +42,37 @@ class SubmissionAdmissionAuthority:
         strict_formal_ready = bool(normalized_gate.get("strict_incubation_ready")) or (
             str(normalized_gate.get("incubation_pass_mode") or "").strip().lower() == "strict"
         )
-        formal_track_requested = str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+        candidate_payload = dict(candidate or {})
+        candidate_params = dict(candidate_payload.get("params") or {})
+        candidate_budget = dict(candidate_payload.get("incubation_budget") or {})
+        observe_first_intake_requested = bool(
+            candidate_payload.get("observe_first_intake")
+            or candidate_params.get("observe_first_intake")
+            or candidate_budget.get("observe_first_intake")
+        )
+        explicit_formal_track_requested = str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+        readiness_tier = (
+            str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() or "unknown"
+        )
+        formal_runtime_ready = (
+            bool(runtime_bootstrap.get("runtime_bootstrap_eligible"))
+            and not bool(runtime_bootstrap.get("execution_semantic_gap"))
+            and bool(runtime_bootstrap.get("semantic_runtime_match"))
+            and not bool(runtime_bootstrap.get("proxy_runtime_used"))
+            and not bool(runtime_bootstrap.get("diagnostic_only"))
+            and readiness_tier == "formal_runtime_ready"
+            and str(runtime_bootstrap.get("trade_prediction_contract_status") or "").strip().lower() == "ready"
+            and not bool(runtime_bootstrap.get("trade_prediction_contract_observation_gap"))
+        )
+        formal_track_auto_corrected = bool(
+            not explicit_formal_track_requested
+            and observe_first_intake_requested
+            and bool(normalized_gate.get("passed"))
+            and strict_formal_ready
+            and not bool(normalized_gate.get("live_candidate_ready"))
+            and formal_runtime_ready
+        )
+        formal_track_requested = bool(explicit_formal_track_requested or formal_track_auto_corrected)
         formal_track_blockers: list[str] = []
         if formal_track_requested:
             if not bool(runtime_bootstrap.get("runtime_bootstrap_eligible")):
@@ -60,9 +90,6 @@ class SubmissionAdmissionAuthority:
                 formal_track_blockers.append("proxy_runtime_not_allowed_for_formal_incubation")
             if bool(runtime_bootstrap.get("diagnostic_only")):
                 formal_track_blockers.append("diagnostic_only_runtime")
-            readiness_tier = (
-                str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() or "unknown"
-            )
             if readiness_tier != "formal_runtime_ready":
                 formal_track_blockers.append(f"execution_readiness_tier:{readiness_tier}")
             if not strict_formal_ready:
@@ -162,7 +189,11 @@ class SubmissionAdmissionAuthority:
             action_type = "incubation"
             submission_lane = "formal_incubation"
             final_status = "incubating"
-            trigger = "strict_incubation_ready_and_budget_formal"
+            trigger = (
+                "strict_incubation_ready_and_observe_first_formal_correction"
+                if formal_track_auto_corrected
+                else "strict_incubation_ready_and_budget_formal"
+            )
             gaps = admission_block_reasons
             fallback_conditions = [
                 "downgrade_to_observe_if_signal_quality_or_execution_evidence_weakens",
@@ -230,8 +261,10 @@ class SubmissionAdmissionAuthority:
             "final_status": final_status,
             "completed": bool(completed),
             "formal_track_requested": formal_track_requested,
+            "formal_track_auto_corrected": formal_track_auto_corrected,
             "formal_track_eligible": formal_track_eligible,
             "formal_track_blockers": list(formal_track_blockers),
+            "observe_first_intake_requested": observe_first_intake_requested,
             "admission_decision_contract_version": ADMISSION_DECISION_CONTRACT_VERSION,
             "admission_decision": admission_decision,
             **runtime_bootstrap,
@@ -247,8 +280,10 @@ class SubmissionAdmissionAuthority:
             "submission_lane": submission_lane,
             "final_status": final_status,
             "formal_track_requested": formal_track_requested,
+            "formal_track_auto_corrected": formal_track_auto_corrected,
             "formal_track_eligible": formal_track_eligible,
             "formal_track_blockers": list(formal_track_blockers),
+            "observe_first_intake_requested": observe_first_intake_requested,
             "admission_decision_contract_version": ADMISSION_DECISION_CONTRACT_VERSION,
             "admission_decision": admission_decision,
             **runtime_bootstrap,

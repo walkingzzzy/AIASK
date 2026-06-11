@@ -75,6 +75,15 @@ def _heavy_strategy_params() -> dict:
         "risk_rules": {"max_drawdown": 0.12, "stop_loss": 0.05},
         "trade_plan": {"horizon": "swing_5_20d", "position": "equal_weight"},
         "factory_run_id": "run-json-cap",
+        "submission_lane": "observe_incubation",
+        "planned_submission_lane": "formal_incubation",
+        "final_status": "submitted",
+        "planned_final_status": "incubating",
+        "observe_first_intake": True,
+        "formal_track_requested": True,
+        "runtime_family_data_source": "price_proxy_runtime",
+        "execution_readiness_tier": "observe_diagnostic_only",
+        "trade_prediction_contract_status": "ready",
         "resolved_candidate_envelope": {
             "records": [{"symbol": f"{i:06d}", "features": list(range(60))} for i in range(700)]
         },
@@ -86,8 +95,50 @@ def _heavy_strategy_params() -> dict:
             "target_symbols": [f"{i:06d}" for i in range(1000)],
             "market_context": "y" * 30000,
         },
-        "incubation_budget": {"raw": ["z" * 200 for _ in range(300)]},
+        "incubation_budget": {
+            "track": "observe_incubation",
+            "rank": 7,
+            "priority_score": 91.5,
+            "exploration_candidate": True,
+            "raw": ["z" * 200 for _ in range(300)],
+        },
     }
+
+
+def _heavy_quality_report_summary() -> dict:
+    payload = {
+        "strategy_id": "strategy-quality-summary",
+        "submission_lane": "observe_incubation",
+        "planned_submission_lane": "formal_incubation",
+        "final_status": "submitted",
+        "planned_final_status": "incubating",
+        "formal_track_requested": True,
+        "formal_track_auto_corrected": False,
+        "formal_track_eligible": False,
+        "formal_track_blockers": [
+            "default_profile_not_allowed_for_single_name_runtime",
+            "diagnostic_only_not_allowed_for_incubation",
+        ],
+        "observe_first_intake_requested": True,
+        "incubation_budget_track": "formal_incubation",
+        "incubation_budget_rank": 3,
+        "incubation_budget_priority_score": 98.25,
+        "runtime_bootstrap_reason": "proxy_runtime_observe_only",
+        "runtime_family_data_source": "price_proxy_runtime",
+        "proxy_runtime_used": True,
+        "diagnostic_only": True,
+        "execution_readiness_tier": "observe_diagnostic_only",
+        "trade_prediction_contract_status": "ready",
+        "trade_prediction_contract_observation_gap": False,
+        "submission_action_type": "paper",
+        "submission_action_trigger": "formal_lane_requires_semantic_runtime_match",
+        "candidate_contract_snapshot": {
+            "candidates": [{"id": i, "contract": "x" * 300} for i in range(220)]
+        },
+    }
+    for i in range(120):
+        payload[f"filler_{i:03d}"] = "x" * 600
+    return payload
 
 
 def _json_len(value) -> int:
@@ -190,7 +241,17 @@ def test_strategy_factory_primary_bloat_paths_are_capped(tmp_path, monkeypatch):
             assert "resolved_candidate_envelope" not in params
             assert "candidate_contract_snapshot" not in params
             assert "research_task" not in params
+            assert params["submission_lane"] == "observe_incubation"
+            assert params["planned_submission_lane"] == "formal_incubation"
+            assert params["final_status"] == "submitted"
+            assert params["planned_final_status"] == "incubating"
+            assert params["observe_first_intake"] is True
+            assert params["incubation_budget"]["track"] == "observe_incubation"
+            assert params["incubation_budget"]["rank"] == 7
+            assert params["incubation_budget"]["priority_score"] == 91.5
+            assert params["incubation_budget"]["exploration_candidate"] is True
             assert params["_storage_audit"]["payload_hash"]
+            assert "incubation_budget" not in params["_storage_audit"].get("dropped_large_nodes", {})
             assert set(params["_storage_audit"]["dropped_large_nodes"]) >= {
                 "resolved_candidate_envelope",
                 "candidate_contract_snapshot",
@@ -266,6 +327,56 @@ def test_strategy_factory_primary_bloat_paths_are_capped(tmp_path, monkeypatch):
                 }
             )
             assert _json_len(evidence["evidence_payload"]) < JSON_LIMIT
+        finally:
+            await close_db()
+
+    asyncio.run(_run())
+
+
+def test_strategy_quality_report_summary_compaction_preserves_priority_fields(tmp_path, monkeypatch):
+    monkeypatch.setenv("AIASK_SQLITE_PATH", str(tmp_path / "quality_summary_caps.sqlite3"))
+
+    async def _run() -> None:
+        db = get_db()
+        try:
+            await db.initialize()
+            await db.save_strategy(
+                {
+                    "id": "strategy-quality-summary",
+                    "name": "Strategy Quality Summary",
+                    "status": "draft",
+                    "strategy_type": "momentum",
+                }
+            )
+            summary = _heavy_quality_report_summary()
+            assert _json_len(summary) > JSON_LIMIT
+
+            await db.save_strategy_quality_report(
+                "strategy-quality-summary",
+                "submission",
+                {
+                    "passed": True,
+                    "summary": summary,
+                },
+            )
+            report = await db.get_strategy_quality_report("strategy-quality-summary", "submission")
+            assert report is not None
+            stored = dict(report["summary"] or {})
+            assert _json_len(stored) < JSON_LIMIT
+            assert stored["storage_mode"] == "compact_json"
+            assert stored["submission_lane"] == "observe_incubation"
+            assert stored["planned_submission_lane"] == "formal_incubation"
+            assert stored["final_status"] == "submitted"
+            assert stored["planned_final_status"] == "incubating"
+            assert stored["incubation_budget_track"] == "formal_incubation"
+            assert stored["runtime_family_data_source"] == "price_proxy_runtime"
+            assert stored["proxy_runtime_used"] is True
+            assert stored["diagnostic_only"] is True
+            assert stored["execution_readiness_tier"] == "observe_diagnostic_only"
+            assert stored["trade_prediction_contract_status"] == "ready"
+            assert stored["submission_action_type"] == "paper"
+            assert stored["submission_action_trigger"] == "formal_lane_requires_semantic_runtime_match"
+            assert stored["truncated_key_count"] > 0
         finally:
             await close_db()
 

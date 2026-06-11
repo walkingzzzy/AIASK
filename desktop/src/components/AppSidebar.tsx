@@ -19,7 +19,7 @@ function SidebarNavGroup({
   const [collapsed, setCollapsed] = useState(Boolean(group.defaultCollapsed));
   const advanced = group.id.startsWith("advanced") || group.id === "legacy";
   return (
-    <section className={`sidebar-nav-group ${advanced ? "advanced" : ""}`} aria-label={group.label}>
+    <section className={`sidebar-nav-group ${advanced ? "advanced" : ""}`} aria-label={group.label} data-view-group-id={group.id}>
       <button
         aria-label={group.label}
         className="section-label nav-label nav-group-toggle"
@@ -35,7 +35,7 @@ function SidebarNavGroup({
         const active = mainView === view.id && (view.id !== "workbench" || inspectorTab === "details");
         return (
           <div className="sidebar-nav-item" key={view.id}>
-            <IconButton active={active} label={view.label} onClick={() => onSelectView(view.id)}>
+            <IconButton active={active} data-view-id={view.id} label={view.label} onClick={() => onSelectView(view.id)}>
               <Icon size={16} />
             </IconButton>
             {view.badge && <span className="sidebar-nav-badge">{view.badge}</span>}

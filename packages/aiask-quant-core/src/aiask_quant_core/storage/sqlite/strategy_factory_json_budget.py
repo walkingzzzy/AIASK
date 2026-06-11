@@ -129,6 +129,7 @@ STRATEGY_PARAM_FULL_KEYS = {
     "repair_rebound_pct",
     "risk_rules",
     "rsi_period",
+    "runtime_recompile_backfill",
     "sell_quantile",
     "sell_threshold",
     "short_period",
@@ -174,6 +175,66 @@ STRATEGY_PARAM_REF_KEYS = {
     "task_run_id",
     "trace_id",
 }
+
+QUALITY_REPORT_SUMMARY_PRIORITY_KEYS = (
+    "strategy_id",
+    "prediction_trace_id",
+    "trace_id",
+    "name",
+    "status",
+    "submission_lane",
+    "planned_submission_lane",
+    "final_status",
+    "planned_final_status",
+    "created_total",
+    "created_strategy_pool",
+    "created_audit_only",
+    "gate_3_recorded",
+    "record_only",
+    "gate3_record_only",
+    "validation_grade",
+    "raw_validation_grade",
+    "effective_validation_grade",
+    "validation_total_score",
+    "strict_incubation_ready",
+    "strict_incubation_blocked",
+    "formal_track_requested",
+    "formal_track_auto_corrected",
+    "formal_track_eligible",
+    "formal_track_blockers",
+    "observe_first_intake_requested",
+    "observe_intake_requested",
+    "incubation_budget_track",
+    "incubation_budget_rank",
+    "incubation_budget_priority_score",
+    "incubation_budget_exploration_candidate",
+    "runtime_bootstrap_eligible",
+    "runtime_bootstrap_reason",
+    "runtime_bootstrap_budget_tier",
+    "runtime_playbook_present",
+    "runtime_contract_missing_fields",
+    "wide_intake_admitted",
+    "pre_observe_hard_reject_reasons",
+    "strategy_type_registered",
+    "semantic_runtime_match",
+    "runtime_family_data_source",
+    "proxy_runtime_used",
+    "diagnostic_only",
+    "execution_readiness_tier",
+    "semantic_contract_missing_fields",
+    "trade_prediction_contract_status",
+    "trade_prediction_contract_hash",
+    "trade_prediction_contract_missing_fields",
+    "trade_prediction_contract_reject_reasons",
+    "trade_prediction_contract_observation_gap",
+    "submission_action_type",
+    "submission_action_trigger",
+    "submission_action_gaps",
+    "submission_action_fallback_conditions",
+    "submission_action_next_step",
+    "submission_action_completed",
+    "admission_decision",
+)
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int | None = None) -> int:
@@ -377,6 +438,29 @@ def compact_json(value: Any, *, depth: int = 0, max_list_items: int = 12, max_di
     return str(value)
 
 
+def _assign_compact_value(
+    target: dict[str, Any],
+    key: str,
+    item: Any,
+    *,
+    nested_limit: int = 80,
+    list_limit: int = 16,
+) -> None:
+    if item in (None, "", [], {}):
+        return
+    if _is_scalar(item):
+        target[key] = item
+        return
+    if isinstance(item, list):
+        target[key] = preview_list(item, limit=list_limit)
+        target[f"{key}_count"] = len(item)
+        return
+    if isinstance(item, Mapping):
+        target[key] = _scalar_mapping(item, limit=nested_limit)
+        return
+    target[key] = str(item)
+
+
 def _scalar_mapping(value: Any, *, limit: int = 40) -> dict[str, Any]:
     if not isinstance(value, Mapping):
         return {}
@@ -568,23 +652,8 @@ def compact_strategy_factory_run_summary(value: Any, *, field_name: str, origina
         if str(key).startswith("family_gate_feedback")
     ]
 
-    def assign_compact(key: str, item: Any, *, nested_limit: int = 80) -> None:
-        if item in (None, "", [], {}):
-            return
-        if _is_scalar(item):
-            compact[key] = item
-            return
-        if isinstance(item, list):
-            compact[key] = preview_list(item, limit=16)
-            compact[f"{key}_count"] = len(item)
-            return
-        if isinstance(item, Mapping):
-            compact[key] = _scalar_mapping(item, limit=nested_limit)
-            return
-        compact[key] = str(item)
-
     for key in preserve_keys:
-        assign_compact(str(key), payload.get(key), nested_limit=120)
+        _assign_compact_value(compact, str(key), payload.get(key), nested_limit=120)
 
     scalar_preview_count = 0
     for raw_key, item in payload.items():
@@ -593,7 +662,43 @@ def compact_strategy_factory_run_summary(value: Any, *, field_name: str, origina
             continue
         if not _is_scalar(item):
             continue
-        assign_compact(key, item)
+        _assign_compact_value(compact, key, item)
+        scalar_preview_count += 1
+        if scalar_preview_count >= 40:
+            break
+    if len(payload) > len(compact):
+        compact["truncated_key_count"] = max(0, len(payload) - len(compact))
+    return compact
+
+
+def compact_strategy_quality_report_summary(value: Any, *, field_name: str, original_size: int) -> dict[str, Any]:
+    payload = dict(value or {}) if isinstance(value, Mapping) else {}
+    compact: dict[str, Any] = {
+        "storage_mode": "compact_json",
+        "field_name": field_name,
+        "truncated": True,
+        "original_size_bytes": int(original_size),
+        "payload_hash": stable_json_hash(value),
+        "top_level_keys": sorted(str(key) for key in payload.keys())[:80],
+    }
+    preserve_keys = [key for key in QUALITY_REPORT_SUMMARY_PRIORITY_KEYS if key in payload]
+    preserve_keys.extend(
+        key
+        for key in payload.keys()
+        if str(key).startswith("gate3_") and key not in preserve_keys
+    )
+
+    for key in preserve_keys:
+        _assign_compact_value(compact, str(key), payload.get(key), nested_limit=80)
+
+    scalar_preview_count = 0
+    for raw_key, item in payload.items():
+        key = str(raw_key)
+        if key in compact or f"{key}_count" in compact:
+            continue
+        if not _is_scalar(item):
+            continue
+        _assign_compact_value(compact, key, item)
         scalar_preview_count += 1
         if scalar_preview_count >= 40:
             break
@@ -616,6 +721,9 @@ def compact_strategy_params(value: Any, *, field_name: str, original_size: int) 
     for raw_key, item in payload.items():
         key = str(raw_key)
         if item in (None, "", [], {}):
+            continue
+        if key == "incubation_budget" and isinstance(item, Mapping):
+            compact[key] = _scalar_mapping(item, limit=24)
             continue
         if key in STRATEGY_PARAM_FULL_KEYS or key in STRATEGY_PARAM_REF_KEYS or _is_scalar(item):
             compact[key] = compact_json(item, max_dict_items=32, max_list_items=24)
@@ -689,6 +797,12 @@ def compact_for_field(field_name: str, value: Any, *, max_bytes: int) -> Any:
         compacted = compact_factor_research(value, field_name=field_name, original_size=original_size)
     elif normalized == "strategy_factory_runs.summary":
         compacted = compact_strategy_factory_run_summary(value, field_name=field_name, original_size=original_size)
+    elif normalized == "strategy_quality_reports.summary":
+        compacted = compact_strategy_quality_report_summary(
+            value,
+            field_name=field_name,
+            original_size=original_size,
+        )
     elif normalized.endswith("strategies.params") or normalized == "strategies.params":
         compacted = compact_strategy_params(value, field_name=field_name, original_size=original_size)
     else:

@@ -161,6 +161,7 @@
             )
             if _semantic_contract_feature_enabled():
                 gate = _apply_semantic_contract_gate(gate, semantic_audit)
+            candidate = self._apply_gate_runtime_context(candidate, gate)
             candidate_provenance = self._candidate_provenance(candidate, existing_strategy)
             strategy_profile = dict(candidate_provenance.get("strategy_profile") or {})
             incubation_budget = dict(candidate.get("incubation_budget") or {})
@@ -238,6 +239,63 @@
                 runtime_bootstrap_eligible=bool(submission_action.get("runtime_bootstrap_eligible")),
                 runtime_bootstrap_budget_tier=str(submission_action.get("runtime_bootstrap_budget_tier") or "") or None,
             )
+            planned_submission_lane = str(
+                submission_action.get("planned_submission_lane") or submission_lane
+            )
+            planned_final_status = str(
+                submission_action.get("planned_final_status") or final_status
+            )
+            candidate_params = dict(candidate.get("params") or {})
+            if str(submission_lane or "").strip():
+                candidate_params["submission_lane"] = submission_lane
+            if planned_submission_lane:
+                candidate_params["planned_submission_lane"] = planned_submission_lane
+            if str(final_status or "").strip():
+                candidate_params["final_status"] = final_status
+            if planned_final_status:
+                candidate_params["planned_final_status"] = planned_final_status
+            candidate_params["formal_track_requested"] = bool(
+                submission_action.get("formal_track_requested")
+            )
+            candidate_params["formal_track_auto_corrected"] = bool(
+                submission_action.get("formal_track_auto_corrected")
+            )
+            candidate_params["formal_track_eligible"] = bool(
+                submission_action.get("formal_track_eligible")
+            )
+            candidate_params["observe_first_intake_requested"] = bool(
+                submission_action.get("observe_first_intake_requested")
+            )
+            for field_name in (
+                "runtime_bootstrap_eligible",
+                "runtime_bootstrap_reason",
+                "runtime_bootstrap_budget_tier",
+                "wide_intake_admitted",
+                "observe_intake_requested",
+                "strategy_type_registered",
+                "runtime_family_data_source",
+                "proxy_runtime_used",
+                "diagnostic_only",
+                "execution_readiness_tier",
+                "trade_prediction_contract_status",
+                "trade_prediction_contract_observation_gap",
+            ):
+                value = submission_action.get(field_name)
+                if value not in (None, "", [], {}):
+                    candidate_params[field_name] = value
+            predicted_incubation_track = str(
+                submission_action.get("incubation_budget_track")
+                or incubation_budget_track
+                or dict(candidate.get("incubation_budget") or {}).get("track")
+                or dict(candidate_params.get("incubation_budget") or {}).get("track")
+                or ""
+            ).strip().lower()
+            if predicted_incubation_track:
+                candidate_params["incubation_budget_track"] = predicted_incubation_track
+            candidate = {
+                **dict(candidate or {}),
+                "params": candidate_params,
+            }
             data = self._build_strategy_data(strategy_id, name, candidate, metrics, existing=existing_strategy)
             candidate = apply_resolved_candidate_envelope(
                 {
@@ -613,12 +671,6 @@
                             )
             final_status = str(post_gate.get("final_status") or final_status)
             submission_lane = str(post_gate.get("submission_lane") or submission_lane)
-            await self._submission_coordinator.save_quality_report(
-                db,
-                strategy_id,
-                quality_report,
-                options=quality_report_options,
-            )
             if gate3_record_only:
                 factor_performance_report = {
                     "reported": False,
@@ -635,6 +687,16 @@
                     read_only=read_only,
                 )
             quality_summary = dict(quality_report.get("summary") or {})
+            candidate_params = dict(candidate.get("params") or {})
+            candidate_budget = dict(candidate.get("incubation_budget") or {})
+            if not candidate_budget:
+                candidate_budget = dict(candidate_params.get("incubation_budget") or {})
+
+            def _pick_value(*values: Any) -> Any:
+                for value in values:
+                    if value not in (None, "", [], {}):
+                        return value
+                return None
 
             resolved_submission_action = dict(post_gate.get("submission_action") or submission_action.get("submission_action") or {})
             resolved_submission_action_type = post_gate.get("submission_action_type", submission_action.get("submission_action_type"))
@@ -654,6 +716,50 @@
                 "submission_action_next_step",
                 submission_action.get("submission_action_next_step"),
             )
+            for field_name in (
+                "runtime_bootstrap_eligible",
+                "runtime_bootstrap_reason",
+                "runtime_bootstrap_budget_tier",
+                "runtime_playbook_present",
+                "runtime_contract_missing_fields",
+                "wide_intake_admitted",
+                "observe_intake_requested",
+                "pre_observe_hard_reject_reasons",
+                "strategy_type_registered",
+                "formal_track_requested",
+                "formal_track_auto_corrected",
+                "formal_track_eligible",
+                "formal_track_blockers",
+                "observe_first_intake_requested",
+                "planned_submission_lane",
+                "planned_final_status",
+                "execution_semantic_mode",
+                "execution_semantic_gap",
+                "execution_semantic_gap_reasons",
+                "dsl_required",
+                "dsl_compiled",
+                "semantic_runtime_match",
+                "runtime_family_data_source",
+                "proxy_runtime_used",
+                "diagnostic_only",
+                "execution_readiness_tier",
+                "semantic_contract_missing_fields",
+                "trade_prediction_contract_status",
+                "trade_prediction_contract_hash",
+                "trade_prediction_contract_missing_fields",
+                "trade_prediction_contract_reject_reasons",
+                "trade_prediction_contract_observation_gap",
+            ):
+                value = _pick_value(
+                    resolved_submission_action.get(field_name),
+                    post_gate.get(field_name),
+                    quality_summary.get(field_name),
+                    gate.get(field_name),
+                    candidate.get(field_name),
+                    candidate_params.get(field_name),
+                )
+                if value not in (None, "", [], {}):
+                    resolved_submission_action[field_name] = value
             dedup_result = dict(candidate.get("dedup_result") or {})
             constraint_check = dict(candidate.get("constraint_check") or {})
             validation_profile = dict(candidate.get("validation_profile") or {})
@@ -696,7 +802,8 @@
             gate_b_summary = _gate_b_payload(candidate, gate)
             gate_c_summary = _gate_c_payload({**candidate, **post_gate}, gate, final_status)
 
-            summary = {
+            summary = dict(quality_summary)
+            summary.update({
                 "strategy_id": strategy_id,
                 "prediction_trace_id": prediction_trace_id or None,
                 "trace_id": prediction_trace_id or None,
@@ -722,15 +829,282 @@
                 "formal_track_requested": bool(
                     post_gate.get("formal_track_requested", submission_action.get("formal_track_requested"))
                 ),
+                "formal_track_auto_corrected": bool(
+                    post_gate.get(
+                        "formal_track_auto_corrected",
+                        submission_action.get("formal_track_auto_corrected"),
+                    )
+                ),
                 "formal_track_eligible": bool(
                     post_gate.get("formal_track_eligible", submission_action.get("formal_track_eligible"))
                 ),
                 "formal_track_blockers": list(
                     post_gate.get("formal_track_blockers", submission_action.get("formal_track_blockers") or [])
                 ),
+                "observe_first_intake_requested": bool(
+                    post_gate.get(
+                        "observe_first_intake_requested",
+                        submission_action.get("observe_first_intake_requested"),
+                    )
+                ),
+                "planned_submission_lane": post_gate.get(
+                    "planned_submission_lane",
+                    _pick_value(
+                        submission_action.get("planned_submission_lane"),
+                        resolved_submission_action.get("planned_submission_lane"),
+                        submission_lane,
+                    ),
+                ),
+                "planned_final_status": post_gate.get(
+                    "planned_final_status",
+                    _pick_value(
+                        submission_action.get("planned_final_status"),
+                        resolved_submission_action.get("planned_final_status"),
+                        final_status,
+                    ),
+                ),
                 "runtime_bootstrap_reason": post_gate.get(
                     "runtime_bootstrap_reason",
-                    submission_action.get("runtime_bootstrap_reason"),
+                    _pick_value(
+                        submission_action.get("runtime_bootstrap_reason"),
+                        resolved_submission_action.get("runtime_bootstrap_reason"),
+                        quality_summary.get("runtime_bootstrap_reason"),
+                        gate.get("runtime_bootstrap_reason"),
+                        candidate.get("runtime_bootstrap_reason"),
+                        candidate_params.get("runtime_bootstrap_reason"),
+                    ),
+                ),
+                "runtime_bootstrap_eligible": bool(
+                    post_gate.get(
+                        "runtime_bootstrap_eligible",
+                        _pick_value(
+                            submission_action.get("runtime_bootstrap_eligible"),
+                            resolved_submission_action.get("runtime_bootstrap_eligible"),
+                            quality_summary.get("runtime_bootstrap_eligible"),
+                            gate.get("runtime_bootstrap_eligible"),
+                            candidate.get("runtime_bootstrap_eligible"),
+                            candidate_params.get("runtime_bootstrap_eligible"),
+                        ),
+                    )
+                ),
+                "runtime_bootstrap_budget_tier": post_gate.get(
+                    "runtime_bootstrap_budget_tier",
+                    _pick_value(
+                        submission_action.get("runtime_bootstrap_budget_tier"),
+                        resolved_submission_action.get("runtime_bootstrap_budget_tier"),
+                        quality_summary.get("runtime_bootstrap_budget_tier"),
+                        gate.get("runtime_bootstrap_budget_tier"),
+                        candidate.get("runtime_bootstrap_budget_tier"),
+                        candidate_params.get("runtime_bootstrap_budget_tier"),
+                    ),
+                ),
+                "runtime_playbook_present": bool(
+                    post_gate.get(
+                        "runtime_playbook_present",
+                        _pick_value(
+                            submission_action.get("runtime_playbook_present"),
+                            resolved_submission_action.get("runtime_playbook_present"),
+                            quality_summary.get("runtime_playbook_present"),
+                            gate.get("runtime_playbook_present"),
+                            candidate.get("runtime_playbook_present"),
+                            candidate_params.get("runtime_playbook_present"),
+                        ),
+                    )
+                ),
+                "runtime_contract_missing_fields": list(
+                    post_gate.get(
+                        "runtime_contract_missing_fields",
+                        _pick_value(
+                            submission_action.get("runtime_contract_missing_fields"),
+                            resolved_submission_action.get("runtime_contract_missing_fields"),
+                            quality_summary.get("runtime_contract_missing_fields"),
+                            gate.get("runtime_contract_missing_fields"),
+                            candidate.get("runtime_contract_missing_fields"),
+                            candidate_params.get("runtime_contract_missing_fields"),
+                            [],
+                        ) or [],
+                    )
+                ),
+                "wide_intake_admitted": bool(
+                    post_gate.get(
+                        "wide_intake_admitted",
+                        _pick_value(
+                            submission_action.get("wide_intake_admitted"),
+                            resolved_submission_action.get("wide_intake_admitted"),
+                            quality_summary.get("wide_intake_admitted"),
+                            gate.get("wide_intake_admitted"),
+                            candidate.get("wide_intake_admitted"),
+                            candidate_params.get("wide_intake_admitted"),
+                        ),
+                    )
+                ),
+                "observe_intake_requested": bool(
+                    post_gate.get(
+                        "observe_intake_requested",
+                        _pick_value(
+                            submission_action.get("observe_intake_requested"),
+                            resolved_submission_action.get("observe_intake_requested"),
+                            quality_summary.get("observe_intake_requested"),
+                            gate.get("observe_intake_requested"),
+                            candidate.get("observe_intake_requested"),
+                            candidate_params.get("observe_intake_requested"),
+                        ),
+                    )
+                ),
+                "pre_observe_hard_reject_reasons": list(
+                    post_gate.get(
+                        "pre_observe_hard_reject_reasons",
+                        submission_action.get("pre_observe_hard_reject_reasons") or [],
+                    )
+                ),
+                "strategy_type_registered": bool(
+                    post_gate.get(
+                        "strategy_type_registered",
+                        submission_action.get("strategy_type_registered"),
+                    )
+                ),
+                "execution_semantic_mode": post_gate.get(
+                    "execution_semantic_mode",
+                    _pick_value(
+                        submission_action.get("execution_semantic_mode"),
+                        resolved_submission_action.get("execution_semantic_mode"),
+                        quality_summary.get("execution_semantic_mode"),
+                        gate.get("execution_semantic_mode"),
+                        candidate.get("execution_semantic_mode"),
+                        candidate_params.get("execution_semantic_mode"),
+                    ),
+                ),
+                "execution_semantic_gap": bool(
+                    post_gate.get(
+                        "execution_semantic_gap",
+                        _pick_value(
+                            submission_action.get("execution_semantic_gap"),
+                            resolved_submission_action.get("execution_semantic_gap"),
+                            quality_summary.get("execution_semantic_gap"),
+                            gate.get("execution_semantic_gap"),
+                            candidate.get("execution_semantic_gap"),
+                            candidate_params.get("execution_semantic_gap"),
+                        ),
+                    )
+                ),
+                "execution_semantic_gap_reasons": list(
+                    post_gate.get(
+                        "execution_semantic_gap_reasons",
+                        submission_action.get("execution_semantic_gap_reasons") or [],
+                    )
+                ),
+                "dsl_required": bool(
+                    post_gate.get(
+                        "dsl_required",
+                        submission_action.get("dsl_required"),
+                    )
+                ),
+                "dsl_compiled": bool(
+                    post_gate.get(
+                        "dsl_compiled",
+                        submission_action.get("dsl_compiled"),
+                    )
+                ),
+                "semantic_runtime_match": bool(
+                    post_gate.get(
+                        "semantic_runtime_match",
+                        _pick_value(
+                            submission_action.get("semantic_runtime_match"),
+                            resolved_submission_action.get("semantic_runtime_match"),
+                            quality_summary.get("semantic_runtime_match"),
+                            gate.get("semantic_runtime_match"),
+                            candidate.get("semantic_runtime_match"),
+                            candidate_params.get("semantic_runtime_match"),
+                        ),
+                    )
+                ),
+                "runtime_family_data_source": post_gate.get(
+                    "runtime_family_data_source",
+                    _pick_value(
+                        submission_action.get("runtime_family_data_source"),
+                        resolved_submission_action.get("runtime_family_data_source"),
+                        quality_summary.get("runtime_family_data_source"),
+                        gate.get("runtime_family_data_source"),
+                        candidate.get("runtime_family_data_source"),
+                        candidate_params.get("runtime_family_data_source"),
+                    ),
+                ),
+                "proxy_runtime_used": bool(
+                    post_gate.get(
+                        "proxy_runtime_used",
+                        _pick_value(
+                            submission_action.get("proxy_runtime_used"),
+                            resolved_submission_action.get("proxy_runtime_used"),
+                            quality_summary.get("proxy_runtime_used"),
+                            gate.get("proxy_runtime_used"),
+                            candidate.get("proxy_runtime_used"),
+                            candidate_params.get("proxy_runtime_used"),
+                        ),
+                    )
+                ),
+                "execution_readiness_tier": post_gate.get(
+                    "execution_readiness_tier",
+                    _pick_value(
+                        submission_action.get("execution_readiness_tier"),
+                        resolved_submission_action.get("execution_readiness_tier"),
+                        quality_summary.get("execution_readiness_tier"),
+                        gate.get("execution_readiness_tier"),
+                        candidate.get("execution_readiness_tier"),
+                        candidate_params.get("execution_readiness_tier"),
+                    ),
+                ),
+                "semantic_contract_missing_fields": list(
+                    post_gate.get(
+                        "semantic_contract_missing_fields",
+                        submission_action.get("semantic_contract_missing_fields") or [],
+                    )
+                ),
+                "trade_prediction_contract_status": post_gate.get(
+                    "trade_prediction_contract_status",
+                    _pick_value(
+                        submission_action.get("trade_prediction_contract_status"),
+                        resolved_submission_action.get("trade_prediction_contract_status"),
+                        quality_summary.get("trade_prediction_contract_status"),
+                        gate.get("trade_prediction_contract_status"),
+                        candidate.get("trade_prediction_contract_status"),
+                        candidate_params.get("trade_prediction_contract_status"),
+                    ),
+                ),
+                "trade_prediction_contract_hash": post_gate.get(
+                    "trade_prediction_contract_hash",
+                    _pick_value(
+                        submission_action.get("trade_prediction_contract_hash"),
+                        resolved_submission_action.get("trade_prediction_contract_hash"),
+                        quality_summary.get("trade_prediction_contract_hash"),
+                        gate.get("trade_prediction_contract_hash"),
+                        candidate.get("trade_prediction_contract_hash"),
+                        candidate_params.get("trade_prediction_contract_hash"),
+                    ),
+                ),
+                "trade_prediction_contract_missing_fields": list(
+                    post_gate.get(
+                        "trade_prediction_contract_missing_fields",
+                        submission_action.get("trade_prediction_contract_missing_fields") or [],
+                    )
+                ),
+                "trade_prediction_contract_reject_reasons": list(
+                    post_gate.get(
+                        "trade_prediction_contract_reject_reasons",
+                        submission_action.get("trade_prediction_contract_reject_reasons") or [],
+                    )
+                ),
+                "trade_prediction_contract_observation_gap": bool(
+                    post_gate.get(
+                        "trade_prediction_contract_observation_gap",
+                        _pick_value(
+                            submission_action.get("trade_prediction_contract_observation_gap"),
+                            resolved_submission_action.get("trade_prediction_contract_observation_gap"),
+                            quality_summary.get("trade_prediction_contract_observation_gap"),
+                            gate.get("trade_prediction_contract_observation_gap"),
+                            candidate.get("trade_prediction_contract_observation_gap"),
+                            candidate_params.get("trade_prediction_contract_observation_gap"),
+                        ),
+                    )
                 ),
                 "submission_action_type": resolved_submission_action_type,
                 "submission_action_trigger": resolved_submission_action_trigger,
@@ -864,12 +1238,28 @@
                 "candidate_latest_validation_at": candidate_provenance.get("latest_validation_at"),
                 "candidate_latest_validation_age_days": candidate_provenance.get("latest_validation_age_days"),
                 "incubation_budget": incubation_budget,
-                "incubation_budget_track": incubation_budget_track,
-                "incubation_budget_rank": incubation_budget.get("rank"),
-                "incubation_budget_priority_score": incubation_budget.get("priority_score"),
+                "incubation_budget_track": _pick_value(
+                    post_gate.get("incubation_budget_track"),
+                    incubation_budget_track,
+                    candidate_budget.get("track"),
+                    dict(candidate_params.get("incubation_budget") or {}).get("track"),
+                    quality_summary.get("incubation_budget_track"),
+                ),
+                "incubation_budget_rank": _pick_value(
+                    post_gate.get("incubation_budget_rank"),
+                    incubation_budget.get("rank"),
+                    candidate_budget.get("rank"),
+                    quality_summary.get("incubation_budget_rank"),
+                ),
+                "incubation_budget_priority_score": _pick_value(
+                    post_gate.get("incubation_budget_priority_score"),
+                    incubation_budget.get("priority_score"),
+                    candidate_budget.get("priority_score"),
+                    quality_summary.get("incubation_budget_priority_score"),
+                ),
                 "incubation_budget_exploration_candidate": bool(incubation_budget.get("exploration_candidate")),
                 **post_gate,
-            }
+            })
             created_total = bool(not refresh_existing and not read_only)
             created_strategy_pool = bool(
                 created_total
@@ -889,6 +1279,13 @@
                 and not read_only
                 and not gate3_record_only
             )
+            resolved_diagnostic_only = post_gate.get("diagnostic_only")
+            if resolved_diagnostic_only is None:
+                resolved_diagnostic_only = quality_summary.get("diagnostic_only")
+            if resolved_diagnostic_only is None:
+                resolved_diagnostic_only = gate.get("diagnostic_only")
+            if resolved_diagnostic_only is None:
+                resolved_diagnostic_only = candidate.get("diagnostic_only")
             summary.update(
                 {
                     "created_total": created_total,
@@ -897,13 +1294,22 @@
                     "gate_3_recorded": gate_3_recorded,
                     "record_only": bool(gate3_record_only),
                     "gate3_record_only": bool(gate3_record_only),
-                    "diagnostic_only": bool(read_only),
+                    "diagnostic_only": bool(
+                        read_only if resolved_diagnostic_only is None else resolved_diagnostic_only
+                    ),
                     "read_only": bool(read_only),
                     **gate3_quality_record,
                 }
             )
             for field_name in _SEMANTIC_CONTRACT_FIELDS:
                 _assign_optional_payload(summary, field_name, candidate.get(field_name))
+            quality_report["summary"] = summary
+            await self._submission_coordinator.save_quality_report(
+                db,
+                strategy_id,
+                quality_report,
+                options=quality_report_options,
+            )
             return {
                 "created": created_strategy_pool,
                 "created_total": created_total,

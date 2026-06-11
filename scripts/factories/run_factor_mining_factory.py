@@ -75,6 +75,17 @@ _configure_stdio_utf8()
 
 # 项目路径
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+STRATEGY_FACTORY_SRC = PROJECT_ROOT / "packages" / "strategy-factory" / "src"
+if str(STRATEGY_FACTORY_SRC) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_FACTORY_SRC))
+
+from strategy_factory.runtime_bootstrap import ensure_factory_runtime
+
+ensure_factory_runtime(
+    project_root=PROJECT_ROOT,
+    script_path=Path(__file__).resolve(),
+    argv=sys.argv[1:],
+)
 
 
 def _bootstrap_local_package_paths() -> None:

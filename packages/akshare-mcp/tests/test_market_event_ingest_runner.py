@@ -141,3 +141,27 @@ def test_three_factory_supervisor_writes_ingest_startup_manifest(tmp_path) -> No
     assert "supervisor planned market_event_ingest" in (
         tmp_path / "market_event_ingest.log"
     ).read_text(encoding="utf-8")
+
+
+def test_three_factory_supervisor_prefers_current_interpreter_by_default(monkeypatch) -> None:
+    supervisor = _load_script_module(
+        "_aiask_test_run_three_factories_python_default",
+        "scripts/factories/run_three_factories.py",
+    )
+
+    monkeypatch.delenv("AIASK_FACTORY_PYTHON", raising=False)
+    args = supervisor.parse_args([])
+
+    assert supervisor._python_path(args) == supervisor.sys.executable
+
+
+def test_three_factory_supervisor_python_override_wins(monkeypatch) -> None:
+    supervisor = _load_script_module(
+        "_aiask_test_run_three_factories_python_override",
+        "scripts/factories/run_three_factories.py",
+    )
+
+    monkeypatch.setenv("AIASK_FACTORY_PYTHON", "C:/custom/python.exe")
+    args = supervisor.parse_args([])
+
+    assert supervisor._python_path(args) == "C:/custom/python.exe"

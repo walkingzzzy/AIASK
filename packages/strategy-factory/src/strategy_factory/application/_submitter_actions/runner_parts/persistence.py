@@ -1,5 +1,52 @@
 
         @classmethod
+        def _apply_gate_runtime_context(
+            cls,
+            candidate: Optional[dict[str, Any]],
+            gate: Optional[dict[str, Any]],
+        ) -> dict[str, Any]:
+            payload = cls._ensure_runtime_playbook(candidate)
+            normalized_gate = dict(gate or {})
+            params = dict(payload.get("params") or {})
+            runtime_field_names = (
+                "execution_semantic_mode",
+                "execution_semantic_gap",
+                "execution_semantic_gap_reasons",
+                "dsl_required",
+                "dsl_compiled",
+                "semantic_runtime_match",
+                "runtime_family_data_source",
+                "proxy_runtime_used",
+                "diagnostic_only",
+                "execution_readiness_tier",
+                "semantic_contract_missing_fields",
+                "trade_prediction_contract_status",
+                "trade_prediction_contract_hash",
+                "trade_prediction_contract_missing_fields",
+                "trade_prediction_contract_reject_reasons",
+                "trade_prediction_contract_observation_gap",
+            )
+
+            def _copy_runtime_value(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return dict(value)
+                if isinstance(value, list):
+                    return list(value)
+                return value
+
+            for field_name in runtime_field_names:
+                if field_name not in normalized_gate:
+                    continue
+                value = normalized_gate.get(field_name)
+                if value in _EMPTY_CONTRACT_VALUES:
+                    continue
+                copied = _copy_runtime_value(value)
+                payload[field_name] = copied
+                params[field_name] = _copy_runtime_value(value)
+            payload["params"] = params
+            return payload
+
+        @classmethod
         def _runtime_bootstrap_context(
             cls,
             gate: Optional[dict[str, Any]],
@@ -7,7 +54,7 @@
             candidate: Optional[dict[str, Any]],
         ) -> dict[str, Any]:
             normalized_gate = dict(gate or {})
-            payload = cls._ensure_runtime_playbook(candidate)
+            payload = cls._apply_gate_runtime_context(candidate, normalized_gate)
             validation_grade = cls._normalized_validation_grade(normalized_gate)
             strategy_type_registered = cls._strategy_type_registered(payload)
             missing_runtime_fields = [
@@ -470,9 +517,22 @@
                 "runtime_bootstrap_reason",
                 "runtime_bootstrap_budget_tier",
                 "runtime_playbook_present",
+                "runtime_contract_missing_fields",
+                "wide_intake_admitted",
+                "observe_intake_requested",
+                "pre_observe_hard_reject_reasons",
+                "strategy_type_registered",
                 "formal_track_requested",
+                "formal_track_auto_corrected",
                 "formal_track_eligible",
                 "formal_track_blockers",
+                "observe_first_intake_requested",
+                "planned_submission_lane",
+                "planned_final_status",
+                "incubation_budget_track",
+                "incubation_budget_rank",
+                "incubation_budget_priority_score",
+                "incubation_budget_exploration_candidate",
                 "execution_semantic_mode",
                 "execution_semantic_gap",
                 "execution_semantic_gap_reasons",
@@ -484,6 +544,11 @@
                 "diagnostic_only",
                 "execution_readiness_tier",
                 "semantic_contract_missing_fields",
+                "trade_prediction_contract_status",
+                "trade_prediction_contract_hash",
+                "trade_prediction_contract_missing_fields",
+                "trade_prediction_contract_reject_reasons",
+                "trade_prediction_contract_observation_gap",
                 "submission_action",
                 "submission_action_type",
                 "submission_action_trigger",

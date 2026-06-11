@@ -105,6 +105,32 @@ class _StrategyCrudCoreMixin:
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
 
+        async def list_submitted_strategies_for_dedup(self, limit: int = 500, offset: int = 0) -> List[dict]:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           COALESCE((SELECT AVG(rating) FROM strategy_reviews WHERE strategy_id = s.id), 0) AS avg_rating
+                    FROM strategies s
+                    WHERE s.status = 'submitted'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM strategy_incubation_accounts a
+                          LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+                          WHERE a.strategy_id = s.id
+                            AND a.status = 'active'
+                            AND a.stage IN ('paper', 'warmup', 'observe')
+                            AND COALESCE(pa.status, 'active') = 'active'
+                            AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+                      )
+                    ORDER BY s.updated_at DESC
+                    LIMIT $1 OFFSET $2
+                    """,
+                    limit,
+                    offset,
+                )
+            return [self._decode_strategy_row(dict(r)) for r in rows]
+
         async def list_paper_observation_strategies(self, limit: int = 50) -> List[dict]:
             """DEV-V1 P1: 列出所有 paper observation 候选策略.
 
@@ -139,6 +165,43 @@ class _StrategyCrudCoreMixin:
                 )
             return [self._decode_strategy_row(dict(r)) for r in rows]
 
+        async def list_active_paper_observation_strategies(self, limit: int = 50) -> List[dict]:
+            async with self.acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT s.*,
+                           a.account_id AS paper_account_id,
+                           a.bound_at AS paper_bound_at,
+                           a.stage AS observation_stage
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+                    WHERE s.status = 'submitted'
+                      AND a.status = 'active'
+                      AND a.stage IN ('paper', 'warmup', 'observe')
+                      AND COALESCE(pa.status, 'active') = 'active'
+                      AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM strategy_incubation_accounts a2
+                          WHERE a2.strategy_id = s.id
+                            AND a2.stage IN ('candidate', 'graduation_ready', 'listed', 'promoted')
+                            AND a2.status = 'active'
+                      )
+                    ORDER BY
+                        CASE a.stage
+                            WHEN 'paper' THEN 0
+                            WHEN 'warmup' THEN 1
+                            WHEN 'observe' THEN 2
+                            WHEN 'observe' THEN 2
+                            ELSE 9
+                        END,
+                        datetime(COALESCE(a.updated_at, a.bound_at)) DESC
+                    LIMIT $1
+                    """,
+                    limit,
+                )
+            return [self._decode_strategy_row(dict(r)) for r in rows]
+
         async def get_paper_observation_backlog_status(self, limit: int = 500) -> dict:
             """Return submitted + active stage=paper backlog and latest intake event."""
             _ = limit
@@ -160,6 +223,26 @@ class _StrategyCrudCoreMixin:
                       )
                     """,
                 )
+                active_observation = await conn.fetchrow(
+                    """
+                    SELECT COUNT(*) AS active_count,
+                           MAX(datetime(COALESCE(a.updated_at, a.bound_at))) AS latest_active_at
+                    FROM strategies s
+                    JOIN strategy_incubation_accounts a ON a.strategy_id = s.id
+                    LEFT JOIN paper_accounts pa ON pa.id = a.account_id
+                    WHERE s.status = 'submitted'
+                      AND a.status = 'active'
+                      AND a.stage IN ('paper', 'warmup', 'observe')
+                      AND COALESCE(pa.status, 'active') = 'active'
+                      AND COALESCE(pa.account_type, 'incubation') = 'incubation'
+                      AND NOT EXISTS (
+                          SELECT 1 FROM strategy_incubation_accounts a2
+                          WHERE a2.strategy_id = s.id
+                            AND a2.stage IN ('candidate', 'graduation_ready', 'listed', 'promoted')
+                            AND a2.status = 'active'
+                      )
+                    """,
+                )
                 latest_recognized = await conn.fetchrow(
                     """
                     SELECT event_type, created_at
@@ -171,11 +254,15 @@ class _StrategyCrudCoreMixin:
                 )
             backlog_count = int(dict(backlog or {}).get("backlog_count") or 0)
             latest_bound_at = dict(backlog or {}).get("latest_bound_at")
+            active_count = int(dict(active_observation or {}).get("active_count") or 0)
+            latest_active_at = dict(active_observation or {}).get("latest_active_at")
             latest_recognized_at = dict(latest_recognized or {}).get("created_at")
             return {
                 "paper_observation_backlog_count": backlog_count,
-                "paper_observation_backlog_status": "empty" if backlog_count <= 0 else "queued",
+                "paper_observation_backlog_status": "empty" if active_count <= 0 else "queued",
+                "paper_observation_active_count": active_count,
                 "paper_observation_latest_bound_at": str(latest_bound_at) if latest_bound_at else None,
+                "paper_observation_latest_active_at": str(latest_active_at) if latest_active_at else None,
                 "paper_observation_last_recognized_at": str(latest_recognized_at) if latest_recognized_at else None,
                 "paper_observation_latest_event_type": dict(latest_recognized or {}).get("event_type"),
             }

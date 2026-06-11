@@ -1144,6 +1144,10 @@ export interface FinancialSystemReadiness {
     object?: string;
     status?: string;
     script?: string;
+    working_directory?: string;
+    self_test_command?: string;
+    live_command?: string;
+    environment_note?: string;
     checks?: Array<{ name?: string; method?: string; path?: string; observes?: string[] }>;
     [key: string]: unknown;
   };

@@ -33,6 +33,20 @@ function Set-Env {
 }
 
 if ([string]::IsNullOrWhiteSpace($Python)) {
+    $ResolvedPython = Get-Command python -ErrorAction SilentlyContinue
+    if ($ResolvedPython) {
+        $Python = if ([string]::IsNullOrWhiteSpace($ResolvedPython.Source)) { "python" } else { $ResolvedPython.Source }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($Python)) {
+    $ResolvedPy = Get-Command py -ErrorAction SilentlyContinue
+    if ($ResolvedPy) {
+        $Python = if ([string]::IsNullOrWhiteSpace($ResolvedPy.Source)) { "py" } else { $ResolvedPy.Source }
+    }
+}
+
+if ([string]::IsNullOrWhiteSpace($Python)) {
     $Preferred = "F:\Python311\python.exe"
     if (Test-Path -LiteralPath $Preferred) {
         $Python = $Preferred

@@ -8,6 +8,8 @@ from typing import Any, Optional
 
 from strategy_factory.api.semantic_contract import apply_resolved_candidate_envelope
 
+from .instrument_profile_measurement import measure_instrument_profile_from_db
+from .fundamental_runtime_contract import build_fundamental_runtime_contract_from_db
 from .strategy_spec import StrategySpec
 
 _EMPTY_VALUES = (None, "", [], {})
@@ -230,19 +232,96 @@ def _save_payload_changed(strategy: dict[str, Any], updated_payload: dict[str, A
     return any(updated_payload.get(field) != strategy.get(field) for field in comparable_fields)
 
 
+# 仅与 DSL 可执行性相关的 gap 原因前缀。其余 gap(如语义契约缺失)不影响"DSL 能否被
+# 信号生成引擎执行",不应让 _is_compiled_dsl_ready 误判为未编译。
+_DSL_BLOCKING_GAP_PREFIXES = (
+    "compiled_dsl_missing",
+    "trade_plan_to_dsl_map_missing",
+    "dsl_compile_failed",
+    "dsl_compile_failure",
+    "trend_family_dsl_synthesis_failed",
+)
+
+
 def _is_compiled_dsl_ready(params: dict[str, Any]) -> bool:
+    """判断 DSL 是否已编译且可被信号生成引擎执行。
+
+    只看 DSL 可执行性,不混入语义契约完整性(evidence/prediction/confidence)——
+    后者属 formal 晋升关卡(由 _recompiled_formal_ready 把关),与"规则引擎能否产信号"无关。
+    """
     payload = dict(params or {})
-    return (
-        str(payload.get("execution_semantic_mode") or "").strip().lower() == "compiled_dsl"
-        and bool(payload.get("dsl_compiled"))
-        and not bool(payload.get("execution_semantic_gap"))
-    )
+    mode = str(payload.get("execution_semantic_mode") or "").strip().lower()
+    if mode != "compiled_dsl" or not bool(payload.get("dsl_compiled")):
+        return False
+    # 仅当存在真正与 DSL 相关的 gap 时才判未就绪
+    gap_reasons = [str(r or "").strip().lower() for r in (payload.get("execution_semantic_gap_reasons") or [])]
+    for reason in gap_reasons:
+        if any(reason.startswith(prefix) for prefix in _DSL_BLOCKING_GAP_PREFIXES):
+            return False
+    return True
+
+
+def _strict_gate_passed(strategy: dict[str, Any], params: dict[str, Any]) -> bool:
+    """读取原策略的 strict gate 通过证据(来自提交期 quality summary)。
+
+    缺证据时返回 False —— 宁可不升 formal,也不误升未经严格门的样本。
+    """
+    for source in (params, strategy):
+        payload = dict(source or {})
+        for key in ("strict_incubation_ready", "passed_strict"):
+            value = payload.get(key)
+            if isinstance(value, bool):
+                if value:
+                    return True
+            elif _safe_bool(value) and _text(value):
+                return True
+    return False
+
+
+def _recompiled_formal_ready(params: dict[str, Any], strategy: dict[str, Any]) -> bool:
+    """重编译 + 测量后,判断样本是否满足 formal_runtime 升级条件。
+
+    严格复核,不另造门:复用 admission_authority.formal_runtime_ready 的等价语义子集。
+    趋势家族要求 compiled_dsl + measured profile;因子家族要求真实 fundamental_runtime。
+    """
+    payload = dict(params or {})
+    strategy_type = _text(strategy.get("strategy_type")).lower()
+    is_factor_family = strategy_type in _FACTOR_RECOMPILE_TYPES
+
+    if bool(payload.get("proxy_runtime_used")):
+        return False
+    if bool(payload.get("diagnostic_only")):
+        return False
+    if str(payload.get("execution_readiness_tier") or "").strip().lower() != "formal_runtime_ready":
+        return False
+    if str(payload.get("trade_prediction_contract_status") or "").strip().lower() != "ready":
+        return False
+    if not bool(payload.get("semantic_runtime_match", True)):
+        return False
+
+    if is_factor_family:
+        contract = dict(payload.get("fundamental_runtime_contract") or {})
+        if not contract.get("measured_fields"):
+            return False
+        if str(payload.get("runtime_family_data_source") or "").strip().lower() != "fundamental_runtime":
+            return False
+    else:
+        if not _is_compiled_dsl_ready(payload):
+            return False
+        instrument_profile = dict(payload.get("instrument_profile") or {})
+        measurement_source = str(instrument_profile.get("measurement_source") or "").strip().lower()
+        if measurement_source not in {"measured", "measured_runtime"}:
+            return False
+        if not bool(instrument_profile.get("measured_profile_complete")):
+            return False
+    return _strict_gate_passed(strategy, payload)
 
 
 def build_trend_strategy_recompile_backfill(
     strategy: dict[str, Any],
     *,
     backtest_metrics: Optional[dict[str, Any]] = None,
+    measured_profile_summary: Optional[dict[str, Any]] = None,
     force: bool = False,
     timestamp: Optional[str] = None,
 ) -> dict[str, Any]:
@@ -270,6 +349,18 @@ def build_trend_strategy_recompile_backfill(
             "strategy_id": strategy_id,
             "status": "skipped",
             "reason": "unsupported_status",
+            "deterministic_recompile_eligible": deterministic_eligible,
+            "updated_payload": _strategy_save_payload(payload, params),
+        }
+
+    # P1-2: 已成功重编译过的样本直接跳过(返回原 payload,不改不 save),
+    # 避免 save 刷新 updated_at 把已处理样本顶到扫描窗口前列、霸占 batch,
+    # 让扫描自然推进到尚未补齐的存量 observe 样本。force=True 时不跳过。
+    if not force and _is_compiled_dsl_ready(params) and params.get("runtime_recompile_backfill"):
+        return {
+            "strategy_id": strategy_id,
+            "status": "already_compiled",
+            "reason": "compiled_dsl_already_present",
             "deterministic_recompile_eligible": deterministic_eligible,
             "updated_payload": _strategy_save_payload(payload, params),
         }
@@ -320,6 +411,13 @@ def build_trend_strategy_recompile_backfill(
         }
 
     metadata = _backfill_metadata(payload, backtest_metrics=backtest_metrics)
+    # P0-b: 注入真实测量的 instrument-profile 指标,使 StrategySpec 重建时
+    # _normalize_instrument_profile 把 measurement_source 升级为 measured,
+    # 解除 default_profile_not_allowed_for_single_name_runtime 阻塞。
+    if measured_profile_summary and bool(measured_profile_summary.get("measured")):
+        existing_summary = dict(metadata.get("source_symbol_summary") or {})
+        existing_summary.update(measured_profile_summary)
+        metadata["source_symbol_summary"] = existing_summary
     spec = StrategySpec(
         strategy_type=strategy_type,
         params=deepcopy(params),
@@ -374,6 +472,105 @@ def build_trend_strategy_recompile_backfill(
     }
 
 
+_FACTOR_RECOMPILE_TYPES = {"quality_factor", "value_factor", "growth_factor"}
+
+
+def build_factor_strategy_recompile_backfill(
+    strategy: dict[str, Any],
+    *,
+    fundamental_contract: Optional[dict[str, Any]] = None,
+    backtest_metrics: Optional[dict[str, Any]] = None,
+    force: bool = False,
+    timestamp: Optional[str] = None,
+) -> dict[str, Any]:
+    """因子家族(quality/value/growth)重建:注入真实 fundamental_runtime_contract,
+    使 spec 重算 runtime_family_data_source=fundamental_runtime,解除 proxy 阻塞。
+
+    无真实 fundamental_contract 时不强行升级,保持 proxy(observe),只回显诊断。
+    """
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    strategy_id = _text(payload.get("id"))
+    strategy_type = _text(payload.get("strategy_type")).lower()
+    status = _text(payload.get("status")).lower()
+    target_symbols = _normalize_target_symbols(payload)
+    timestamp_value = timestamp or datetime.now(timezone.utc).isoformat()
+
+    if strategy_type not in _FACTOR_RECOMPILE_TYPES:
+        return {
+            "strategy_id": strategy_id,
+            "status": "skipped",
+            "reason": "unsupported_strategy_type",
+            "updated_payload": _strategy_save_payload(payload, params),
+        }
+    if status not in set(_DEFAULT_STATUSES):
+        return {
+            "strategy_id": strategy_id,
+            "status": "skipped",
+            "reason": "unsupported_status",
+            "updated_payload": _strategy_save_payload(payload, params),
+        }
+    if not fundamental_contract or not bool(fundamental_contract.get("measured_fields")):
+        # 无真实财务数据 → 不造空壳,保持 proxy(observe)。
+        return {
+            "strategy_id": strategy_id,
+            "status": "revision_required",
+            "reason": "fundamental_runtime_contract_unavailable",
+            "updated_payload": _strategy_save_payload(payload, params),
+        }
+
+    metadata = _backfill_metadata(payload, backtest_metrics=backtest_metrics)
+    metadata["fundamental_runtime_contract"] = dict(fundamental_contract)
+    metadata["runtime_family_data_source"] = "fundamental_runtime"
+    spec_params = deepcopy(params)
+    spec_params["fundamental_runtime_contract"] = dict(fundamental_contract)
+    spec_params["runtime_family_data_source"] = "fundamental_runtime"
+    spec = StrategySpec(
+        strategy_type=strategy_type,
+        params=spec_params,
+        name=_text(payload.get("name")),
+        description=_text(payload.get("description")),
+        tags=list(payload.get("tags") or []),
+        metadata=metadata,
+    )
+    generated_candidate = apply_resolved_candidate_envelope(
+        spec.to_candidate(source="factor_recompile_backfill", experiment_id=f"factor_backfill:{strategy_id}")
+    )
+    generated_params = dict(generated_candidate.get("params") or {})
+    merged_params, applied_fields, preserved_fields = _merge_params(
+        deepcopy(params), generated_params, force=force
+    )
+    # 强制落上真实契约(确保不被旧值覆盖)
+    merged_params["fundamental_runtime_contract"] = dict(fundamental_contract)
+    if str(merged_params.get("runtime_family_data_source") or "").strip().lower() != "fundamental_runtime":
+        merged_params["runtime_family_data_source"] = "fundamental_runtime"
+    proxy_cleared = not bool(merged_params.get("proxy_runtime_used"))
+    result_status = "recompiled" if proxy_cleared else "revision_required"
+    result_reason = None if proxy_cleared else "proxy_runtime_not_cleared_after_fundamental_contract"
+    merged_params["runtime_recompile_backfill"] = {
+        "status": result_status,
+        "reason": result_reason,
+        "strategy_type": strategy_type,
+        "target_symbols": target_symbols,
+        "recompiled_at": timestamp_value,
+        "source": "factor_recompile_backfill",
+        "fundamental_data_quality": fundamental_contract.get("data_quality"),
+        "fundamental_report_date": fundamental_contract.get("report_date"),
+    }
+    tags = list(dict.fromkeys([*list(payload.get("tags") or []), "fundamental_runtime_backfill"]))
+    updated_payload = _strategy_save_payload(payload, merged_params, tags=tags)
+    return {
+        "strategy_id": strategy_id,
+        "status": result_status,
+        "reason": result_reason,
+        "target_symbols": target_symbols,
+        "updated_payload": updated_payload,
+        "generated_candidate": generated_candidate,
+        "applied_param_fields": applied_fields,
+        "preserved_param_fields": preserved_fields,
+    }
+
+
 async def backfill_historical_trend_strategies(
     db,
     *,
@@ -384,6 +581,8 @@ async def backfill_historical_trend_strategies(
     batch_size: int = 100,
     dry_run: bool = False,
     force: bool = False,
+    measure_profile: bool = True,
+    promote_ready: bool = True,
 ) -> dict[str, Any]:
     ids = _normalize_strategy_ids(strategy_ids or [])
     rows: list[dict[str, Any]] = []
@@ -415,6 +614,7 @@ async def backfill_historical_trend_strategies(
     recompiled = 0
     revision_required = 0
     skipped = 0
+    promoted_count = 0
     items: list[dict[str, Any]] = []
     for strategy in rows:
         scanned += 1
@@ -422,19 +622,60 @@ async def backfill_historical_trend_strategies(
         if hasattr(db, "get_strategy_metrics"):
             metrics_rows = await db.get_strategy_metrics(_text(strategy.get("id")))
             backtest_metrics = _pick_backtest_metrics(metrics_rows)
-        result = build_trend_strategy_recompile_backfill(
-            strategy,
-            backtest_metrics=backtest_metrics,
-            force=force,
-        )
+        strategy_type = _text(strategy.get("strategy_type")).lower()
+        target_symbols = _normalize_target_symbols(strategy)
+        if strategy_type in _FACTOR_RECOMPILE_TYPES:
+            fundamental_contract = None
+            primary_code = target_symbols[0] if len(target_symbols) >= 1 else None
+            if primary_code:
+                fundamental_contract = await build_fundamental_runtime_contract_from_db(
+                    db, strategy_type, primary_code
+                )
+            result = build_factor_strategy_recompile_backfill(
+                strategy,
+                fundamental_contract=fundamental_contract,
+                backtest_metrics=backtest_metrics,
+                force=force,
+            )
+        else:
+            measured_profile_summary = None
+            if measure_profile and strategy_type in _TREND_RECOMPILE_TYPES and len(target_symbols) == 1:
+                measured_profile_summary = await measure_instrument_profile_from_db(
+                    db, target_symbols[0]
+                )
+            result = build_trend_strategy_recompile_backfill(
+                strategy,
+                backtest_metrics=backtest_metrics,
+                measured_profile_summary=measured_profile_summary,
+                force=force,
+            )
         updated_payload = dict(result.get("updated_payload") or {})
-        changed = _save_payload_changed(strategy, updated_payload)
+        promoted = False
+        if (
+            promote_ready
+            and result.get("status") == "recompiled"
+            and _text(strategy.get("status")).lower() == "submitted"
+        ):
+            merged_params = dict(updated_payload.get("params") or {})
+            if _recompiled_formal_ready(merged_params, strategy):
+                merged_params["submission_lane"] = "formal_incubation"
+                merged_params["incubation_budget_track"] = "formal_incubation"
+                merged_params["final_status"] = "incubating"
+                merged_params["formal_track_requested"] = True
+                merged_params["formal_track_auto_corrected"] = True
+                merged_params["formal_promoted_via"] = "trend_recompile_backfill"
+                updated_payload["params"] = merged_params
+                updated_payload["status"] = "incubating"
+                promoted = True
+        changed = _save_payload_changed(strategy, updated_payload) or promoted
         if result.get("status") == "recompiled":
             recompiled += 1
         elif result.get("status") == "revision_required":
             revision_required += 1
         else:
             skipped += 1
+        if promoted:
+            promoted_count += 1
         if changed:
             updated += 1
             if not dry_run:
@@ -447,6 +688,7 @@ async def backfill_historical_trend_strategies(
                 "deterministic_recompile_eligible": bool(result.get("deterministic_recompile_eligible")),
                 "target_symbols": list(result.get("target_symbols") or []),
                 "changed": changed,
+                "promoted_to_formal": promoted,
                 "applied_param_fields": list(result.get("applied_param_fields") or []),
                 "preserved_param_fields": list(result.get("preserved_param_fields") or []),
             }
@@ -457,6 +699,7 @@ async def backfill_historical_trend_strategies(
         "recompiled": recompiled,
         "revision_required": revision_required,
         "skipped": skipped,
+        "promoted_to_formal": promoted_count,
         "dry_run": bool(dry_run),
         "force": bool(force),
         "items": items,

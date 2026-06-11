@@ -32,6 +32,22 @@ def paper_intake_batch_limit() -> int:
     return max(1, min(value, 500))
 
 
+def recompile_remediation_enabled() -> bool:
+    """P0-b/P1: 孵化工厂每轮对 observe 池趋势策略重编译补 compiled_dsl + 测量
+    instrument_profile,并把满足 formal readiness 的样本升级到 formal_incubation。
+    默认 OFF,行为与改造前一致。"""
+    return _env_bool("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", default=False)
+
+
+def recompile_remediation_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT", "200")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 200
+    return max(1, min(value, 1000))
+
+
 def diagnostic_intake_enabled() -> bool:
     return _env_bool("INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED", default=False)
 

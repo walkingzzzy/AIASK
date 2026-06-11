@@ -272,11 +272,29 @@
                 "event_prefilter",
                 "semantic_contract_missing_fields",
                 "execution_semantic_gap_reasons",
+                "execution_semantic_mode",
+                "dsl_compiled",
+                "execution_semantic_gap",
             ):
                 value = candidate.get(field_name)
                 if value in (None, "", [], {}):
                     value = existing_params.get(field_name)
                 _assign_if_present(stored_params, field_name, value)
+            for runtime_struct_field in (
+                "instrument_profile",
+                "trade_plan_to_dsl_map",
+                "execution_semantic_contract",
+                "fundamental_runtime_contract",
+            ):
+                _assign_if_present(
+                    stored_params,
+                    runtime_struct_field,
+                    dict(
+                        candidate.get(runtime_struct_field)
+                        or existing_params.get(runtime_struct_field)
+                        or {}
+                    ),
+                )
             if candidate_provenance:
                 stored_params["candidate_provenance"] = candidate_provenance
                 if candidate_provenance.get("source_candidate_artifact_id"):

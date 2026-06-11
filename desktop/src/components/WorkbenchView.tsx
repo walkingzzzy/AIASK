@@ -45,6 +45,10 @@ function runLabel(run: DesktopRunSummary): string {
   return `${run.status} / tools ${run.tool_call_count ?? 0} / approvals ${run.approval_count ?? 0}`;
 }
 
+function toolDirectory(tools: ToolCatalogItem[], health: HealthDetailed | null) {
+  return new Set([...tools.map((tool) => tool.name), ...(health?.tools?.names || [])]);
+}
+
 export function WorkbenchView({
   agentMode,
   apiToken,
@@ -124,6 +128,65 @@ export function WorkbenchView({
     pendingIntents: queue.pending_intents,
     artifactCount: artifacts.length,
   };
+  const knownTools = toolDirectory(tools, health);
+  const hasTool = (name: string) => knownTools.has(name);
+  const safePathSteps: Array<{
+    key: string;
+    label: string;
+    status: string;
+    detail: string;
+    target: MainView;
+    action: string;
+  }> = [
+    {
+      key: "mode",
+      label: "1. 模式 / 模型",
+      status: status === "AIASK_ONLINE" || health?.status === "online" ? "ready" : "partial",
+      detail: `${health?.tools?.toolset || agentMode} / ${health?.runtime?.model || "模型待加载"}`,
+      target: "readiness-health",
+      action: "打开准备度",
+    },
+    {
+      key: "mcp",
+      label: "2. MCP / 连接器",
+      status: queue.mcp_degraded ? "partial" : status === "AIASK_ONLINE" ? "ready" : "partial",
+      detail: queue.mcp_degraded ? `${queue.mcp_degraded} 个 MCP 降级，先复核聚合状态。` : "复核服务器、资源、提示词和 OAuth 状态。",
+      target: "mcp-connectors",
+      action: "打开 MCP",
+    },
+    {
+      key: "memory",
+      label: "3. 记忆 / 搜索",
+      status: hasTool("agent_memory_search") && hasTool("agent_session_search") ? "ready" : "partial",
+      detail: hasTool("agent_memory_search") && hasTool("agent_session_search") ? "会话搜索和金融记忆搜索已在工具目录。" : "等待工具目录刷新或后端暴露记忆搜索。",
+      target: "user",
+      action: "打开本地用户",
+    },
+    {
+      key: "financial-manager",
+      label: "4. 金融经理台",
+      status: hasTool("agent_portfolio_risk") ? "ready" : "partial",
+      detail: hasTool("agent_portfolio_risk") ? "组合风险、只读查询和安全 workflow 可复核。" : "等待金融只读工具进入 Agent 工具目录。",
+      target: "financial-manager",
+      action: "打开金融经理台",
+    },
+    {
+      key: "data",
+      label: "5. 数据 / 量化门禁",
+      status: hasTool("agent_quant_data_gate") ? "ready" : "partial",
+      detail: hasTool("agent_quant_data_gate") ? "量化数据门禁工具可用于只读预检。" : "先检查数据同步、SQLite 和工具目录。",
+      target: "data",
+      action: "打开数据",
+    },
+    {
+      key: "factory",
+      label: "6. 工厂接力",
+      status: hasTool("agent_factory_status") ? "ready" : "partial",
+      detail: hasTool("agent_factory_status") ? "策略、因子和孵化入口可从金融实验室接力。" : "等待工厂状态工具或运行快照加载。",
+      target: "finance-lab",
+      action: "打开金融实验室",
+    },
+  ];
 
   return (
     <>
@@ -249,6 +312,34 @@ export function WorkbenchView({
                 </div>
               </article>
             </div>
+
+            <section className="workbench-safe-path" aria-label="金融 Agent 安全链路">
+              <div className="section-header">
+                <div>
+                  <span>金融 Agent 安全链路</span>
+                  <h3>现在可以复核什么</h3>
+                </div>
+                <StatusBadge status="read_only" label="只读导航" />
+              </div>
+              <div className="safe-path-grid">
+                {safePathSteps.map((step) => (
+                  <article className={`safe-path-step ${step.status}`} key={step.key}>
+                    <div>
+                      <strong>{step.label}</strong>
+                      <StatusBadge status={step.status} />
+                    </div>
+                    <p>{step.detail}</p>
+                    <button className="small-button" onClick={() => onOpenView(step.target)} type="button">
+                      <FileSearch size={13} />
+                      {step.action}
+                    </button>
+                  </article>
+                ))}
+              </div>
+              <p className="muted compact-copy">
+                这里的入口只做只读导航；状态型、外部平台和交易风险动作仍需要 ActionIntent、控制令牌和后端护栏。
+              </p>
+            </section>
 
             <div className="quick-link-row context-actions">
               <button className="small-button" onClick={() => onOpenView("projects-contexts")} type="button">

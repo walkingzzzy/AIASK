@@ -358,6 +358,95 @@ def test_generator_skips_monolithic_but_keeps_local_fallback_after_empty_pipelin
     assert "monolithic_fallback_suppressed" not in report["external_provider"]
     assert "local_fallback_suppressed" not in report["external_provider"]
     assert report["local_generator"]["status"] == "succeeded"
+
+
+def test_generator_keeps_local_fallback_after_pipeline_timeout(monkeypatch):
+    import pandas as pd
+
+    import akshare_mcp.services._strategy_generators_generate as generate_module
+    import akshare_mcp.services.strategy_generators as public_generators
+    from akshare_mcp.services.strategy_generators import LLMProxyStrategyGenerator
+    from akshare_mcp.services.strategy_spec import StrategySpec
+
+    class _TimeoutPipeline:
+        async def run_pipeline(self, **kwargs):
+            raise asyncio.TimeoutError()
+
+    class _LocalFallbackMiner:
+        called = False
+
+        def generate_factor_candidates(self, *args, **kwargs):
+            self.called = True
+            return [
+                {
+                    "name": "timeout local fallback",
+                    "description": "local candidate after pipeline timeout",
+                    "formula": "close / close.shift(10) - 1",
+                    "category": "momentum",
+                    "rationale": "pipeline timeout fallback",
+                    "_engine": "local_rule_v1",
+                }
+            ]
+
+    monkeypatch.setattr(public_generators, "PIPELINE_MODE", "staged", raising=False)
+    monkeypatch.setattr(generate_module, "PIPELINE_MODE", "staged", raising=False)
+    monkeypatch.setattr(public_generators, "get_strategy_pipeline", lambda: _TimeoutPipeline(), raising=False)
+
+    generator = LLMProxyStrategyGenerator()
+    generator.external_provider = _EnabledProvider()
+    generator.miner = _LocalFallbackMiner()
+
+    async def _recent_experiments(*args, **kwargs):
+        return []
+
+    async def _build_research_context(*args, **kwargs):
+        return {"task_target_context": {}, "blocked_by_target_universe": False}
+
+    async def _build_market_frame(*args, **kwargs):
+        return pd.DataFrame({"close": [10.0, 10.2, 10.4], "volume": [1000, 1100, 1200]})
+
+    async def _build_symbol_frame_cache(*args, **kwargs):
+        return {}
+
+    async def _run_external_provider_request(*args, **kwargs):
+        raise AssertionError("monolithic external provider must not run after staged pipeline timeout")
+
+    def _local_candidate_to_spec(candidate, research_task=None):
+        return StrategySpec(
+            strategy_type="momentum",
+            params={"lookback": 10, "threshold": 0.01},
+            name=str(candidate.get("name") or "timeout fallback"),
+            metadata={"generator_type": "local_rule_v1"},
+        )
+
+    monkeypatch.setattr(generator, "_recent_experiments", _recent_experiments)
+    monkeypatch.setattr(generator, "_build_research_context", _build_research_context)
+    monkeypatch.setattr(generator, "_build_market_frame", _build_market_frame)
+    monkeypatch.setattr(generator, "_build_symbol_frame_cache", _build_symbol_frame_cache)
+    monkeypatch.setattr(generator, "_run_external_provider_request", _run_external_provider_request)
+    monkeypatch.setattr(generator, "_local_candidate_to_spec", _local_candidate_to_spec)
+
+    specs = asyncio.run(
+        generator.generate(
+            _FakeDb(),
+            limit=2,
+            snapshot={},
+            parent_strategies=[],
+            research_task={"target_symbols": ["600000"], "allowed_strategy_types": ["momentum"]},
+        )
+    )
+
+    report = generator.get_last_report()
+    assert len(specs) == 1
+    assert generator.miner.called is True
+    assert report["pipeline_staged_fallback_reason"] == "pipeline_timeout"
+    assert report["post_pipeline_fallback_suppressed"] is False
+    assert report["post_pipeline_suppression_reason"] is None
+    assert report["external_provider"]["status"] == "skipped_after_pipeline_timeout"
+    assert report["external_provider"]["monolithic_external_provider_skipped"] is True
+    assert report["external_provider"]["monolithic_external_provider_skip_reason"] == "pipeline_timeout"
+    assert "local_fallback_suppressed" not in report["external_provider"]
+    assert report["local_generator"]["status"] == "succeeded"
     assert report["selected_generators"]["local_rule_v1"] == 1
 
 

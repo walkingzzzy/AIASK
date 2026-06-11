@@ -189,6 +189,26 @@ async def test_runner_pipeline_passes_paper_observation_strategies(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_runner_uses_active_paper_observation_query_when_available(monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
+    monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "50")
+    runner = IncubationFactoryRunner(dry_run=True)
+    db = MagicMock()
+    db.list_active_paper_observation_strategies = AsyncMock(
+        return_value=[{"id": "paper-warmup-1", "status": "submitted", "observation_stage": "warmup"}]
+    )
+    db.list_paper_observation_strategies = AsyncMock(
+        side_effect=AssertionError("legacy backlog query should not be used when active query exists")
+    )
+
+    result = await runner._list_paper_observation(db)
+
+    assert result == [{"id": "paper-warmup-1", "status": "submitted", "observation_stage": "warmup"}]
+    db.list_active_paper_observation_strategies.assert_called_once_with(limit=50)
+    db.list_paper_observation_strategies.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_pipeline_run_batch_with_strategies_skips_status_query(monkeypatch):
     service = StrategyIncubationPipelineService()
     db = MagicMock()

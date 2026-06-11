@@ -187,10 +187,8 @@
                     _pipeline_fallback_reason = 'pipeline_timeout'
                     skip_monolithic_external_provider = True
                     monolithic_external_provider_skip_reason = 'pipeline_timeout'
-                    suppress_post_pipeline_fallback = True
-                    post_pipeline_suppression_reason = 'pipeline_timeout'
                     logger.warning(
-                        'Pipeline staged mode timed out after %.1fs; suppressing monolithic/local fallback: %s',
+                        'Pipeline staged mode timed out after %.1fs; skipping monolithic external provider and continuing with local fallback: %s',
                         float(pipeline_run_timeout_sec or 0.0),
                         exc,
                     )

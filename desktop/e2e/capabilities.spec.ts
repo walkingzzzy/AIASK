@@ -2266,6 +2266,15 @@ const LEGACY_REPLACEMENT_BUTTONS = [
   "前往 集成",
 ];
 
+const WORKBENCH_SAFE_PATH_BUTTONS = [
+  "打开准备度",
+  "打开 MCP",
+  "打开本地用户",
+  "打开金融经理台",
+  "打开数据",
+  "打开金融实验室",
+];
+
 function viewLabel(name: string) {
   return VIEW_LABELS[name] || name;
 }
@@ -2318,6 +2327,75 @@ Object.assign(VIEW_LABELS, {
   Workflows: "工作流",
   Settings: "设置"
 });
+
+const VIEW_IDS: Record<string, string> = {
+  Overview: "overview",
+  Agent: "workbench",
+  Workbench: "workbench",
+  "Runs / Events": "runs-events",
+  "Coverage Matrix": "coverage",
+  Models: "models",
+  "Data & Sync": "data",
+  MCP: "mcp-connectors",
+  Skills: "plugins-skills",
+  "Projects / Contexts": "projects-contexts",
+  Approvals: "tools-intents-approvals",
+  "Finance Lab": "finance-lab",
+  Integrations: "integrations",
+  Automation: "automation",
+  Readiness: "readiness-health",
+  "Financial Manager": "financial-manager",
+  "Market Temperature": "market-temperature",
+  "Quant Research": "quant",
+  "Strategy Factory": "strategy-factory",
+  "Factor Factory": "factor-factory",
+  Incubation: "incubation",
+  "Local User": "user",
+  Tools: "tools",
+  Capabilities: "capabilities",
+  "Event Console": "event-console",
+  "Factory Events": "factory-events",
+  Diagnostics: "diagnostics",
+  "Agent Status": "agent",
+  Workflows: "workflows",
+  Settings: "settings"
+};
+
+const VIEW_GROUP_IDS: Record<string, string> = {
+  workbench: "primary",
+  "projects-contexts": "primary",
+  "runs-events": "primary",
+  "tools-intents-approvals": "primary",
+  "finance-lab": "primary",
+  integrations: "primary",
+  automation: "primary",
+  settings: "primary",
+  "financial-manager": "advanced-finance",
+  "market-temperature": "advanced-finance",
+  quant: "advanced-finance",
+  "strategy-factory": "advanced-finance",
+  "factor-factory": "advanced-finance",
+  incubation: "advanced-finance",
+  data: "advanced-finance",
+  workflows: "advanced-finance",
+  "factory-events": "advanced-finance",
+  "plugins-skills": "advanced-ops",
+  "mcp-connectors": "advanced-ops",
+  gateway: "advanced-ops",
+  "readiness-health": "advanced-ops",
+  "extensions-pilot": "advanced-ops",
+  overview: "legacy",
+  agent: "legacy",
+  capabilities: "legacy",
+  coverage: "legacy",
+  tools: "legacy",
+  mcp: "legacy",
+  diagnostics: "legacy",
+  "event-console": "legacy",
+  skills: "legacy",
+  user: "legacy",
+  models: "legacy"
+};
 
 Object.assign(CONTROL_LABELS, {
   Refresh: "刷新",
@@ -2395,6 +2473,26 @@ async function openCollapsedNavGroup(page: Page, groupName: string, targetLabel:
   return true;
 }
 
+async function openMainViewById(page: Page, name: string) {
+  const viewId = VIEW_IDS[name];
+  if (!viewId) return false;
+  const navigation = page.getByRole("navigation");
+  const selector = `button[data-view-id="${viewId}"]`;
+  let target = navigation.locator(selector);
+  const groupId = VIEW_GROUP_IDS[viewId];
+  const group = groupId ? navigation.locator(`section[data-view-group-id="${groupId}"]`) : null;
+  if (!(await target.count()) && group && (await group.count())) {
+    const toggle = group.getByRole("button").first();
+    if ((await toggle.count()) && (await toggle.isVisible())) await toggle.click();
+    target = navigation.locator(selector);
+  }
+  if (!(await target.count())) return false;
+  await expect(target.first(), `Sidebar view ${name} should be visible`).toBeVisible({ timeout: 15_000 });
+  await target.first().click();
+  await waitForMainViewReady(page, name);
+  return true;
+}
+
 async function waitForMainViewReady(page: Page, context: string) {
   await expect(page.getByLabel("Loading view"), `${context} loading fallback should finish`).toHaveCount(0, { timeout: 15_000 });
   await expect(page.locator("main h1, main h2, main h3").first(), `${context} should render a heading`).toBeVisible({ timeout: 15_000 });
@@ -2417,6 +2515,8 @@ async function openMainView(page: Page, name: string) {
     await waitForMainViewReady(page, name);
     return;
   }
+
+  if (await openMainViewById(page, name)) return;
 
   if (name === "Sessions") {
     const sessionsButton = page.getByRole("button").filter({ hasText: viewLabel("Sessions") }).first();
@@ -3226,6 +3326,9 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   report.screenshots.push(path.join(reportDir, "desktop-workbench.png"));
 
   const workbenchInventory = await recordInventory(report, page, "Workbench");
+  await expect(page.getByRole("region", { name: "金融 Agent 安全链路" })).toBeVisible();
+  await expect(page.getByText("现在可以复核什么")).toBeVisible();
+  report.actions.push({ page: "Workbench", control: "金融 Agent 安全链路", result: "visible", note: "Workbench surfaces read-only mode, MCP, memory, financial manager, data, and factory navigation" });
   await clickAndRecord(report, page, "Workbench", "Sync Agent state", "AIASK_ONLINE");
   assertMainButtonCoverage(workbenchInventory, [
     "Sync Agent state",
@@ -3235,6 +3338,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
     "run_fixture completed / tools 0 / approvals 0",
+    ...WORKBENCH_SAFE_PATH_BUTTONS,
     "准备度",
     "Readiness",
     "Projects / Contexts",
@@ -3307,6 +3411,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Run thread task",
     "E2E session 2026-05-21T08:00:00.000Z",
     "run_fixture completed / tools 0 / approvals 0",
+    ...WORKBENCH_SAFE_PATH_BUTTONS,
     "准备度",
     "Readiness",
     "Projects / Contexts",

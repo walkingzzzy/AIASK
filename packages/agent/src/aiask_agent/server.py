@@ -63,6 +63,16 @@ def _json_dumps(payload: Any) -> bytes:
     return dumps_json_bytes(payload, ensure_ascii=False, sort_keys=True)
 
 
+def _query_bool(query: dict[str, list[str]], key: str, *, default: bool = False) -> bool:
+    values = query.get(key)
+    if not values:
+        return default
+    value = str(values[-1] or "").strip().lower()
+    if not value:
+        return default
+    return value in {"1", "true", "yes", "on"}
+
+
 def _exception_messages(exc: BaseException) -> list[str]:
     messages = [str(exc)] if str(exc) else [exc.__class__.__name__]
     nested = getattr(exc, "exceptions", None)
@@ -3674,7 +3684,26 @@ def build_server(
                 if not self._api_authorized():
                     self._send_error_json(401, "unauthorized", code="unauthorized")
                     return
-                self._send_json(200, {"object": "list", "data": MCPAggregator().servers_summary()})
+                include_all = _query_bool(query, "all")
+                self._send_json(200, {"object": "list", "data": MCPAggregator().servers_summary(include_all=include_all)})
+                return
+            if path in {"/v1/mcp/tools", "/v1/mcp/resources", "/v1/mcp/prompts", "/v1/mcp/oauth_status"}:
+                ok, reason = self._hermes_full_authorized()
+                if not ok:
+                    status = 503 if reason in {"control token is not configured", "AIASK native Hermes full mode is not enabled"} else 401
+                    self._send_error_json(status, reason or "unauthorized", code="hermes_full_unauthorized")
+                    return
+                include_all = _query_bool(query, "all")
+                mcp = MCPAggregator()
+                if path == "/v1/mcp/tools":
+                    data = mcp.tools_summary(include_all=include_all)
+                elif path == "/v1/mcp/resources":
+                    data = mcp.resources_summary(include_all=include_all)
+                elif path == "/v1/mcp/prompts":
+                    data = mcp.prompts_summary(include_all=include_all)
+                else:
+                    data = mcp.oauth_status(include_all=include_all)
+                self._send_json(200, {"object": "list", "data": data})
                 return
             if path == "/v1/search":
                 if not self._api_authorized():
