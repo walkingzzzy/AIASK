@@ -148,7 +148,12 @@ def evaluate_validation_evidence(
     rank_ic_mean = safe_float(metrics.get("rank_ic_mean", summary.get("rank_ic_mean")))
     rank_ic_ir = safe_float(metrics.get("rank_ic_ir", summary.get("rank_ic_ir")))
     positive_ratio = safe_float(metrics.get("positive_ratio", summary.get("positive_ratio")))
-    ic_history_rows = safe_int(persisted_outputs.get("ic_history_rows"))
+    # 晋升证据用 DB 累计 IC 历史行数(ic_history_rows_total),回退到本轮新增(ic_history_rows)。
+    # 累计口径避免"单轮验证窗口产不出 min_ic_history_rows 行 → 永远进不了 active"的死锁。
+    ic_history_rows = max(
+        safe_int(persisted_outputs.get("ic_history_rows_total")),
+        safe_int(persisted_outputs.get("ic_history_rows")),
+    )
     lookahead_risk = str(lookahead.get("risk_level") or "unknown").lower()
 
     reasons: list[str] = []

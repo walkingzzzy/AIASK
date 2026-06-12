@@ -164,6 +164,17 @@ class FactorMiningFactory:
 
             await self._record_feedback(run_id, raw_candidates, evolved, validated, admitted)
 
+            # 盘活存量:基于累计 IC 历史复评 quarantine 因子,达标者转回 active(DB 落库)。
+            # 与 evidence 门累计口径修复配套——存量达标因子不再因历史误降级而永困 quarantine。
+            reappraisal: dict[str, Any] = {}
+            try:
+                from .reappraise import reappraise_quarantine_factors
+
+                reappraisal = await reappraise_quarantine_factors(db, limit=200)
+            except Exception as exc:  # noqa: BLE001 - 复评失败不得拖垮挖掘周期
+                logger.warning("FactorMiningFactory: quarantine reappraisal failed: %s", exc)
+                reappraisal = {"error": f"{type(exc).__name__}: {exc}"}
+
             self._last_run_at = datetime.now(timezone.utc)
             self._run_count += 1
             report = {
@@ -182,6 +193,11 @@ class FactorMiningFactory:
                 "engines_used": self._engine_scheduler.last_engines_used,
                 "validation_universe_health": getattr(context, "validation_universe_health", {}),
                 "quality_summary": quality_summary,
+                "quarantine_reappraisal": {
+                    "scanned": reappraisal.get("scanned", 0),
+                    "promoted": reappraisal.get("promoted", 0),
+                    "kept_quarantine": reappraisal.get("kept_quarantine", 0),
+                },
             }
             await self._persist_mining_run(db, report)
             return report

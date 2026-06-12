@@ -435,6 +435,18 @@ async def validate_factor_candidate_pipeline(
                 source_chain.append("db.save_factor_ic")
             if persisted_outputs["errors"]:
                 validation_warnings.append("factor_ic_history_persist_failed")
+        # 回填 DB 累计 IC 历史行数(跨轮),供晋升证据校验使用,避免"本轮新增<60"误判死锁。
+        if persist_ic_history and hasattr(db, "count_factor_ic_history"):
+            try:
+                persisted_outputs["ic_history_rows_total"] = int(
+                    await db.count_factor_ic_history(
+                        resolved_factor_key, str(int(horizon_days))
+                    )
+                )
+            except Exception as exc:
+                persisted_outputs["errors"].append(
+                    f"factor_ic_count:{type(exc).__name__}:{exc}"
+                )
 
     factor_df = _build_panel(factor_series_map)
     close_df = _build_panel(close_series_map)

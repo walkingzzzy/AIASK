@@ -352,6 +352,62 @@ async def _run_strategy_factory_once(
     }
 
 
+async def _run_factor_mining_once(enabled: bool) -> dict[str, Any] | None:
+    """每轮跑一轮因子挖掘,使因子超市持续有新候选供策略工厂使用。
+
+    覆盖"四大核心持续运行"中的因子挖掘工厂 + 因子超市。失败不阻断本轮(只记录)。
+    """
+    if not enabled:
+        return None
+    started_at = _iso_now()
+    try:
+        from strategy_factory.runtime.factor_mining import get_factor_mining_factory
+
+        factory = get_factor_mining_factory()
+        result = await factory.run_mining_cycle(trigger="quality_session")
+        return {
+            "started_at": started_at,
+            "completed_at": _iso_now(),
+            "result": {
+                "success": bool((result or {}).get("success")),
+                "raw_candidate_count": int((result or {}).get("raw_candidate_count") or 0),
+                "evolved_count": int((result or {}).get("evolved_count") or 0),
+                "validated_count": int((result or {}).get("validated_count") or 0),
+                "admitted_count": int((result or {}).get("admitted_count") or 0),
+                "pool_size": int((result or {}).get("pool_size") or 0),
+                "engines_used": list((result or {}).get("engines_used") or []),
+                "error": (result or {}).get("error"),
+            },
+        }
+    except Exception as exc:  # noqa: BLE001 - 因子挖掘失败不得拖垮整轮 session
+        LOGGER.warning("Factor mining round failed: %s", exc)
+        return {
+            "started_at": started_at,
+            "completed_at": _iso_now(),
+            "result": {"success": False, "error": f"{type(exc).__name__}: {exc}"},
+        }
+
+
+async def _collect_factor_shelf_status() -> dict[str, Any]:
+    """采集因子超市池状态(active/quarantine/retired + IC 健康度),用于每轮记录与质量追踪。"""
+    try:
+        from akshare_mcp.services.factor_mining_factory.api import get_factor_pool_gateway
+
+        gateway = get_factor_pool_gateway()
+        status = await gateway.get_pool_status()
+        health = dict((status or {}).get("pool_health") or {})
+        return {
+            "pool_size": (status or {}).get("pool_size") or (status or {}).get("size"),
+            "active_count": health.get("active_promoted_count"),
+            "quarantine_count": health.get("quarantine_count"),
+            "retired_count": health.get("retired_count"),
+            "recent_60d_icir": health.get("recent_60d_icir"),
+            "evidence_insufficient_count": health.get("evidence_insufficient_count"),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
 async def _run_signal_tracker_once(enabled: bool) -> dict[str, Any] | None:
     """P0-1: 在孵化前跑一轮 SignalTracker,为 observe 样本生成当日信号。
 
@@ -2184,6 +2240,7 @@ async def _run_round(
     with_incubation: bool,
     strategy_sample_limit: int,
 ) -> dict[str, Any]:
+    factor_mining_run = await _run_factor_mining_once(with_incubation)
     factory_run = await _run_strategy_factory_once(
         factory_mod=factory_mod,
         codes=codes,
@@ -2201,6 +2258,7 @@ async def _run_round(
     }
     signal_tracker_run = await _run_signal_tracker_once(with_incubation)
     incubation_run = await _run_incubation_once(with_incubation)
+    factor_shelf_status = await _collect_factor_shelf_status() if with_incubation else None
     incubation_result = dict((incubation_run or {}).get("result") or {})
     paper_backlog = await _collect_paper_observation_backlog()
     incubation_intake = dict(incubation_result.get("intake") or {})
@@ -2265,6 +2323,8 @@ async def _run_round(
         "factory_result": compact_factory_result,
         "run_ids": run_ids,
         "quality_snapshot": quality_snapshot,
+        "factor_mining_result": factor_mining_run,
+        "factor_shelf_status": factor_shelf_status,
         "signal_tracker_result": signal_tracker_run,
         "incubation_result": compact_incubation_result,
     }

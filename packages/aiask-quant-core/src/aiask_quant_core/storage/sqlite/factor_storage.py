@@ -113,3 +113,23 @@ class FactorStorageMixin:
                 factor_name, period, limit,
             )
         return [dict(r) for r in rows]
+
+    async def count_factor_ic_history(self, factor_name: str, period: str | None = None) -> int:
+        """统计某因子已持久化的 IC 历史行数(跨轮累计)。
+
+        晋升证据校验应基于累计历史,而非单轮验证窗口新增的行数,
+        否则形成"要 60 行才放行、但单轮产不出 60 行"的鸡生蛋死锁。
+        period 为 None 时统计该因子全部 period 的累计行数。
+        """
+        async with self.acquire() as conn:
+            if period is None:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n FROM factor_ic_history WHERE factor_name = $1",
+                    factor_name,
+                )
+            else:
+                row = await conn.fetchrow(
+                    "SELECT COUNT(*) AS n FROM factor_ic_history WHERE factor_name = $1 AND period = $2",
+                    factor_name, period,
+                )
+        return int(dict(row or {}).get("n") or 0)
