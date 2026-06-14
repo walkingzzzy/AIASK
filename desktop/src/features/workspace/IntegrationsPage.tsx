@@ -35,6 +35,14 @@ const integrationEntries: Array<{
     needsControl: true
   },
   {
+    id: "tools-intents-approvals",
+    title: "工具与审批",
+    label: "审批",
+    description: "工具目录、意图、审批和受控流程管理。",
+    icon: ShieldCheck,
+    needsControl: true
+  },
+  {
     id: "readiness-health",
     title: "准备度与健康",
     label: "准备度 / 健康",

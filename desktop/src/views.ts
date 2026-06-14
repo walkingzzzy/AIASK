@@ -365,48 +365,15 @@ function pick(ids: MainView[]): ViewRegistryItem[] {
 
 export const VIEW_GROUPS: ViewGroup[] = [
   {
-    id: "primary",
-    label: "主工作区",
-    items: pick(["workbench", "projects-contexts", "runs-events", "tools-intents-approvals", "finance-lab", "integrations", "automation", "settings"]),
-  },
-  {
-    id: "advanced-finance",
-    label: "高级金融",
-    defaultCollapsed: true,
+    id: "core",
+    label: "核心功能",
     items: pick([
-      "financial-manager",
-      "market-temperature",
-      "quant",
-      "strategy-factory",
-      "factor-factory",
-      "incubation",
-      "data",
-      "workflows",
-      "factory-events",
-    ]),
-  },
-  {
-    id: "advanced-ops",
-    label: "高级运维",
-    defaultCollapsed: true,
-    items: pick(["models", "plugins-skills", "mcp-connectors", "gateway", "readiness-health", "extensions-pilot"]),
-  },
-  {
-    id: "legacy",
-    label: "旧入口 / 高级诊断",
-    defaultCollapsed: true,
-    diagnosticOnly: true,
-    items: pick([
-      "overview",
-      "agent",
-      "capabilities",
-      "coverage",
-      "tools",
-      "mcp",
-      "diagnostics",
-      "event-console",
-      "skills",
-      "user",
+      "workbench",
+      "projects-contexts",
+      "runs-events",
+      "integrations",
+      "finance-lab",
+      "settings"
     ]),
   },
 ];
