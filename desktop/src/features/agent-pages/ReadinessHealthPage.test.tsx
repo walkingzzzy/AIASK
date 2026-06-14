@@ -20,7 +20,7 @@ describe("ReadinessHealthPage", () => {
   const hermesStatus: HermesStatus = {
     object: "aiask.hermes_status",
     implementation: "aiask_native",
-    baseline: "Hermes v0.15.1 full runtime capability reference",
+    baseline: "Hermes v0.16.0 full runtime capability reference",
     embedded_vendor_runtime: false,
     full_mode_enabled: true,
     full_mode_active: true,
@@ -59,7 +59,14 @@ describe("ReadinessHealthPage", () => {
     expect(screen.getAllByText("AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION").length).toBeGreaterThan(0);
     expect(screen.getByText("现在最该做什么")).toBeInTheDocument();
     expect(screen.getByText("运行一次只读金融工作流")).toBeInTheDocument();
-    expect(screen.getByText("真实联调检查清单")).toBeInTheDocument();
+    expect(screen.getByText("检查清单状态")).toBeInTheDocument();
+    expect(screen.getByText(/日常使用只需要看状态和检查数/)).toBeInTheDocument();
+    expect(screen.getByText("技术联调清单")).toBeInTheDocument();
+    expect(screen.getByText("高级诊断：完整模式控制台")).toBeInTheDocument();
+    expect(screen.getByText("金融安全工具集")).toBeInTheDocument();
+    expect(screen.getAllByText("本地数据库").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByText("技术联调清单"));
     expect(screen.getByText("scripts/ops/live_readiness_smoke.py")).toBeInTheDocument();
     expect(screen.getByText("packages/agent")).toBeInTheDocument();
     expect(screen.getByText("uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --self-test --pretty")).toBeInTheDocument();
@@ -69,7 +76,7 @@ describe("ReadinessHealthPage", () => {
     expect(screen.getByText("factory_status")).toBeInTheDocument();
     expect(screen.getByText("market_temperature_cache")).toBeInTheDocument();
     expect(screen.getByText("market_temperature_forward_validation")).toBeInTheDocument();
-    expect(screen.getByText("观测字段：success, configured, database_configured, run_count")).toBeInTheDocument();
+    expect(screen.getByText("观测字段：success, runtime_enabled, event_runtime_mode, daily_run_count, cycle_count")).toBeInTheDocument();
     expect(screen.getByText("观测字段：ready, status, blockers, warnings")).toBeInTheDocument();
     expect(screen.getByText("观测字段：benchmark_status, quality_status, warnings, sample_count")).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "真实金融流程前置检查" })).toBeInTheDocument();

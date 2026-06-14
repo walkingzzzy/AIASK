@@ -1,6 +1,7 @@
-import { BarChart3, ClipboardCheck, FileJson, FileText, Image, MessageSquare, ShieldCheck, Sparkles } from "lucide-react";
+import { BarChart3, ClipboardCheck, ExternalLink, FileJson, FileText, Image, Link2, MessageSquare, ShieldCheck, Sparkles } from "lucide-react";
+import type { MouseEvent } from "react";
 import { EmptyState, RawEvidencePanel, StatusBadge } from "./shared";
-import type { AgentResponse, DesktopRunSummary, TaskArtifact, TaskReviewComment, TaskThread, TimelineEvent } from "../types";
+import type { AgentArtifactRecord, AgentSourceRecord, AgentResponse, DesktopRunSummary, TaskArtifact, TaskArtifactKind, TaskReviewComment, TaskThread, TimelineEvent } from "../types";
 
 function artifactIcon(kind: TaskArtifact["kind"]) {
   switch (kind) {
@@ -8,6 +9,16 @@ function artifactIcon(kind: TaskArtifact["kind"]) {
       return Image;
     case "json":
       return FileJson;
+    case "quote_snapshot":
+      return BarChart3;
+    case "news_digest":
+    case "file":
+    case "code":
+    case "script":
+    case "terminal_output":
+    case "table":
+    case "patch":
+      return FileText;
     case "strategy":
     case "factor":
       return BarChart3;
@@ -20,102 +31,116 @@ function artifactIcon(kind: TaskArtifact["kind"]) {
   }
 }
 
+function apiHref(endpoint: string | undefined, path: string) {
+  const base = String(endpoint || "").replace(/\/+$/, "");
+  return base ? `${base}${path}` : path;
+}
+
+function artifactHref(artifact: AgentArtifactRecord, endpoint?: string) {
+  const uri = String(artifact.uri || "");
+  if (/^https?:\/\//i.test(uri)) return uri;
+  return apiHref(endpoint, `/v1/artifacts/${encodeURIComponent(artifact.artifact_id)}/content?max_bytes=1048576`);
+}
+
+function sourceHref(source: AgentSourceRecord, endpoint?: string) {
+  if (source.url) return source.url;
+  return apiHref(endpoint, `/v1/sources/${encodeURIComponent(source.source_id)}`);
+}
+
+async function openAgentEvidence(event: MouseEvent<HTMLAnchorElement>, href: string, token?: string) {
+  if (!token?.trim() || !/\/v1\/(?:artifacts|sources)\//.test(href)) return;
+  event.preventDefault();
+  try {
+    const response = await fetch(href, { headers: { Authorization: `Bearer ${token.trim()}` } });
+    if (!response.ok) throw new Error(`AIASK_HTTP_${response.status}`);
+    const contentType = response.headers.get("content-type") || "application/json";
+    const text = await response.text();
+    const blob = new Blob([text], { type: contentType.includes("json") ? "application/json" : "text/plain" });
+    const objectUrl = URL.createObjectURL(blob);
+    window.open(objectUrl, "_blank", "noopener,noreferrer");
+    window.setTimeout(() => URL.revokeObjectURL(objectUrl), 60_000);
+  } catch {
+    window.open(href, "_blank", "noopener,noreferrer");
+  }
+}
+
+function artifactDescription(artifact: AgentArtifactRecord) {
+  if (artifact.preview_text) return artifact.preview_text;
+  if (artifact.mime_type || artifact.size_bytes) {
+    return [artifact.mime_type, artifact.size_bytes ? `${artifact.size_bytes} bytes` : ""].filter(Boolean).join(" / ");
+  }
+  return artifact.tool_name || artifact.kind || "Durable Agent artifact";
+}
+
 export function buildTaskArtifacts({
-  selectedThread,
-  selectedResponse,
-  recentRuns,
-  timelineEvents
+  durableArtifacts,
+  endpoint
 }: {
   selectedThread: TaskThread | null;
   selectedResponse?: AgentResponse | null;
   recentRuns?: DesktopRunSummary[];
   timelineEvents?: TimelineEvent[];
+  durableArtifacts?: AgentArtifactRecord[];
+  durableSources?: AgentSourceRecord[];
+  endpoint?: string;
 }): TaskArtifact[] {
-  const artifacts: TaskArtifact[] = [];
-  const response = selectedResponse || selectedThread?.response || null;
-  if (selectedThread) {
-    artifacts.push({
-      id: `thread:${selectedThread.id}`,
-      kind: "note",
-      title: selectedThread.title || "当前线程",
-      description: selectedThread.prompt || "线程已就绪，可以继续后续工作。",
-      status: selectedThread.status,
-      source: selectedThread.sessionId || selectedThread.id,
-      createdAt: selectedThread.createdAt,
-      sourceView: "workbench",
-      targetPath: selectedThread.sessionId ? `sessions/${selectedThread.sessionId}` : `threads/${selectedThread.id}`,
-      severity: selectedThread.status.toLowerCase() === "blocked" ? "critical" : selectedThread.status.toLowerCase() === "queued" ? "warning" : "info"
-    });
-  }
-  if (response) {
-    artifacts.push({
-      id: `response:${response.id}`,
-      kind: "report",
-      title: "Agent 回复摘要",
-      description: response.output_text || "已捕获回复 payload，等待复核。",
-      status: response.status,
-      source: response.metadata?.run_id || response.metadata?.session_id || response.id,
-      sourceView: "workbench",
-      targetPath: response.metadata?.run_id ? `runs/${response.metadata.run_id}` : `responses/${response.id}`,
-      severity: response.status?.toLowerCase?.() === "failed" ? "critical" : "info",
-      value: response
-    });
-    if (response.metadata?.tool_calls?.length) {
-      artifacts.push({
-        id: `tools:${response.id}`,
-        kind: "json",
-        title: "工具调用证据",
-        description: `${response.metadata.tool_calls.length} 条工具调用记录`,
-        status: "ready",
-        source: response.id,
-        sourceView: "tools-intents-approvals",
-        targetPath: `responses/${response.id}/tool-calls`,
-        severity: "info",
-        value: response.metadata.tool_calls
-      });
-    }
-  }
-  (recentRuns || []).slice(0, 3).forEach((run) => {
-    artifacts.push({
-      id: `run:${run.run_id}`,
-      kind: "run",
-      title: `运行 ${run.run_id}`,
-      description: `工具 ${run.tool_call_count ?? 0} / 审批 ${run.approval_count ?? 0} / 错误 ${run.error_count ?? 0}`,
-      status: run.status,
-      source: run.run_id,
+  return (durableArtifacts || []).map((artifact) => {
+    const href = artifactHref(artifact, endpoint);
+    const status = artifact.status || "ready";
+    const severity =
+      ["failed", "error"].includes(status.toLowerCase())
+        ? "critical"
+        : ["missing", "blocked"].includes(status.toLowerCase())
+          ? "warning"
+          : "info";
+    return {
+      id: `artifact:${artifact.artifact_id}`,
+      kind: normalizeArtifactKind(artifact.kind),
+      title: artifact.title || artifact.artifact_id,
+      description: artifactDescription(artifact),
+      status,
+      source: artifact.tool_call_id || artifact.run_id || artifact.session_id,
+      createdAt: artifact.created_at,
       sourceView: "runs-events",
-      targetPath: `runs/${run.run_id}`,
-      severity: run.error_count ? "critical" : run.has_pending_approval ? "warning" : "info",
-      value: run
-    });
+      targetPath: href,
+      href,
+      path: artifact.path || artifact.uri,
+      severity,
+      value: artifact
+    };
   });
-  const approvalEvents = (timelineEvents || []).filter((event) => event.kind === "approval").slice(0, 3);
-  approvalEvents.forEach((event) => {
-    artifacts.push({
-      id: `approval:${event.id}`,
-      kind: "approval",
-      title: event.title || "审批事件",
-      description: event.body || "当前时间线中捕获到审批事件。",
-      status: "approval_required",
-      source: event.id,
-      sourceView: "tools-intents-approvals",
-      targetPath: `timeline/${event.id}`,
-      severity: "warning",
-      value: event
-    });
-  });
-  if (!artifacts.length) {
-    artifacts.push({
-      id: "empty:guide",
-      kind: "note",
-      title: "暂无产物",
-      description: "运行任务或选择线程后，这里会收集回复、工具证据、审批、截图和报告。",
-      status: "idle",
-      sourceView: "workbench",
-      severity: "info"
-    });
-  }
-  return artifacts;
+}
+
+function normalizeArtifactKind(kind: string | undefined): TaskArtifactKind {
+  const normalized = String(kind || "file") as TaskArtifactKind;
+  const allowed: TaskArtifactKind[] = [
+    "report",
+    "strategy",
+    "factor",
+    "data",
+    "screenshot",
+    "json",
+    "run",
+    "approval",
+    "note",
+    "file",
+    "code",
+    "script",
+    "terminal_output",
+    "quote_snapshot",
+    "news_digest",
+    "chart",
+    "table",
+    "patch",
+  ];
+  return allowed.includes(normalized) ? normalized : "file";
+}
+
+function readableTimestamp(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
 }
 
 export function buildTaskReviewComments(artifacts: TaskArtifact[]): TaskReviewComment[] {
@@ -132,7 +157,62 @@ export function buildTaskReviewComments(artifacts: TaskArtifact[]): TaskReviewCo
     }));
 }
 
-export function ArtifactCard({ artifact, compact = false }: { artifact: TaskArtifact; compact?: boolean }) {
+export function SourcesPanel({
+  sources,
+  compact = false,
+  endpoint,
+  apiToken
+}: {
+  sources?: AgentSourceRecord[];
+  compact?: boolean;
+  endpoint?: string;
+  apiToken?: string;
+}) {
+  const items = sources || [];
+  return (
+    <section className={`task-panel ${compact ? "compact" : ""}`}>
+      <div className="section-header">
+        <div>
+          <span>{items.length} 个来源</span>
+          <h3>来源证据</h3>
+        </div>
+        <Link2 size={18} />
+      </div>
+      {items.length ? (
+        <div className="source-evidence-list">
+          {items.map((source) => (
+            <article className="source-evidence-card" key={source.source_id}>
+              <div>
+                <strong>{source.title || source.provider || source.source_id}</strong>
+                <StatusBadge status={source.source_type || "source"} technicalLabel={source.source_type || "source"} />
+              </div>
+              {source.excerpt && <p>{source.excerpt}</p>}
+              <div className="artifact-meta">
+                {source.provider && <span>{source.provider}</span>}
+                {source.published_at && <span>发布 {readableTimestamp(source.published_at)}</span>}
+                {source.fetched_at && <span>抓取 {readableTimestamp(source.fetched_at)}</span>}
+                {source.data_timestamp && <span>数据 {readableTimestamp(source.data_timestamp)}</span>}
+              </div>
+              <a href={sourceHref(source, endpoint)} onClick={(event) => openAgentEvidence(event, sourceHref(source, endpoint), apiToken)} rel="noreferrer" target="_blank">
+                <ExternalLink size={13} />
+                {source.url || source.source_id}
+              </a>
+              {!compact && <RawEvidencePanel title="Source evidence" value={source} />}
+            </article>
+          ))}
+        </div>
+      ) : (
+        <EmptyState
+          body="行情 provider、新闻链接、网页引用和本地数据来源会在运行完成后显示。"
+          icon={<Link2 size={24} />}
+          title="暂无来源证据"
+        />
+      )}
+    </section>
+  );
+}
+
+export function ArtifactCard({ artifact, compact = false, apiToken }: { artifact: TaskArtifact; compact?: boolean; apiToken?: string }) {
   const Icon = artifactIcon(artifact.kind);
   return (
     <article className={`artifact-card ${artifact.severity || "info"}`}>
@@ -152,6 +232,12 @@ export function ArtifactCard({ artifact, compact = false }: { artifact: TaskArti
           {artifact.targetPath && <span>{artifact.targetPath}</span>}
           {artifact.path && <span>{artifact.path}</span>}
         </div>
+        {artifact.href && (
+          <a className="artifact-evidence-link" href={artifact.href} onClick={(event) => openAgentEvidence(event, artifact.href || "", apiToken)} rel="noreferrer" target="_blank">
+            <ExternalLink size={13} />
+            Open evidence
+          </a>
+        )}
         {artifact.value !== undefined && !compact && (
           <RawEvidencePanel title="Raw evidence" value={artifact.value} />
         )}
@@ -175,10 +261,12 @@ export function ReviewComment({ comment }: { comment: TaskReviewComment }) {
 
 export function ArtifactsPanel({
   artifacts,
-  compact = false
+  compact = false,
+  apiToken
 }: {
   artifacts: TaskArtifact[];
   compact?: boolean;
+  apiToken?: string;
 }) {
   return (
     <section className={`task-panel ${compact ? "compact" : ""}`}>
@@ -189,9 +277,17 @@ export function ArtifactsPanel({
         </div>
         <ClipboardCheck size={18} />
       </div>
-      <div className="artifact-list">
-        {artifacts.map((artifact) => <ArtifactCard artifact={artifact} compact={compact} key={artifact.id} />)}
-      </div>
+      {artifacts.length ? (
+        <div className="artifact-list">
+          {artifacts.map((artifact) => <ArtifactCard artifact={artifact} compact={compact} apiToken={apiToken} key={artifact.id} />)}
+        </div>
+      ) : (
+        <EmptyState
+          body="Durable artifacts from the Agent artifacts API will appear here after a run records quotes, generated files, scripts, or terminal output."
+          icon={<ClipboardCheck size={24} />}
+          title="No durable artifacts"
+        />
+      )}
     </section>
   );
 }

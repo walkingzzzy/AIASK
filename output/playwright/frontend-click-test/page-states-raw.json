@@ -1,0 +1,1085 @@
+[
+  {
+    "ok": true,
+    "viewId": "workbench",
+    "label": "工作台",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "AIASK 工作台"
+      },
+      {
+        "tag": "H3",
+        "text": "线程优先工作台"
+      },
+      {
+        "tag": "H3",
+        "text": "现在可以复核什么"
+      },
+      {
+        "tag": "H3",
+        "text": "任务产物"
+      },
+      {
+        "tag": "H3",
+        "text": "审查队列"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "准备度",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "Gateway受限",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "同步",
+        "disabled": false,
+        "aria": "同步 AIASK 状态"
+      },
+      {
+        "text": "已完成会话已完成 · 2026-06-09 18:39b1acf60a-b...bf3a78",
+        "disabled": false,
+        "aria": "打开会话：已完成会话 已完成 · 2026-06-09 18:39"
+      },
+      {
+        "text": "有错误需查看会话有错误需查看 · 2026-05-29 09:287691a0b7-d...595674",
+        "disabled": false,
+        "aria": "打开会话：有错误需查看会话 有错误需查看 · 2026-05-29 09:28"
+      },
+      {
+        "text": "有错误需查看会话有错误需查看 · 2026-05-27 13:09b193cf51-d...66095a",
+        "disabled": false,
+        "aria": "打开会话：有错误需查看会话 有错误需查看 · 2026-05-27 13:09"
+      },
+      {
+        "text": "已完成会话已完成 · 2026-05-27 13:03264aca64-5...ba78c5",
+        "disabled": false,
+        "aria": "打开会话：已完成会话 已完成 · 2026-05-27 13:03"
+      },
+      {
+        "text": "运行已完成工具 0 次 · 审批 0 项 · 错误 0 个run_0f2b77...9f87f2",
+        "disabled": false,
+        "aria": "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个"
+      },
+      {
+        "text": "运行失败工具 3 次 · 审批 0 项 · 错误 4 个run_7daff4...7dbe6e",
+        "disabled": false,
+        "aria": "查看运行：运行失败 工具 3 次 · 审批 0 项 · 错误 4 个"
+      },
+      {
+        "text": "运行已完成工具 3 次 · 审批 0 项 · 错误 1 个run_26c3fb...28e8e5",
+        "disabled": false,
+        "aria": "查看运行：运行已完成 工具 3 次 · 审批 0 项 · 错误 1 个"
+      },
+      {
+        "text": "运行已完成工具 0 次 · 审批 0 项 · 错误 0 个run_d0750b...d62801",
+        "disabled": false,
+        "aria": "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个"
+      },
+      {
+        "text": "打开准备度",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开 MCP",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开本地用户",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开金融经理台",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开数据",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开金融实验室",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "项目 / 上下文",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "审批",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "金融实验室",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "集成",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "插件 / 技能受限",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "扩展内部",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "金融安全",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "Hermes full",
+        "disabled": true,
+        "aria": null
+      },
+      {
+        "text": "运行",
+        "disabled": true,
+        "aria": "运行线程任务"
+      }
+    ],
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "type": null,
+        "placeholder": "新会话",
+        "label": "会话 ID",
+        "value": ""
+      },
+      {
+        "tag": "TEXTAREA",
+        "type": null,
+        "placeholder": "让 AIASK 研究、检查工具、生成报告，或继续当前线程...",
+        "label": null,
+        "value": ""
+      }
+    ],
+    "alerts": [],
+    "textSample": "在线，可以开始任务 AIASK 工作台 本地操作者 / local · 真实后端 · http://127.0.0.1:8767 真实后端 在线，可以开始任务 新线程 金融安全模式 3 个产物 准备度 Gateway 受限 同步 任务中枢 线程优先工作台 金融安全模式 连接状态 在线，可以开始任务 Agent 已响应，工作台可以同步会话、运行和工具状态。 当前任务 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 待处理事项 7 项 4 个待确认意图 · 3 个审批 可用范围 金融安全模式 默认只做研究、查询和受控审批。 API 令牌未填写；控制令牌未填写。 最近会话 已完成会话 已完成 · 2026-06-09 18:39 b1acf60a-b...bf3a78 有错误需查看会话 有错误需查看 · 2026-05-29 09:28 7691a0b7-d...595674 有错误需查看会话 有错误需查看 · 2026-05-27 13:09 b193cf51-d...66095a 已完成会话 已完成 · 2026-05-27 13:03 264aca64-5...ba78c5 最近运行 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 run_0f2b77...9f87f2 运行失败 工具 3 次 · 审批 0 项 · 错误 4 个 run_7daff4...7dbe6e 运行已完成 工具 3 次 · 审批 0 项 · 错误 1 个 run_26c3fb...28e8e5 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 run_d0750b...d62801 操作队列 4 个待确认意图 · 3 个审批 意图 4 审批 3 Gateway 0 MCP 0 金融 Agent 安全链路 现在可以复核什么 只读导航 1. 模式 / 模型 就绪 金融安全模式；当前模型 gpt-5.4。默认只做研究、查询和受控审批。 打开准备度 2. MCP / 连接器 就绪 复核服务器、资源、提示词和 OAuth 状态。 打开 MCP 3. 记忆 / 搜索 就绪 会话搜索和金融记忆搜索已在工具目录。 打开本地用户 4. 金融经理台 就绪 组合风险、只读查询和安全 workflow 可复核。 打开金融经理台 5. 数据 / 量化门禁 就绪 量化数据门禁工具可用于只读预检。 打开数据 6. 工厂接力 就绪 策略、因子和孵化入口可从金融实验室接力。 打开金融实验室 这里的入口只做只读导航；状态型、外部平台和交易风险动作仍需要 ActionIntent、控制令牌和后端护栏。 项目 / 上下文 审批 金融实验室 集成 插件 / 技能 受限 扩展 内部 开始一个任务 在下方输入指令后，AIASK 会在这里展示回复、工具调用、审批和运行事件。 3 个产物 任务产物 运行 run_0f2b776e75214be99065b2b7509f87f2 已完成 工具 0 / 审批 0 / 错误 0 run runs-events run_0f2b776e75214be99065b2b7509f87f2 runs/run_0f2b776e75214be99065b2b7509f87f2 运行 run_7daff48f4eec468dae4bd862717dbe6e",
+    "textLength": 1830,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/02-workbench.png"
+  },
+  {
+    "ok": true,
+    "viewId": "projects-contexts",
+    "label": "项目 / 上下文",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "项目 / 上下文"
+      },
+      {
+        "tag": "H2",
+        "text": "本地操作者"
+      },
+      {
+        "tag": "H2",
+        "text": "http://127.0.0.1:8767"
+      },
+      {
+        "tag": "H2",
+        "text": "控制令牌门控"
+      },
+      {
+        "tag": "H3",
+        "text": "保持上下文可见"
+      },
+      {
+        "tag": "H3",
+        "text": "线程优先上下文"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "同步",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开设置",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "准备度 / 健康",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "返回工作台",
+        "disabled": false,
+        "aria": null
+      }
+    ],
+    "inputs": [],
+    "alerts": [],
+    "textSample": "工作区 项目 / 上下文 集中查看当前 Agent 端点、后端模式、操作员画像和线程任务所需的就绪门控。 真实后端 在线 同步 上下文 本地操作者 用户：local 模式：finance_safe Agent 端点 http://127.0.0.1:8767 默认：http://127.0.0.1:8767 服务：aiask-agent 权限 控制令牌门控 API 令牌：缺失 完整模式：已激活 推荐动作 保持上下文可见 打开设置 准备度 / 健康 返回工作台 设计说明 线程优先上下文 此页是当前桌面客户端的轻量项目/上下文中枢，将 Mock/真实后端、Agent 端点、画像、令牌和完整模式状态放在同一处， 不新增后端依赖。",
+    "textLength": 315,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/03-projects-contexts.png"
+  },
+  {
+    "ok": true,
+    "viewId": "runs-events",
+    "label": "运行 / 事件",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "运行 / 事件"
+      },
+      {
+        "tag": "H3",
+        "text": "运行摘要"
+      },
+      {
+        "tag": "H3",
+        "text": "运行事件"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "刷新",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_0f2b776e75214be99065b2b7509f87f2completed工具 0 / 审批 0 / 错误 0最近事件：run.completed",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_7daff48f4eec468dae4bd862717dbe6efailed工具 3 / 审批 0 / 错误 4最近事件：learning.observed错误",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_26c3fb47b9784b82aeb54e2b9e28e8e5completed工具 3 / 审批 0 / 错误 1最近事件：learning.observed错误",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_d0750bec885e47b5a36697c8a8d62801completed工具 0 / 审批 0 / 错误 0最近事件：run.completed",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_32af0d02e37144c0964d91109aa4046bcompleted工具 11 / 审批 0 / 错误 5最近事件：learning.observed错误",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_7dcdf4798d314683b84e5f9cd26eb9e9completed工具 0 / 审批 0 / 错误 0最近事件：learning.observed",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "run_085927a65f1b4896a59dd54a648008c3completed工具 0 / 审批 0 / 错误 0最近事件：learning.observed",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "时间线",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "列表",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "跳转到 runs-events",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "跳转到 runs-events",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "跳转到 runs-events",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "跳转到 runs-events",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "跳转到 runs-events",
+        "disabled": false,
+        "aria": null
+      }
+    ],
+    "inputs": [
+      {
+        "tag": "SELECT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "all"
+      }
+    ],
+    "alerts": [],
+    "textSample": "Agent 运行 运行 / 事件 RUNS_LOADED 刷新 7 个运行 运行摘要 run_0f2b776e75214be99065b2b7509f87f2 completed 工具 0 / 审批 0 / 错误 0 最近事件：run.completed run_7daff48f4eec468dae4bd862717dbe6e failed 工具 3 / 审批 0 / 错误 4 最近事件：learning.observed 错误 run_26c3fb47b9784b82aeb54e2b9e28e8e5 completed 工具 3 / 审批 0 / 错误 1 最近事件：learning.observed 错误 run_d0750bec885e47b5a36697c8a8d62801 completed 工具 0 / 审批 0 / 错误 0 最近事件：run.completed run_32af0d02e37144c0964d91109aa4046b completed 工具 11 / 审批 0 / 错误 5 最近事件：learning.observed 错误 run_7dcdf4798d314683b84e5f9cd26eb9e9 completed 工具 0 / 审批 0 / 错误 0 最近事件：learning.observed run_085927a65f1b4896a59dd54a648008c3 completed 工具 0 / 审批 0 / 错误 0 最近事件：learning.observed run_0f2b776e75214be99065b2b7509f87f2 运行事件 时间线 列表 all tool approval gateway mcp error system run.started system 2026-06-09T10:39:33.322673+00:00 跳转到 runs-events 原始事件 model.started system 2026-06-09T10:39:33.527952+00:00 跳转到 runs-events 原始事件 model.completed system 2026-06-09T10:39:39.805860+00:00 跳转到 runs-events 原始事件 model.delta system 2026-06-09T10:39:39.890535+00:00 跳转到 runs-events 原始事件 run.completed system 2026-06-09T10:39:39.936064+00:00 跳转到 runs-events 原始事件",
+    "textLength": 1129,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/04-runs-events.png"
+  },
+  {
+    "ok": true,
+    "viewId": "tools-intents-approvals",
+    "label": "审批",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "工具 / 意图 / 审批"
+      },
+      {
+        "tag": "H3",
+        "text": "工具目录"
+      },
+      {
+        "tag": "H3",
+        "text": "Intents"
+      },
+      {
+        "tag": "H3",
+        "text": "/v1/approvals"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "刷新",
+        "disabled": true,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "详情",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "刷新队列",
+        "disabled": true,
+        "aria": null
+      }
+    ],
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "type": "text",
+        "placeholder": "搜索工具名称、描述、分类...",
+        "label": null,
+        "value": ""
+      },
+      {
+        "tag": "SELECT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "all"
+      },
+      {
+        "tag": "SELECT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "name"
+      },
+      {
+        "tag": "SELECT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "pending"
+      },
+      {
+        "tag": "INPUT",
+        "type": null,
+        "placeholder": "reason",
+        "label": null,
+        "value": "desktop_decision"
+      }
+    ],
+    "alerts": [],
+    "textSample": "Agent 安全控制 工具 / 意图 / 审批 未加载 刷新 202 / 202 个工具 工具目录 所有工具 金融安全 仅完整模式 只读 Intent 需审批 已阻塞 排序： 名称 分类 可见性 工具 VISIBILITY SAFETY / INTERACTION 操作 agent_acp_manage full_mode_only full_mode_only approval 详情 agent_action_intent_create api_safe finance_safe intent approval 详情 agent_action_intent_get api_safe finance_safe 只读 详情 agent_analyze_stock api_safe finance_safe 只读 详情 agent_backtest_suite api_safe finance_safe 只读 详情 agent_browser_back full_mode_only full_mode_only approval 详情 agent_browser_cdp full_mode_only full_mode_only approval 详情 agent_browser_click full_mode_only full_mode_only approval 详情 agent_browser_console full_mode_only full_mode_only 只读 详情 agent_browser_extract full_mode_only full_mode_only 只读 详情 agent_browser_get_images full_mode_only full_mode_only 只读 详情 agent_browser_navigate full_mode_only full_mode_only approval 详情 agent_browser_press full_mode_only full_mode_only approval 详情 agent_browser_scroll full_mode_only full_mode_only approval 详情 agent_browser_snapshot full_mode_only full_mode_only 只读 详情 agent_browser_type full_mode_only full_mode_only approval 详情 agent_browser_vision full_mode_only full_mode_only 只读 详情 agent_clarify full_mode_only full_mode_only 只读 详情 agent_code_graph_query full_mode_only full_mode_only 只读 详情 agent_computer_use full_mode_only full_mode_only approval 详情 `/v1/tools` 是唯一工具目录。Hermes full 工具只作为契约对照数据读取，当前共 0 个。 0 条 Intents 暂无意图记录。 通用审批队列 /v1/appro",
+    "textLength": 1492,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/05-tools-intents-approvals.png"
+  },
+  {
+    "ok": true,
+    "viewId": "finance-lab",
+    "label": "金融实验室",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "金融实验室"
+      },
+      {
+        "tag": "H2",
+        "text": "工厂接力总览"
+      },
+      {
+        "tag": "H3",
+        "text": "因子工厂"
+      },
+      {
+        "tag": "H3",
+        "text": "策略工厂"
+      },
+      {
+        "tag": "H3",
+        "text": "孵化工厂"
+      },
+      {
+        "tag": "H3",
+        "text": "下一步"
+      },
+      {
+        "tag": "H2",
+        "text": "组合与风险"
+      },
+      {
+        "tag": "H2",
+        "text": "研究运行"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "刷新接力状态",
+        "disabled": true,
+        "aria": null
+      },
+      {
+        "text": "维护或运行因子工厂",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "刷新策略工厂",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "检查孵化状态",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开因子工厂",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开策略工厂",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "打开孵化工厂",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "财务管理组合与风险组合、关注列表、风险检查和受控执行入口。",
+        "disabled": false,
+        "aria": "财务管理"
+      },
+      {
+        "text": "量化研究研究运行创建结构化研究运行，并复核生成的研究报告。",
+        "disabled": false,
+        "aria": "量化研究"
+      },
+      {
+        "text": "策略工厂策略生成生成、评审并通过安全门控管理策略候选。",
+        "disabled": false,
+        "aria": "策略工厂"
+      },
+      {
+        "text": "因子工厂因子挖掘挖掘因子，查看活跃池和引擎健康状态。",
+        "disabled": false,
+        "aria": "因子工厂"
+      },
+      {
+        "text": "孵化工厂孵化生命周期复核命中率、生命周期阶段和晋升准备度。",
+        "disabled": false,
+        "aria": "孵化工厂"
+      },
+      {
+        "text": "数据数据准备度检查数据新鲜度、同步计划和运行前置状态。",
+        "disabled": false,
+        "aria": "数据"
+      },
+      {
+        "text": "事件工厂工厂事件创建、预览、审批并复核工厂事件和雷达任务。",
+        "disabled": false,
+        "aria": "事件工厂"
+      }
+    ],
+    "inputs": [],
+    "alerts": [
+      "尚未看到活跃因子，策略工厂缺少可复用的因子证据。",
+      "策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。",
+      "孵化状态尚未加载，无法证明策略已进入观察或晋升反馈环。"
+    ],
+    "textSample": "金融任务 金融实验室 把金融工作作为任务模板启动；结果回到当前线程，沉淀为产物、审批项和运行摘要。 Agent HTTP 等待加载 刷新接力状态 Factor -> Strategy -> Incubation 工厂接力总览 只读汇总 Agent HTTP 证据：因子池是否可用、策略评审是否给出分流、孵化器是否已经产生生命周期和命中率反馈。 接力状态 部分就绪 活跃因子 0 策略评审 未加载 孵化运行 - 挖掘与治理活跃池 因子工厂 未加载 活跃池 - 活跃因子 0 已晋升 0 代表因子 - 尚未看到活跃因子，策略工厂缺少可复用的因子证据。 维护或运行因子工厂 候选生成、评审与孵化分流 策略工厂 未加载 最近运行 - 候选数 - 评审策略 - 评审决策 - 策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。 刷新策略工厂 生命周期、命中率与反馈 孵化工厂 未加载 运行次数 - 错误数 0 最近结果 - 孵化中 - 孵化状态尚未加载，无法证明策略已进入观察或晋升反馈环。 检查孵化状态 3 个待处理点 下一步 部分就绪 因子工厂 尚未看到活跃因子，策略工厂缺少可复用的因子证据。 打开因子工厂 策略工厂 策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。 打开策略工厂 孵化工厂 孵化状态尚未加载，无法证明策略已进入观察或晋升反馈环。 打开孵化工厂 工厂接力原始证据 财务管理 组合与风险 组合、关注列表、风险检查和受控执行入口。 量化研究 研究运行 创建结构化研究运行，并复核生成的研究报告。 策略工厂 策略生成 生成、评审并通过安全门控管理策略候选。 因子工厂 因子挖掘 挖掘因子，查看活跃池和引擎健康状态。 孵化工厂 孵化生命周期 复核命中率、生命周期阶段和晋升准备度。 数据 数据准备度 检查数据新鲜度、同步计划和运行前置状态。 事件工厂 工厂事件 创建、预览、审批并复核工厂事件和雷达任务。",
+    "textLength": 817,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/06-finance-lab.png"
+  },
+  {
+    "ok": true,
+    "viewId": "integrations",
+    "label": "集成",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "集成"
+      },
+      {
+        "tag": "H2",
+        "text": "MCP 与连接器"
+      },
+      {
+        "tag": "H2",
+        "text": "Gateway 投递"
+      },
+      {
+        "tag": "H2",
+        "text": "插件与技能"
+      },
+      {
+        "tag": "H2",
+        "text": "准备度与健康"
+      },
+      {
+        "tag": "H3",
+        "text": "ActionIntent 仍是状态型动作的唯一授权链路"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "MCP / 连接器MCP 与连接器发现 MCP 服务、资源、提示词、OAuth 状态和连接器健康。需要控制令牌",
+        "disabled": false,
+        "aria": "MCP / 连接器"
+      },
+      {
+        "text": "GatewayGateway 投递查看平台、守护进程、消息、目录、重试和发送意图。需要控制令牌",
+        "disabled": false,
+        "aria": "Gateway"
+      },
+      {
+        "text": "插件 / 技能插件与技能管理原生插件生命周期，并把技能应用回工作台线程。需要控制令牌",
+        "disabled": false,
+        "aria": "插件 / 技能"
+      },
+      {
+        "text": "准备度 / 健康准备度与健康复核模型、MCP、Gateway、插件和金融系统门控。可查看",
+        "disabled": false,
+        "aria": "准备度 / 健康"
+      }
+    ],
+    "inputs": [],
+    "alerts": [],
+    "textSample": "集成与运维 集成 MCP、Gateway、插件、技能、连接器和准备度的统一入口；受控动作保持可见，并继续走安全门控。 控制受限 完整模式 202 个工具 MCP / 连接器 MCP 与连接器 发现 MCP 服务、资源、提示词、OAuth 状态和连接器健康。 需要控制令牌 Gateway Gateway 投递 查看平台、守护进程、消息、目录、重试和发送意图。 需要控制令牌 插件 / 技能 插件与技能 管理原生插件生命周期，并把技能应用回工作台线程。 需要控制令牌 准备度 / 健康 准备度与健康 复核模型、MCP、Gateway、插件和金融系统门控。 可查看 安全边界 ActionIntent 仍是状态型动作的唯一授权链路 这个聚合页只重组前端入口。所有会改变状态的集成动作仍然使用现有 Agent 路由、控制令牌门控和审批流程。",
+    "textLength": 367,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/07-integrations.png"
+  },
+  {
+    "ok": true,
+    "viewId": "automation",
+    "label": "自动化",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "AI 自动化任务"
+      },
+      {
+        "tag": "H2",
+        "text": "让 AI 定期替你完成重复任务"
+      },
+      {
+        "tag": "H3",
+        "text": "自动化任务"
+      },
+      {
+        "tag": "H3",
+        "text": "运行输出"
+      },
+      {
+        "tag": "H3",
+        "text": "列表与控制"
+      },
+      {
+        "tag": "H3",
+        "text": "尚未选择"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "刷新",
+        "disabled": true,
+        "aria": null
+      },
+      {
+        "text": "创建自动化",
+        "disabled": true,
+        "aria": "创建任务"
+      }
+    ],
+    "inputs": [
+      {
+        "tag": "INPUT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "每日研究监控"
+      },
+      {
+        "tag": "TEXTAREA",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "复盘最新市场数据，并总结需要关注的风险提醒。"
+      }
+    ],
+    "alerts": [
+      "默认使用 finance_safe 工具集和 30 分钟检查节奏。需要定时表达式、间隔或工具集配置时，请到设置中的自动化管理调整。"
+    ],
+    "textSample": "自动化 AI 自动化任务 未加载 刷新 0 个任务 让 AI 定期替你完成重复任务 前台保留日常创建、运行、暂停和恢复；定时表达式、间隔和工具集等高级配置放在设置的自动化管理中。 空 创建 自动化任务 名称 提示词 默认使用 finance_safe 工具集和 30 分钟检查节奏。需要定时表达式、间隔或工具集配置时，请到设置中的自动化管理调整。 创建自动化 最近结果 运行输出 未加载 运行或创建自动化后，这里会显示摘要。 已配置任务 列表与控制 未加载 尚未配置任务。 选中任务 尚未选择 未加载 点击任务行的“查看”后，这里会显示日常复核摘要。",
+    "textLength": 275,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/08-automation.png"
+  },
+  {
+    "ok": true,
+    "viewId": "settings",
+    "label": "设置",
+    "url": "http://127.0.0.1:1420/",
+    "documentTitle": "AIASK Desktop",
+    "headings": [
+      {
+        "tag": "H1",
+        "text": "设置中心"
+      },
+      {
+        "tag": "H3",
+        "text": "默认行为"
+      }
+    ],
+    "buttons": [
+      {
+        "text": "返回工作台",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "常规",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "连接",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "令牌与权限",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "技能管理",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "自动化管理",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "应用集成",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "Webhook",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "插件与技能包",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "模型配置",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "MCP 管理入口",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "工作流入口",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "股票数据源",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "数据路径",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "学习 / RL",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "安全扫描",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "高级诊断入口",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "关于",
+        "disabled": false,
+        "aria": null
+      },
+      {
+        "text": "刷新",
+        "disabled": true,
+        "aria": null
+      },
+      {
+        "text": "保存画像",
+        "disabled": true,
+        "aria": null
+      }
+    ],
+    "inputs": [
+      {
+        "tag": "SELECT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "finance_safe"
+      },
+      {
+        "tag": "INPUT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "local"
+      },
+      {
+        "tag": "INPUT",
+        "type": null,
+        "placeholder": null,
+        "label": null,
+        "value": "本地操作者"
+      }
+    ],
+    "alerts": [],
+    "textSample": "返回工作台 设置 可操作设置、管理入口与只读状态 基础设置 常规 连接 令牌与权限 高级管理 技能管理 自动化管理 应用集成 Webhook 插件与技能包 状态与入口 模型配置 MCP 管理入口 工作流入口 股票数据源 数据路径 学习 / RL 安全扫描 高级诊断入口 关于 设置 设置中心 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。 刷新 默认行为 设置智能体默认模式和本地用户身份。 本地 默认模式 finance_safe 用于日常金融研究；hermes_full 需要控制令牌和完整模式。 finance_safe hermes_full 用户 ID 用于会话、研究运行和本地存储作用域。 画像名称 显示在对话、任务和本地用户页面。 保存画像",
+    "textLength": 346,
+    "badPatterns": [],
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/09-settings.png"
+  },
+  {
+    "ok": false,
+    "viewId": "financial-manager",
+    "label": "金融经理台",
+    "error": "Error: missing nav view financial-manager"
+  },
+  {
+    "ok": false,
+    "viewId": "market-temperature",
+    "label": "市场温度",
+    "error": "Error: missing nav view market-temperature"
+  },
+  {
+    "ok": false,
+    "viewId": "quant",
+    "label": "量化研究",
+    "error": "Error: missing nav view quant"
+  },
+  {
+    "ok": false,
+    "viewId": "strategy-factory",
+    "label": "策略工厂",
+    "error": "Error: missing nav view strategy-factory"
+  },
+  {
+    "ok": false,
+    "viewId": "factor-factory",
+    "label": "因子工厂",
+    "error": "Error: missing nav view factor-factory"
+  },
+  {
+    "ok": false,
+    "viewId": "incubation",
+    "label": "孵化工厂",
+    "error": "Error: missing nav view incubation"
+  },
+  {
+    "ok": false,
+    "viewId": "data",
+    "label": "数据",
+    "error": "Error: missing nav view data"
+  },
+  {
+    "ok": false,
+    "viewId": "workflows",
+    "label": "工作流",
+    "error": "Error: missing nav view workflows"
+  },
+  {
+    "ok": false,
+    "viewId": "factory-events",
+    "label": "工厂事件",
+    "error": "Error: missing nav view factory-events"
+  },
+  {
+    "ok": false,
+    "viewId": "models",
+    "label": "模型配置",
+    "error": "Error: missing nav view models"
+  },
+  {
+    "ok": false,
+    "viewId": "plugins-skills",
+    "label": "插件 / 技能",
+    "error": "Error: missing nav view plugins-skills"
+  },
+  {
+    "ok": false,
+    "viewId": "mcp-connectors",
+    "label": "MCP / 连接器",
+    "error": "Error: missing nav view mcp-connectors"
+  },
+  {
+    "ok": false,
+    "viewId": "gateway",
+    "label": "Gateway",
+    "error": "Error: missing nav view gateway"
+  },
+  {
+    "ok": false,
+    "viewId": "readiness-health",
+    "label": "准备度 / 健康",
+    "error": "Error: missing nav view readiness-health"
+  },
+  {
+    "ok": false,
+    "viewId": "extensions-pilot",
+    "label": "扩展注册表",
+    "error": "Error: missing nav view extensions-pilot"
+  },
+  {
+    "ok": false,
+    "viewId": "overview",
+    "label": "总览",
+    "error": "Error: missing nav view overview"
+  },
+  {
+    "ok": false,
+    "viewId": "agent",
+    "label": "智能体",
+    "error": "Error: missing nav view agent"
+  },
+  {
+    "ok": false,
+    "viewId": "capabilities",
+    "label": "能力中心",
+    "error": "Error: missing nav view capabilities"
+  },
+  {
+    "ok": false,
+    "viewId": "coverage",
+    "label": "覆盖矩阵",
+    "error": "Error: missing nav view coverage"
+  },
+  {
+    "ok": false,
+    "viewId": "tools",
+    "label": "工具",
+    "error": "Error: missing nav view tools"
+  },
+  {
+    "ok": false,
+    "viewId": "mcp",
+    "label": "MCP",
+    "error": "Error: missing nav view mcp"
+  },
+  {
+    "ok": false,
+    "viewId": "diagnostics",
+    "label": "诊断",
+    "error": "Error: missing nav view diagnostics"
+  },
+  {
+    "ok": false,
+    "viewId": "event-console",
+    "label": "事件控制台",
+    "error": "Error: missing nav view event-console"
+  },
+  {
+    "ok": false,
+    "viewId": "skills",
+    "label": "技能",
+    "error": "Error: missing nav view skills"
+  },
+  {
+    "ok": false,
+    "viewId": "user",
+    "label": "本地用户",
+    "error": "Error: missing nav view user"
+  }
+]

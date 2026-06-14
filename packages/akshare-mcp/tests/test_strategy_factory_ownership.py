@@ -136,6 +136,60 @@ def test_factory_status_reads_persisted_runs_without_scheduler(monkeypatch) -> N
     assert result["data"]["last_result"]["run_id"] == "factory_run_latest"
 
 
+def test_recent_factory_status_surfaces_strict_incubation_blockers(monkeypatch) -> None:
+    from akshare_mcp.tools.managers.strategy_mgr_helpers import (
+        build_strict_incubation_blocker_summary,
+    )
+
+    summary = build_strict_incubation_blocker_summary(
+        [
+            {
+                "run_id": "factory_run_recent",
+                "summary": {"submitted": 3},
+                "submission_artifact": {
+                    "strategy_briefs": [
+                        {
+                            "strategy_id": "s1",
+                            "candidate_family": "momentum",
+                            "raw_validation_grade": "A",
+                            "submission_lane": "observe_incubation",
+                            "strict_incubation_ready": False,
+                            "formal_track_requested": True,
+                            "formal_track_blockers": [
+                                "diagnostic_only_runtime",
+                                "execution_readiness_tier:missing",
+                            ],
+                            "admission_block_reasons": [
+                                "default_profile_not_allowed_for_single_name_runtime"
+                            ],
+                        },
+                        {
+                            "strategy_id": "s2",
+                            "candidate_family": "quality_factor",
+                            "raw_validation_grade": "B",
+                            "submission_lane": "diagnostic_observation",
+                            "strict_incubation_ready": False,
+                            "diagnostic_only": True,
+                            "execution_readiness_tier": "missing_executable_contract",
+                        },
+                    ]
+                },
+            }
+        ],
+        {},
+        limit=1,
+    )
+
+    blockers = {item["reason_code"]: item["count"] for item in summary["top_blockers"]}
+
+    assert summary["status"] == "blocked"
+    assert summary["strict_ready_given_raw_b_rate"] == 0.0
+    assert blockers["diagnostic_only_not_allowed_for_incubation"] == 2
+    assert blockers["execution_readiness_tier:missing_executable_contract"] == 2
+    assert blockers["default_profile_not_allowed_for_single_name_runtime"] == 1
+    assert summary["sample_blocked_strategies"][0]["strategy_id"] == "s1"
+
+
 def test_mcp_server_does_not_enable_strategy_factory_embedded_start_by_default(monkeypatch) -> None:
     monkeypatch.delenv("STRATEGY_FACTORY_ENABLED", raising=False)
     monkeypatch.setenv("AKSHARE_MCP_STARTUP_PROFILE", "full")

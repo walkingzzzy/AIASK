@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MarketTemperatureWorkspace } from "./MarketTemperatureWorkspace";
 
@@ -314,12 +314,16 @@ describe("MarketTemperatureWorkspace", () => {
     render(<MarketTemperatureWorkspace endpoint="http://127.0.0.1:8767" apiToken="api-token" />);
 
     await waitFor(() => expect(screen.getByTestId("market-temperature-workspace")).toBeInTheDocument());
-    await waitFor(() => expect(screen.getByText("计算机")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByTestId("market-industry-heatmap")).toBeInTheDocument());
+    await waitFor(() =>
+      expect(within(screen.getByTestId("market-industry-heatmap")).getAllByRole("listitem").length).toBeGreaterThanOrEqual(2)
+    );
+    await waitFor(() => expect(screen.getAllByText("计算机").length).toBeGreaterThan(0));
 
     expect(screen.getByRole("heading", { name: "市场温度" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "热行业" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "冷行业" })).toBeInTheDocument();
-    expect(screen.getByText("电力设备")).toBeInTheDocument();
+    expect(screen.getAllByText("电力设备").length).toBeGreaterThan(0);
     expect(screen.getByRole("heading", { name: "缓存就绪" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "缓存历史" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "行业历史" })).toBeInTheDocument();
@@ -415,7 +419,7 @@ describe("MarketTemperatureWorkspace", () => {
 
     render(<MarketTemperatureWorkspace endpoint="http://127.0.0.1:8767" apiToken="api-token" />);
 
-    await waitFor(() => expect(screen.getByText("计算机")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getAllByText("计算机").length).toBeGreaterThan(0));
     fireEvent.click(screen.getByRole("button", { name: /更新快照/ }));
 
     await waitFor(() => expect(screen.getByText("AIASK_HTTP_500")).toBeInTheDocument());

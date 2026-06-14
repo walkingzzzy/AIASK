@@ -3,7 +3,18 @@ import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { JsonPanel, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
-import type { LocalProfile, RecentSessionSummary } from "../../types";
+import type {
+  LocalProfile,
+  RecentSessionSummary,
+  RetentionSweepResult,
+  UserAnalyticsSummary,
+  UserActivityPayload,
+  UserDataDeleteResult,
+  UserDataExport,
+  UserDataPolicy,
+  UserLearningDataset,
+  WorkflowRecommendationPayload
+} from "../../types";
 
 export function LocalUserWorkspace({
   endpoint,
@@ -29,6 +40,16 @@ export function LocalUserWorkspace({
   const [messages, setMessages] = useState<Array<Record<string, unknown>>>([]);
   const [query, setQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Array<Record<string, unknown>>>([]);
+  const [activity, setActivity] = useState<UserActivityPayload | null>(null);
+  const [policy, setPolicy] = useState<UserDataPolicy | null>(null);
+  const [analytics, setAnalytics] = useState<UserAnalyticsSummary | null>(null);
+  const [exportData, setExportData] = useState<UserDataExport | null>(null);
+  const [deletePreview, setDeletePreview] = useState<UserDataDeleteResult | null>(null);
+  const [retentionPreview, setRetentionPreview] = useState<RetentionSweepResult | null>(null);
+  const [learningDataset, setLearningDataset] = useState<UserLearningDataset | null>(null);
+  const [recommendations, setRecommendations] = useState<WorkflowRecommendationPayload | null>(null);
+  const [aggregateAnalytics, setAggregateAnalytics] = useState<UserAnalyticsSummary | null>(null);
+  const [globalRetentionPreview, setGlobalRetentionPreview] = useState<RetentionSweepResult | null>(null);
   const [memoryStatus, setMemoryStatus] = useState<unknown>(null);
   const [memoryResults, setMemoryResults] = useState<unknown>(null);
   const [message, setMessage] = useState("NOT_LOADED");
@@ -53,6 +74,26 @@ export function LocalUserWorkspace({
       } catch {
         setSessions([]);
       }
+      try {
+        const [activityPayload, policyPayload, analyticsPayload, learningPayload, recommendationPayload] = await Promise.all([
+          api.userActivity(loadedProfile.user_id, 30),
+          api.userDataPolicyGet(loadedProfile.user_id),
+          api.userAnalyticsSummary(loadedProfile.user_id, 20),
+          api.userLearningDataset(loadedProfile.user_id, 50),
+          api.userRecommendations(loadedProfile.user_id, 5)
+        ]);
+        setActivity(activityPayload);
+        setPolicy(policyPayload.data);
+        setAnalytics(analyticsPayload);
+        setLearningDataset(learningPayload);
+        setRecommendations(recommendationPayload);
+      } catch {
+        setActivity(null);
+        setPolicy(null);
+        setAnalytics(null);
+        setLearningDataset(null);
+        setRecommendations(null);
+      }
       setMessage("LOCAL_PROFILE_LOADED");
     } catch (error) {
       setMessage(formatApiError(error));
@@ -68,7 +109,43 @@ export function LocalUserWorkspace({
       const saved = await api.localProfileSave({ user_id: draftUserId, profile_name: draftProfileName });
       setProfile(saved);
       onProfileChange(saved);
+      try {
+        const [activityPayload, policyPayload, analyticsPayload, learningPayload, recommendationPayload] = await Promise.all([
+          api.userActivity(saved.user_id, 30),
+          api.userDataPolicyGet(saved.user_id),
+          api.userAnalyticsSummary(saved.user_id, 20),
+          api.userLearningDataset(saved.user_id, 50),
+          api.userRecommendations(saved.user_id, 5)
+        ]);
+        setActivity(activityPayload);
+        setPolicy(policyPayload.data);
+        setAnalytics(analyticsPayload);
+        setLearningDataset(learningPayload);
+        setRecommendations(recommendationPayload);
+      } catch {
+        setActivity(null);
+        setPolicy(null);
+        setAnalytics(null);
+        setLearningDataset(null);
+        setRecommendations(null);
+      }
       setMessage("LOCAL_PROFILE_SAVED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function savePolicyPatch(patch: Partial<UserDataPolicy>) {
+    const targetUserId = policy?.user_id || draftUserId || "local";
+    setBusy(true);
+    try {
+      const payload = await api.userDataPolicySave(targetUserId, patch);
+      setPolicy(payload.data);
+      setActivity((current) => (current ? { ...current, policy: payload.data } : current));
+      setLearningDataset(await api.userLearningDataset(targetUserId, 50));
+      setMessage("USER_DATA_POLICY_SAVED");
     } catch (error) {
       setMessage(formatApiError(error));
     } finally {
@@ -88,6 +165,43 @@ export function LocalUserWorkspace({
       setSearchResults(payload.data || []);
       setMemoryResults(memoryPayload);
       setMessage("USER_DATA_SEARCHED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewExport() {
+    const targetUserId = policy?.user_id || draftUserId || "local";
+    setBusy(true);
+    try {
+      const [exportPayload, deletePayload, retentionPayload] = await Promise.all([
+        api.userDataExport(targetUserId, 500),
+        api.userDataDelete(targetUserId, { dry_run: true, reason: "desktop_preview" }),
+        api.retentionSweep({ user_id: targetUserId, dry_run: true })
+      ]);
+      setExportData(exportPayload);
+      setDeletePreview(deletePayload);
+      setRetentionPreview(retentionPayload);
+      setMessage("USER_DATA_EXPORT_PREVIEWED");
+    } catch (error) {
+      setMessage(formatApiError(error));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function previewGovernance() {
+    setBusy(true);
+    try {
+      const [aggregatePayload, retentionPayload] = await Promise.all([
+        api.userAnalyticsSummary(undefined, 20),
+        api.retentionSweep({ dry_run: true })
+      ]);
+      setAggregateAnalytics(aggregatePayload);
+      setGlobalRetentionPreview(retentionPayload);
+      setMessage("AGGREGATE_GOVERNANCE_PREVIEWED");
     } catch (error) {
       setMessage(formatApiError(error));
     } finally {
@@ -117,6 +231,9 @@ export function LocalUserWorkspace({
   }, [endpoint, apiToken, controlToken]);
 
   const memoryStatusRecord = memoryStatus && typeof memoryStatus === "object" ? (memoryStatus as Record<string, unknown>) : {};
+  const activityEvents = activity?.events || [];
+  const toolInvocations = activity?.tool_invocations || [];
+  const feedbackEvents = activity?.feedback || [];
 
   return (
     <section className="capabilities-workspace">
@@ -279,9 +396,277 @@ export function LocalUserWorkspace({
             <RawEvidencePanel title="记忆状态 JSON" value={memoryStatus || { status: "not_loaded" }} />
           </section>
 
+          <section className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>{activityEvents.length} events</span>
+                  <h3>Activity Audit</h3>
+                </div>
+                <StatusBadge status={activity ? "ready" : "not_loaded"} />
+              </div>
+              <div className="mini-list">
+                {activityEvents.slice(0, 10).map((item, index) => (
+                  <article key={`${item.id || item.event_type || "event"}:${index}`}>
+                    <strong>{String(item.event_type || "event")}</strong>
+                    <span>{String(item.page_key || item.route || item.target_type || "-")}</span>
+                    <p>{String(item.created_at || item.source || "-")}</p>
+                  </article>
+                ))}
+                {!activityEvents.length && <p className="muted">No page or interaction events have been stored for this user yet.</p>}
+              </div>
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>{toolInvocations.length} calls</span>
+                  <h3>Tool Audit</h3>
+                </div>
+                <StatusBadge status={toolInvocations.length ? "ready" : "not_loaded"} />
+              </div>
+              <div className="mini-list">
+                {toolInvocations.slice(0, 10).map((item, index) => (
+                  <article key={`${item.invocation_id || item.tool_name || "tool"}:${index}`}>
+                    <strong>{String(item.tool_name || "tool")}</strong>
+                    <span>{String(item.status || "-")}</span>
+                    <p>{String(item.created_at || item.trace_id || item.run_id || "-")}</p>
+                  </article>
+                ))}
+                {!toolInvocations.length && <p className="muted">Tool calls will appear here with secret fields redacted.</p>}
+              </div>
+            </section>
+          </section>
+
+          <section className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Retention</span>
+                  <h3>Data Policy</h3>
+                </div>
+                <StatusBadge status={policy ? "ready" : "not_loaded"} />
+              </div>
+              <div className="kv-grid">
+                <span>Event TTL</span>
+                <strong>{policy ? `${policy.event_ttl_days} days` : "-"}</strong>
+                <span>Audit TTL</span>
+                <strong>{policy ? `${policy.audit_ttl_days} days` : "-"}</strong>
+                <span>Run/Event TTL</span>
+                <strong>{policy ? `${policy.run_event_ttl_days} days` : "-"}</strong>
+                <span>Tool Payload TTL</span>
+                <strong>{policy ? `${policy.tool_payload_ttl_days} days` : "-"}</strong>
+                <span>Conversation</span>
+                <strong>{compact(policy?.conversation_retention)}</strong>
+              </div>
+              <label className="field-row">
+                <span>Product analytics</span>
+                <input
+                  checked={Boolean(policy?.allow_product_analytics)}
+                  disabled={busy || !policy}
+                  onChange={(event) => savePolicyPatch({ allow_product_analytics: event.target.checked })}
+                  type="checkbox"
+                />
+              </label>
+              <label className="field-row">
+                <span>Learning use</span>
+                <input
+                  checked={Boolean(policy?.allow_learning)}
+                  disabled={busy || !policy}
+                  onChange={(event) => savePolicyPatch({ allow_learning: event.target.checked })}
+                  type="checkbox"
+                />
+              </label>
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>{feedbackEvents.length} items</span>
+                  <h3>Feedback</h3>
+                </div>
+                <StatusBadge status={feedbackEvents.length ? "ready" : "not_loaded"} />
+              </div>
+              <div className="mini-list">
+                {feedbackEvents.slice(0, 10).map((item, index) => (
+                  <article key={`${item.feedback_id || item.target_id || "feedback"}:${index}`}>
+                    <strong>{String(item.feedback_type || "feedback")}</strong>
+                    <span>{String(item.target_type || item.target_id || "-")}</span>
+                    <p>{String(item.comment || item.created_at || "-").slice(0, 220)}</p>
+                  </article>
+                ))}
+                {!feedbackEvents.length && <p className="muted">Explicit user feedback will be stored here for review and learning gates.</p>}
+              </div>
+              <RawEvidencePanel title="User Activity JSON" value={activity || { status: "not_loaded" }} />
+            </section>
+          </section>
+
+          <section className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Optimization</span>
+                  <h3>Analytics Summary</h3>
+                </div>
+                <StatusBadge status={analytics ? "ready" : "not_loaded"} />
+              </div>
+              <div className="kv-grid">
+                <span>Events</span>
+                <strong>{compact(analytics?.totals?.events)}</strong>
+                <span>Tools</span>
+                <strong>{compact(analytics?.totals?.tool_invocations)}</strong>
+                <span>Feedback</span>
+                <strong>{compact(analytics?.totals?.feedback)}</strong>
+              </div>
+              <div className="mini-list">
+                {(analytics?.tools || []).slice(0, 6).map((item, index) => (
+                  <article key={`${item.tool_name || "tool"}:${index}`}>
+                    <strong>{String(item.tool_name || "tool")}</strong>
+                    <span>{String(item.count || 0)} calls</span>
+                    <p>{`failure_rate=${String(item.failure_rate ?? 0)}, avg_ms=${String(item.avg_duration_ms ?? 0)}`}</p>
+                  </article>
+                ))}
+                {!(analytics?.tools || []).length && <p className="muted">Tool reliability metrics will appear after audited tool calls.</p>}
+              </div>
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>{recommendations?.count || 0} items</span>
+                  <h3>Recommendations</h3>
+                </div>
+                <StatusBadge status={recommendations ? "ready" : "not_loaded"} />
+              </div>
+              <div className="mini-list">
+                {(recommendations?.data || []).map((item, index) => (
+                  <article key={`${item.id || item.kind || "recommendation"}:${index}`}>
+                    <strong>{String(item.title || item.kind || "Recommendation")}</strong>
+                    <span>{String(item.priority || "-")}</span>
+                    <p>{String(item.reason || "-").slice(0, 220)}</p>
+                  </article>
+                ))}
+                {!(recommendations?.data || []).length && <p className="muted">Workflow recommendations will appear after enough activity, failures, or feedback.</p>}
+              </div>
+            </section>
+          </section>
+
+          <section className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Portability</span>
+                  <h3>Export And Delete</h3>
+                </div>
+                <StatusBadge status={exportData || deletePreview ? "ready" : "not_loaded"} />
+              </div>
+              <button className="small-button" disabled={busy || !draftUserId.trim()} onClick={previewExport} type="button">
+                Preview Export/Delete
+              </button>
+              <div className="kv-grid">
+                <span>Export sessions</span>
+                <strong>{compact(exportData?.sessions?.length)}</strong>
+                <span>Export messages</span>
+                <strong>{compact(exportData?.messages?.length)}</strong>
+                <span>Delete dry-run</span>
+                <strong>{compact(deletePreview?.dry_run)}</strong>
+                <span>Delete messages</span>
+                <strong>{compact(deletePreview?.counts?.messages)}</strong>
+              </div>
+              <RawEvidencePanel title="Export/Delete JSON" value={{ exportData, deletePreview }} />
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Governance</span>
+                  <h3>Retention And Learning</h3>
+                </div>
+                <StatusBadge status={retentionPreview || learningDataset ? "ready" : "not_loaded"} />
+              </div>
+              <div className="kv-grid">
+                <span>Retention dry-run</span>
+                <strong>{compact(retentionPreview?.dry_run)}</strong>
+                <span>Market data affected</span>
+                <strong>{compact(retentionPreview?.market_data_affected)}</strong>
+                <span>Learning allowed</span>
+                <strong>{compact(learningDataset?.allowed)}</strong>
+                <span>Learning items</span>
+                <strong>{compact(learningDataset?.count || learningDataset?.items?.length)}</strong>
+              </div>
+              <RawEvidencePanel title="Retention/Learning JSON" value={{ retentionPreview, learningDataset }} />
+            </section>
+          </section>
+
+          <section className="capability-grid two">
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Admin</span>
+                  <h3>Privacy Aggregates</h3>
+                </div>
+                <StatusBadge status={aggregateAnalytics ? "ready" : "control_token_required"} />
+              </div>
+              <button className="small-button" disabled={busy || !controlToken.trim()} onClick={previewGovernance} type="button">
+                Preview Aggregate Governance
+              </button>
+              <div className="kv-grid">
+                <span>Scope</span>
+                <strong>{compact(aggregateAnalytics?.scope)}</strong>
+                <span>Events</span>
+                <strong>{compact(aggregateAnalytics?.totals?.events)}</strong>
+                <span>Tools</span>
+                <strong>{compact(aggregateAnalytics?.totals?.tool_invocations)}</strong>
+                <span>Feedback</span>
+                <strong>{compact(aggregateAnalytics?.totals?.feedback)}</strong>
+              </div>
+              <div className="mini-list">
+                {(aggregateAnalytics?.pages || []).slice(0, 5).map((item, index) => (
+                  <article key={`${item.page_key || "page"}:${index}`}>
+                    <strong>{String(item.page_key || "unknown")}</strong>
+                    <span>{String(item.count || 0)} events</span>
+                    <p>Aggregated page usage only; per-user records stay in the user activity panel.</p>
+                  </article>
+                ))}
+                {!(aggregateAnalytics?.pages || []).length && <p className="muted">Aggregate page usage appears here after a control-gated preview.</p>}
+              </div>
+            </section>
+
+            <section className="capability-section">
+              <div className="section-header">
+                <div>
+                  <span>Reliability</span>
+                  <h3>Audit Posture</h3>
+                </div>
+                <StatusBadge status={globalRetentionPreview ? "ready" : "not_loaded"} />
+              </div>
+              <div className="kv-grid">
+                <span>Retention dry-run</span>
+                <strong>{compact(globalRetentionPreview?.dry_run)}</strong>
+                <span>Market data affected</span>
+                <strong>{compact(globalRetentionPreview?.market_data_affected)}</strong>
+                <span>Tables</span>
+                <strong>{compact(globalRetentionPreview?.tables?.length)}</strong>
+                <span>Tool rows</span>
+                <strong>{compact(globalRetentionPreview?.counts?.tool_invocations_payloads)}</strong>
+              </div>
+              <div className="mini-list">
+                {(aggregateAnalytics?.tools || []).slice(0, 5).map((item, index) => (
+                  <article key={`${item.tool_name || "tool"}:${index}`}>
+                    <strong>{String(item.tool_name || "tool")}</strong>
+                    <span>{String(item.count || 0)} calls</span>
+                    <p>{`failed=${String(item.failed ?? 0)}, failure_rate=${String(item.failure_rate ?? 0)}`}</p>
+                  </article>
+                ))}
+                {!(aggregateAnalytics?.tools || []).length && <p className="muted">Aggregate tool reliability appears here without raw input or output payloads.</p>}
+              </div>
+              <RawEvidencePanel title="Aggregate Governance JSON" value={{ aggregateAnalytics, globalRetentionPreview }} />
+            </section>
+          </section>
+
           <details className="raw-details">
             <summary>原始本地画像数据</summary>
-            <JsonPanel value={{ profile, sessions, messages, searchResults, memoryStatus, memoryResults }} />
+            <JsonPanel value={{ profile, sessions, messages, searchResults, activity, policy, analytics, exportData, deletePreview, retentionPreview, learningDataset, recommendations, aggregateAnalytics, globalRetentionPreview, memoryStatus, memoryResults }} />
           </details>
         </div>
       </div>

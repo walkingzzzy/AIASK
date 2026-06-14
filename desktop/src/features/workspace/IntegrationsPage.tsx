@@ -81,7 +81,7 @@ export function IntegrationsPage({
             const gated = entry.needsControl && !controlReady;
             return (
               <button
-                aria-label={entry.label}
+                aria-label={`打开 ${entry.label}`}
                 className="optimization-card action-card"
                 key={entry.id}
                 onClick={() => onOpenView(entry.id)}

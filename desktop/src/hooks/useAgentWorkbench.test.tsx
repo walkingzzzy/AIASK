@@ -46,6 +46,12 @@ vi.mock("../services/aiaskApi", () => {
       }),
       sessionMessages: vi.fn().mockResolvedValue({ data: [] }),
       runEvents: vi.fn().mockResolvedValue([]),
+      runArtifacts: vi.fn().mockResolvedValue({
+        data: [{ artifact_id: "art_quote", kind: "quote_snapshot", title: "Quote snapshot", status: "ready" }],
+      }),
+      runSources: vi.fn().mockResolvedValue({
+        data: [{ source_id: "src_news", source_type: "news", title: "Linked news", url: "https://example.com/news" }],
+      }),
       getIntent: vi.fn().mockResolvedValue({ success: true, data: {} }),
       confirmIntent: vi.fn().mockResolvedValue({ success: true }),
       denyIntent: vi.fn().mockResolvedValue({ success: true }),
@@ -106,6 +112,18 @@ describe("useAgentWorkbench", () => {
     expect(result.current.summary?.recent_sessions).toHaveLength(1);
     expect(result.current.summary?.recent_sessions[0].session_id).toBe("sess_001");
     expect(result.current.recentRuns).toHaveLength(1);
+  });
+
+  it("loads durable artifacts and sources for the visible run", async () => {
+    const { result } = renderWorkbench({ canLoadHistory: true });
+
+    await waitFor(() => {
+      expect(result.current.selectedRunArtifacts).toHaveLength(1);
+      expect(result.current.selectedRunSources).toHaveLength(1);
+    });
+
+    expect(result.current.selectedRunArtifacts[0].kind).toBe("quote_snapshot");
+    expect(result.current.selectedRunSources[0].source_type).toBe("news");
   });
 
   it("does not load summary when canLoadHistory is false", () => {

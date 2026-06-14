@@ -1,5 +1,5 @@
 import { Activity, BarChart3, Database, RefreshCw, Thermometer } from "lucide-react";
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { CSSProperties, FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
@@ -182,6 +182,114 @@ function IndustryList({
         {!items.length && <p className="muted">暂无行业排行。</p>}
       </div>
     </article>
+  );
+}
+
+function heatmapIndustryKey(item: MarketTemperatureIndustry, index: number): string {
+  return String(item.code || item.name || item.date || `industry-${index}`);
+}
+
+function presentIndustryFields(item: MarketTemperatureIndustry): MarketTemperatureIndustry {
+  return Object.fromEntries(
+    Object.entries(item).filter(([, value]) => value !== undefined && value !== null && value !== "")
+  ) as MarketTemperatureIndustry;
+}
+
+function heatmapWeight(item: MarketTemperatureIndustry): number {
+  const marketCapWeight = numeric(item.market_cap_weight);
+  if (marketCapWeight !== null && marketCapWeight > 0) return marketCapWeight * 1000;
+  const amount = numeric(item.amount);
+  if (amount !== null && amount > 0) return amount;
+  const stockCount = numeric(item.stock_count);
+  if (stockCount !== null && stockCount > 0) return stockCount;
+  return 1;
+}
+
+function heatmapTone(item: MarketTemperatureIndustry): string {
+  const state = String(item.state || "").toLowerCase();
+  if (["hot", "warm", "neutral", "cool", "cold"].includes(state)) return state;
+  const temperature = numeric(item.temperature);
+  if (temperature === null) return "unknown";
+  if (temperature >= 80) return "hot";
+  if (temperature >= 65) return "warm";
+  if (temperature <= 20) return "cold";
+  if (temperature <= 35) return "cool";
+  return "neutral";
+}
+
+function heatmapTileStyle(item: MarketTemperatureIndustry, maxWeight: number): CSSProperties {
+  const relative = maxWeight > 0 ? heatmapWeight(item) / maxWeight : 0;
+  const grow = Math.max(1, Math.min(4, Math.round(relative * 4)));
+  const minHeight = Math.max(96, Math.min(172, 92 + relative * 80));
+  return {
+    flex: `${grow} 1 ${grow >= 3 ? "220px" : "150px"}`,
+    minHeight: `${minHeight}px`
+  };
+}
+
+function IndustryHeatmap({
+  coldIndustries,
+  hotIndustries,
+  industries
+}: {
+  coldIndustries: MarketTemperatureIndustry[];
+  hotIndustries: MarketTemperatureIndustry[];
+  industries: MarketTemperatureIndustry[];
+}) {
+  const items = useMemo(() => {
+    const merged = new Map<string, MarketTemperatureIndustry>();
+    [...industries, ...hotIndustries, ...coldIndustries].forEach((item, index) => {
+      const key = heatmapIndustryKey(item, index);
+      const previous = merged.get(key) || {};
+      merged.set(key, { ...previous, ...presentIndustryFields(item) });
+    });
+    return Array.from(merged.values())
+      .sort((left, right) => heatmapWeight(right) - heatmapWeight(left))
+      .slice(0, 24);
+  }, [coldIndustries, hotIndustries, industries]);
+  const maxWeight = items.reduce((max, item) => Math.max(max, heatmapWeight(item)), 0);
+
+  return (
+    <section className="capability-section market-heatmap-section" data-testid="market-industry-heatmap">
+      <div className="section-header">
+        <div>
+          <span>{items.length}/{industries.length || items.length} industries</span>
+          <h3>行业热力图</h3>
+        </div>
+        <BarChart3 size={18} />
+      </div>
+      <div className="market-heatmap" role="list" aria-label="行业热力图">
+        {items.map((item, index) => (
+          <article
+            className={`market-heatmap-tile heatmap-${heatmapTone(item)}`}
+            key={`${heatmapIndustryKey(item, index)}-${index}`}
+            role="listitem"
+            style={heatmapTileStyle(item, maxWeight)}
+          >
+            <div className="market-heatmap-tile-header">
+              <span>{item.code || item.date || "industry"}</span>
+              <StatusBadge status={stateStatus(item.state)} label={stateLabel(item.state)} />
+            </div>
+            <strong>{item.name || `行业-${index + 1}`}</strong>
+            <div className="market-heatmap-metrics">
+              <span>
+                <small>温度</small>
+                {fixed(item.temperature, 1)}
+              </span>
+              <span>
+                <small>MA20</small>
+                {ratio(item.ma20_breadth)}
+              </span>
+              <span>
+                <small>涨跌</small>
+                {(item.advance_count ?? 0)}/{(item.decline_count ?? 0)}
+              </span>
+            </div>
+          </article>
+        ))}
+        {!items.length && <p className="muted">暂无行业热力图数据。</p>}
+      </div>
+    </section>
   );
 }
 
@@ -607,6 +715,8 @@ export function MarketTemperatureWorkspace({ endpoint, apiToken }: Props) {
             <MetricCard label="上涨 / 下跌" value={`${market.advance_count ?? 0}/${market.decline_count ?? 0}`} status={stateStatus(market.state)} />
             <MetricCard label="样本" value={market.stock_count ?? 0} status={market.stock_count ? "ready" : "not_loaded"} />
           </div>
+
+          <IndustryHeatmap coldIndustries={coldIndustries} hotIndustries={hotIndustries} industries={industries} />
 
           <section className="capability-grid two">
             <IndustryList icon={<BarChart3 size={18} />} items={hotIndustries} title="热行业" total={industries.length} />

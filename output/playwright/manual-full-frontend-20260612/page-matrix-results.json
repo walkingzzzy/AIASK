@@ -1,0 +1,264 @@
+[
+  {
+    "viewId": "workbench",
+    "label": "工作台",
+    "ok": true,
+    "file": "04-workbench.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\nhttp://127.0.0.1:8767\nAIASK 工作台\n\n本地操作者 / local\n\nLive\n在线\n新线程\nfinance_safe\n3 个产物\n准备度\nGateway\n受限\n同步\n任务中枢\n线程优先工作台\nfinance_safe\n项目 / 上下文\n本地操作者\n真实后端模式\n运行\nrun_0f2b776e75214be99065b2b7509f87f2\n当前线程的当前或最近运行\n待处理\n8\n5 个意图 / 3 个审批\n权限\n完整模式就绪\nAPI missing; 控制 missing\n最近会话\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n2026-06-09T10:39:39.929095+00:00\n7691a0b7-d071-4406-9b83-5f5f19595674\n2026-05-29T01:28:43.977806+00:00\nb193cf51-db27-40ba-bb30-d7425966095a\n2026-05-27T05:09:42.404506+00:00\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n2026-05-27T05:03:38.029820+00:00\n最近运行\nrun_0f2b776e75214be99065b2b7509f87f2\ncompleted / tools 0 / approvals 0\nrun_7daff48f4eec468dae4bd862717dbe6e\nfailed / tools 3 / approvals 0\nrun_26c3fb47b9784b82aeb54e2b9e28e8e5\ncompleted / tools 3 / approvals 0\nrun_d0750bec885e47b5a36697c8a8d62801\ncompleted / tools 0 / approvals 0\n操作队列\n意图\n5\n审批\n3\nGateway\n0\nMCP\n0\n金融 Agent 安全链路\n现在可以复核什么\n只读导航\n1. 模式 / 模型\n就绪\n\ngeneral_full / gpt-5.4\n\n打开准备度\n2. MCP / 连接器\n就绪\n\n复核服务器、资源、提示词和 OAuth 状态。\n\n打开 MCP\n3. 记忆 / 搜索\n就绪\n\n会话搜索和金融记忆搜索已在工具目录。\n\n打开本地用户\n4. 金融经理台\n就绪\n\n组合风险、只读查询和安全 workflow 可复核。\n\n打开金融经理台\n5. 数据 / 量化门禁\n就绪\n\n量化数据门禁工具可用于只读预检。\n\n打开数据\n6. 工厂接力\n就绪\n\n策略、因子和孵化入口可从金融实验室接力。\n\n打开金融实验室\n\n这里的入口只做只读导航；状态型、外部平台和交易风险动作仍需要 ActionIntent、控制令牌和后端护栏。\n\n项目 / 上下文\n审批\n金融实验室\n集成\n插件 / 技能\n受限\n扩展\n内部\n开始一个任务\n在下方输入指令后，AIASK 会在这里展示回复、工具调用、审批和运行事件。\n3 个产物\n任务产物\n运行 run_0f2b776e75214be99065b2b7509f87f2\n已完成\n\n工具 0 / 审批 0 / 错误 0\n\nrun\nruns-events\nrun_0f2b776e75214be99065b2b7509f87f2\nruns/run_0f2b776e75214be99065b2b7509f87f2\n运行 run_7daff48f4eec468dae4bd862717dbe6e\n失败\n\n工具 3 / 审批 0 / 错误 4\n\nrun\nruns-events\nrun_7daff48f4eec468dae4bd862717dbe6e\nruns/run_7daff48f4eec468dae4bd862717dbe6e\n运行 run_26c3fb47b9784b82aeb54e2b9e2",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "projects-contexts",
+    "label": "项目 / 上下文",
+    "ok": true,
+    "file": "05-projects-contexts.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\n工作区\n项目 / 上下文\n\n集中查看当前 Agent 端点、后端模式、操作员画像和线程任务所需的就绪门控。\n\n真实后端\n在线\n同步\n上下文\n本地操作者\n\n用户：local\n\n模式：finance_safe\n\nAgent 端点\nhttp://127.0.0.1:8767\n\n默认：http://127.0.0.1:8767\n\n服务：aiask-agent\n\n权限\n控制令牌门控\n\nAPI 令牌：缺失\n\n完整模式：已激活\n\n推荐动作\n保持上下文可见\n打开设置\n准备度 / 健康\n返回工作台\n设计说明\n线程优先上下文\n\n此页是当前桌面客户端的轻量项目/上下文中枢，将 Mock/真实后端、Agent 端点、画像、令牌和完整模式状态放在同一处， 不新增后端依赖。\n\n进度\n当前运行环境\nAgent\n在线\nAgent 端点\nhttp://127.0.0.1:8767\n环境信息\n权限与能力\n控制令牌未就绪\n受限\n\n缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。\n\n打开设置\n控制令牌\n未就绪\n完整模式\n已开启\n工具集\ngeneral_full\n工具数量\n202\n当前任务\n等待任务线程\n暂无选中线程\n运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。\n返回工作台",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "runs-events",
+    "label": "运行 / 事件",
+    "ok": true,
+    "file": "06-runs-events.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\nAgent 运行\n运行 / 事件\nRUNS_LOADED\n刷新\n7 个运行\n运行摘要\nrun_0f2b776e75214be99065b2b7509f87f2\ncompleted\n工具 0 / 审批 0 / 错误 0\n最近事件：run.completed\nrun_7daff48f4eec468dae4bd862717dbe6e\nfailed\n工具 3 / 审批 0 / 错误 4\n最近事件：learning.observed\n错误\nrun_26c3fb47b9784b82aeb54e2b9e28e8e5\ncompleted\n工具 3 / 审批 0 / 错误 1\n最近事件：learning.observed\n错误\nrun_d0750bec885e47b5a36697c8a8d62801\ncompleted\n工具 0 / 审批 0 / 错误 0\n最近事件：run.completed\nrun_32af0d02e37144c0964d91109aa4046b\ncompleted\n工具 11 / 审批 0 / 错误 5\n最近事件：learning.observed\n错误\nrun_7dcdf4798d314683b84e5f9cd26eb9e9\ncompleted\n工具 0 / 审批 0 / 错误 0\n最近事件：learning.observed\nrun_085927a65f1b4896a59dd54a648008c3\ncompleted\n工具 0 / 审批 0 / 错误 0\n最近事件：learning.observed\nrun_0f2b776e75214be99065b2b7509f87f2\n运行事件\n时间线\n列表\nall\ntool\napproval\ngateway\nmcp\nerror\nsystem\nrun.started\nsystem\n2026-06-09T10:39:33.322673+00:00\n跳转到 runs-events\n原始事件\nmodel.started\nsystem\n2026-06-09T10:39:33.527952+00:00\n跳转到 runs-events\n原始事件\nmodel.completed\nsystem\n2026-06-09T10:39:39.805860+00:00\n跳转到 runs-events\n原始事件\nmodel.delta\nsystem\n2026-06-09T10:39:39.890535+00:00\n跳转到 runs-events\n原始事件\nrun.completed\nsystem\n2026-06-09T10:39:39.936064+00:00\n跳转到 runs-events\n原始事件\n进度\n当前运行环境\nAgent\n在线\nAgent 端点\nhttp://127.0.0.1:8767\n环境信息\n权限与能力\n控制令牌未就绪\n受限\n\n缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。\n\n打开设置\n控制令牌\n未就绪\n完整模式\n已开启\n工具集\ngeneral_full\n工具数量\n202\n当前任务\n等待任务线程\n暂无选中线程\n运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。\n返回工作台",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "tools-intents-approvals",
+    "label": "审批",
+    "ok": true,
+    "file": "07-tools-intents-approvals.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\nAgent 安全控制\n工具 / 意图 / 审批\nINTENT_LOADED\n刷新\n202 / 202 个工具\n工具目录\n所有工具\n金融安全\n仅完整模式\n只读\nIntent\n需审批\n已阻塞\n排序：\n名称\n分类\n可见性\n工具\nVISIBILITY\nSAFETY / INTERACTION\n操作\nagent_acp_manage\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_action_intent_create\napi_safe\nfinance_safe\nintent\napproval\n详情\nagent_action_intent_get\napi_safe\nfinance_safe\n只读\n详情\nagent_analyze_stock\napi_safe\nfinance_safe\n只读\n详情\nagent_backtest_suite\napi_safe\nfinance_safe\n只读\n详情\nagent_browser_back\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_cdp\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_click\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_console\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_browser_extract\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_browser_get_images\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_browser_navigate\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_press\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_scroll\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_snapshot\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_browser_type\nfull_mode_only\nfull_mode_only\napproval\n详情\nagent_browser_vision\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_clarify\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_code_graph_query\nfull_mode_only\nfull_mode_only\n只读\n详情\nagent_computer_use\nfull_mode_only\nfull_mode_only\napproval\n详情\n\n`/v1/tools` 是唯一工具目录。Hermes full 工具只作为契约对照数据读取，当前共 0 个。\n\n11 条\nIntents\nstrategy_manager.factory_run_once\nintent_20260609T103942_1b3572f4ea\nawaiting_confirmation\nstrategy_manager.factory_run_once\nintent_20260522T075839_d029695be3\nexpired\nincubation_factory.maintenance\nintent_20260522T075724_c28d94bb71\nawaiting_confirmation\nincubation_",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "finance-lab",
+    "label": "金融实验室",
+    "ok": true,
+    "file": "08-finance-lab.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\n金融任务\n金融实验室\n\n把金融工作作为任务模板启动；结果回到当前线程，沉淀为产物、审批项和运行摘要。\n\nAgent HTTP\n未加载\n刷新接力状态\nFactor -> Strategy -> Incubation\n工厂接力总览\n\n只读汇总 Agent HTTP 证据：因子池是否可用、策略评审是否给出分流、孵化器是否已经产生生命周期和命中率反馈。\n\n接力状态\n部分就绪\n活跃因子\n0\n策略评审\n未加载\n孵化运行\n-\n挖掘与治理活跃池\n因子工厂\n未加载\n活跃池\n-\n活跃因子\n0\n已晋升\n0\n代表因子\n-\n尚未看到活跃因子，策略工厂缺少可复用的因子证据。\n维护或运行因子工厂\n候选生成、评审与孵化分流\n策略工厂\n未加载\n最近运行\n-\n候选数\n-\n评审策略\n-\n评审决策\n-\n策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。\n刷新策略工厂\n生命周期、命中率与反馈\n孵化工厂\n未加载\n运行次数\n-\n错误数\n0\n最近结果\n-\n孵化中\n-\n孵化状态尚未加载，无法证明策略已进入观察或晋升反馈环。\n检查孵化状态\n3 个待处理点\n下一步\n部分就绪\n因子工厂\n尚未看到活跃因子，策略工厂缺少可复用的因子证据。\n打开因子工厂\n策略工厂\n策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。\n打开策略工厂\n孵化工厂\n孵化状态尚未加载，无法证明策略已进入观察或晋升反馈环。\n打开孵化工厂\n工厂接力原始证据\n财务管理\n组合与风险\n\n组合、关注列表、风险检查和受控执行入口。\n\n量化研究\n研究运行\n\n创建结构化研究运行，并复核生成的研究报告。\n\n策略工厂\n策略生成\n\n生成、评审并通过安全门控管理策略候选。\n\n因子工厂\n因子挖掘\n\n挖掘因子，查看活跃池和引擎健康状态。\n\n孵化工厂\n孵化生命周期\n\n复核命中率、生命周期阶段和晋升准备度。\n\n数据\n数据准备度\n\n检查数据新鲜度、同步计划和运行前置状态。\n\n事件工厂\n工厂事件\n\n创建、预览、审批并复核工厂事件和雷达任务。\n\n进度\n当前运行环境\nAgent\n在线\nAgent 端点\nhttp://127.0.0.1:8767\n环境信息\n权限与能力\n控制令牌未就绪\n受限\n\n缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。\n\n打开设置\n控制令牌\n未就绪\n完整模式\n已开启\n工具集\ngeneral_full\n工具数量\n202\n当前任务\n等待任务线程\n暂无选中线程\n运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。\n返回工作台",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "integrations",
+    "label": "集成",
+    "ok": true,
+    "file": "09-integrations.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\n集成与运维\n集成\n\nMCP、Gateway、插件、技能、连接器和准备度的统一入口；受控动作保持可见，并继续走安全门控。\n\n控制受限\n完整模式\n202 个工具\nMCP / 连接器\nMCP 与连接器\n\n发现 MCP 服务、资源、提示词、OAuth 状态和连接器健康。\n\n需要控制令牌\nGateway\nGateway 投递\n\n查看平台、守护进程、消息、目录、重试和发送意图。\n\n需要控制令牌\n插件 / 技能\n插件与技能\n\n管理原生插件生命周期，并把技能应用回工作台线程。\n\n需要控制令牌\n准备度 / 健康\n准备度与健康\n\n复核模型、MCP、Gateway、插件和金融系统门控。\n\n可查看\n安全边界\nActionIntent 仍是状态型动作的唯一授权链路\n\n这个聚合页只重组前端入口。所有会改变状态的集成动作仍然使用现有 Agent 路由、控制令牌门控和审批流程。\n\n进度\n当前运行环境\nAgent\n在线\nAgent 端点\nhttp://127.0.0.1:8767\n环境信息\n权限与能力\n控制令牌未就绪\n受限\n\n缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。\n\n打开设置\n控制令牌\n未就绪\n完整模式\n已开启\n工具集\ngeneral_full\n工具数量\n202\n当前任务\n等待任务线程\n暂无选中线程\n运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。\n返回工作台",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "automation",
+    "label": "自动化",
+    "ok": true,
+    "file": "10-automation.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "AIASK\nAgent 工作台\n新建线程\n项目 / 上下文\naiask-agent\n桌面客户端\n在线\n会话\n受限\n任务线程\n7\n搜索与历史\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\nb1acf60a-b97a-4869-9e7e-637df6bf3a78\n已完成\n7691a0b7-d071-4406-9b83-5f5f19595674\n7691a0b7-d071-4406-9b83-5f5f19595674\n错误\nb193cf51-db27-40ba-bb30-d7425966095a\nb193cf51-db27-40ba-bb30-d7425966095a\n错误\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n264aca64-5f27-4504-b3d1-e48cc9ba78c5\n已完成\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n1ebe800f-cd3b-49a1-aa4d-8379db176fc7\n错误\n5dda21bf-7055-42bc-908e-257b03555981\n5dda21bf-7055-42bc-908e-257b03555981\n已完成\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n8c297ffe-a2b0-4204-8e52-ec24b8e1118e\n已完成\n导航\n主工作区\n工作台\n项目 / 上下文\n运行 / 事件\n审批\n金融实验室\n集成\n自动化\n设置\n高级金融\n金融经理台\n市场温度\n量化研究\n策略工厂\n因子工厂\n孵化工厂\n数据\n自动化\n工作流\n工厂事件\n高级运维\n模型配置\n插件 / 技能\nMCP / 连接器\nGateway\n准备度 / 健康\n扩展注册表\n内部\n设置\n旧入口 / 高级诊断\n总览\n智能体\n能力中心\n覆盖矩阵\n工具\nMCP\n诊断\n事件控制台\n技能\n本地用户\n扩展\n内部\n在线\n202 个工具\n完整模式已启用\n自动化\nAI 自动化任务\n未加载\n刷新\n0 个任务\n让 AI 定期替你完成重复任务\n\n前台保留日常创建、运行、暂停和恢复；定时表达式、间隔和工具集等高级配置放在设置的自动化管理中。\n\n空\n创建\n自动化任务\n名称\n提示词\n默认使用 finance_safe 工具集和 30 分钟检查节奏。需要定时表达式、间隔或工具集配置时，请到设置中的自动化管理调整。\n创建自动化\n最近结果\n运行输出\n未加载\n\n运行或创建自动化后，这里会显示摘要。\n\n已配置任务\n列表与控制\n未加载\n\n尚未配置任务。\n\n选中任务\n尚未选择\n未加载\n\n点击任务行的“查看”后，这里会显示日常复核摘要。\n\n进度\n当前运行环境\nAgent\n在线\nAgent 端点\nhttp://127.0.0.1:8767\n环境信息\n权限与能力\n控制令牌未就绪\n受限\n\n缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。\n\n打开设置\n控制令牌\n未就绪\n完整模式\n已开启\n工具集\ngeneral_full\n工具数量\n202\n当前任务\n等待任务线程\n暂无选中线程\n运行智能体任务后，这里会显示回复、模型、令牌、审批和事件详情。\n返回工作台",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "settings",
+    "label": "设置",
+    "ok": false,
+    "file": "11-settings.png",
+    "url": "http://127.0.0.1:1420/",
+    "bodyPreview": "返回对话\n设置\n可操作设置、管理入口与只读状态\n基础设置\n常规\n连接\n令牌与权限\n高级管理\n技能管理\n自动化管理\n应用集成\nWebhook\n插件与技能包\n状态与入口\n模型配置\nMCP 管理入口\n工作流入口\n股票数据源\n数据路径\n学习 / RL\n安全扫描\n高级诊断入口\n关于\n设置\n设置中心\n\n只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。\n\n刷新\n默认行为\n\n设置智能体默认模式和本地用户身份。\n\n本地\n默认模式\nfinance_safe 用于日常金融研究；hermes_full 需要控制令牌和完整模式。\nfinance_safe\nhermes_full\n用户 ID\n用于会话、研究运行和本地存储作用域。\n画像名称\n显示在对话、任务和本地用户页面。\n保存画像",
+    "events": [],
+    "overflow": {
+      "bodyScrollWidth": 1440,
+      "bodyClientWidth": 1440,
+      "mainOverflow": []
+    }
+  },
+  {
+    "viewId": "financial-manager",
+    "label": "金融经理台",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "market-temperature",
+    "label": "市场温度",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "quant",
+    "label": "量化研究",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "strategy-factory",
+    "label": "策略工厂",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "factor-factory",
+    "label": "因子工厂",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "incubation",
+    "label": "孵化工厂",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "data",
+    "label": "数据",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "workflows",
+    "label": "工作流",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "factory-events",
+    "label": "工厂事件",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "models",
+    "label": "模型配置",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "plugins-skills",
+    "label": "插件 / 技能",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "mcp-connectors",
+    "label": "MCP / 连接器",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "gateway",
+    "label": "Gateway",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "readiness-health",
+    "label": "准备度 / 健康",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "extensions-pilot",
+    "label": "扩展注册表",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "overview",
+    "label": "总览",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "agent",
+    "label": "智能体",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "capabilities",
+    "label": "能力中心",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "coverage",
+    "label": "覆盖矩阵",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "tools",
+    "label": "工具",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "mcp",
+    "label": "MCP",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "diagnostics",
+    "label": "诊断",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "event-console",
+    "label": "事件控制台",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "skills",
+    "label": "技能",
+    "ok": false,
+    "issue": "nav button not found"
+  },
+  {
+    "viewId": "user",
+    "label": "本地用户",
+    "ok": false,
+    "issue": "nav button not found"
+  }
+]

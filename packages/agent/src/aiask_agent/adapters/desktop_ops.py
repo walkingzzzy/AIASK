@@ -221,14 +221,155 @@ async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> di
         return _execution_failed(exc, action=action, dependency="incubation_factory")
 
 
+STOCK_RADAR_SCHEDULE_JOB_NAME = "AIASK Stock Radar Safe Daily Scan"
+
+
+def _bool_param(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "y", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "n", "off", "disabled"}:
+            return False
+    return bool(value)
+
+
+def _stock_radar_run_params(payload: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "mode": str(payload.get("mode") or "run_once"),
+        "days": bounded_int(payload.get("days"), default=3, minimum=1, maximum=30),
+        "limit": bounded_int(payload.get("limit"), default=80, minimum=1, maximum=500),
+        "stock_codes": payload.get("stock_codes") or payload.get("codes"),
+        "allow_network": _bool_param(payload.get("allow_network"), default=False),
+        "allow_llm": _bool_param(payload.get("allow_llm"), default=False),
+        "embed": _bool_param(payload.get("embed"), default=False),
+        "parse_pdf": _bool_param(payload.get("parse_pdf"), default=True),
+        "include_rss": _bool_param(payload.get("include_rss"), default=True),
+        "ingest_market_text": _bool_param(payload.get("ingest_market_text"), default=True),
+    }
+
+
+def _stock_radar_schedule_prompt(run_params: dict[str, Any]) -> str:
+    return (
+        "Run the AIASK stock radar once using the approved safe schedule payload. "
+        f"Parameters: days={run_params.get('days')}, limit={run_params.get('limit')}, "
+        f"allow_network={run_params.get('allow_network')}, allow_llm={run_params.get('allow_llm')}, "
+        f"parse_pdf={run_params.get('parse_pdf')}, ingest_market_text={run_params.get('ingest_market_text')}. "
+        "Persist the radar run and digest through Agent-owned facades. "
+        "Do not include buy, sell, position sizing, or live trading instructions."
+    )
+
+
+def _find_stock_radar_job(store: Any) -> dict[str, Any] | None:
+    for job in store.list():
+        payload = dict(job.get("payload") or {})
+        if payload.get("stock_radar") is True and payload.get("action") == "run_once":
+            return job
+        if str(job.get("name") or "") == STOCK_RADAR_SCHEDULE_JOB_NAME:
+            return job
+    return None
+
+
+def _schedule_stock_radar_update(payload: dict[str, Any]) -> dict[str, Any]:
+    from ..scheduler import AgentJobStore
+
+    store = AgentJobStore()
+    schedule_raw = str(payload.get("schedule") or "").strip()
+    schedule_value = None if schedule_raw.lower() in {"", "manual", "none", "off"} else schedule_raw
+    interval_seconds = payload.get("interval_seconds")
+    if interval_seconds is not None:
+        interval_seconds = bounded_int(interval_seconds, default=86400, minimum=60, maximum=604800)
+    enabled = _bool_param(payload.get("enabled"), default=bool(schedule_value or interval_seconds))
+    if enabled and not schedule_value and not interval_seconds:
+        interval_seconds = 86400
+    delete_requested = _bool_param(payload.get("delete") or payload.get("remove"), default=False) or schedule_raw.lower() in {"delete", "remove"}
+    existing = _find_stock_radar_job(store)
+    if delete_requested:
+        deleted = bool(existing and store.delete(str(existing.get("job_id") or "")))
+        return {
+            "success": True,
+            "data": {
+                "object": "stock_radar.schedule_update",
+                "status": "deleted" if deleted else "not_found",
+                "deleted": deleted,
+                "job_id": existing.get("job_id") if existing else None,
+                "preview": False,
+                "auto_push": False,
+                "source_chain": ["ActionIntent", "aiask_agent.scheduler"],
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "stateful", "target": "agent_jobs"}},
+        }
+
+    run_params = _stock_radar_run_params(payload)
+    job_payload = {
+        "stock_radar": True,
+        "action": "run_once",
+        "run_params": run_params,
+        "source": "stock_radar.schedule_update",
+        "no_trade_instructions": True,
+        "auto_push": False,
+    }
+    prompt = _stock_radar_schedule_prompt(run_params)
+    if existing:
+        job = store.update(
+            str(existing.get("job_id") or ""),
+            name=STOCK_RADAR_SCHEDULE_JOB_NAME,
+            prompt=prompt,
+            schedule=schedule_value,
+            interval_seconds=interval_seconds,
+            toolset="finance_safe",
+            enabled=enabled,
+            payload=job_payload,
+        )
+        status = "updated" if enabled else "disabled"
+    else:
+        job = store.create(
+            name=STOCK_RADAR_SCHEDULE_JOB_NAME,
+            prompt=prompt,
+            schedule=schedule_value,
+            interval_seconds=interval_seconds,
+            toolset="finance_safe",
+            enabled=enabled,
+            payload=job_payload,
+        )
+        status = "scheduled" if enabled else "disabled"
+    return {
+        "success": True,
+        "data": {
+            "object": "stock_radar.schedule_update",
+            "status": status,
+            "job": job,
+            "job_id": job.get("job_id") if isinstance(job, dict) else None,
+            "schedule": schedule_value,
+            "interval_seconds": interval_seconds,
+            "enabled": enabled,
+            "preview": False,
+            "auto_push": False,
+            "source_chain": ["ActionIntent", "aiask_agent.scheduler"],
+        },
+        "error": None,
+        "meta": {"side_effect": {"level": "stateful", "target": "agent_jobs"}},
+    }
+
+
 async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    if action == "schedule_update":
+        try:
+            return _schedule_stock_radar_update(dict(params or {}))
+        except Exception as exc:
+            return _execution_failed(exc, action=action, dependency="stock_radar")
+
     try:
         _ensure_monorepo_paths()
         from akshare_mcp.storage import get_db
         from akshare_mcp.services.stock_radar import (
             push_stock_radar_digest,
             run_stock_radar,
-            schedule_stock_radar_update,
         )
     except ModuleNotFoundError as exc:
         return _dependency_missing(exc, dependency="stock_radar")
@@ -393,8 +534,6 @@ async def _execute_stock_radar(action: str, params: dict[str, Any]) -> dict[str,
             payload.setdefault("dry_run", True)
             result = await asyncio.wait_for(push_stock_radar_digest(db, payload), timeout=timeout)
             result = await _deliver_stock_radar_digest(payload, result if isinstance(result, dict) else {"success": True, "data": result, "error": None})
-        elif action == "schedule_update":
-            result = await asyncio.wait_for(schedule_stock_radar_update(db, payload), timeout=timeout)
         else:
             raise ValueError(f"unsupported stock radar action: {action}")
         return result if isinstance(result, dict) else {"success": True, "data": result, "error": None}

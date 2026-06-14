@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,9 @@ LLM_ENV_KEYS = {
     "AIASK_AGENT_MODEL_PROVIDER",
     "AIASK_AGENT_MODEL_PROVIDERS",
     "AIASK_AGENT_MODEL_TIMEOUT",
+    "AIASK_AGENT_PROMPT_CACHE_ENABLED",
+    "AIASK_AGENT_PROMPT_CACHE_RECENT_MESSAGES",
+    "AIASK_AGENT_PROMPT_CACHE_STRATEGY",
     "AIASK_AGENT_CONTEXT_MAX_TOKENS",
     "AIASK_AGENT_MAX_TOKENS",
     "AIASK_AGENT_TTS_FORMAT",
@@ -189,6 +193,86 @@ def _dotenv_values(path: Path) -> dict[str, str]:
         return _parse_env_lines(path.read_text(encoding="utf-8", errors="replace"))
     except OSError:
         return {}
+
+
+_ENV_KEY_PATTERN = re.compile(r"^[A-Z_][A-Z0-9_]*$")
+
+
+def _quote_env_value(value: str) -> str:
+    raw = str(value or "")
+    if raw == "":
+        return ""
+    if re.fullmatch(r"[A-Za-z0-9_./:@%+=,-]+", raw):
+        return raw
+    return '"' + raw.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+
+
+def writable_project_env_path(explicit_path: str | None = None) -> tuple[Path, str]:
+    candidates = project_env_candidates(explicit_path=explicit_path)
+    for env_path, source in candidates:
+        if env_path.exists() and env_path.is_file():
+            return env_path, source
+    if candidates:
+        return candidates[0]
+    root = discover_project_root()
+    if root is not None:
+        return root / ".env", "project_root"
+    return Path.cwd() / ".env", "cwd"
+
+
+def update_project_env_values(
+    updates: dict[str, str | None],
+    *,
+    explicit_path: str | None = None,
+    force_load: bool = True,
+) -> dict[str, Any]:
+    """Persist selected environment variables without returning secret values."""
+    env_path, source = writable_project_env_path(explicit_path=explicit_path)
+    normalized: dict[str, str] = {}
+    for key, value in dict(updates or {}).items():
+        name = str(key or "").strip().upper()
+        if not name or not _ENV_KEY_PATTERN.match(name):
+            raise ValueError(f"invalid environment variable name: {key}")
+        if not is_llm_env_key(name, {**normalized, name: str(value or "")}):
+            raise ValueError(f"refusing to update non-LLM environment variable: {name}")
+        normalized[name] = str(value or "")
+
+    env_path.parent.mkdir(parents=True, exist_ok=True)
+    created = not env_path.exists()
+    try:
+        lines = env_path.read_text(encoding="utf-8", errors="replace").splitlines() if env_path.exists() else []
+    except OSError:
+        lines = []
+
+    remaining = dict(normalized)
+    output: list[str] = []
+    for raw in lines:
+        stripped = raw.strip()
+        candidate = stripped
+        if candidate.startswith("export "):
+            candidate = candidate[7:].strip()
+        key = candidate.split("=", 1)[0].strip() if "=" in candidate else ""
+        if key in remaining:
+            output.append(f"{key}={_quote_env_value(remaining.pop(key))}")
+        else:
+            output.append(raw)
+    if remaining:
+        if output and output[-1].strip():
+            output.append("")
+        output.append("# AIASK model configuration managed by Desktop")
+        for key in sorted(remaining):
+            output.append(f"{key}={_quote_env_value(remaining[key])}")
+    env_path.write_text("\n".join(output).rstrip() + "\n", encoding="utf-8")
+    for key, value in normalized.items():
+        os.environ[key] = value
+    load_project_env(explicit_path=str(env_path), override=True, force=force_load)
+    return {
+        "path": str(env_path),
+        "source": source,
+        "created": created,
+        "updated_keys": sorted(normalized),
+        "secrets_redacted": True,
+    }
 
 
 def load_project_env(

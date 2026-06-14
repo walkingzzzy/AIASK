@@ -1,0 +1,364 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e7]
+      - generic [ref=e9]:
+        - strong [ref=e10]: AIASK
+        - generic [ref=e11]: Agent 工作台
+      - img [ref=e12]
+    - button "新建线程" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+      - text: 新建线程
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: 项目 / 上下文
+        - strong [ref=e19]: aiask-agent
+        - generic [ref=e20]: Agent 已连接 · 桌面客户端
+      - generic "ready / 在线" [ref=e500]:
+        - img [ref=e501]
+        - generic [ref=e26]: 在线
+    - button "会话 受限" [ref=e29] [cursor=pointer]:
+      - img [ref=e30]
+      - text: 会话
+      - generic "gated / 受限" [ref=e32]:
+        - img [ref=e33]
+        - generic [ref=e35]: 受限
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - generic [ref=e38]: 任务线程
+        - generic [ref=e39]: "7"
+      - button "搜索与历史" [ref=e40] [cursor=pointer]:
+        - img [ref=e41]
+        - text: 搜索与历史
+      - generic [ref=e44]:
+        - button "已完成会话 已完成 · 最近更新 2026-06-09 18:39 b1acf60a...bf3a78" [ref=e504] [cursor=pointer]:
+          - strong [ref=e505]: 已完成会话
+          - generic [ref=e506]: 已完成 · 最近更新 2026-06-09 18:39
+          - emphasis [ref=e507]: b1acf60a...bf3a78
+        - button "错误会话 错误 · 最近更新 2026-05-29 09:28 7691a0b7...595674" [ref=e508] [cursor=pointer]:
+          - strong [ref=e509]: 错误会话
+          - generic [ref=e510]: 错误 · 最近更新 2026-05-29 09:28
+          - emphasis [ref=e511]: 7691a0b7...595674
+        - button "错误会话 错误 · 最近更新 2026-05-27 13:09 b193cf51...66095a" [ref=e512] [cursor=pointer]:
+          - strong [ref=e513]: 错误会话
+          - generic [ref=e514]: 错误 · 最近更新 2026-05-27 13:09
+          - emphasis [ref=e515]: b193cf51...66095a
+        - button "已完成会话 已完成 · 最近更新 2026-05-27 13:03 264aca64...ba78c5" [ref=e516] [cursor=pointer]:
+          - strong [ref=e517]: 已完成会话
+          - generic [ref=e518]: 已完成 · 最近更新 2026-05-27 13:03
+          - emphasis [ref=e519]: 264aca64...ba78c5
+        - button "错误会话 错误 · 最近更新 2026-05-22 16:02 1ebe800f...176fc7" [ref=e520] [cursor=pointer]:
+          - strong [ref=e521]: 错误会话
+          - generic [ref=e522]: 错误 · 最近更新 2026-05-22 16:02
+          - emphasis [ref=e523]: 1ebe800f...176fc7
+        - button "已完成会话 已完成 · 最近更新 2026-05-22 15:47 5dda21bf...555981" [ref=e524] [cursor=pointer]:
+          - strong [ref=e525]: 已完成会话
+          - generic [ref=e526]: 已完成 · 最近更新 2026-05-22 15:47
+          - emphasis [ref=e527]: 5dda21bf...555981
+        - button "已完成会话 已完成 · 最近更新 2026-05-21 10:45 8c297ffe...e1118e" [ref=e528] [cursor=pointer]:
+          - strong [ref=e529]: 已完成会话
+          - generic [ref=e530]: 已完成 · 最近更新 2026-05-21 10:45
+          - emphasis [ref=e531]: 8c297ffe...e1118e
+    - navigation "Main navigation" [ref=e48]:
+      - generic [ref=e49]:
+        - img [ref=e50]
+        - generic [ref=e55]: 导航
+      - region "主工作区" [ref=e56]:
+        - button "主工作区" [ref=e57] [cursor=pointer]:
+          - generic [ref=e58]: 主工作区
+          - img [ref=e59]
+        - button "工作台" [ref=e62] [cursor=pointer]:
+          - img [ref=e63]
+          - generic [ref=e65]: 工作台
+        - button "项目 / 上下文" [ref=e67] [cursor=pointer]:
+          - img [ref=e68]
+          - generic [ref=e73]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e75] [cursor=pointer]:
+          - img [ref=e76]
+          - generic [ref=e79]: 运行 / 事件
+        - button "审批" [ref=e81] [cursor=pointer]:
+          - img [ref=e82]
+          - generic [ref=e85]: 审批
+        - button "金融实验室" [active] [ref=e87] [cursor=pointer]:
+          - img [ref=e88]
+          - generic [ref=e92]: 金融实验室
+        - button "集成" [ref=e94] [cursor=pointer]:
+          - img [ref=e95]
+          - generic [ref=e101]: 集成
+        - button "自动化" [ref=e103] [cursor=pointer]:
+          - img [ref=e104]
+          - generic [ref=e108]: 自动化
+        - button "设置" [ref=e110] [cursor=pointer]:
+          - img [ref=e111]
+          - generic [ref=e114]: 设置
+      - region "高级金融" [ref=e115]:
+        - button "高级金融" [ref=e116] [cursor=pointer]:
+          - generic [ref=e117]: 高级金融
+          - img [ref=e118]
+      - region "高级运维" [ref=e120]:
+        - button "高级运维" [ref=e121] [cursor=pointer]:
+          - generic [ref=e122]: 高级运维
+          - img [ref=e123]
+      - region "旧入口 / 高级诊断" [ref=e125]:
+        - button "旧入口 / 高级诊断" [ref=e126] [cursor=pointer]:
+          - generic [ref=e127]: 旧入口 / 高级诊断
+          - img [ref=e128]
+    - button "扩展 内部" [ref=e132] [cursor=pointer]:
+      - img [ref=e133]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e136]:
+        - img [ref=e137]
+        - generic [ref=e139]: 内部
+    - generic [ref=e140]:
+      - generic "AIASK_ONLINE / 在线" [ref=e532]:
+        - img [ref=e533]
+        - generic [ref=e146]: 在线
+      - generic [ref=e147]: 202 个可用工具
+      - generic [ref=e148]: 完整工具已启用
+  - main [ref=e149]:
+    - generic [ref=e1635]:
+      - generic [ref=e1636]:
+        - generic [ref=e1637]:
+          - text: 金融任务
+          - heading "金融实验室" [level=1] [ref=e1638]
+          - paragraph [ref=e1639]: 把金融工作作为任务模板启动；结果回到当前线程，沉淀为产物、审批项和运行摘要。
+        - generic [ref=e1640]:
+          - generic "gated / Agent HTTP" [ref=e1641]:
+            - img [ref=e1642]
+            - generic [ref=e1644]: Agent HTTP
+          - generic "failed / 工厂接力状态已加载" [ref=e1645]:
+            - img [ref=e1646]
+            - generic [ref=e1650]: 工厂接力状态已加载
+          - button "刷新接力状态" [ref=e1651] [cursor=pointer]:
+            - img [ref=e1652]
+            - text: 刷新接力状态
+      - generic [ref=e1658]:
+        - generic [ref=e1659]:
+          - generic [ref=e1660]:
+            - text: Factor -> Strategy -> Incubation
+            - heading "工厂接力总览" [level=2] [ref=e1661]
+            - paragraph [ref=e1662]: 只读汇总 Agent HTTP 证据：因子池是否可用、策略评审是否给出分流、孵化器是否已经产生生命周期和命中率反馈。
+          - img [ref=e1663]
+        - generic [ref=e1667]:
+          - generic [ref=e1668]:
+            - generic [ref=e1669]: 接力状态
+            - strong [ref=e1670]: 失败
+          - generic [ref=e1671]:
+            - generic [ref=e1672]: 活跃因子
+            - strong [ref=e1673]: "0"
+          - generic [ref=e1674]:
+            - generic [ref=e1675]: 策略评审
+            - strong [ref=e1676]: 未加载
+          - generic [ref=e1677]:
+            - generic [ref=e1678]: 孵化运行
+            - strong [ref=e1679]: "0"
+        - region "工厂接力总览" [ref=e1680]:
+          - article [ref=e1681]:
+            - generic [ref=e1682]:
+              - generic [ref=e1683]:
+                - text: 挖掘与治理活跃池
+                - heading "因子工厂" [level=3] [ref=e1684]
+              - generic "partial / 部分就绪" [ref=e1685]:
+                - img [ref=e1686]
+                - generic [ref=e1688]: 部分就绪
+            - generic [ref=e1689]:
+              - generic [ref=e1690]:
+                - generic [ref=e1691]: 活跃池
+                - strong [ref=e1692]: "39"
+              - generic [ref=e1693]:
+                - generic [ref=e1694]: 活跃因子
+                - strong [ref=e1695]: "0"
+              - generic [ref=e1696]:
+                - generic [ref=e1697]: 已晋升
+                - strong [ref=e1698]: "0"
+              - generic [ref=e1699]:
+                - generic [ref=e1700]: 代表因子
+                - strong [ref=e1701]: "-"
+            - generic [ref=e1702]:
+              - img [ref=e1703]
+              - text: 尚未看到活跃因子，策略工厂缺少可复用的因子证据。
+            - button "维护或运行因子工厂" [ref=e1706] [cursor=pointer]:
+              - text: 维护或运行因子工厂
+              - img [ref=e1707]
+            - img
+          - article [ref=e1709]:
+            - generic [ref=e1710]:
+              - generic [ref=e1711]:
+                - text: 候选生成、评审与孵化分流
+                - heading "策略工厂" [level=3] [ref=e1712]
+              - generic "failed / 失败" [ref=e1713]:
+                - img [ref=e1714]
+                - generic [ref=e1718]: 失败
+            - generic [ref=e1719]:
+              - generic [ref=e1720]:
+                - generic [ref=e1721]: 最近运行
+                - strong [ref=e1722]: "-"
+              - generic [ref=e1723]:
+                - generic [ref=e1724]: 候选数
+                - strong [ref=e1725]: "-"
+              - generic [ref=e1726]:
+                - generic [ref=e1727]: 评审策略
+                - strong [ref=e1728]: "-"
+              - generic [ref=e1729]:
+                - generic [ref=e1730]: 评审决策
+                - strong [ref=e1731]: "-"
+            - generic [ref=e1732]:
+              - img [ref=e1733]
+              - text: 策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。
+            - button "刷新策略工厂" [ref=e1736] [cursor=pointer]:
+              - text: 刷新策略工厂
+              - img [ref=e1737]
+            - img
+          - article [ref=e1739]:
+            - generic [ref=e1740]:
+              - generic [ref=e1741]:
+                - text: 生命周期、命中率与反馈
+                - heading "孵化工厂" [level=3] [ref=e1742]
+              - generic "ready / 就绪" [ref=e1743]:
+                - img [ref=e1744]
+                - generic [ref=e1747]: 就绪
+            - generic [ref=e1748]:
+              - generic [ref=e1749]:
+                - generic [ref=e1750]: 运行次数
+                - strong [ref=e1751]: "0"
+              - generic [ref=e1752]:
+                - generic [ref=e1753]: 错误数
+                - strong [ref=e1754]: "0"
+              - generic [ref=e1755]:
+                - generic [ref=e1756]: 最近结果
+                - strong [ref=e1757]: "-"
+              - generic [ref=e1758]:
+                - generic [ref=e1759]: 孵化中
+                - strong [ref=e1760]: "-"
+            - generic [ref=e1761]:
+              - img [ref=e1762]
+              - text: 当前证据足以进入下一段复核。
+            - button "查看孵化看板" [ref=e1765] [cursor=pointer]:
+              - text: 查看孵化看板
+              - img [ref=e1766]
+        - generic [ref=e1768]:
+          - generic [ref=e1769]:
+            - generic [ref=e1770]:
+              - text: 2 个待处理点
+              - heading "下一步" [level=3] [ref=e1771]
+            - generic "partial / 部分就绪" [ref=e1772]:
+              - img [ref=e1773]
+              - generic [ref=e1775]: 部分就绪
+          - generic [ref=e1776]:
+            - article [ref=e1777]:
+              - generic [ref=e1778]:
+                - text: 因子工厂
+                - strong [ref=e1779]: 尚未看到活跃因子，策略工厂缺少可复用的因子证据。
+              - button "打开因子工厂" [ref=e1780] [cursor=pointer]
+            - article [ref=e1781]:
+              - generic [ref=e1782]:
+                - text: 策略工厂
+                - strong [ref=e1783]: 策略状态或评审快照不可用，需要刷新能力中心并检查策略工厂接口。
+              - button "打开策略工厂" [ref=e1784] [cursor=pointer]
+        - group [ref=e1785]:
+          - generic "工厂接力原始证据" [ref=e1786] [cursor=pointer]:
+            - generic [ref=e1787]:
+              - img [ref=e1788]
+              - text: 工厂接力原始证据
+            - img [ref=e1793]
+        - generic [ref=e1795]:
+          - button "财务管理" [ref=e1796] [cursor=pointer]:
+            - img [ref=e1797]
+            - generic [ref=e1799]: 财务管理
+            - heading "组合与风险" [level=2] [ref=e1800]
+            - paragraph [ref=e1801]: 组合、关注列表、风险检查和受控执行入口。
+          - button "量化研究" [ref=e1802] [cursor=pointer]:
+            - img [ref=e1803]
+            - generic [ref=e1806]: 量化研究
+            - heading "研究运行" [level=2] [ref=e1807]
+            - paragraph [ref=e1808]: 创建结构化研究运行，并复核生成的研究报告。
+          - button "策略工厂" [ref=e1809] [cursor=pointer]:
+            - img [ref=e1810]
+            - generic [ref=e1812]: 策略工厂
+            - heading "策略生成" [level=2] [ref=e1813]
+            - paragraph [ref=e1814]: 生成、评审并通过安全门控管理策略候选。
+          - button "因子工厂" [ref=e1815] [cursor=pointer]:
+            - img [ref=e1816]
+            - generic [ref=e1818]: 因子工厂
+            - heading "因子挖掘" [level=2] [ref=e1819]
+            - paragraph [ref=e1820]: 挖掘因子，查看活跃池和引擎健康状态。
+          - button "孵化工厂" [ref=e1821] [cursor=pointer]:
+            - img [ref=e1822]
+            - generic [ref=e1824]: 孵化工厂
+            - heading "孵化生命周期" [level=2] [ref=e1825]
+            - paragraph [ref=e1826]: 复核命中率、生命周期阶段和晋升准备度。
+          - button "数据" [ref=e1827] [cursor=pointer]:
+            - img [ref=e1828]
+            - generic [ref=e1832]: 数据
+            - heading "数据准备度" [level=2] [ref=e1833]
+            - paragraph [ref=e1834]: 检查数据新鲜度、同步计划和运行前置状态。
+          - button "事件工厂" [ref=e1835] [cursor=pointer]:
+            - img [ref=e1836]
+            - generic [ref=e1842]: 事件工厂
+            - heading "工厂事件" [level=2] [ref=e1843]
+            - paragraph [ref=e1844]: 创建、预览、审批并复核工厂事件和雷达任务。
+  - complementary "环境上下文" [ref=e796]:
+    - generic [ref=e797]:
+      - generic [ref=e798]:
+        - generic [ref=e799]:
+          - generic [ref=e800]: 进度
+          - strong [ref=e801]: 当前运行环境
+        - img [ref=e802]
+      - generic [ref=e804]:
+        - img [ref=e805]
+        - generic [ref=e808]: Agent
+        - generic "ready / 在线，可以使用" [ref=e809]:
+          - img [ref=e810]
+          - generic [ref=e813]: 在线，可以使用
+      - paragraph [ref=e814]: Agent 已响应，当前页面可以读取会话、工具和运行状态。
+      - generic [ref=e815]:
+        - img [ref=e816]
+        - generic [ref=e821]: Agent 端点
+        - code [ref=e822]: http://127.0.0.1:8767
+    - generic [ref=e823]:
+      - generic [ref=e824]:
+        - generic [ref=e825]:
+          - generic [ref=e826]: 环境信息
+          - strong [ref=e827]: 权限与能力
+        - img [ref=e828]
+      - generic [ref=e831]:
+        - generic [ref=e832]:
+          - img [ref=e833]
+          - strong [ref=e837]: 控制令牌未就绪
+          - generic "gated / 受限" [ref=e838]:
+            - img [ref=e839]
+            - generic [ref=e841]: 受限
+        - paragraph [ref=e842]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - button "打开设置" [ref=e844] [cursor=pointer]
+      - generic [ref=e845]:
+        - generic [ref=e846]:
+          - img [ref=e847]
+          - generic [ref=e850]: 控制令牌
+          - generic "gated / 仅可查看/研究" [ref=e851]:
+            - img [ref=e852]
+            - generic [ref=e854]: 仅可查看/研究
+        - generic [ref=e855]:
+          - img [ref=e856]
+          - generic [ref=e868]: 完整模式
+          - generic "ready / 已开启" [ref=e869]:
+            - img [ref=e870]
+            - generic [ref=e873]: 已开启
+        - generic [ref=e874]:
+          - img [ref=e875]
+          - generic [ref=e877]: 工具集
+          - strong [ref=e878]: 完整工具集
+        - paragraph [ref=e879]: 可查看通用工具；写入、外部平台和高风险动作仍需控制令牌与审批。
+        - generic [ref=e880]:
+          - img [ref=e881]
+          - generic [ref=e885]: 工具数量
+          - strong [ref=e886]: "202"
+    - generic [ref=e887]:
+      - generic [ref=e888]:
+        - generic [ref=e889]:
+          - generic [ref=e890]: 当前任务
+          - strong [ref=e891]: 等待任务线程
+        - img [ref=e892]
+      - generic [ref=e896]:
+        - strong [ref=e897]: 暂无选中线程
+        - generic [ref=e898]: 开始任务后，这里会汇总当前回复、模型、审批和事件状态。
+        - button "返回工作台" [ref=e899] [cursor=pointer]

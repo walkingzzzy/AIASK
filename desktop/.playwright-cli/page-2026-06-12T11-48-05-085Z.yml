@@ -1,0 +1,460 @@
+- generic [ref=e3]:
+  - complementary [ref=e1948]:
+    - generic [ref=e1949]:
+      - img [ref=e1951]
+      - generic [ref=e1953]:
+        - strong [ref=e1954]: AIASK
+        - generic [ref=e1955]: Agent 工作台
+      - img [ref=e1956]
+    - button "新建线程" [ref=e1958] [cursor=pointer]:
+      - img [ref=e1959]
+      - text: 新建线程
+    - generic [ref=e1960]:
+      - generic [ref=e1961]:
+        - generic [ref=e1962]: 项目 / 上下文
+        - strong [ref=e1963]: aiask-agent
+        - generic [ref=e1964]: Agent 已连接 · 桌面客户端
+      - generic "ready / 在线" [ref=e1965]:
+        - img [ref=e1966]
+        - generic [ref=e1969]: 在线
+    - button "会话 受限" [ref=e1972] [cursor=pointer]:
+      - img [ref=e1973]
+      - text: 会话
+      - generic "gated / 受限" [ref=e1975]:
+        - img [ref=e1976]
+        - generic [ref=e1978]: 受限
+    - generic [ref=e1979]:
+      - generic [ref=e1980]:
+        - generic [ref=e1981]: 任务线程
+        - generic [ref=e1982]: "7"
+      - button "搜索与历史" [ref=e1983] [cursor=pointer]:
+        - img [ref=e1984]
+        - text: 搜索与历史
+      - generic [ref=e1987]:
+        - button "已完成会话 已完成 · 最近更新 2026-06-09 18:39 b1acf60a...bf3a78" [ref=e1988] [cursor=pointer]:
+          - strong [ref=e1989]: 已完成会话
+          - generic [ref=e1990]: 已完成 · 最近更新 2026-06-09 18:39
+          - emphasis [ref=e1991]: b1acf60a...bf3a78
+        - button "错误会话 错误 · 最近更新 2026-05-29 09:28 7691a0b7...595674" [ref=e1992] [cursor=pointer]:
+          - strong [ref=e1993]: 错误会话
+          - generic [ref=e1994]: 错误 · 最近更新 2026-05-29 09:28
+          - emphasis [ref=e1995]: 7691a0b7...595674
+        - button "错误会话 错误 · 最近更新 2026-05-27 13:09 b193cf51...66095a" [ref=e1996] [cursor=pointer]:
+          - strong [ref=e1997]: 错误会话
+          - generic [ref=e1998]: 错误 · 最近更新 2026-05-27 13:09
+          - emphasis [ref=e1999]: b193cf51...66095a
+        - button "已完成会话 已完成 · 最近更新 2026-05-27 13:03 264aca64...ba78c5" [ref=e2000] [cursor=pointer]:
+          - strong [ref=e2001]: 已完成会话
+          - generic [ref=e2002]: 已完成 · 最近更新 2026-05-27 13:03
+          - emphasis [ref=e2003]: 264aca64...ba78c5
+        - button "错误会话 错误 · 最近更新 2026-05-22 16:02 1ebe800f...176fc7" [ref=e2004] [cursor=pointer]:
+          - strong [ref=e2005]: 错误会话
+          - generic [ref=e2006]: 错误 · 最近更新 2026-05-22 16:02
+          - emphasis [ref=e2007]: 1ebe800f...176fc7
+        - button "已完成会话 已完成 · 最近更新 2026-05-22 15:47 5dda21bf...555981" [ref=e2008] [cursor=pointer]:
+          - strong [ref=e2009]: 已完成会话
+          - generic [ref=e2010]: 已完成 · 最近更新 2026-05-22 15:47
+          - emphasis [ref=e2011]: 5dda21bf...555981
+        - button "已完成会话 已完成 · 最近更新 2026-05-21 10:45 8c297ffe...e1118e" [ref=e2012] [cursor=pointer]:
+          - strong [ref=e2013]: 已完成会话
+          - generic [ref=e2014]: 已完成 · 最近更新 2026-05-21 10:45
+          - emphasis [ref=e2015]: 8c297ffe...e1118e
+    - navigation "Main navigation" [ref=e2016]:
+      - generic [ref=e2017]:
+        - img [ref=e2018]
+        - generic [ref=e2023]: 导航
+      - region "主工作区" [ref=e2024]:
+        - button "主工作区" [ref=e2025] [cursor=pointer]:
+          - generic [ref=e2026]: 主工作区
+          - img [ref=e2027]
+        - button "工作台" [ref=e2030] [cursor=pointer]:
+          - img [ref=e2031]
+          - generic [ref=e2033]: 工作台
+        - button "项目 / 上下文" [ref=e2035] [cursor=pointer]:
+          - img [ref=e2036]
+          - generic [ref=e2041]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e2043] [cursor=pointer]:
+          - img [ref=e2044]
+          - generic [ref=e2047]: 运行 / 事件
+        - button "审批" [ref=e2049] [cursor=pointer]:
+          - img [ref=e2050]
+          - generic [ref=e2053]: 审批
+        - button "金融实验室" [ref=e2055] [cursor=pointer]:
+          - img [ref=e2056]
+          - generic [ref=e2060]: 金融实验室
+        - button "集成" [ref=e2062] [cursor=pointer]:
+          - img [ref=e2063]
+          - generic [ref=e2069]: 集成
+        - button "自动化" [ref=e2071] [cursor=pointer]:
+          - img [ref=e2072]
+          - generic [ref=e2076]: 自动化
+        - button "设置" [ref=e2078] [cursor=pointer]:
+          - img [ref=e2079]
+          - generic [ref=e2082]: 设置
+      - region "高级金融" [ref=e2083]:
+        - button "高级金融" [ref=e2084] [cursor=pointer]:
+          - generic [ref=e2085]: 高级金融
+          - img [ref=e2086]
+      - region "高级运维" [ref=e2088]:
+        - button "高级运维" [ref=e2089] [cursor=pointer]:
+          - generic [ref=e2090]: 高级运维
+          - img [ref=e2091]
+      - region "旧入口 / 高级诊断" [ref=e2093]:
+        - button "旧入口 / 高级诊断" [ref=e2094] [cursor=pointer]:
+          - generic [ref=e2095]: 旧入口 / 高级诊断
+          - img [ref=e2096]
+    - button "扩展 内部" [ref=e2100] [cursor=pointer]:
+      - img [ref=e2101]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e2104]:
+        - img [ref=e2105]
+        - generic [ref=e2107]: 内部
+    - generic [ref=e2108]:
+      - generic "AIASK_ONLINE / 在线" [ref=e2109]:
+        - img [ref=e2110]
+        - generic [ref=e2113]: 在线
+      - generic [ref=e2114]: 202 个可用工具
+      - generic [ref=e2115]: 完整工具已启用
+  - main [ref=e149]:
+    - generic [ref=e2523]:
+      - generic [ref=e2524]:
+        - generic [ref=e2525]:
+          - text: 运维与连接
+          - heading "MCP / 连接器" [level=1] [ref=e2526]
+        - generic [ref=e2527]:
+          - generic "CAPABILITIES_SYNCED / 能力已同步" [ref=e2528]:
+            - img [ref=e2529]
+            - generic [ref=e2532]: 能力已同步
+          - generic "CONTROL_TOKEN_REQUIRED / 需要控制令牌" [ref=e2533]:
+            - img [ref=e2534]
+            - generic [ref=e2536]: 需要控制令牌
+          - button "刷新" [ref=e2537] [cursor=pointer]:
+            - img [ref=e2538]
+            - text: 刷新
+      - generic [ref=e2544]:
+        - generic [ref=e2545]:
+          - generic [ref=e2546]:
+            - text: MCP + 连接器
+            - heading "服务器、工具、资源、提示词、OAuth 与连接器管理" [level=2] [ref=e2547]
+            - paragraph [ref=e2548]: 桌面端只读取 Agent 聚合状态并调用 Agent HTTP 管理接口，不直接连接 MCP server 或 manager。
+          - img [ref=e2549]
+        - generic [ref=e2555]:
+          - generic [ref=e2556]:
+            - img [ref=e2557]
+            - strong [ref=e2561]: 连接器管理受限
+            - generic "gated / 受限" [ref=e2562]:
+              - img [ref=e2563]
+              - generic [ref=e2565]: 受限
+          - paragraph [ref=e2566]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - generic [ref=e2567]:
+          - generic [ref=e2568]:
+            - generic [ref=e2569]: MCP 状态
+            - strong [ref=e2570]: 受限
+          - generic [ref=e2571]:
+            - generic [ref=e2572]: 服务器
+            - strong [ref=e2573]: "1"
+          - generic [ref=e2574]:
+            - generic [ref=e2575]: 工具
+            - strong [ref=e2576]: "128"
+          - generic [ref=e2577]:
+            - generic [ref=e2578]: 资源
+            - strong [ref=e2579]: "3"
+          - generic [ref=e2580]:
+            - generic [ref=e2581]: 提示词
+            - strong [ref=e2582]: "7"
+          - generic [ref=e2583]:
+            - generic [ref=e2584]: OAuth
+            - strong [ref=e2585]: "0"
+          - generic [ref=e2586]:
+            - generic [ref=e2587]: 连接器
+            - strong [ref=e2588]: "0"
+          - generic [ref=e2589]:
+            - generic [ref=e2590]: 已连接
+            - strong [ref=e2591]: "0"
+        - generic [ref=e2592]:
+          - generic [ref=e2593]:
+            - img [ref=e2594]
+            - strong [ref=e2598]: MCP 授权未配置
+            - generic "unconfigured / 未配置" [ref=e2599]:
+              - img [ref=e2600]
+              - generic [ref=e2602]: 未配置
+          - paragraph [ref=e2603]: MCP 授权缺失：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+        - generic [ref=e2604]:
+          - generic [ref=e2605]:
+            - generic [ref=e2606]:
+              - text: 只读冒烟测试未运行
+              - heading "MCP 只读调用冒烟测试" [level=3] [ref=e2607]
+            - button "运行 MCP 只读冒烟测试" [disabled] [ref=e2608]:
+              - img [ref=e2609]
+              - text: 运行 MCP 只读冒烟测试
+          - generic [ref=e2611]:
+            - article [ref=e2612]:
+              - generic [ref=e2613]:
+                - generic [ref=e2614]:
+                  - strong [ref=e2615]: 读取 MCP 资源
+                  - generic [ref=e2616]: /v1/mcp/resources/read
+                - generic "idle / 空闲" [ref=e2617]:
+                  - img [ref=e2618]
+                  - generic [ref=e2620]: 空闲
+              - generic [ref=e2621]:
+                - generic [ref=e2622]: 服务器
+                - strong [ref=e2623]: akshare-local
+                - generic [ref=e2624]: 目标
+                - strong [ref=e2625]: 未发现资源
+                - generic [ref=e2626]: 结果
+                - strong [ref=e2627]: 无可用资源
+            - article [ref=e2628]:
+              - generic [ref=e2629]:
+                - generic [ref=e2630]:
+                  - strong [ref=e2631]: 获取 MCP 提示词
+                  - generic [ref=e2632]: /v1/mcp/prompts/get
+                - generic "idle / 空闲" [ref=e2633]:
+                  - img [ref=e2634]
+                  - generic [ref=e2636]: 空闲
+              - generic [ref=e2637]:
+                - generic [ref=e2638]: 服务器
+                - strong [ref=e2639]: akshare-local
+                - generic [ref=e2640]: 目标
+                - strong [ref=e2641]: 未发现提示词
+                - generic [ref=e2642]: 结果
+                - strong [ref=e2643]: 无可用提示词
+        - generic [ref=e2644]:
+          - generic [ref=e2645]:
+            - generic [ref=e2646]:
+              - generic [ref=e2647]:
+                - generic [ref=e2648]: 1 个服务器
+                - heading "MCP 服务器" [level=3] [ref=e2649]
+              - img [ref=e2650]
+            - generic [ref=e2662]:
+              - generic [ref=e2663]:
+                - generic [ref=e2664]: 服务器
+                - generic [ref=e2665]: 传输
+                - generic [ref=e2666]: 状态
+                - generic [ref=e2667]: 详情
+              - generic [ref=e2668]:
+                - strong [ref=e2669]: akshare-local
+                - generic [ref=e2670]: streamable_http
+                - generic [ref=e2671]: 已配置
+                - generic [ref=e2672]: financial
+          - generic [ref=e2673]:
+            - generic [ref=e2675]:
+              - generic [ref=e2676]: 128 个工具
+              - heading "MCP 工具" [level=3] [ref=e2677]
+            - paragraph [ref=e2679]: 已发现 128 个工具；缺少控制令牌，暂不展开工具明细。
+          - generic [ref=e2680]:
+            - generic [ref=e2682]:
+              - generic [ref=e2683]: 3 个资源
+              - heading "MCP 资源" [level=3] [ref=e2684]
+            - paragraph [ref=e2686]: 已发现 3 个资源；缺少控制令牌，暂不展开资源明细。
+          - generic [ref=e2687]:
+            - generic [ref=e2689]:
+              - generic [ref=e2690]: 7 个提示词 / 0 个 OAuth 状态
+              - heading "提示词 / OAuth" [level=3] [ref=e2691]
+            - paragraph [ref=e2693]: 已发现 7 个提示词；缺少控制令牌，暂不展开提示词明细。
+        - generic [ref=e2694]:
+          - generic [ref=e2695]:
+            - generic [ref=e2696]:
+              - generic [ref=e2697]: 0 总数 / 0 已连接 / 0 已配置
+              - heading "连接器摘要" [level=3] [ref=e2698]
+            - generic "CONTROL_TOKEN_REQUIRED / 需要控制令牌" [ref=e2699]:
+              - img [ref=e2700]
+              - generic [ref=e2702]: 需要控制令牌
+          - paragraph [ref=e2704]: 需要控制令牌后才能查看连接器列表和测试结果。
+        - generic [ref=e2705]:
+          - generic [ref=e2706]:
+            - generic [ref=e2708]:
+              - generic [ref=e2709]: 0 个连接器
+              - heading "连接器列表" [level=3] [ref=e2710]
+            - paragraph [ref=e2712]: 连接器列表需要控制令牌后加载。
+          - generic [ref=e2713]:
+            - generic [ref=e2714]:
+              - generic [ref=e2715]:
+                - text: 详情 / 测试
+                - heading "连接器详情" [level=3] [ref=e2716]
+              - generic "not_loaded / 未加载" [ref=e2717]:
+                - img [ref=e2718]
+                - generic [ref=e2720]: 未加载
+            - paragraph [ref=e2721]: 请选择连接器，或先运行一次测试。
+            - group [ref=e2722]:
+              - generic "连接器原始结果" [ref=e2723] [cursor=pointer]:
+                - generic [ref=e2724]:
+                  - img [ref=e2725]
+                  - text: 连接器原始结果
+                - img [ref=e2730]
+        - generic [ref=e2732]:
+          - generic [ref=e2734]:
+            - text: 高级 MCP 操作
+            - heading "MCP 操作" [level=3] [ref=e2735]
+          - generic [ref=e2736]:
+            - generic [ref=e2737]:
+              - generic [ref=e2738]:
+                - text: MCP
+                - heading "连接器评审队列" [level=2] [ref=e2739]
+                - paragraph [ref=e2740]: 控制令牌未通过验证。请确认设置中的令牌与 Agent 启动环境一致。
+              - generic "gated / 受限" [ref=e2741]:
+                - img [ref=e2742]
+                - generic [ref=e2744]: 受限
+            - generic [ref=e2745]:
+              - strong [ref=e2746]: 后端进程缺少 MCP 授权环境变量
+              - generic [ref=e2747]: AIASK 已注册此 MCP 服务，但当前运行的后端尚未读取这些环境变量：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+            - generic [ref=e2748]:
+              - generic [ref=e2749]:
+                - article [ref=e2750]:
+                  - generic [ref=e2751]: Partial
+                  - strong [ref=e2752]: "no"
+                  - generic "implemented / 已实现" [ref=e2753]:
+                    - img [ref=e2754]
+                    - generic [ref=e2757]: 已实现
+                - article [ref=e2758]:
+                  - generic [ref=e2759]: 注册
+                  - strong [ref=e2760]: registered
+                  - generic "implemented / 已实现" [ref=e2761]:
+                    - img [ref=e2762]
+                    - generic [ref=e2765]: 已实现
+                - article [ref=e2766]:
+                  - generic [ref=e2767]: 发现
+                  - strong [ref=e2768]: auth_missing
+                  - generic "unconfigured / 未配置" [ref=e2769]:
+                    - img [ref=e2770]
+                    - generic [ref=e2772]: 未配置
+                - article [ref=e2773]:
+                  - generic [ref=e2774]: 授权
+                  - strong [ref=e2775]: 缺失
+                  - generic "unconfigured / 未配置" [ref=e2776]:
+                    - img [ref=e2777]
+                    - generic [ref=e2779]: 未配置
+                - article [ref=e2780]:
+                  - generic [ref=e2781]: 已发现
+                  - strong [ref=e2782]: 128 个工具 / 3 个资源 / 7 个提示词
+                  - generic "implemented / 已实现" [ref=e2783]:
+                    - img [ref=e2784]
+                    - generic [ref=e2787]: 已实现
+              - generic [ref=e2788]:
+                - generic [ref=e2789]: 注册
+                - strong [ref=e2790]: registered
+                - generic [ref=e2791]: 发现
+                - strong [ref=e2792]: auth_missing
+                - generic [ref=e2793]: 配置路径
+                - strong [ref=e2794]: C:\Users\walking\.aiask-agent\mcp_servers.json
+                - generic [ref=e2795]: 配置存在
+                - strong [ref=e2796]: "true"
+                - generic [ref=e2797]: 检测端口
+                - strong [ref=e2798]: "3100"
+                - generic [ref=e2799]: 建议 URL
+                - strong [ref=e2800]: http://127.0.0.1:3100/mcp
+                - generic [ref=e2801]: 授权已配置
+                - strong [ref=e2802]: "false"
+                - generic [ref=e2803]: Auth env
+                - strong [ref=e2804]: AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+                - generic [ref=e2805]: 缺失授权环境变量
+                - strong [ref=e2806]: AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+                - generic [ref=e2807]: 已发现
+                - strong [ref=e2808]: 128 个工具 / 3 个资源 / 7 个提示词
+                - generic [ref=e2809]: Unsupported methods
+                - strong [ref=e2810]: "-"
+              - generic [ref=e2811]:
+                - textbox "MCP 服务名称" [ref=e2812]: akshare-local
+                - button "注册本地 MCP 服务" [disabled] [ref=e2813]: 注册本地 MCP
+                - button "发现或刷新 MCP 服务" [disabled] [ref=e2814]: 发现/刷新服务
+            - generic [ref=e2815]:
+              - generic [ref=e2816]:
+                - generic [ref=e2818]:
+                  - generic [ref=e2819]: 1 个已配置
+                  - heading "服务" [level=3] [ref=e2820]
+                - article [ref=e2822]:
+                  - strong [ref=e2823]: akshare-local
+                  - generic [ref=e2824]: streamable_http / financial
+                  - generic "implemented / 已实现" [ref=e2825]:
+                    - img [ref=e2826]
+                    - generic [ref=e2829]: 已实现
+              - generic [ref=e2830]:
+                - generic [ref=e2832]:
+                  - generic [ref=e2833]: 0 个已发现
+                  - heading "动态工具" [level=3] [ref=e2834]
+                - paragraph [ref=e2836]: 请使用控制令牌解锁 MCP 工具查看权限。
+            - generic [ref=e2837]:
+              - generic [ref=e2838]:
+                - heading "资源" [level=3] [ref=e2839]
+                - generic [ref=e2840]:
+                  - textbox "资源 URI" [ref=e2841]
+                  - button "读取 MCP 资源" [disabled] [ref=e2842]: 读取
+                - paragraph [ref=e2843]: 可用资源 0 个
+              - generic [ref=e2844]:
+                - heading "提示词" [level=3] [ref=e2845]
+                - generic [ref=e2846]:
+                  - textbox "提示词名称" [ref=e2847]
+                  - button "获取 MCP 提示词" [disabled] [ref=e2848]: 获取
+                - paragraph [ref=e2849]: 可用提示词 0 个
+              - generic [ref=e2850]:
+                - heading "OAuth" [level=3] [ref=e2851]
+                - generic [ref=e2852]:
+                  - textbox "OAuth 服务名称" [ref=e2853]: akshare-local
+                  - button "启动 MCP OAuth 流程" [disabled] [ref=e2854]: 启动
+                - paragraph [ref=e2855]: OAuth 条目 0 个
+            - group [ref=e2856]:
+              - generic "原始操作结果" [ref=e2857] [cursor=pointer]
+  - complementary "环境上下文" [ref=e2338]:
+    - generic [ref=e2339]:
+      - generic [ref=e2340]:
+        - generic [ref=e2341]:
+          - generic [ref=e2342]: 进度
+          - strong [ref=e2343]: 当前运行环境
+        - img [ref=e2344]
+      - generic [ref=e2346]:
+        - img [ref=e2347]
+        - generic [ref=e2350]: Agent
+        - generic "ready / 在线，可以使用" [ref=e2351]:
+          - img [ref=e2352]
+          - generic [ref=e2355]: 在线，可以使用
+      - paragraph [ref=e2356]: Agent 已响应，当前页面可以读取会话、工具和运行状态。
+      - generic [ref=e2357]:
+        - img [ref=e2358]
+        - generic [ref=e2363]: Agent 端点
+        - code [ref=e2364]: http://127.0.0.1:8767
+    - generic [ref=e2365]:
+      - generic [ref=e2366]:
+        - generic [ref=e2367]:
+          - generic [ref=e2368]: 环境信息
+          - strong [ref=e2369]: 权限与能力
+        - img [ref=e2370]
+      - generic [ref=e2373]:
+        - generic [ref=e2374]:
+          - img [ref=e2375]
+          - strong [ref=e2379]: 控制令牌未就绪
+          - generic "gated / 受限" [ref=e2380]:
+            - img [ref=e2381]
+            - generic [ref=e2383]: 受限
+        - paragraph [ref=e2384]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - button "打开设置" [ref=e2386] [cursor=pointer]
+      - generic [ref=e2387]:
+        - generic [ref=e2388]:
+          - img [ref=e2389]
+          - generic [ref=e2392]: 控制令牌
+          - generic "gated / 仅可查看/研究" [ref=e2393]:
+            - img [ref=e2394]
+            - generic [ref=e2396]: 仅可查看/研究
+        - generic [ref=e2397]:
+          - img [ref=e2398]
+          - generic [ref=e2410]: 完整模式
+          - generic "ready / 已开启" [ref=e2411]:
+            - img [ref=e2412]
+            - generic [ref=e2415]: 已开启
+        - generic [ref=e2416]:
+          - img [ref=e2417]
+          - generic [ref=e2419]: 工具集
+          - strong [ref=e2420]: 完整工具集
+        - paragraph [ref=e2421]: 可查看通用工具；写入、外部平台和高风险动作仍需控制令牌与审批。
+        - generic [ref=e2422]:
+          - img [ref=e2423]
+          - generic [ref=e2427]: 工具数量
+          - strong [ref=e2428]: "202"
+    - generic [ref=e2429]:
+      - generic [ref=e2430]:
+        - generic [ref=e2431]:
+          - generic [ref=e2432]: 当前任务
+          - strong [ref=e2433]: 等待任务线程
+        - img [ref=e2434]
+      - generic [ref=e2438]:
+        - strong [ref=e2439]: 暂无选中线程
+        - generic [ref=e2440]: 开始任务后，这里会汇总当前回复、模型、审批和事件状态。
+        - button "返回工作台" [ref=e2441] [cursor=pointer]

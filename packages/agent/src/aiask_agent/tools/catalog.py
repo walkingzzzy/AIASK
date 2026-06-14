@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from .contracts import enrich_tool_contracts
 from .policy import GENERAL_FULL_TOOLSET
 
 FINANCE_SAFE_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
@@ -18,6 +19,20 @@ FINANCE_SAFE_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "category": "financial_read",
         "side_effect": "read_only",
         "description": "Run the AIASK stock analysis workflow for one security.",
+    },
+    {
+        "name": "agent_stock_live_quote",
+        "capability": "stock_live_quote",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Fetch a realtime stock quote through the AIASK Agent facade with provider, timestamp, and source-chain evidence.",
+    },
+    {
+        "name": "agent_stock_news_digest",
+        "capability": "stock_news_digest",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Fetch stock or market news through the AIASK Agent facade and preserve source links as citation evidence.",
     },
     {
         "name": "agent_governance_check",
@@ -282,6 +297,20 @@ GENERAL_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "description": "Verify AIASK file write or patch effects with workspace, hash, stat, and lightweight diagnostics evidence.",
     },
     {
+        "name": "agent_file_checkpoint",
+        "capability": "file_checkpoint",
+        "category": "general_write",
+        "side_effect": "filesystem_write",
+        "description": "Create a rollback checkpoint for a workspace file before a local mutation.",
+    },
+    {
+        "name": "agent_file_rollback",
+        "capability": "file_rollback",
+        "category": "general_write",
+        "side_effect": "filesystem_write",
+        "description": "Restore a workspace file from an AIASK file checkpoint.",
+    },
+    {
         "name": "agent_code_graph_query",
         "capability": "code_graph_query",
         "category": "general_read",
@@ -441,6 +470,13 @@ GENERAL_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "category": "vision",
         "side_effect": "read_only",
         "description": "Analyze image metadata and prepare native vision context.",
+    },
+    {
+        "name": "agent_media_provider_catalog",
+        "capability": "media_provider_catalog",
+        "category": "vision",
+        "side_effect": "read_only",
+        "description": "Inspect AIASK image, video, vision, TTS, and STT provider catalog/readiness without generating media.",
     },
     {
         "name": "agent_image_generate",
@@ -934,8 +970,8 @@ def catalog_for_toolset(toolset: str, *, include_general: bool = False) -> tuple
     financial_extensions = tuple(item for item in GENERAL_TOOL_CATALOG if item.get("category") == "financial_read")
     base = (*FINANCE_SAFE_TOOL_CATALOG, *financial_extensions)
     if toolset == GENERAL_FULL_TOOLSET and include_general:
-        return (*FINANCE_SAFE_TOOL_CATALOG, *GENERAL_TOOL_CATALOG)
-    return base
+        return enrich_tool_contracts((*FINANCE_SAFE_TOOL_CATALOG, *GENERAL_TOOL_CATALOG))
+    return enrich_tool_contracts(base)
 
 
 def tool_descriptions() -> dict[str, str]:

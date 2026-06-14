@@ -9,18 +9,25 @@ export function collectCapabilityRows(payload: {
     tool_mapping?: unknown[];
     platform_mapping?: unknown[];
     feature_mapping?: unknown[];
-    parity?: { v014_delta?: { missing?: unknown[]; partial?: unknown[]; implemented?: unknown[] } };
+    parity?: {
+      v014_delta?: { missing?: unknown[]; partial?: unknown[]; implemented?: unknown[] };
+      v016_delta?: { missing?: unknown[]; partial?: unknown[]; implemented?: unknown[] };
+    };
   };
 } | null): CapabilityMatrixItem[] {
   const hermes = payload?.hermes || {};
-  const delta = hermes.parity?.v014_delta || {};
+  const delta014 = hermes.parity?.v014_delta || {};
+  const delta016 = hermes.parity?.v016_delta || {};
   return [
     ...(hermes.feature_mapping || []),
     ...(hermes.tool_mapping || []),
     ...(hermes.platform_mapping || []),
-    ...(delta.missing || []),
-    ...(delta.partial || []),
-    ...(delta.implemented || [])
+    ...(delta014.missing || []),
+    ...(delta014.partial || []),
+    ...(delta014.implemented || []),
+    ...(delta016.missing || []),
+    ...(delta016.partial || []),
+    ...(delta016.implemented || [])
   ] as CapabilityMatrixItem[];
 }
 

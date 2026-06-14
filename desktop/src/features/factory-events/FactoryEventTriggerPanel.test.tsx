@@ -34,8 +34,9 @@ function intentRequests(calls: Array<{ url: string; init: RequestInit }>) {
   return calls.filter((call) => call.url.endsWith("/intents"));
 }
 
-function makeFetchMock() {
+function makeFetchMock(options: { failRadarCandidatesAfter?: number } = {}) {
   const calls: Array<{ url: string; init: RequestInit }> = [];
+  let radarCandidatesCalls = 0;
   const fetchMock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input);
     calls.push({ url, init: init || {} });
@@ -140,6 +141,13 @@ function makeFetchMock() {
       });
     }
     if (url.includes("/v1/desktop/stock-radar/candidates")) {
+      radarCandidatesCalls += 1;
+      if (options.failRadarCandidatesAfter && radarCandidatesCalls > options.failRadarCandidatesAfter) {
+        return new Response(JSON.stringify({ error: "radar candidates failed" }), {
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        });
+      }
       return jsonResponse({
         success: true,
         error: null,
@@ -670,6 +678,39 @@ describe("FactoryEventTriggerPanel render", () => {
       "stock_radar.push_digest",
       "stock_radar.schedule_update"
     ]));
+    const scheduleIntent = intentRequests(calls).find((call) => requestBody(call).action === "stock_radar.schedule_update");
+    expect(requestBody(scheduleIntent!).params).toMatchObject({
+      interval_seconds: 86400,
+      enabled: true,
+      allow_network: false,
+      allow_llm: false
+    });
+  });
+
+  it("clears stale stock radar candidates and digest when refresh fails", async () => {
+    const { calls } = makeFetchMock({ failRadarCandidatesAfter: 1 });
+    render(
+      <FactoryEventTriggerPanel
+        endpoint="http://127.0.0.1:8767"
+        apiToken="api-token"
+        controlToken="control-token"
+      />
+    );
+
+    fireEvent.click(screen.getAllByRole("tab")[0]);
+    await waitFor(() => {
+      expect(screen.getByText(/600111/)).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新雷达" }));
+
+    await waitFor(() => {
+      expect(calls.filter((call) => call.url.includes("/v1/desktop/stock-radar/candidates")).length).toBeGreaterThanOrEqual(2);
+    });
+    await waitFor(() => {
+      expect(screen.queryByText(/600111/)).not.toBeInTheDocument();
+    });
+    expect(screen.getByText(/AIASK_HTTP_500/)).toBeInTheDocument();
   });
 
   it("shows event-list ActionIntent feedback without leaving the events tab", async () => {

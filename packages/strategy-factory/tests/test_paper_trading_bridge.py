@@ -85,6 +85,7 @@ def test_bridge_reuses_same_day_same_strategy_symbol_direction_order() -> None:
             signal=1,
             strategy_id="strategy-1",
             signal_date="2026-05-21",
+            latest_price=200.0,
         )
         second = await bridge._place_paper_order(
             account_id="paper-1",
@@ -92,6 +93,7 @@ def test_bridge_reuses_same_day_same_strategy_symbol_direction_order() -> None:
             signal=1,
             strategy_id="strategy-1",
             signal_date="2026-05-21",
+            latest_price=200.0,
         )
         third = await bridge._place_paper_order(
             account_id=" paper-1 ",
@@ -99,6 +101,7 @@ def test_bridge_reuses_same_day_same_strategy_symbol_direction_order() -> None:
             signal=1,
             strategy_id=" strategy-1 ",
             signal_date=" 2026-05-21 ",
+            latest_price=200.0,
         )
         return first, second, third
 
@@ -107,9 +110,58 @@ def test_bridge_reuses_same_day_same_strategy_symbol_direction_order() -> None:
     assert len(db.orders) == 1
     assert first["placed"] is True
     assert first["order_id"] == "1"
+    # 30% × 100k = 30k 预算 / 200 元 = 150 股 → 整手取 100 股
+    assert first["shares"] == 100
     assert second["placed"] is False
     assert second["reused"] is True
     assert second["order_id"] == first["order_id"]
     assert third["placed"] is False
     assert third["reused"] is True
     assert third["order_id"] == first["order_id"]
+
+
+def test_bridge_buy_shares_scale_to_latest_price_no_insufficient_cash() -> None:
+    """高价股按最新价估算股数，不再固定除数 20 导致 insufficient_cash。"""
+    from strategy_factory.application.research.paper_trading_bridge import PaperTradingBridge
+
+    db = _FakePaperDb()
+    bridge = PaperTradingBridge(db)
+
+    async def _run():
+        # 现金 100k，30% 预算 = 30k；股价 1500 → 30k/1500=20 股 → 不足整手 → 跳过
+        high = await bridge._place_paper_order(
+            account_id="paper-1",
+            code="601138",
+            signal=1,
+            strategy_id="strategy-1",
+            signal_date="2026-06-12",
+            latest_price=1500.0,
+        )
+        # 股价 50 → 30k/50=600 股 → 整手 600 股，下单成功
+        mid = await bridge._place_paper_order(
+            account_id="paper-1",
+            code="300308",
+            signal=1,
+            strategy_id="strategy-1",
+            signal_date="2026-06-12",
+            latest_price=50.0,
+        )
+        # 缺价格 → 不下单，明确 no_price 而非超额下单
+        nop = await bridge._place_paper_order(
+            account_id="paper-1",
+            code="000001",
+            signal=1,
+            strategy_id="strategy-1",
+            signal_date="2026-06-12",
+            latest_price=0.0,
+        )
+        return high, mid, nop
+
+    high, mid, nop = asyncio.run(_run())
+
+    assert high["placed"] is False
+    assert high["reason"] == "insufficient_cash_for_one_lot"
+    assert mid["placed"] is True
+    assert mid["shares"] == 600
+    assert nop["placed"] is False
+    assert nop["reason"] == "no_price"

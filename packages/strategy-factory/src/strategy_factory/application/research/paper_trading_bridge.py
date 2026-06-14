@@ -244,12 +244,14 @@ class PaperTradingBridge:
         account_id = str(account.get("id") or "")
 
         # 下单到模拟盘
+        latest_price = float(closes[-1]) if len(closes) > 0 else 0.0
         order_result = await self._place_paper_order(
             account_id=account_id,
             code=target_code,
             signal=latest_signal,
             strategy_id=strategy_id,
             signal_date=signal_date,
+            latest_price=latest_price,
         )
 
         return {
@@ -423,6 +425,7 @@ class PaperTradingBridge:
         signal: int,
         strategy_id: str,
         signal_date: str,
+        latest_price: float = 0.0,
     ) -> dict[str, Any]:
         """向模拟盘下单。"""
         account_id = str(account_id or "").strip()
@@ -453,7 +456,7 @@ class PaperTradingBridge:
             except Exception:
                 return {"placed": False, "reason": "position_check_failed"}
         else:
-            # 买入：用账户 10% 资金
+            # 买入：用账户 30% 资金，按最新价估算可买股数（A 股 100 股整手）
             try:
                 acct = await self._fetchrow(
                     "SELECT current_capital FROM paper_accounts WHERE id = $1",
@@ -462,9 +465,13 @@ class PaperTradingBridge:
                 capital = float(acct.get("current_capital") or 0) if acct else 0
                 if capital <= 0:
                     return {"placed": False, "reason": "no_capital"}
-                # 用 30% 资金买入（单股最大仓位）
+                price = float(latest_price or 0)
+                if price <= 0:
+                    return {"placed": False, "reason": "no_price"}
                 budget = capital * 0.30
-                shares = max(100, int(budget / 20) // 100 * 100)  # 粗估，100 股整数
+                shares = int(budget / price) // 100 * 100
+                if shares < 100:
+                    return {"placed": False, "reason": "insufficient_cash_for_one_lot"}
             except Exception:
                 return {"placed": False, "reason": "capital_check_failed"}
 

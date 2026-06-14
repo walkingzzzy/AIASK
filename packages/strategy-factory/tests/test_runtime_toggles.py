@@ -32,6 +32,7 @@ def _clear_env(monkeypatch):
         "INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED",
         "INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT",
         "INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE",
+        "STRATEGY_FACTORY_DIRECTION_GATE_ENABLED",
     ):
         monkeypatch.delenv(key, raising=False)
     yield
@@ -294,3 +295,23 @@ def test_gate3_record_only_intake_defaults_disabled(monkeypatch):
     assert toggles.gate3_record_only_intake_enabled() is True
     assert toggles.gate3_record_only_intake_batch_limit() == 500
     assert toggles.gate3_record_only_intake_min_grade() == "SS"
+
+
+def test_stock_direction_gate_defaults_enabled():
+    assert toggles.stock_direction_gate_enabled() is True
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("1", True),
+        ("true", True),
+        ("on", True),
+        ("0", False),
+        ("false", False),
+        ("", False),
+    ],
+)
+def test_stock_direction_gate_toggle(monkeypatch, value, expected):
+    monkeypatch.setenv("STRATEGY_FACTORY_DIRECTION_GATE_ENABLED", value)
+    assert toggles.stock_direction_gate_enabled() is expected

@@ -1,0 +1,148 @@
+{
+  "url": "http://127.0.0.1:1420/?mock=1",
+  "screenshots": [
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-01-workbench.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-02-settings-home.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-03-panel-loaded.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-04-filled-form.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-05-after-save.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-06-after-test.png"
+  ],
+  "actions": [
+    {
+      "action": "click",
+      "role": "button",
+      "name": "/设置|Settings|设置入口/i",
+      "note": "open settings from app shell"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "股票数据源",
+      "note": "open stock data source settings"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "/Tushare Pro/i",
+      "note": "choose Tushare preset"
+    },
+    {
+      "action": "fill",
+      "fields": [
+        "显示名称",
+        "API Key / Token"
+      ]
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "保存数据源",
+      "note": "save data source"
+    },
+    {
+      "action": "click",
+      "role": "button",
+      "name": "测试连接",
+      "note": "run connectivity test"
+    }
+  ],
+  "saveVisible": true,
+  "testPassed": false,
+  "readyVisible": false,
+  "secretLeaked": false,
+  "navButtonHeights": [
+    {
+      "text": "常规",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "连接",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "令牌与权限",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "技能管理",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "自动化管理",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "应用集成",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "Webhook",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "插件与技能包",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "模型配置",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "MCP 管理入口",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "工作流入口",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "股票数据源",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "数据路径",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "学习 / RL",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "安全扫描",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "高级诊断入口",
+      "h": 34,
+      "w": 269
+    },
+    {
+      "text": "关于",
+      "h": 34,
+      "w": 269
+    }
+  ],
+  "errors": [],
+  "console": [
+    {
+      "type": "info",
+      "text": "%cDownload the React DevTools for a better development experience: https://reactjs.org/link/react-devtools font-weight:bold"
+    }
+  ]
+}

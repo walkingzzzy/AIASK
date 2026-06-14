@@ -165,15 +165,20 @@ def test_strict_parity_has_no_code_gaps_in_full_runtime(tmp_path, monkeypatch) -
         max_iterations=2,
     )
     payload = parity_summary(runtime.tool_registry.names(), env={}, gateway_adapters=ADAPTERS.keys())
-    assert payload["baseline"] == "Hermes v0.15.1 full runtime capability reference"
-    assert payload["baseline_release_tag"] == "7402706c5"
-    assert payload["strict_hermes_tool_count"] == 57
+    assert payload["baseline"] == "Hermes v0.16.0 full runtime capability reference"
+    assert payload["baseline_version"] == "0.16.0"
+    assert payload["baseline_release_tag"] == "v2026.6.5"
+    assert payload["strict_hermes_tool_count"] == 58
     assert payload["strict_gateway_platform_count"] == 22
     assert payload["core_missing_hermes_tools"] == []
     assert payload["core_missing_gateway_platforms"] == []
     assert payload["core_code_status"] == "present"
     assert payload["code_status"] == "present"
     assert payload["v014_delta"]["missing_count"] == 0
+    assert payload["v016_delta"]["baseline"] == "Hermes v0.16.0 Surface Release capability reference"
+    assert payload["v016_delta"]["release_tag"] == "v2026.6.5"
+    assert payload["v016_delta"]["missing_count"] == 0
+    assert payload["v016_delta"]["total"] == 19
     assert payload["missing_hermes_tools"] == []
     assert payload["missing_gateway_platforms"] == []
     delta_rows = [
@@ -432,6 +437,7 @@ def test_feature_ledger_has_no_mock_gaps_for_full_runtime(tmp_path, monkeypatch)
     payload = parity_summary(runtime.tool_registry.names(), env={}, gateway_adapters=ADAPTERS.keys())
     assert payload["core_missing_features"] == []
     assert payload["v014_delta"]["missing_count"] == 0
+    assert payload["v016_delta"]["missing_count"] == 0
     assert {item["feature"] for item in payload["feature_mapping"]} >= {
         "gateway_channel_directory",
         "gateway_direct_delivery",
@@ -445,6 +451,11 @@ def test_feature_ledger_has_no_mock_gaps_for_full_runtime(tmp_path, monkeypatch)
         "per_turn_file_mutation_verifier",
         "live_session_handoff",
         "subgoal_control",
+        "desktop_native_self_update",
+        "remote_gateway_connection_profiles",
+        "model_picker_profiles_and_fallback",
+        "undo_last_turns",
+        "checkpoint_and_rollback",
     }
 
 
@@ -536,6 +547,25 @@ def test_tui_controller_parser_reducers_and_resume() -> None:
     assert controller.apply_local_command(parsed)["session_id"] == "sess_1"
     assert controller.session_id == "sess_1"
     assert "/steer" in controller.autocomplete("/st")
+    assert "/undo" in controller.autocomplete("/un")
+    undo = controller.parse_slash_command("/undo 2")
+    assert undo is not None
+    undo_plan = controller.apply_local_command(undo)
+    assert undo_plan["status"] == "pending_remote_undo"
+    assert undo_plan["turns"] == 2
+    assert undo_plan["session_id"] == "sess_1"
+    assert "/rollback" in controller.autocomplete("/ro")
+    rollback = controller.parse_slash_command("/rollback fchk_demo")
+    assert rollback is not None
+    rollback_plan = controller.apply_local_command(rollback)
+    assert rollback_plan == {"checkpoint_id": "fchk_demo", "status": "pending_remote_rollback"}
+    latest_rollback = controller.parse_slash_command("/rollback latest notes/demo.txt")
+    assert latest_rollback is not None
+    assert controller.apply_local_command(latest_rollback)["path"] == "notes/demo.txt"
+    assert "/artifacts" in controller.autocomplete("/ar")
+    assert "/sources" in controller.autocomplete("/so")
+    assert controller.features()["artifact_browser"] is True
+    assert controller.features()["source_browser"] is True
     reduced = controller.reduce_sse_event({"event": "approval.pending", "data": {"approval": {"approval_id": "app_1"}}})
     assert reduced["event"] == "approval.pending"
     assert controller.approvals[-1]["approval"]["approval_id"] == "app_1"

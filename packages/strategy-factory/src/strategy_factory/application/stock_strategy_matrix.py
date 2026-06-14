@@ -14,6 +14,7 @@ from ..domain.constants import (
     STOCK_FIRST_ROUTER_ENABLED,
     STOCK_FIRST_ROUTER_STRICT,
     STOCK_FIRST_ROUTER_TELEMETRY_ENABLED,
+    STOCK_DIRECTION_GATE_ENABLED,
     STOCK_STRATEGY_MATRIX_BATCH_SIZE,
     STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN,
     STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK,
@@ -33,6 +34,7 @@ from ._stock_universe_loader import filter_stock_universe_rows_by_codes, load_st
 from .factory_market_views import build_full_market_topn_payload
 from .factory_execution import resolve_runtime_mode_flags
 from ._matrix_vector_reuse import VectorReuseService
+from ._runtime_toggles import stock_direction_gate_enabled
 from .research_plane_contract import build_task_artifact
 from .stock_strategy_router import StockRegimeProfile, route_strategies
 from .sector_taxonomy import (

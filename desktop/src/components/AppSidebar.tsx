@@ -5,6 +5,43 @@ import { IconButton, StatusBadge, statusLabel } from "./shared";
 import type { HealthDetailed, HermesStatus, InspectorTab, MainView, TaskThread } from "../types";
 import type { ViewGroup, ViewRegistryItem } from "../views";
 
+function connectionSummary(status: string) {
+  if (status === "AIASK_ONLINE") return { label: "在线", detail: "Agent 已连接" };
+  if (status === "AIASK_DISCONNECTED") return { label: "未连接", detail: "等待连接 Agent" };
+  return { label: statusLabel(status), detail: "需要查看连接状态" };
+}
+
+function fullModeSummary(enabled?: boolean) {
+  return enabled ? "完整工具已启用" : "仅金融安全模式";
+}
+
+function looksLikeTechnicalId(value?: string) {
+  return Boolean(value && /^[a-f0-9_-]{18,}$/i.test(value.trim()));
+}
+
+function shortId(value?: string) {
+  if (!value) return "-";
+  return value.length > 18 ? `${value.slice(0, 8)}...${value.slice(-6)}` : value;
+}
+
+function readableTime(value?: string) {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function threadSummary(thread: TaskThread) {
+  const status = statusLabel(thread.status);
+  const title = thread.title && !looksLikeTechnicalId(thread.title) ? thread.title : `${status}会话`;
+  const lastSeen = thread.lastMessageAt ? `最近更新 ${readableTime(thread.lastMessageAt)}` : "等待新的运行记录";
+  return {
+    title,
+    detail: `${status} · ${lastSeen}`,
+    technical: shortId(thread.sessionId || thread.id),
+  };
+}
+
 function SidebarNavGroup({
   group,
   inspectorTab,
@@ -74,6 +111,7 @@ export function AppSidebar({
   viewGroups: ViewGroup[];
 }) {
   const fullModeActive = Boolean(health?.hermes?.full_mode_active || hermesStatus?.full_mode_active);
+  const connection = connectionSummary(status);
   const primaryGroups = useMemo(() => viewGroups.filter((group) => group.id === "primary"), [viewGroups]);
   const advancedGroups = useMemo(() => viewGroups.filter((group) => group.id !== "primary"), [viewGroups]);
 
@@ -99,9 +137,9 @@ export function AppSidebar({
         <div>
           <span>项目 / 上下文</span>
           <strong>{health?.service || "本地 AIASK"}</strong>
-          <small>{health?.host ? `${health.host}:${health.port || ""}` : "桌面客户端"}</small>
+          <small>{connection.detail} · {health?.host ? `${health.host}:${health.port || ""}` : "桌面客户端"}</small>
         </div>
-        <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "online" : status} />
+        <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={connection.label} />
       </div>
 
       <div className="extension-slot-row sidebar-slot">
@@ -130,9 +168,16 @@ export function AppSidebar({
               onClick={() => onSelectThread(thread.id)}
               type="button"
             >
-              <span>{thread.sessionId || thread.id}</span>
-              <strong>{thread.title}</strong>
-              <em>{statusLabel(thread.status)}</em>
+              {(() => {
+                const item = threadSummary(thread);
+                return (
+                  <>
+                    <strong>{item.title}</strong>
+                    <span>{item.detail}</span>
+                    <em>{item.technical}</em>
+                  </>
+                );
+              })()}
             </button>
           ))}
           {!threads.length && (
@@ -179,9 +224,9 @@ export function AppSidebar({
       </div>
 
       <div className="sidebar-footer">
-        <StatusBadge status={status} label={status} />
-        <span>{health?.tools?.count ?? 0} 个工具</span>
-        <span>{hermesStatus?.full_mode_enabled ? "完整模式已启用" : "完整模式未启用"}</span>
+        <StatusBadge status={status} label={connection.label} />
+        <span>{health?.tools?.count ?? 0} 个可用工具</span>
+        <span>{fullModeSummary(hermesStatus?.full_mode_enabled)}</span>
       </div>
     </aside>
   );

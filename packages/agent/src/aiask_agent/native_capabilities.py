@@ -16,7 +16,7 @@ from contextlib import closing
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote_plus, urlparse
+from urllib.parse import quote_plus, urlencode, urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
@@ -37,6 +37,7 @@ from .rl_atropos import RLAtroposManager
 from .security import SecurityScanner
 from .session_store import AgentSessionStore, now_iso
 from .skill_packs import SkillPackManager
+from .stock_data_sources import search_source_by_provider
 from .terminal_backends import list_backends, sessions as terminal_backend_sessions
 from .todo import FinancialTodoStore
 from .tools.policy import ToolPolicy
@@ -79,6 +80,132 @@ def _safe_slug(value: str) -> str:
 def _limit(value: str, max_chars: int) -> tuple[str, bool]:
     limit = bounded_int(max_chars, default=20000, minimum=1, maximum=200000)
     return value[:limit], len(value) > limit
+
+
+def media_provider_catalog(env: dict[str, str] | None = None) -> dict[str, Any]:
+    values = dict(os.environ if env is None else env)
+
+    def configured(required: list[str]) -> bool:
+        return all(str(values.get(key) or "").strip() for key in required)
+
+    def row(
+        *,
+        name: str,
+        modality: str,
+        provider_type: str,
+        required_env: list[str],
+        capabilities: list[str],
+        default_model_env: str | None = None,
+        default_model: str | None = None,
+        local_dependency: str | None = None,
+    ) -> dict[str, Any]:
+        ready = configured(required_env)
+        dependency_ready = True
+        if local_dependency:
+            dependency_ready = bool(shutil.which(local_dependency))
+        if local_dependency and not dependency_ready:
+            status = "skipped_missing_dependency"
+        else:
+            status = "live_unverified" if ready else "skipped_missing_credentials"
+        if not required_env and not local_dependency:
+            status = "available"
+        return {
+            "name": name,
+            "modality": modality,
+            "provider_type": provider_type,
+            "configured": bool(ready and dependency_ready) if required_env or local_dependency else True,
+            "status": status,
+            "required_env": required_env,
+            "capabilities": capabilities,
+            "default_model": str(values.get(default_model_env) or default_model or "") if default_model_env or default_model else None,
+            "local_dependency": local_dependency,
+            "secrets_redacted": True,
+        }
+
+    providers = [
+        row(
+            name="openai_vision",
+            modality="vision",
+            provider_type="openai",
+            required_env=["OPENAI_API_KEY", "AIASK_AGENT_VISION_MODEL"],
+            capabilities=["image_understanding"],
+            default_model_env="AIASK_AGENT_VISION_MODEL",
+        ),
+        row(
+            name="openai_image",
+            modality="image",
+            provider_type="openai",
+            required_env=["OPENAI_API_KEY"],
+            capabilities=["image_generate"],
+            default_model_env="AIASK_AGENT_IMAGE_MODEL",
+            default_model="gpt-image-1",
+        ),
+        row(
+            name="aiask_video_endpoint",
+            modality="video",
+            provider_type="openai_compatible",
+            required_env=["AIASK_VIDEO_API_URL", "AIASK_VIDEO_API_KEY"],
+            capabilities=["video_status", "video_create", "video_status_check"],
+            default_model_env="AIASK_VIDEO_MODEL",
+            default_model="video",
+        ),
+        row(
+            name="openai_tts",
+            modality="tts",
+            provider_type="openai",
+            required_env=["OPENAI_API_KEY"],
+            capabilities=["text_to_speech"],
+            default_model_env="AIASK_AGENT_TTS_MODEL",
+            default_model="gpt-4o-mini-tts",
+        ),
+        row(
+            name="edge_tts",
+            modality="tts",
+            provider_type="local_dependency",
+            required_env=[],
+            capabilities=["text_to_speech"],
+            local_dependency="edge-tts",
+        ),
+        row(
+            name="openai_stt",
+            modality="stt",
+            provider_type="openai",
+            required_env=["OPENAI_API_KEY"],
+            capabilities=["transcribe_audio"],
+            default_model_env="AIASK_AGENT_STT_MODEL",
+            default_model="gpt-4o-mini-transcribe",
+        ),
+        row(
+            name="iflytek_voice",
+            modality="voice",
+            provider_type="iflytek",
+            required_env=["IFLYTEK_APP_ID", "IFLYTEK_API_KEY"],
+            capabilities=["speech_to_text", "text_to_speech"],
+        ),
+        row(
+            name="local_whisper",
+            modality="stt",
+            provider_type="local_dependency",
+            required_env=[],
+            capabilities=["transcribe_audio"],
+            local_dependency="whisper",
+        ),
+    ]
+    by_modality: dict[str, int] = {}
+    configured_count = 0
+    for item in providers:
+        by_modality[str(item["modality"])] = by_modality.get(str(item["modality"]), 0) + 1
+        configured_count += 1 if item.get("configured") else 0
+    return {
+        "object": "aiask.media_provider_catalog",
+        "status": "implemented",
+        "providers": providers,
+        "provider_count": len(providers),
+        "configured_count": configured_count,
+        "by_modality": by_modality,
+        "secrets_redacted": True,
+        "catalog_semantics": "configured providers are reported as live_unverified until a real provider call succeeds",
+    }
 
 
 def _is_private_target(url: str) -> bool:
@@ -716,28 +843,109 @@ def build_native_capability_handlers(
             if not query:
                 raise ValueError("query is required")
             limit = bounded_int(arguments.get("limit"), default=5, minimum=1, maximum=20)
-            url = f"https://duckduckgo.com/html/?q={quote_plus(query)}"
-            content, content_type, status = _fetch_url(url, max_bytes=524288, timeout=20)
-            links = _extract_links(content, url, limit=limit * 3)
-            results: list[dict[str, str]] = []
-            seen: set[str] = set()
-            for item in links:
-                href = item["url"]
-                if "duckduckgo.com" in urlparse(href).netloc and "uddg=" in href:
-                    match = re.search(r"uddg=([^&]+)", href)
-                    if match:
-                        from urllib.parse import unquote
+            configured_source = search_source_by_provider(str(arguments.get("source_id") or arguments.get("provider") or "").strip())
+            provider = str((configured_source or {}).get("provider") or "duckduckgo")
+            base_url = str((configured_source or {}).get("base_url") or "").strip().rstrip("/")
+            api_key = str((configured_source or {}).get("api_key") or (configured_source or {}).get("token") or "").strip()
+            timeout = bounded_float((configured_source or {}).get("timeout_seconds"), default=20.0, minimum=1.0, maximum=60.0)
+            results: list[dict[str, Any]] = []
+            status: int | None = None
+            provider_payload: dict[str, Any] = {"source_id": (configured_source or {}).get("id"), "source": (configured_source or {}).get("source")}
 
-                        href = unquote(match.group(1))
-                if href in seen or not href.startswith("http"):
-                    continue
-                seen.add(href)
-                results.append({"title": item["title"], "url": href})
-                if len(results) >= limit:
-                    break
+            if provider == "tavily" and api_key:
+                payload = {
+                    "query": query,
+                    "max_results": limit,
+                    "search_depth": str(arguments.get("search_depth") or (configured_source or {}).get("search_depth") or "basic"),
+                    "include_answer": bool(arguments.get("include_answer") or (configured_source or {}).get("include_answer") or False),
+                }
+                response = await asyncio.to_thread(
+                    _json_request,
+                    "POST",
+                    f"{base_url or 'https://api.tavily.com'}/search",
+                    payload,
+                    headers={"Authorization": f"Bearer {api_key}"},
+                    timeout=timeout,
+                )
+                status = response.get("status_code")
+                body = dict(response.get("body") or {}) if isinstance(response.get("body"), dict) else {}
+                for item in list(body.get("results") or [])[:limit]:
+                    if not isinstance(item, dict):
+                        continue
+                    results.append({"title": str(item.get("title") or item.get("url") or ""), "url": str(item.get("url") or ""), "snippet": str(item.get("content") or item.get("snippet") or "")})
+                provider_payload["answer"] = body.get("answer")
+            elif provider == "brave_search" and api_key:
+                params = urlencode({"q": query, "count": str(limit)})
+                response = await asyncio.to_thread(
+                    _json_request,
+                    "GET",
+                    f"{base_url or 'https://api.search.brave.com/res/v1'}/web/search?{params}",
+                    None,
+                    headers={"Accept": "application/json", "X-Subscription-Token": api_key},
+                    timeout=timeout,
+                )
+                status = response.get("status_code")
+                body = dict(response.get("body") or {}) if isinstance(response.get("body"), dict) else {}
+                web_results = dict(body.get("web") or {}).get("results") if isinstance(body.get("web"), dict) else body.get("results")
+                for item in list(web_results or [])[:limit]:
+                    if not isinstance(item, dict):
+                        continue
+                    results.append({"title": str(item.get("title") or item.get("url") or ""), "url": str(item.get("url") or ""), "snippet": str(item.get("description") or item.get("snippet") or "")})
+            elif provider == "serpapi" and api_key:
+                params = urlencode({"engine": str((configured_source or {}).get("engine") or "google"), "q": query, "api_key": api_key, "num": str(limit)})
+                response = await asyncio.to_thread(
+                    _json_request,
+                    "GET",
+                    f"{base_url or 'https://serpapi.com/search.json'}?{params}",
+                    None,
+                    timeout=timeout,
+                )
+                status = response.get("status_code")
+                body = dict(response.get("body") or {}) if isinstance(response.get("body"), dict) else {}
+                for item in list(body.get("organic_results") or body.get("news_results") or [])[:limit]:
+                    if not isinstance(item, dict):
+                        continue
+                    results.append({"title": str(item.get("title") or item.get("link") or ""), "url": str(item.get("link") or item.get("url") or ""), "snippet": str(item.get("snippet") or item.get("source") or "")})
+            elif provider == "exa" and api_key:
+                payload = {"query": query, "numResults": limit, "type": str(arguments.get("search_type") or (configured_source or {}).get("search_type") or "auto")}
+                response = await asyncio.to_thread(
+                    _json_request,
+                    "POST",
+                    f"{base_url or 'https://api.exa.ai'}/search",
+                    payload,
+                    headers={"x-api-key": api_key},
+                    timeout=timeout,
+                )
+                status = response.get("status_code")
+                body = dict(response.get("body") or {}) if isinstance(response.get("body"), dict) else {}
+                for item in list(body.get("results") or [])[:limit]:
+                    if not isinstance(item, dict):
+                        continue
+                    results.append({"title": str(item.get("title") or item.get("url") or ""), "url": str(item.get("url") or ""), "snippet": str(item.get("text") or item.get("summary") or "")})
+            else:
+                provider = "duckduckgo"
+                url = f"{base_url or 'https://duckduckgo.com/html/'}?q={quote_plus(query)}"
+                content, content_type, status = _fetch_url(url, max_bytes=524288, timeout=timeout)
+                provider_payload["content_type"] = content_type
+                links = _extract_links(content, url, limit=limit * 3)
+                seen: set[str] = set()
+                for item in links:
+                    href = item["url"]
+                    if "duckduckgo.com" in urlparse(href).netloc and "uddg=" in href:
+                        match = re.search(r"uddg=([^&]+)", href)
+                        if match:
+                            from urllib.parse import unquote
+
+                            href = unquote(match.group(1))
+                    if href in seen or not href.startswith("http"):
+                        continue
+                    seen.add(href)
+                    results.append({"title": item["title"], "url": href})
+                    if len(results) >= limit:
+                        break
             return _envelope(
                 True,
-                data={"query": query, "results": results, "status": status, "provider": "duckduckgo_html"},
+                data={"query": query, "results": results, "status": status, "provider": provider, **provider_payload},
                 tool_name=tool,
                 level="read_only",
                 target=query,
@@ -1122,6 +1330,9 @@ def build_native_capability_handlers(
             elif action == "classify_error":
                 data = {"error_class": model_registry.classify_error(arguments.get("error"))}
                 level = "read_only"
+            elif action == "prompt_cache":
+                data = model_registry.status().get("prompt_cache") or {}
+                level = "read_only"
             else:
                 raise ValueError(f"unsupported model action: {action}")
             return _envelope(True, data=data, tool_name=tool, level=level, target=action, idempotent=level == "read_only")
@@ -1134,6 +1345,9 @@ def build_native_capability_handlers(
         try:
             if action == "status":
                 data = memory_providers.status()
+                level = "read_only"
+            elif action == "catalog":
+                data = memory_providers.catalog()
                 level = "read_only"
             elif action == "save":
                 data = {"memory": memory_providers.save(arguments)}
@@ -1265,6 +1479,13 @@ def build_native_capability_handlers(
             except Exception as exc:
                 data["error"] = str(exc)
                 return _envelope(False, data=data, error=str(exc), tool_name=tool, level="read_only", target=image)
+        except Exception as exc:
+            return _envelope(False, error=str(exc), tool_name=tool, level="read_only")
+
+    async def media_provider_catalog_tool(_: dict[str, Any]) -> dict[str, Any]:
+        tool = "agent_media_provider_catalog"
+        try:
+            return _envelope(True, data=media_provider_catalog(), tool_name=tool, level="read_only")
         except Exception as exc:
             return _envelope(False, error=str(exc), tool_name=tool, level="read_only")
 
@@ -1523,14 +1744,40 @@ def build_native_capability_handlers(
         action = str(arguments.get("action") or "status").strip().lower()
         try:
             if action == "request":
+                runtime_context = dict(arguments.get("_aiask_runtime_context") or {})
+                metadata = dict(arguments.get("metadata") or {})
+                if runtime_context:
+                    metadata.update(
+                        {
+                            "handoff_kind": "ownership_transfer",
+                            "source_session_id": runtime_context.get("session_id"),
+                            "source_run_id": runtime_context.get("run_id"),
+                            "source_trace_id": runtime_context.get("trace_id"),
+                            "source_tool_call_id": runtime_context.get("parent_tool_call_id"),
+                            "context_snapshot_id": runtime_context.get("context_snapshot_id"),
+                        }
+                    )
                 item = session_store.request_handoff(
-                    session_id=str(arguments.get("session_id") or "default").strip() or "default",
-                    user_id=arguments.get("user_id"),
+                    session_id=str(arguments.get("session_id") or runtime_context.get("session_id") or "default").strip() or "default",
+                    user_id=arguments.get("user_id") or runtime_context.get("user_id"),
                     target=arguments.get("target"),
                     reason=arguments.get("reason"),
                     summary=arguments.get("summary"),
-                    metadata=dict(arguments.get("metadata") or {}),
+                    metadata=metadata,
                 )
+                session_store.set_session_handoff_state(
+                    str(item.get("session_id") or "default"),
+                    status="pending",
+                    handoff_id=item.get("handoff_id"),
+                    target=item.get("target"),
+                    source_run_id=metadata.get("source_run_id"),
+                    source_tool_call_id=metadata.get("source_tool_call_id"),
+                    context_snapshot_id=metadata.get("context_snapshot_id"),
+                    summary=item.get("summary"),
+                    reason=item.get("reason"),
+                    metadata=metadata,
+                )
+                item = session_store.get_handoff(str(item.get("handoff_id") or "")) or item
                 data = {"handoff": item}
                 level = "stateful"
             elif action == "status":
@@ -1554,12 +1801,26 @@ def build_native_capability_handlers(
                 level = "read_only"
             elif action in {"complete", "fail"}:
                 status = "completed" if action == "complete" else "failed"
+                handoff = session_store.update_handoff(
+                    str(arguments.get("handoff_id") or ""),
+                    status=status,
+                    metadata=dict(arguments.get("metadata") or {}),
+                )
+                session_store.set_session_handoff_state(
+                    str(handoff.get("session_id") or "default"),
+                    status=status,
+                    handoff_id=handoff.get("handoff_id"),
+                    target=handoff.get("target"),
+                    source_run_id=dict(handoff.get("metadata") or {}).get("source_run_id"),
+                    source_tool_call_id=dict(handoff.get("metadata") or {}).get("source_tool_call_id"),
+                    context_snapshot_id=dict(handoff.get("metadata") or {}).get("context_snapshot_id"),
+                    summary=handoff.get("summary"),
+                    reason=handoff.get("reason"),
+                    metadata=dict(handoff.get("metadata") or {}),
+                )
                 data = {
-                    "handoff": session_store.update_handoff(
-                        str(arguments.get("handoff_id") or ""),
-                        status=status,
-                        metadata=dict(arguments.get("metadata") or {}),
-                    )
+                    "handoff": handoff,
+                    "handoff_state": dict((session_store.get_session(str(handoff.get("session_id") or "")) or {}).get("metadata") or {}).get("handoff_state"),
                 }
                 level = "stateful"
             else:
@@ -1944,6 +2205,7 @@ def build_native_capability_handlers(
         "agent_rl_list_runs": rl_list_runs,
         "agent_rl_test_inference": rl_test_inference,
         "agent_vision_analyze": vision_analyze,
+        "agent_media_provider_catalog": media_provider_catalog_tool,
         "agent_image_generate": image_generate,
         "agent_video_generate": video_generate,
         "agent_text_to_speech": text_to_speech,

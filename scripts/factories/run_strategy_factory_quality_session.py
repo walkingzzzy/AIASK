@@ -321,14 +321,30 @@ async def _run_strategy_factory_once(
     factory_mod,
     codes: list[str],
     execution_mode: str,
+    universe_limit: int = 0,
 ) -> dict[str, Any]:
-    runner = factory_mod.StrategyFactoryRunner(
-        interval_sec=300,
-        run_once=True,
-        target_codes=list(codes or []),
-        execution_mode=execution_mode,
-        dispatch_run_mode=False,
-    )
+    # universe_limit>0 时走 dispatch 默认 universe 模式(覆盖全市场子集),
+    # 否则用显式 codes(单/少标的)。dispatch 模式让候选覆盖多标的,
+    # 信号方向多样化,observe 诊断交易得以启动。
+    use_dispatch = int(universe_limit or 0) > 0 and not codes
+    if use_dispatch:
+        runner = factory_mod.StrategyFactoryRunner(
+            interval_sec=300,
+            run_once=True,
+            target_codes=[],
+            execution_mode=execution_mode,
+            dispatch_run_mode=True,
+            dispatch_default_universe=True,
+            dispatch_default_universe_limit=int(universe_limit),
+        )
+    else:
+        runner = factory_mod.StrategyFactoryRunner(
+            interval_sec=300,
+            run_once=True,
+            target_codes=list(codes or []),
+            execution_mode=execution_mode,
+            dispatch_run_mode=False,
+        )
     started_monotonic = time.monotonic()
     started_at = _iso_now()
     raw_result = await runner._execute_cycle()
@@ -352,13 +368,29 @@ async def _run_strategy_factory_once(
     }
 
 
-async def _run_factor_mining_once(enabled: bool) -> dict[str, Any] | None:
-    """每轮跑一轮因子挖掘,使因子超市持续有新候选供策略工厂使用。
+async def _run_factor_mining_once(
+    enabled: bool,
+    *,
+    round_no: int = 1,
+    every_n_rounds: int = 10,
+) -> dict[str, Any] | None:
+    """因子挖掘按频率运行(默认每 10 轮一次),使因子超市持续有新候选但不拖慢每轮节奏。
 
-    覆盖"四大核心持续运行"中的因子挖掘工厂 + 因子超市。失败不阻断本轮(只记录)。
+    因子挖掘严格验证较重(含 llm_primary 180s 超时),每轮跑会显著拉长全链路单轮耗时。
+    频率由 STRATEGY_QUALITY_FACTOR_MINING_EVERY_N_ROUNDS 控制(默认 10);第 1 轮总是跑一次。
+    失败不阻断本轮(只记录)。
     """
     if not enabled:
         return None
+    import os as _os
+    try:
+        every_n = int(str(_os.getenv("STRATEGY_QUALITY_FACTOR_MINING_EVERY_N_ROUNDS", every_n_rounds)).strip())
+    except Exception:
+        every_n = every_n_rounds
+    every_n = max(1, every_n)
+    # 第 1 轮跑一次(建立基线),之后每 every_n 轮跑一次;其余轮跳过。
+    if round_no != 1 and (round_no % every_n) != 0:
+        return {"skipped": True, "reason": f"factor_mining_every_{every_n}_rounds", "round": round_no}
     started_at = _iso_now()
     try:
         from strategy_factory.runtime.factor_mining import get_factor_mining_factory
@@ -2239,12 +2271,14 @@ async def _run_round(
     execution_mode: str,
     with_incubation: bool,
     strategy_sample_limit: int,
+    universe_limit: int = 0,
 ) -> dict[str, Any]:
-    factor_mining_run = await _run_factor_mining_once(with_incubation)
+    factor_mining_run = await _run_factor_mining_once(with_incubation, round_no=round_no)
     factory_run = await _run_strategy_factory_once(
         factory_mod=factory_mod,
         codes=codes,
         execution_mode=execution_mode,
+        universe_limit=universe_limit,
     )
     run_ids = list(factory_run.get("run_ids") or [])
     quality_snapshot = await _collect_run_snapshot(run_ids[0], strategy_sample_limit) if run_ids else {
@@ -2336,6 +2370,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--pause-sec", type=int, default=300, help="sleep time between completed rounds")
     parser.add_argument("--max-runs", type=int, default=0, help="stop after N rounds; 0 means no explicit limit")
     parser.add_argument("--codes", nargs="*", default=["601288"], help="target stock codes; omit value to use current default universe")
+    parser.add_argument("--universe-limit", type=int, default=0, help="若 >0 且未显式传 --codes,走 dispatch 默认 universe 模式,覆盖全市场前 N 只(中等规模验证建议 200-500)")
     parser.add_argument("--execution-mode", default=DEFAULT_EXECUTION_MODE, help="strategy factory execution mode")
     parser.add_argument("--report", default=None, help="root-level markdown report path")
     parser.add_argument("--session-id", default=None, help="explicit session id")
@@ -2412,6 +2447,7 @@ async def _async_main(args: argparse.Namespace) -> int:
                 execution_mode=args.execution_mode,
                 with_incubation=bool(args.with_incubation),
                 strategy_sample_limit=max(1, int(args.strategy_sample_limit)),
+                universe_limit=max(0, int(getattr(args, "universe_limit", 0) or 0)),
             )
             state["entries"].append(entry)
             _persist_round(entry, paths)

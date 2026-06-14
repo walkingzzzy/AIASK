@@ -9,6 +9,8 @@ from ..runtime import AgentRuntime
 TOOL_CONTRACT_CATALOG_FIELDS = (
     "input_schema",
     "output_schema",
+    "outputSchema",
+    "annotations",
     "freshness",
     "examples",
     "contract_version",

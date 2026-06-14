@@ -1,0 +1,1202 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/features/agent-pages/McpConnectorsPage.tsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=5e7a649d"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+var _s = $RefreshSig$();
+import { Eye, Play, PlugZap, RefreshCw, ServerCog, TestTubeDiagonal } from "/node_modules/.vite/deps/lucide-react.js?v=5e7a649d";
+import __vite__cjsImport2_react from "/node_modules/.vite/deps/react.js?v=5e7a649d"; const useEffect = __vite__cjsImport2_react["useEffect"]; const useMemo = __vite__cjsImport2_react["useMemo"]; const useState = __vite__cjsImport2_react["useState"];
+import { formatApiError } from "/src/api.ts?t=1781262947365";
+import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact, localizeBlockedReason, shortText } from "/src/components/shared.tsx";
+import { useCapabilityWorkbench } from "/src/hooks/useCapabilityWorkbench.ts?t=1781262947365";
+import { AiaskApi } from "/src/services/aiaskApi.ts?t=1781262947365";
+import { McpPanel } from "/src/features/mcp/McpPanel.tsx?t=1781262947365";
+function asRecord(value) {
+  return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function connectorRef(connector) {
+  if (connector.id && connector.id.includes(":")) return connector.id.slice(connector.id.indexOf(":") + 1);
+  if (connector.id) return connector.id;
+  return connector.name;
+}
+function statusFromPayload(payload) {
+  const mcp = payload?.mcp;
+  if (!mcp) return "not_loaded";
+  if (mcp.gated) return "gated";
+  return mcp.discovery_status || mcp.registration_status || "unknown";
+}
+function connectorsSummaryNumbers(summary, list) {
+  const record = asRecord(asRecord(summary).data || summary);
+  return {
+    total: Number(record.total ?? list.length),
+    connected: Number(record.connected ?? list.filter((item) => item.connected || item.status === "ready").length),
+    configured: Number(record.configured ?? list.filter((item) => item.configured).length)
+  };
+}
+function mcpItemField(value, field) {
+  const record = asRecord(value);
+  return String(record[field] || "").trim();
+}
+function mcpResultStatus(result) {
+  const record = asRecord(result);
+  if (record.success === true) return "ready";
+  const errorCode = String(record.error_code || "").toUpperCase();
+  if (errorCode.includes("AUTH") || errorCode.includes("DISCOVERY") || errorCode.includes("UNAVAILABLE")) return "blocked";
+  return "failed";
+}
+function mcpResultDetail(result) {
+  const record = asRecord(result);
+  const data = asRecord(record.data);
+  const nestedResult = asRecord(data.result);
+  return String(nestedResult.text || data.prompt || data.status || record.error_code || record.error || record.object || "ready");
+}
+function connectorMessageLabel(status) {
+  if (status === "CONNECTORS_NOT_LOADED") return "连接器尚未加载";
+  if (status === "CONNECTORS_LOADED") return "连接器已加载";
+  if (status === "CONNECTOR_DETAIL_LOADED") return "连接器详情已加载";
+  if (status === "CONNECTOR_TESTED") return "连接器测试完成";
+  return status;
+}
+function smokeMessageLabel(status) {
+  if (status === "MCP_SMOKE_NOT_RUN") return "只读冒烟测试未运行";
+  if (status === "MCP_SMOKE_RUNNING") return "只读冒烟测试运行中";
+  if (status === "MCP_SMOKE_DONE") return "只读冒烟测试已完成";
+  return status;
+}
+export function McpConnectorsPage({
+  endpoint,
+  apiToken,
+  controlToken
+}) {
+  _s();
+  const api = useMemo(() => new AiaskApi({ endpoint, apiToken, controlToken }), [endpoint, apiToken, controlToken]);
+  const { payload, message, busy, refresh } = useCapabilityWorkbench(endpoint, apiToken, controlToken);
+  const [connectorSummary, setConnectorSummary] = useState(null);
+  const [connectors, setConnectors] = useState([]);
+  const [selectedConnector, setSelectedConnector] = useState(null);
+  const [connectorResult, setConnectorResult] = useState(null);
+  const [connectorMessage, setConnectorMessage] = useState("CONNECTORS_NOT_LOADED");
+  const [connectorBusy, setConnectorBusy] = useState(false);
+  const [smokeSteps, setSmokeSteps] = useState([]);
+  const [smokeMessage, setSmokeMessage] = useState("MCP_SMOKE_NOT_RUN");
+  const [smokeBusy, setSmokeBusy] = useState(false);
+  const mcp = payload?.mcp;
+  const firstServerName = String(mcp?.servers?.[0]?.name || "");
+  const firstResourceUri = mcpItemField(mcp?.resources?.[0], "uri");
+  const firstPromptName = mcpItemField(mcp?.prompts?.[0], "name");
+  const summaryNumbers = connectorsSummaryNumbers(connectorSummary, connectors);
+  const mcpStatus = statusFromPayload(payload);
+  const mcpToolCount = mcp?.discovered_counts?.tools ?? mcp?.tools.length ?? 0;
+  const mcpResourceCount = mcp?.discovered_counts?.resources ?? mcp?.resources.length ?? 0;
+  const mcpPromptCount = mcp?.discovered_counts?.prompts ?? mcp?.prompts.length ?? 0;
+  const oauthCount = mcp?.oauth.length ?? 0;
+  const missingAuth = mcp?.missing_auth_env_vars || [];
+  const hasControlToken = Boolean(controlToken.trim());
+  const groupedConnectors = connectors.reduce((acc, connector) => {
+    const key = connector.type || "unknown";
+    if (!acc[key]) acc[key] = [];
+    acc[key].push(connector);
+    return acc;
+  }, {});
+  async function loadConnectors() {
+    if (!hasControlToken) {
+      setConnectorSummary(null);
+      setConnectors([]);
+      setSelectedConnector(null);
+      setConnectorResult(null);
+      setConnectorMessage("CONTROL_TOKEN_REQUIRED");
+      return;
+    }
+    setConnectorBusy(true);
+    try {
+      const [summaryPayload, listPayload] = await Promise.all(
+        [
+          api.connectorsSummary(),
+          api.connectorsList()
+        ]
+      );
+      setConnectorSummary(summaryPayload);
+      setConnectors(listPayload.data || []);
+      setConnectorMessage("CONNECTORS_LOADED");
+    } catch (error) {
+      setConnectorSummary(null);
+      setConnectors([]);
+      setConnectorMessage(formatApiError(error));
+    } finally {
+      setConnectorBusy(false);
+    }
+  }
+  async function refreshAll() {
+    await Promise.all([refresh(), loadConnectors()]);
+  }
+  async function loadConnectorDetail(connector) {
+    setConnectorBusy(true);
+    try {
+      const payload2 = await api.connectorDetail(connector.type, connectorRef(connector));
+      setSelectedConnector(payload2.data || connector);
+      setConnectorResult(payload2);
+      setConnectorMessage("CONNECTOR_DETAIL_LOADED");
+    } catch (error) {
+      setConnectorMessage(formatApiError(error));
+    } finally {
+      setConnectorBusy(false);
+    }
+  }
+  async function testConnector(connector) {
+    setConnectorBusy(true);
+    try {
+      const payload2 = await api.connectorTest(connector.type, connectorRef(connector));
+      setSelectedConnector(payload2.data || connector);
+      setConnectorResult(payload2);
+      setConnectorMessage("CONNECTOR_TESTED");
+    } catch (error) {
+      setConnectorMessage(formatApiError(error));
+    } finally {
+      setConnectorBusy(false);
+    }
+  }
+  function initialSmokeSteps() {
+    return [
+      {
+        id: "resource",
+        label: "读取 MCP 资源",
+        endpoint: "/v1/mcp/resources/read",
+        target: firstResourceUri || "未发现资源",
+        status: "idle",
+        detail: firstResourceUri ? "等待运行" : "无可用资源"
+      },
+      {
+        id: "prompt",
+        label: "获取 MCP 提示词",
+        endpoint: "/v1/mcp/prompts/get",
+        target: firstPromptName || "未发现提示词",
+        status: "idle",
+        detail: firstPromptName ? "等待运行" : "无可用提示词"
+      }
+    ];
+  }
+  async function runMcpReadOnlySmoke() {
+    const selectedServer = firstServerName;
+    const nextSteps = initialSmokeSteps();
+    setSmokeSteps(nextSteps);
+    setSmokeBusy(true);
+    setSmokeMessage("MCP_SMOKE_RUNNING");
+    try {
+      for (const step of nextSteps) {
+        if (!selectedServer || step.id === "resource" && !firstResourceUri || step.id === "prompt" && !firstPromptName) {
+          setSmokeSteps((current) => current.map((item) => item.id === step.id ? { ...item, status: "blocked", detail: "缺少可调用目标" } : item));
+          continue;
+        }
+        setSmokeSteps((current) => current.map((item) => item.id === step.id ? { ...item, status: "running", detail: "调用 Agent HTTP" } : item));
+        try {
+          const result = step.id === "resource" ? await api.mcpResourceRead(firstResourceUri, selectedServer) : await api.mcpPromptGet(firstPromptName, {}, selectedServer);
+          setSmokeSteps(
+            (current) => current.map((item) => item.id === step.id ? { ...item, status: mcpResultStatus(result), detail: mcpResultDetail(result), result } : item)
+          );
+        } catch (error) {
+          setSmokeSteps(
+            (current) => current.map((item) => item.id === step.id ? { ...item, status: "failed", detail: formatApiError(error) } : item)
+          );
+        }
+      }
+      setSmokeMessage("MCP_SMOKE_DONE");
+    } finally {
+      setSmokeBusy(false);
+    }
+  }
+  useEffect(() => {
+    refreshAll().catch(() => void 0);
+  }, [hasControlToken, endpoint]);
+  return /* @__PURE__ */ jsxDEV("section", { className: "capabilities-workspace", children: [
+    /* @__PURE__ */ jsxDEV("header", { className: "capabilities-header", children: [
+      /* @__PURE__ */ jsxDEV("div", { children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "运维与连接" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 244,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("h1", { children: "MCP / 连接器" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 245,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 243,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "header-actions", children: [
+        /* @__PURE__ */ jsxDEV(StatusBadge, { status: message.startsWith("AIASK_") ? "gated" : "ready", label: message || "ready" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 248,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV(
+          StatusBadge,
+          {
+            status: connectorMessage.startsWith("AIASK_") ? "gated" : "ready",
+            label: connectorMessageLabel(connectorMessage),
+            technicalLabel: connectorMessage
+          },
+          void 0,
+          false,
+          {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 249,
+            columnNumber: 11
+          },
+          this
+        ),
+        /* @__PURE__ */ jsxDEV("button", { className: "small-button", disabled: busy || connectorBusy, onClick: refreshAll, type: "button", children: [
+          /* @__PURE__ */ jsxDEV(RefreshCw, { size: 14, className: busy || connectorBusy ? "spin" : "" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 255,
+            columnNumber: 13
+          }, this),
+          "刷新"
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 254,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 247,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+      lineNumber: 242,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "capabilities-body", children: /* @__PURE__ */ jsxDEV("div", { className: "capability-stack", children: [
+      /* @__PURE__ */ jsxDEV("div", { className: "capability-banner", children: [
+        /* @__PURE__ */ jsxDEV("div", { children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "MCP + 连接器" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 265,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("h2", { children: "服务器、工具、资源、提示词、OAuth 与连接器管理" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 266,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("p", { children: "桌面端只读取 Agent 聚合状态并调用 Agent HTTP 管理接口，不直接连接 MCP server 或 manager。" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 267,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 264,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(PlugZap, { size: 22 }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 269,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 263,
+        columnNumber: 11
+      }, this),
+      !hasControlToken && /* @__PURE__ */ jsxDEV(
+        GatedState,
+        {
+          reason: localizeBlockedReason("control token required") || "MCP 和连接器管理需要控制令牌。请在设置中填写控制令牌后再刷新。",
+          status: "gated",
+          title: "连接器管理受限"
+        },
+        void 0,
+        false,
+        {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 273,
+          columnNumber: 11
+        },
+        this
+      ),
+      /* @__PURE__ */ jsxDEV("div", { className: "diagnostics-summary wide", children: [
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "MCP 状态", value: mcpStatus, status: mcpStatus }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 281,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "服务器", value: mcp?.servers.length ?? 0, status: mcp?.servers.length ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 282,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "工具", value: mcpToolCount, status: mcpToolCount ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 283,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "资源", value: mcpResourceCount, status: mcpResourceCount ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 284,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "提示词", value: mcpPromptCount, status: mcpPromptCount ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 285,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "OAuth", value: oauthCount, status: oauthCount ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 286,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "连接器", value: summaryNumbers.total, status: summaryNumbers.total ? "ready" : "not_loaded" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 287,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(MetricCard, { label: "已连接", value: summaryNumbers.connected, status: summaryNumbers.connected ? "ready" : "unconfigured" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 288,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 280,
+        columnNumber: 11
+      }, this),
+      missingAuth.length ? /* @__PURE__ */ jsxDEV(
+        GatedState,
+        {
+          reason: `MCP 授权缺失：${missingAuth.join(", ")}`,
+          status: "unconfigured",
+          title: "MCP 授权未配置"
+        },
+        void 0,
+        false,
+        {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 292,
+          columnNumber: 11
+        },
+        this
+      ) : null,
+      /* @__PURE__ */ jsxDEV("section", { className: "capability-section mcp-smoke-panel", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+          /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: smokeMessageLabel(smokeMessage) }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 302,
+              columnNumber: 17
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "MCP 只读调用冒烟测试" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 303,
+              columnNumber: 17
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 301,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            "button",
+            {
+              className: "small-button",
+              disabled: busy || connectorBusy || smokeBusy || !hasControlToken || !firstServerName,
+              onClick: runMcpReadOnlySmoke,
+              type: "button",
+              children: [
+                /* @__PURE__ */ jsxDEV(Play, { size: 14 }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 311,
+                  columnNumber: 17
+                }, this),
+                "运行 MCP 只读冒烟测试"
+              ]
+            },
+            void 0,
+            true,
+            {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 305,
+              columnNumber: 15
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 300,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "mcp-smoke-steps", children: (smokeSteps.length ? smokeSteps : initialSmokeSteps()).map(
+          (step) => /* @__PURE__ */ jsxDEV("article", { className: `mcp-smoke-step ${step.status}`, children: [
+            /* @__PURE__ */ jsxDEV("div", { className: "mcp-smoke-step-head", children: [
+              /* @__PURE__ */ jsxDEV("div", { children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: step.label }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 320,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: step.endpoint }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 321,
+                  columnNumber: 23
+                }, this)
+              ] }, void 0, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 319,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV(StatusBadge, { status: step.status }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 323,
+                columnNumber: 21
+              }, this)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 318,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("div", { className: "kv-grid", children: [
+              /* @__PURE__ */ jsxDEV("span", { children: "服务器" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 326,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV("strong", { children: firstServerName || "-" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 327,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: "目标" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 328,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV("strong", { children: step.target }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 329,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: "结果" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 330,
+                columnNumber: 21
+              }, this),
+              /* @__PURE__ */ jsxDEV("strong", { children: step.detail }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 331,
+                columnNumber: 21
+              }, this)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 325,
+              columnNumber: 19
+            }, this),
+            step.result !== void 0 && /* @__PURE__ */ jsxDEV(RawEvidencePanel, { title: `${step.label}结果`, value: step.result }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 333,
+              columnNumber: 49
+            }, this)
+          ] }, step.id, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 317,
+            columnNumber: 15
+          }, this)
+        ) }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 315,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 299,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ jsxDEV("section", { className: "capability-grid two", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+            /* @__PURE__ */ jsxDEV("div", { children: [
+              /* @__PURE__ */ jsxDEV("span", { children: [
+                mcp?.servers.length ?? 0,
+                " 个服务器"
+              ] }, void 0, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 343,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("h3", { children: "MCP 服务器" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 344,
+                columnNumber: 19
+              }, this)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 342,
+              columnNumber: 17
+            }, this),
+            /* @__PURE__ */ jsxDEV(ServerCog, { size: 18 }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 346,
+              columnNumber: 17
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 341,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "data-table", children: [
+            /* @__PURE__ */ jsxDEV("div", { className: "table-head", children: [
+              /* @__PURE__ */ jsxDEV("span", { children: "服务器" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 350,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: "传输" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 351,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: "状态" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 352,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: "详情" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 353,
+                columnNumber: 19
+              }, this)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 349,
+              columnNumber: 17
+            }, this),
+            mcp?.servers.map(
+              (server) => /* @__PURE__ */ jsxDEV("div", { className: "table-row", children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: server.name }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 357,
+                  columnNumber: 21
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: server.transport || "-" }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 358,
+                  columnNumber: 21
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: server.configured === false ? "unconfigured" : "configured" }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 359,
+                  columnNumber: 21
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: shortText(String(server.domain || server.url || server.detail || "-"), 72) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 360,
+                  columnNumber: 21
+                }, this)
+              ] }, server.name, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 356,
+                columnNumber: 17
+              }, this)
+            ),
+            !mcp?.servers.length && /* @__PURE__ */ jsxDEV("div", { className: "table-empty", children: "暂无 MCP 服务器。" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 363,
+              columnNumber: 42
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 348,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 340,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              mcpToolCount,
+              " 个工具"
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 370,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "MCP 工具" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 371,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 369,
+            columnNumber: 17
+          }, this) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 368,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "mini-list", children: [
+            mcp?.tools.slice(0, 12).map(
+              (tool) => /* @__PURE__ */ jsxDEV("article", { children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: tool.wrapped_name || tool.name }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 377,
+                  columnNumber: 21
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: [
+                  tool.server || "-",
+                  " / ",
+                  tool.name
+                ] }, void 0, true, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 378,
+                  columnNumber: 21
+                }, this),
+                /* @__PURE__ */ jsxDEV("p", { children: shortText(tool.description || "暂无描述。", 120) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 379,
+                  columnNumber: 21
+                }, this)
+              ] }, `${tool.server || "mcp"}:${tool.name}`, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 376,
+                columnNumber: 17
+              }, this)
+            ),
+            !mcp?.tools.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "暂无 MCP 工具。" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 382,
+              columnNumber: 40
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 374,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 367,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              mcpResourceCount,
+              " 个资源"
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 389,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "MCP 资源" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 390,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 388,
+            columnNumber: 17
+          }, this) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 387,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "mini-list", children: [
+            mcp?.resources.slice(0, 8).map((resource, index) => {
+              const item = asRecord(resource);
+              return /* @__PURE__ */ jsxDEV("article", { children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: compact(item.name || item.uri || `resource-${index + 1}`) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 398,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: compact(item.uri || item.server || "-") }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 399,
+                  columnNumber: 23
+                }, this)
+              ] }, `${item.uri || item.name || index}`, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 397,
+                columnNumber: 21
+              }, this);
+            }),
+            !mcp?.resources.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "暂无 MCP 资源。" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 403,
+              columnNumber: 44
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 393,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 386,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              mcpPromptCount,
+              " 个提示词 / ",
+              oauthCount,
+              " 个 OAuth 状态"
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 410,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "提示词 / OAuth" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 411,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 409,
+            columnNumber: 17
+          }, this) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 408,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "mini-list", children: [
+            mcp?.prompts.slice(0, 6).map((prompt, index) => {
+              const item = asRecord(prompt);
+              return /* @__PURE__ */ jsxDEV("article", { children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: compact(item.name || `prompt-${index + 1}`) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 419,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: shortText(String(item.description || item.server || "-"), 96) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 420,
+                  columnNumber: 23
+                }, this)
+              ] }, `${item.name || index}`, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 418,
+                columnNumber: 21
+              }, this);
+            }),
+            mcp?.oauth.slice(0, 6).map((oauth, index) => {
+              const item = asRecord(oauth);
+              return /* @__PURE__ */ jsxDEV("article", { children: [
+                /* @__PURE__ */ jsxDEV("strong", { children: compact(item.server || item.name || `oauth-${index + 1}`) }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 428,
+                  columnNumber: 23
+                }, this),
+                /* @__PURE__ */ jsxDEV("span", { children: compact(item.status || item.authenticated || item.error || "unknown") }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 429,
+                  columnNumber: 23
+                }, this)
+              ] }, `oauth:${item.server || item.name || index}`, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 427,
+                columnNumber: 21
+              }, this);
+            }),
+            !mcp?.prompts.length && !mcp?.oauth.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "暂无提示词或 OAuth 状态。" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 433,
+              columnNumber: 64
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 414,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 407,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 339,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ jsxDEV("section", { className: "capability-section", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+          /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              summaryNumbers.total,
+              " 总数 / ",
+              summaryNumbers.connected,
+              " 已连接 / ",
+              summaryNumbers.configured,
+              " 已配置"
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 441,
+              columnNumber: 17
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "连接器摘要" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 442,
+              columnNumber: 17
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 440,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            StatusBadge,
+            {
+              status: connectorMessage.startsWith("AIASK_") ? "gated" : "ready",
+              label: connectorMessageLabel(connectorMessage),
+              technicalLabel: connectorMessage
+            },
+            void 0,
+            false,
+            {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 444,
+              columnNumber: 15
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 439,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "connector-type-grid", children: [
+          Object.entries(groupedConnectors).map(
+            ([type, items]) => /* @__PURE__ */ jsxDEV("article", { children: [
+              /* @__PURE__ */ jsxDEV("strong", { children: type }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 453,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: [
+                items.filter((item) => item.connected || item.status === "ready").length,
+                "/",
+                items.length,
+                " 已连接"
+              ] }, void 0, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 454,
+                columnNumber: 19
+              }, this)
+            ] }, type, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 452,
+              columnNumber: 15
+            }, this)
+          ),
+          !connectors.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "暂无连接器。" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 457,
+            columnNumber: 38
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 450,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 438,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ jsxDEV("section", { className: "capability-grid two", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              connectors.length,
+              " 个连接器"
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 465,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "连接器列表" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 466,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 464,
+            columnNumber: 17
+          }, this) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 463,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV("div", { className: "connector-list", children: [
+            connectors.map(
+              (connector, index) => /* @__PURE__ */ jsxDEV("article", { className: "connector-item", children: [
+                /* @__PURE__ */ jsxDEV("div", { className: "connector-header", children: [
+                  /* @__PURE__ */ jsxDEV("strong", { children: connector.name }, void 0, false, {
+                    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                    lineNumber: 473,
+                    columnNumber: 23
+                  }, this),
+                  /* @__PURE__ */ jsxDEV("span", { className: "tag", children: connector.type }, void 0, false, {
+                    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                    lineNumber: 474,
+                    columnNumber: 23
+                  }, this),
+                  /* @__PURE__ */ jsxDEV(StatusBadge, { status: connector.status || (connector.connected ? "ready" : "unconfigured") }, void 0, false, {
+                    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                    lineNumber: 475,
+                    columnNumber: 23
+                  }, this)
+                ] }, void 0, true, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 472,
+                  columnNumber: 21
+                }, this),
+                connector.category && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: connector.category }, void 0, false, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 477,
+                  columnNumber: 44
+                }, this),
+                connector.missing_env?.length ? /* @__PURE__ */ jsxDEV("div", { className: "notice info compact", children: [
+                  "缺少环境变量：",
+                  connector.missing_env.join(", ")
+                ] }, void 0, true, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 478,
+                  columnNumber: 54
+                }, this) : null,
+                /* @__PURE__ */ jsxDEV("div", { className: "row-actions", children: [
+                  /* @__PURE__ */ jsxDEV("button", { className: "small-button", disabled: connectorBusy, onClick: () => loadConnectorDetail(connector), type: "button", children: [
+                    /* @__PURE__ */ jsxDEV(Eye, { size: 13 }, void 0, false, {
+                      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                      lineNumber: 481,
+                      columnNumber: 25
+                    }, this),
+                    "详情"
+                  ] }, void 0, true, {
+                    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                    lineNumber: 480,
+                    columnNumber: 23
+                  }, this),
+                  /* @__PURE__ */ jsxDEV("button", { className: "small-button", disabled: connectorBusy || !hasControlToken, onClick: () => testConnector(connector), type: "button", children: [
+                    /* @__PURE__ */ jsxDEV(TestTubeDiagonal, { size: 13 }, void 0, false, {
+                      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                      lineNumber: 485,
+                      columnNumber: 25
+                    }, this),
+                    "测试"
+                  ] }, void 0, true, {
+                    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                    lineNumber: 484,
+                    columnNumber: 23
+                  }, this)
+                ] }, void 0, true, {
+                  fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                  lineNumber: 479,
+                  columnNumber: 21
+                }, this)
+              ] }, `${connector.type}:${connectorRef(connector)}:${index}`, true, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 471,
+                columnNumber: 17
+              }, this)
+            ),
+            !connectors.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "暂无连接器列表。" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 491,
+              columnNumber: 40
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 469,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 462,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+          /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+            /* @__PURE__ */ jsxDEV("div", { children: [
+              /* @__PURE__ */ jsxDEV("span", { children: "详情 / 测试" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 498,
+                columnNumber: 19
+              }, this),
+              /* @__PURE__ */ jsxDEV("h3", { children: "连接器详情" }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+                lineNumber: 499,
+                columnNumber: 19
+              }, this)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 497,
+              columnNumber: 17
+            }, this),
+            /* @__PURE__ */ jsxDEV(StatusBadge, { status: selectedConnector ? selectedConnector.status || "ready" : "not_loaded" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 501,
+              columnNumber: 17
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 496,
+            columnNumber: 15
+          }, this),
+          selectedConnector ? /* @__PURE__ */ jsxDEV("div", { className: "kv-grid", children: [
+            /* @__PURE__ */ jsxDEV("span", { children: "名称" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 505,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("strong", { children: selectedConnector.name }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 506,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: "类型" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 507,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("strong", { children: selectedConnector.type }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 508,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: "已配置" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 509,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("strong", { children: String(selectedConnector.configured ?? "unknown") }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 510,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: "已连接" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 511,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("strong", { children: String(selectedConnector.connected ?? "unknown") }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 512,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: "缺少环境变量" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 513,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("strong", { children: selectedConnector.missing_env?.join(", ") || "-" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+              lineNumber: 514,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 504,
+            columnNumber: 15
+          }, this) : /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "请选择连接器，或先运行一次测试。" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 517,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV(RawEvidencePanel, { title: "连接器原始结果", value: { selectedConnector, connectorResult, connectorSummary } }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 519,
+            columnNumber: 15
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 495,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 461,
+        columnNumber: 11
+      }, this),
+      /* @__PURE__ */ jsxDEV("section", { className: "mcp-operations-panel", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "section-header inline-section-header", children: /* @__PURE__ */ jsxDEV("div", { children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "高级 MCP 操作" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 526,
+            columnNumber: 17
+          }, this),
+          /* @__PURE__ */ jsxDEV("h3", { children: "MCP 操作" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+            lineNumber: 527,
+            columnNumber: 17
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 525,
+          columnNumber: 15
+        }, this) }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 524,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV(McpPanel, { apiToken, controlToken, endpoint, onRefresh: refresh, payload }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+          lineNumber: 530,
+          columnNumber: 13
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+        lineNumber: 523,
+        columnNumber: 11
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+      lineNumber: 262,
+      columnNumber: 9
+    }, this) }, void 0, false, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+      lineNumber: 261,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx",
+    lineNumber: 241,
+    columnNumber: 5
+  }, this);
+}
+_s(McpConnectorsPage, "aT/fYhVLblJ31VmCTICqFPdE4aY=", false, function() {
+  return [useCapabilityWorkbench];
+});
+_c = McpConnectorsPage;
+var _c;
+$RefreshReg$(_c, "McpConnectorsPage");
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+function $RefreshReg$(type, id) {
+  return RefreshRuntime.register(type, "C:/Users/walking/Desktop/aiask/desktop/src/features/agent-pages/McpConnectorsPage.tsx " + id);
+}
+function $RefreshSig$() {
+  return RefreshRuntime.createSignatureFunctionForTransform();
+}
+
+//# sourceMappingURL=data:application/json;base64,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QSxpQkFBZTtBQUFBLFVBQ2YsdUJBQUMsUUFBRyxzQkFBSjtBQUFBO0FBQUE7QUFBQTtBQUFBLGlCQUFVO0FBQUEsYUFGWjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBR0EsS0FKRjtBQUFBO0FBQUE7QUFBQTtBQUFBLGVBS0E7QUFBQSxRQUNBLHVCQUFDLFlBQVMsVUFBb0IsY0FBNEIsVUFBb0IsV0FBV0QsU0FBUyxXQUFsRztBQUFBO0FBQUE7QUFBQTtBQUFBLGVBQW1IO0FBQUEsV0FQckg7QUFBQTtBQUFBO0FBQUE7QUFBQSxhQVFBO0FBQUEsU0E3UUY7QUFBQTtBQUFBO0FBQUE7QUFBQSxXQThRQSxLQS9RRjtBQUFBO0FBQUE7QUFBQTtBQUFBLFdBZ1JBO0FBQUEsT0FwU0Y7QUFBQTtBQUFBO0FBQUE7QUFBQSxTQXFTQTtBQUVKO0FBQUNKLEdBcmNlSixtQkFBaUI7QUFBQSxVQVVhbkQsc0JBQXNCO0FBQUE7QUFBQSxLQVZwRG1EO0FBQWlCLElBQUFnRztBQUFBLGFBQUFBLElBQUEiLCJuYW1lcyI6WyJFeWUiLCJQbGF5IiwiUGx1Z1phcCIsIlJlZnJlc2hDdyIsIlNlcnZlckNvZyIsIlRlc3RUdWJlRGlhZ29uYWwiLCJ1c2VFZmZlY3QiLCJ1c2VNZW1vIiwidXNlU3RhdGUiLCJmb3JtYXRBcGlFcnJvciIsIkdhdGVkU3RhdGUiLCJNZXRyaWNDYXJkIiwiUmF3RXZpZGVuY2VQYW5lbCIsIlN0YXR1c0JhZGdlIiwiY29tcGFjdCIsImxvY2FsaXplQmxvY2tlZFJlYXNvbiIsInNob3J0VGV4dCIsInVzZUNhcGFiaWxpdHlXb3JrYmVuY2giLCJBaWFza0FwaSIsIk1jcFBhbmVsIiwiYXNSZWNvcmQiLCJ2YWx1ZSIsIkFycmF5IiwiaXNBcnJheSIsImNvbm5lY3RvclJlZiIsImNvbm5lY3RvciIsImlkIiwiaW5jbHVkZXMiLCJzbGljZSIsImluZGV4T2YiLCJuYW1lIiwic3RhdHVzRnJvbVBheWxvYWQiLCJwYXlsb2FkIiwibWNwIiwiZ2F0ZWQiLCJkaXNjb3Zlcnlfc3RhdHVzIiwicmVnaXN0cmF0aW9uX3N0YXR1cyIsImNvbm5lY3RvcnNTdW1tYXJ5TnVtYmVycyIsInN1bW1hcnkiLCJsaXN0IiwicmVjb3JkIiwiZGF0YSIsInRvdGFsIiwiTnVtYmVyIiwibGVuZ3RoIiwiY29ubmVjdGVkIiwiZmlsdGVyIiwiaXRlbSIsInN0YXR1cyIsImNvbmZpZ3VyZWQiLCJtY3BJdGVtRmllbGQiLCJmaWVsZCIsIlN0cmluZyIsInRyaW0iLCJtY3BSZXN1bHRTdGF0dXMiLCJyZXN1bHQiLCJzdWNjZXNzIiwiZXJyb3JDb2RlIiwiZXJyb3JfY29kZSIsInRvVXBwZXJDYXNlIiwibWNwUmVzdWx0RGV0YWlsIiwibmVzdGVkUmVzdWx0IiwidGV4dCIsInByb21wdCIsImVycm9yIiwib2JqZWN0IiwiY29ubmVjdG9yTWVzc2FnZUxhYmVsIiwic21va2VNZXNzYWdlTGFiZWwiLCJNY3BDb25uZWN0b3JzUGFnZSIsImVuZHBvaW50IiwiYXBpVG9rZW4iLCJjb250cm9sVG9rZW4iLCJfcyIsImFwaSIsIm1lc3NhZ2UiLCJidXN5IiwicmVmcmVzaCIsImNvbm5lY3RvclN1bW1hcnkiLCJzZXRDb25uZWN0b3JTdW1tYXJ5IiwiY29ubmVjdG9ycyIsInNldENvbm5lY3RvcnMiLCJzZWxlY3RlZENvbm5lY3RvciIsInNldFNlbGVjdGVkQ29ubmVjdG9yIiwiY29ubmVjdG9yUmVzdWx0Iiwic2V0Q29ubmVjdG9yUmVzdWx0IiwiY29ubmVjdG9yTWVzc2FnZSIsInNldENvbm5lY3Rvck1lc3NhZ2UiLCJjb25uZWN0b3JCdXN5Iiwic2V0Q29ubmVjdG9yQnVzeSIsInNtb2tlU3RlcHMiLCJzZXRTbW9rZVN0ZXBzIiwic21va2VNZXNzYWdlIiwic2V0U21va2VNZXNzYWdlIiwic21va2VCdXN5Iiwic2V0U21va2VCdXN5IiwiZmlyc3RTZXJ2ZXJOYW1lIiwic2VydmVycyIsImZpcnN0UmVzb3VyY2VVcmkiLCJyZXNvdXJjZXMiLCJmaXJzdFByb21wdE5hbWUiLCJwcm9tcHRzIiwic3VtbWFyeU51bWJlcnMiLCJtY3BTdGF0dXMiLCJtY3BUb29sQ291bnQiLCJkaXNjb3ZlcmVkX2NvdW50cyIsInRvb2xzIiwibWNwUmVzb3VyY2VDb3VudCIsIm1jcFByb21wdENvdW50Iiwib2F1dGhDb3VudCIsIm9hdXRoIiwibWlzc2luZ0F1dGgiLCJtaXNzaW5nX2F1dGhfZW52X3ZhcnMiLCJoYXNDb250cm9sVG9rZW4iLCJCb29sZWFuIiwiZ3JvdXBlZENvbm5lY3RvcnMiLCJyZWR1Y2UiLCJhY2MiLCJrZXkiLCJ0eXBlIiwicHVzaCIsImxvYWRDb25uZWN0b3JzIiwic3VtbWFyeVBheWxvYWQiLCJsaXN0UGF5bG9hZCIsIlByb21pc2UiLCJhbGwiLCJjb25uZWN0b3JzU3VtbWFyeSIsImNvbm5lY3RvcnNMaXN0IiwicmVmcmVzaEFsbCIsImxvYWRDb25uZWN0b3JEZXRhaWwiLCJjb25uZWN0b3JEZXRhaWwiLCJ0ZXN0Q29ubmVjdG9yIiwiY29ubmVjdG9yVGVzdCIsImluaXRpYWxTbW9rZVN0ZXBzIiwibGFiZWwiLCJ0YXJnZXQiLCJkZXRhaWwiLCJydW5NY3BSZWFkT25seVNtb2tlIiwic2VsZWN0ZWRTZXJ2ZXIiLCJuZXh0U3RlcHMiLCJzdGVwIiwiY3VycmVudCIsIm1hcCIsIm1jcFJlc291cmNlUmVhZCIsIm1jcFByb21wdEdldCIsImNhdGNoIiwidW5kZWZpbmVkIiwic3RhcnRzV2l0aCIsImpvaW4iLCJzZXJ2ZXIiLCJ0cmFuc3BvcnQiLCJkb21haW4iLCJ1cmwiLCJ0b29sIiwid3JhcHBlZF9uYW1lIiwiZGVzY3JpcHRpb24iLCJyZXNvdXJjZSIsImluZGV4IiwidXJpIiwiYXV0aGVudGljYXRlZCIsIk9iamVjdCIsImVudHJpZXMiLCJpdGVtcyIsImNhdGVnb3J5IiwibWlzc2luZ19lbnYiLCJfYyJdLCJpZ25vcmVMaXN0IjpbXSwic291cmNlcyI6WyJNY3BDb25uZWN0b3JzUGFnZS50c3giXSwic291cmNlc0NvbnRlbnQiOlsiaW1wb3J0IHsgRXllLCBQbGF5LCBQbHVnWmFwLCBSZWZyZXNoQ3csIFNlcnZlckNvZywgVGVzdFR1YmVEaWFnb25hbCB9IGZyb20gXCJsdWNpZGUtcmVhY3RcIjtcbmltcG9ydCB7IHVzZUVmZmVjdCwgdXNlTWVtbywgdXNlU3RhdGUgfSBmcm9tIFwicmVhY3RcIjtcbmltcG9ydCB7IGZvcm1hdEFwaUVycm9yIH0gZnJvbSBcIi4uLy4uL2FwaVwiO1xuaW1wb3J0IHsgR2F0ZWRTdGF0ZSwgSnNvblBhbmVsLCBNZXRyaWNDYXJkLCBSYXdFdmlkZW5jZVBhbmVsLCBTdGF0dXNCYWRnZSwgY29tcGFjdCwgbG9jYWxpemVCbG9ja2VkUmVhc29uLCBzaG9ydFRleHQgfSBmcm9tIFwiLi4vLi4vY29tcG9uZW50cy9zaGFyZWRcIjtcbmltcG9ydCB7IHVzZUNhcGFiaWxpdHlXb3JrYmVuY2ggfSBmcm9tIFwiLi4vLi4vaG9va3MvdXNlQ2FwYWJpbGl0eVdvcmtiZW5jaFwiO1xuaW1wb3J0IHsgQWlhc2tBcGkgfSBmcm9tIFwiLi4vLi4vc2VydmljZXMvYWlhc2tBcGlcIjtcbmltcG9ydCB0eXBlIHsgQ2FwYWJpbGl0eVdvcmtiZW5jaFBheWxvYWQsIENvbm5lY3RvckRldGFpbCB9IGZyb20gXCIuLi8uLi90eXBlc1wiO1xuaW1wb3J0IHsgTWNwUGFuZWwgfSBmcm9tIFwiLi4vbWNwL01jcFBhbmVsXCI7XG5cbmZ1bmN0aW9uIGFzUmVjb3JkKHZhbHVlOiB1bmtub3duKTogUmVjb3JkPHN0cmluZywgdW5rbm93bj4ge1xuICByZXR1cm4gdmFsdWUgJiYgdHlwZW9mIHZhbHVlID09PSBcIm9iamVjdFwiICYmICFBcnJheS5pc0FycmF5KHZhbHVlKSA/ICh2YWx1ZSBhcyBSZWNvcmQ8c3RyaW5nLCB1bmtub3duPikgOiB7fTtcbn1cblxuZnVuY3Rpb24gY29ubmVjdG9yUmVmKGNvbm5lY3RvcjogQ29ubmVjdG9yRGV0YWlsKTogc3RyaW5nIHtcbiAgaWYgKGNvbm5lY3Rvci5pZCAmJiBjb25uZWN0b3IuaWQuaW5jbHVkZXMoXCI6XCIpKSByZXR1cm4gY29ubmVjdG9yLmlkLnNsaWNlKGNvbm5lY3Rvci5pZC5pbmRleE9mKFwiOlwiKSArIDEpO1xuICBpZiAoY29ubmVjdG9yLmlkKSByZXR1cm4gY29ubmVjdG9yLmlkO1xuICByZXR1cm4gY29ubmVjdG9yLm5hbWU7XG59XG5cbmZ1bmN0aW9uIHN0YXR1c0Zyb21QYXlsb2FkKHBheWxvYWQ6IENhcGFiaWxpdHlXb3JrYmVuY2hQYXlsb2FkIHwgbnVsbCk6IHN0cmluZyB7XG4gIGNvbnN0IG1jcCA9IHBheWxvYWQ/Lm1jcDtcbiAgaWYgKCFtY3ApIHJldHVybiBcIm5vdF9sb2FkZWRcIjtcbiAgaWYgKG1jcC5nYXRlZCkgcmV0dXJuIFwiZ2F0ZWRcIjtcbiAgcmV0dXJuIG1jcC5kaXNjb3Zlcnlfc3RhdHVzIHx8IG1jcC5yZWdpc3RyYXRpb25fc3RhdHVzIHx8IFwidW5rbm93blwiO1xufVxuXG5mdW5jdGlvbiBjb25uZWN0b3JzU3VtbWFyeU51bWJlcnMoc3VtbWFyeTogdW5rbm93biwgbGlzdDogQ29ubmVjdG9yRGV0YWlsW10pIHtcbiAgY29uc3QgcmVjb3JkID0gYXNSZWNvcmQoKGFzUmVjb3JkKHN1bW1hcnkpLmRhdGEgfHwgc3VtbWFyeSkpO1xuICByZXR1cm4ge1xuICAgIHRvdGFsOiBOdW1iZXIocmVjb3JkLnRvdGFsID8/IGxpc3QubGVuZ3RoKSxcbiAgICBjb25uZWN0ZWQ6IE51bWJlcihyZWNvcmQuY29ubmVjdGVkID8/IGxpc3QuZmlsdGVyKChpdGVtKSA9PiBpdGVtLmNvbm5lY3RlZCB8fCBpdGVtLnN0YXR1cyA9PT0gXCJyZWFkeVwiKS5sZW5ndGgpLFxuICAgIGNvbmZpZ3VyZWQ6IE51bWJlcihyZWNvcmQuY29uZmlndXJlZCA/PyBsaXN0LmZpbHRlcigoaXRlbSkgPT4gaXRlbS5jb25maWd1cmVkKS5sZW5ndGgpLFxuICB9O1xufVxuXG50eXBlIE1jcFNtb2tlU3RlcFN0YXR1cyA9IFwiaWRsZVwiIHwgXCJydW5uaW5nXCIgfCBcInJlYWR5XCIgfCBcImJsb2NrZWRcIiB8IFwiZmFpbGVkXCI7XG5cbnR5cGUgTWNwU21va2VTdGVwID0ge1xuICBpZDogXCJyZXNvdXJjZVwiIHwgXCJwcm9tcHRcIjtcbiAgbGFiZWw6IHN0cmluZztcbiAgZW5kcG9pbnQ6IHN0cmluZztcbiAgdGFyZ2V0OiBzdHJpbmc7XG4gIHN0YXR1czogTWNwU21va2VTdGVwU3RhdHVzO1xuICBkZXRhaWw6IHN0cmluZztcbiAgcmVzdWx0PzogdW5rbm93bjtcbn07XG5cbmZ1bmN0aW9uIG1jcEl0ZW1GaWVsZCh2YWx1ZTogdW5rbm93biwgZmllbGQ6IHN0cmluZyk6IHN0cmluZyB7XG4gIGNvbnN0IHJlY29yZCA9IGFzUmVjb3JkKHZhbHVlKTtcbiAgcmV0dXJuIFN0cmluZyhyZWNvcmRbZmllbGRdIHx8IFwiXCIpLnRyaW0oKTtcbn1cblxuZnVuY3Rpb24gbWNwUmVzdWx0U3RhdHVzKHJlc3VsdDogdW5rbm93bik6IE1jcFNtb2tlU3RlcFN0YXR1cyB7XG4gIGNvbnN0IHJlY29yZCA9IGFzUmVjb3JkKHJlc3VsdCk7XG4gIGlmIChyZWNvcmQuc3VjY2VzcyA9PT0gdHJ1ZSkgcmV0dXJuIFwicmVhZHlcIjtcbiAgY29uc3QgZXJyb3JDb2RlID0gU3RyaW5nKHJlY29yZC5lcnJvcl9jb2RlIHx8IFwiXCIpLnRvVXBwZXJDYXNlKCk7XG4gIGlmIChlcnJvckNvZGUuaW5jbHVkZXMoXCJBVVRIXCIpIHx8IGVycm9yQ29kZS5pbmNsdWRlcyhcIkRJU0NPVkVSWVwiKSB8fCBlcnJvckNvZGUuaW5jbHVkZXMoXCJVTkFWQUlMQUJMRVwiKSkgcmV0dXJuIFwiYmxvY2tlZFwiO1xuICByZXR1cm4gXCJmYWlsZWRcIjtcbn1cblxuZnVuY3Rpb24gbWNwUmVzdWx0RGV0YWlsKHJlc3VsdDogdW5rbm93bik6IHN0cmluZyB7XG4gIGNvbnN0IHJlY29yZCA9IGFzUmVjb3JkKHJlc3VsdCk7XG4gIGNvbnN0IGRhdGEgPSBhc1JlY29yZChyZWNvcmQuZGF0YSk7XG4gIGNvbnN0IG5lc3RlZFJlc3VsdCA9IGFzUmVjb3JkKGRhdGEucmVzdWx0KTtcbiAgcmV0dXJuIFN0cmluZyhuZXN0ZWRSZXN1bHQudGV4dCB8fCBkYXRhLnByb21wdCB8fCBkYXRhLnN0YXR1cyB8fCByZWNvcmQuZXJyb3JfY29kZSB8fCByZWNvcmQuZXJyb3IgfHwgcmVjb3JkLm9iamVjdCB8fCBcInJlYWR5XCIpO1xufVxuXG5mdW5jdGlvbiBjb25uZWN0b3JNZXNzYWdlTGFiZWwoc3RhdHVzOiBzdHJpbmcpOiBzdHJpbmcge1xuICBpZiAoc3RhdHVzID09PSBcIkNPTk5FQ1RPUlNfTk9UX0xPQURFRFwiKSByZXR1cm4gXCLov57mjqXlmajlsJrmnKrliqDovb1cIjtcbiAgaWYgKHN0YXR1cyA9PT0gXCJDT05ORUNUT1JTX0xPQURFRFwiKSByZXR1cm4gXCLov57mjqXlmajlt7LliqDovb1cIjtcbiAgaWYgKHN0YXR1cyA9PT0gXCJDT05ORUNUT1JfREVUQUlMX0xPQURFRFwiKSByZXR1cm4gXCLov57mjqXlmajor6bmg4Xlt7LliqDovb1cIjtcbiAgaWYgKHN0YXR1cyA9PT0gXCJDT05ORUNUT1JfVEVTVEVEXCIpIHJldHVybiBcIui/nuaOpeWZqOa1i+ivleWujOaIkFwiO1xuICByZXR1cm4gc3RhdHVzO1xufVxuXG5mdW5jdGlvbiBzbW9rZU1lc3NhZ2VMYWJlbChzdGF0dXM6IHN0cmluZyk6IHN0cmluZyB7XG4gIGlmIChzdGF0dXMgPT09IFwiTUNQX1NNT0tFX05PVF9SVU5cIikgcmV0dXJuIFwi5Y+q6K+75YaS54Of5rWL6K+V5pyq6L+Q6KGMXCI7XG4gIGlmIChzdGF0dXMgPT09IFwiTUNQX1NNT0tFX1JVTk5JTkdcIikgcmV0dXJuIFwi5Y+q6K+75YaS54Of5rWL6K+V6L+Q6KGM5LitXCI7XG4gIGlmIChzdGF0dXMgPT09IFwiTUNQX1NNT0tFX0RPTkVcIikgcmV0dXJuIFwi5Y+q6K+75YaS54Of5rWL6K+V5bey5a6M5oiQXCI7XG4gIHJldHVybiBzdGF0dXM7XG59XG5cbmV4cG9ydCBmdW5jdGlvbiBNY3BDb25uZWN0b3JzUGFnZSh7XG4gIGVuZHBvaW50LFxuICBhcGlUb2tlbixcbiAgY29udHJvbFRva2VuLFxufToge1xuICBlbmRwb2ludDogc3RyaW5nO1xuICBhcGlUb2tlbjogc3RyaW5nO1xuICBjb250cm9sVG9rZW46IHN0cmluZztcbn0pIHtcbiAgY29uc3QgYXBpID0gdXNlTWVtbygoKSA9PiBuZXcgQWlhc2tBcGkoeyBlbmRwb2ludCwgYXBpVG9rZW4sIGNvbnRyb2xUb2tlbiB9KSwgW2VuZHBvaW50LCBhcGlUb2tlbiwgY29udHJvbFRva2VuXSk7XG4gIGNvbnN0IHsgcGF5bG9hZCwgbWVzc2FnZSwgYnVzeSwgcmVmcmVzaCB9ID0gdXNlQ2FwYWJpbGl0eVdvcmtiZW5jaChlbmRwb2ludCwgYXBpVG9rZW4sIGNvbnRyb2xUb2tlbik7XG4gIGNvbnN0IFtjb25uZWN0b3JTdW1tYXJ5LCBzZXRDb25uZWN0b3JTdW1tYXJ5XSA9IHVzZVN0YXRlPHVua25vd24+KG51bGwpO1xuICBjb25zdCBbY29ubmVjdG9ycywgc2V0Q29ubmVjdG9yc10gPSB1c2VTdGF0ZTxDb25uZWN0b3JEZXRhaWxbXT4oW10pO1xuICBjb25zdCBbc2VsZWN0ZWRDb25uZWN0b3IsIHNldFNlbGVjdGVkQ29ubmVjdG9yXSA9IHVzZVN0YXRlPENvbm5lY3RvckRldGFpbCB8IG51bGw+KG51bGwpO1xuICBjb25zdCBbY29ubmVjdG9yUmVzdWx0LCBzZXRDb25uZWN0b3JSZXN1bHRdID0gdXNlU3RhdGU8dW5rbm93bj4obnVsbCk7XG4gIGNvbnN0IFtjb25uZWN0b3JNZXNzYWdlLCBzZXRDb25uZWN0b3JNZXNzYWdlXSA9IHVzZVN0YXRlKFwiQ09OTkVDVE9SU19OT1RfTE9BREVEXCIpO1xuICBjb25zdCBbY29ubmVjdG9yQnVzeSwgc2V0Q29ubmVjdG9yQnVzeV0gPSB1c2VTdGF0ZShmYWxzZSk7XG4gIGNvbnN0IFtzbW9rZVN0ZXBzLCBzZXRTbW9rZVN0ZXBzXSA9IHVzZVN0YXRlPE1jcFNtb2tlU3RlcFtdPihbXSk7XG4gIGNvbnN0IFtzbW9rZU1lc3NhZ2UsIHNldFNtb2tlTWVzc2FnZV0gPSB1c2VTdGF0ZShcIk1DUF9TTU9LRV9OT1RfUlVOXCIpO1xuICBjb25zdCBbc21va2VCdXN5LCBzZXRTbW9rZUJ1c3ldID0gdXNlU3RhdGUoZmFsc2UpO1xuXG4gIGNvbnN0IG1jcCA9IHBheWxvYWQ/Lm1jcDtcbiAgY29uc3QgZmlyc3RTZXJ2ZXJOYW1lID0gU3RyaW5nKG1jcD8uc2VydmVycz8uWzBdPy5uYW1lIHx8IFwiXCIpO1xuICBjb25zdCBmaXJzdFJlc291cmNlVXJpID0gbWNwSXRlbUZpZWxkKG1jcD8ucmVzb3VyY2VzPy5bMF0sIFwidXJpXCIpO1xuICBjb25zdCBmaXJzdFByb21wdE5hbWUgPSBtY3BJdGVtRmllbGQobWNwPy5wcm9tcHRzPy5bMF0sIFwibmFtZVwiKTtcbiAgY29uc3Qgc3VtbWFyeU51bWJlcnMgPSBjb25uZWN0b3JzU3VtbWFyeU51bWJlcnMoY29ubmVjdG9yU3VtbWFyeSwgY29ubmVjdG9ycyk7XG4gIGNvbnN0IG1jcFN0YXR1cyA9IHN0YXR1c0Zyb21QYXlsb2FkKHBheWxvYWQpO1xuICBjb25zdCBtY3BUb29sQ291bnQgPSBtY3A/LmRpc2NvdmVyZWRfY291bnRzPy50b29scyA/PyBtY3A/LnRvb2xzLmxlbmd0aCA/PyAwO1xuICBjb25zdCBtY3BSZXNvdXJjZUNvdW50ID0gbWNwPy5kaXNjb3ZlcmVkX2NvdW50cz8ucmVzb3VyY2VzID8/IG1jcD8ucmVzb3VyY2VzLmxlbmd0aCA/PyAwO1xuICBjb25zdCBtY3BQcm9tcHRDb3VudCA9IG1jcD8uZGlzY292ZXJlZF9jb3VudHM/LnByb21wdHMgPz8gbWNwPy5wcm9tcHRzLmxlbmd0aCA/PyAwO1xuICBjb25zdCBvYXV0aENvdW50ID0gbWNwPy5vYXV0aC5sZW5ndGggPz8gMDtcbiAgY29uc3QgbWlzc2luZ0F1dGggPSBtY3A/Lm1pc3NpbmdfYXV0aF9lbnZfdmFycyB8fCBbXTtcbiAgY29uc3QgaGFzQ29udHJvbFRva2VuID0gQm9vbGVhbihjb250cm9sVG9rZW4udHJpbSgpKTtcbiAgY29uc3QgZ3JvdXBlZENvbm5lY3RvcnMgPSBjb25uZWN0b3JzLnJlZHVjZTxSZWNvcmQ8c3RyaW5nLCBDb25uZWN0b3JEZXRhaWxbXT4+KChhY2MsIGNvbm5lY3RvcikgPT4ge1xuICAgIGNvbnN0IGtleSA9IGNvbm5lY3Rvci50eXBlIHx8IFwidW5rbm93blwiO1xuICAgIGlmICghYWNjW2tleV0pIGFjY1trZXldID0gW107XG4gICAgYWNjW2tleV0ucHVzaChjb25uZWN0b3IpO1xuICAgIHJldHVybiBhY2M7XG4gIH0sIHt9KTtcblxuICBhc3luYyBmdW5jdGlvbiBsb2FkQ29ubmVjdG9ycygpIHtcbiAgICBpZiAoIWhhc0NvbnRyb2xUb2tlbikge1xuICAgICAgc2V0Q29ubmVjdG9yU3VtbWFyeShudWxsKTtcbiAgICAgIHNldENvbm5lY3RvcnMoW10pO1xuICAgICAgc2V0U2VsZWN0ZWRDb25uZWN0b3IobnVsbCk7XG4gICAgICBzZXRDb25uZWN0b3JSZXN1bHQobnVsbCk7XG4gICAgICBzZXRDb25uZWN0b3JNZXNzYWdlKFwiQ09OVFJPTF9UT0tFTl9SRVFVSVJFRFwiKTtcbiAgICAgIHJldHVybjtcbiAgICB9XG4gICAgc2V0Q29ubmVjdG9yQnVzeSh0cnVlKTtcbiAgICB0cnkge1xuICAgICAgY29uc3QgW3N1bW1hcnlQYXlsb2FkLCBsaXN0UGF5bG9hZF0gPSBhd2FpdCBQcm9taXNlLmFsbChbXG4gICAgICAgIGFwaS5jb25uZWN0b3JzU3VtbWFyeSgpLFxuICAgICAgICBhcGkuY29ubmVjdG9yc0xpc3QoKSxcbiAgICAgIF0pO1xuICAgICAgc2V0Q29ubmVjdG9yU3VtbWFyeShzdW1tYXJ5UGF5bG9hZCk7XG4gICAgICBzZXRDb25uZWN0b3JzKGxpc3RQYXlsb2FkLmRhdGEgfHwgW10pO1xuICAgICAgc2V0Q29ubmVjdG9yTWVzc2FnZShcIkNPTk5FQ1RPUlNfTE9BREVEXCIpO1xuICAgIH0gY2F0Y2ggKGVycm9yKSB7XG4gICAgICBzZXRDb25uZWN0b3JTdW1tYXJ5KG51bGwpO1xuICAgICAgc2V0Q29ubmVjdG9ycyhbXSk7XG4gICAgICBzZXRDb25uZWN0b3JNZXNzYWdlKGZvcm1hdEFwaUVycm9yKGVycm9yKSk7XG4gICAgfSBmaW5hbGx5IHtcbiAgICAgIHNldENvbm5lY3RvckJ1c3koZmFsc2UpO1xuICAgIH1cbiAgfVxuXG4gIGFzeW5jIGZ1bmN0aW9uIHJlZnJlc2hBbGwoKSB7XG4gICAgYXdhaXQgUHJvbWlzZS5hbGwoW3JlZnJlc2goKSwgbG9hZENvbm5lY3RvcnMoKV0pO1xuICB9XG5cbiAgYXN5bmMgZnVuY3Rpb24gbG9hZENvbm5lY3RvckRldGFpbChjb25uZWN0b3I6IENvbm5lY3RvckRldGFpbCkge1xuICAgIHNldENvbm5lY3RvckJ1c3kodHJ1ZSk7XG4gICAgdHJ5IHtcbiAgICAgIGNvbnN0IHBheWxvYWQgPSBhd2FpdCBhcGkuY29ubmVjdG9yRGV0YWlsKGNvbm5lY3Rvci50eXBlLCBjb25uZWN0b3JSZWYoY29ubmVjdG9yKSk7XG4gICAgICBzZXRTZWxlY3RlZENvbm5lY3RvcihwYXlsb2FkLmRhdGEgfHwgY29ubmVjdG9yKTtcbiAgICAgIHNldENvbm5lY3RvclJlc3VsdChwYXlsb2FkKTtcbiAgICAgIHNldENvbm5lY3Rvck1lc3NhZ2UoXCJDT05ORUNUT1JfREVUQUlMX0xPQURFRFwiKTtcbiAgICB9IGNhdGNoIChlcnJvcikge1xuICAgICAgc2V0Q29ubmVjdG9yTWVzc2FnZShmb3JtYXRBcGlFcnJvcihlcnJvcikpO1xuICAgIH0gZmluYWxseSB7XG4gICAgICBzZXRDb25uZWN0b3JCdXN5KGZhbHNlKTtcbiAgICB9XG4gIH1cblxuICBhc3luYyBmdW5jdGlvbiB0ZXN0Q29ubmVjdG9yKGNvbm5lY3RvcjogQ29ubmVjdG9yRGV0YWlsKSB7XG4gICAgc2V0Q29ubmVjdG9yQnVzeSh0cnVlKTtcbiAgICB0cnkge1xuICAgICAgY29uc3QgcGF5bG9hZCA9IGF3YWl0IGFwaS5jb25uZWN0b3JUZXN0KGNvbm5lY3Rvci50eXBlLCBjb25uZWN0b3JSZWYoY29ubmVjdG9yKSk7XG4gICAgICBzZXRTZWxlY3RlZENvbm5lY3RvcihwYXlsb2FkLmRhdGEgfHwgY29ubmVjdG9yKTtcbiAgICAgIHNldENvbm5lY3RvclJlc3VsdChwYXlsb2FkKTtcbiAgICAgIHNldENvbm5lY3Rvck1lc3NhZ2UoXCJDT05ORUNUT1JfVEVTVEVEXCIpO1xuICAgIH0gY2F0Y2ggKGVycm9yKSB7XG4gICAgICBzZXRDb25uZWN0b3JNZXNzYWdlKGZvcm1hdEFwaUVycm9yKGVycm9yKSk7XG4gICAgfSBmaW5hbGx5IHtcbiAgICAgIHNldENvbm5lY3RvckJ1c3koZmFsc2UpO1xuICAgIH1cbiAgfVxuXG4gIGZ1bmN0aW9uIGluaXRpYWxTbW9rZVN0ZXBzKCk6IE1jcFNtb2tlU3RlcFtdIHtcbiAgICByZXR1cm4gW1xuICAgICAge1xuICAgICAgICBpZDogXCJyZXNvdXJjZVwiLFxuICAgICAgICBsYWJlbDogXCLor7vlj5YgTUNQIOi1hOa6kFwiLFxuICAgICAgICBlbmRwb2ludDogXCIvdjEvbWNwL3Jlc291cmNlcy9yZWFkXCIsXG4gICAgICAgIHRhcmdldDogZmlyc3RSZXNvdXJjZVVyaSB8fCBcIuacquWPkeeOsOi1hOa6kFwiLFxuICAgICAgICBzdGF0dXM6IFwiaWRsZVwiLFxuICAgICAgICBkZXRhaWw6IGZpcnN0UmVzb3VyY2VVcmkgPyBcIuetieW+hei/kOihjFwiIDogXCLml6Dlj6/nlKjotYTmupBcIixcbiAgICAgIH0sXG4gICAgICB7XG4gICAgICAgIGlkOiBcInByb21wdFwiLFxuICAgICAgICBsYWJlbDogXCLojrflj5YgTUNQIOaPkOekuuivjVwiLFxuICAgICAgICBlbmRwb2ludDogXCIvdjEvbWNwL3Byb21wdHMvZ2V0XCIsXG4gICAgICAgIHRhcmdldDogZmlyc3RQcm9tcHROYW1lIHx8IFwi5pyq5Y+R546w5o+Q56S66K+NXCIsXG4gICAgICAgIHN0YXR1czogXCJpZGxlXCIsXG4gICAgICAgIGRldGFpbDogZmlyc3RQcm9tcHROYW1lID8gXCLnrYnlvoXov5DooYxcIiA6IFwi5peg5Y+v55So5o+Q56S66K+NXCIsXG4gICAgICB9LFxuICAgIF07XG4gIH1cblxuICBhc3luYyBmdW5jdGlvbiBydW5NY3BSZWFkT25seVNtb2tlKCkge1xuICAgIGNvbnN0IHNlbGVjdGVkU2VydmVyID0gZmlyc3RTZXJ2ZXJOYW1lO1xuICAgIGNvbnN0IG5leHRTdGVwcyA9IGluaXRpYWxTbW9rZVN0ZXBzKCk7XG4gICAgc2V0U21va2VTdGVwcyhuZXh0U3RlcHMpO1xuICAgIHNldFNtb2tlQnVzeSh0cnVlKTtcbiAgICBzZXRTbW9rZU1lc3NhZ2UoXCJNQ1BfU01PS0VfUlVOTklOR1wiKTtcbiAgICB0cnkge1xuICAgICAgZm9yIChjb25zdCBzdGVwIG9mIG5leHRTdGVwcykge1xuICAgICAgICBpZiAoIXNlbGVjdGVkU2VydmVyIHx8IChzdGVwLmlkID09PSBcInJlc291cmNlXCIgJiYgIWZpcnN0UmVzb3VyY2VVcmkpIHx8IChzdGVwLmlkID09PSBcInByb21wdFwiICYmICFmaXJzdFByb21wdE5hbWUpKSB7XG4gICAgICAgICAgc2V0U21va2VTdGVwcygoY3VycmVudCkgPT4gY3VycmVudC5tYXAoKGl0ZW0pID0+IChpdGVtLmlkID09PSBzdGVwLmlkID8geyAuLi5pdGVtLCBzdGF0dXM6IFwiYmxvY2tlZFwiLCBkZXRhaWw6IFwi57y65bCR5Y+v6LCD55So55uu5qCHXCIgfSA6IGl0ZW0pKSk7XG4gICAgICAgICAgY29udGludWU7XG4gICAgICAgIH1cbiAgICAgICAgc2V0U21va2VTdGVwcygoY3VycmVudCkgPT4gY3VycmVudC5tYXAoKGl0ZW0pID0+IChpdGVtLmlkID09PSBzdGVwLmlkID8geyAuLi5pdGVtLCBzdGF0dXM6IFwicnVubmluZ1wiLCBkZXRhaWw6IFwi6LCD55SoIEFnZW50IEhUVFBcIiB9IDogaXRlbSkpKTtcbiAgICAgICAgdHJ5IHtcbiAgICAgICAgICBjb25zdCByZXN1bHQgPSBzdGVwLmlkID09PSBcInJlc291cmNlXCJcbiAgICAgICAgICAgID8gYXdhaXQgYXBpLm1jcFJlc291cmNlUmVhZChmaXJzdFJlc291cmNlVXJpLCBzZWxlY3RlZFNlcnZlcilcbiAgICAgICAgICAgIDogYXdhaXQgYXBpLm1jcFByb21wdEdldChmaXJzdFByb21wdE5hbWUsIHt9LCBzZWxlY3RlZFNlcnZlcik7XG4gICAgICAgICAgc2V0U21va2VTdGVwcygoY3VycmVudCkgPT5cbiAgICAgICAgICAgIGN1cnJlbnQubWFwKChpdGVtKSA9PiAoaXRlbS5pZCA9PT0gc3RlcC5pZCA/IHsgLi4uaXRlbSwgc3RhdHVzOiBtY3BSZXN1bHRTdGF0dXMocmVzdWx0KSwgZGV0YWlsOiBtY3BSZXN1bHREZXRhaWwocmVzdWx0KSwgcmVzdWx0IH0gOiBpdGVtKSlcbiAgICAgICAgICApO1xuICAgICAgICB9IGNhdGNoIChlcnJvcikge1xuICAgICAgICAgIHNldFNtb2tlU3RlcHMoKGN1cnJlbnQpID0+XG4gICAgICAgICAgICBjdXJyZW50Lm1hcCgoaXRlbSkgPT4gKGl0ZW0uaWQgPT09IHN0ZXAuaWQgPyB7IC4uLml0ZW0sIHN0YXR1czogXCJmYWlsZWRcIiwgZGV0YWlsOiBmb3JtYXRBcGlFcnJvcihlcnJvcikgfSA6IGl0ZW0pKVxuICAgICAgICAgICk7XG4gICAgICAgIH1cbiAgICAgIH1cbiAgICAgIHNldFNtb2tlTWVzc2FnZShcIk1DUF9TTU9LRV9ET05FXCIpO1xuICAgIH0gZmluYWxseSB7XG4gICAgICBzZXRTbW9rZUJ1c3koZmFsc2UpO1xuICAgIH1cbiAgfVxuXG4gIHVzZUVmZmVjdCgoKSA9PiB7XG4gICAgcmVmcmVzaEFsbCgpLmNhdGNoKCgpID0+IHVuZGVmaW5lZCk7XG4gICAgLy8gZXNsaW50LWRpc2FibGUtbmV4dC1saW5lIHJlYWN0LWhvb2tzL2V4aGF1c3RpdmUtZGVwc1xuICB9LCBbaGFzQ29udHJvbFRva2VuLCBlbmRwb2ludF0pO1xuXG4gIHJldHVybiAoXG4gICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwiY2FwYWJpbGl0aWVzLXdvcmtzcGFjZVwiPlxuICAgICAgPGhlYWRlciBjbGFzc05hbWU9XCJjYXBhYmlsaXRpZXMtaGVhZGVyXCI+XG4gICAgICAgIDxkaXY+XG4gICAgICAgICAgPHNwYW4+6L+Q57u05LiO6L+e5o6lPC9zcGFuPlxuICAgICAgICAgIDxoMT5NQ1AgLyDov57mjqXlmag8L2gxPlxuICAgICAgICA8L2Rpdj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJoZWFkZXItYWN0aW9uc1wiPlxuICAgICAgICAgIDxTdGF0dXNCYWRnZSBzdGF0dXM9e21lc3NhZ2Uuc3RhcnRzV2l0aChcIkFJQVNLX1wiKSA/IFwiZ2F0ZWRcIiA6IFwicmVhZHlcIn0gbGFiZWw9e21lc3NhZ2UgfHwgXCJyZWFkeVwifSAvPlxuICAgICAgICAgIDxTdGF0dXNCYWRnZVxuICAgICAgICAgICAgc3RhdHVzPXtjb25uZWN0b3JNZXNzYWdlLnN0YXJ0c1dpdGgoXCJBSUFTS19cIikgPyBcImdhdGVkXCIgOiBcInJlYWR5XCJ9XG4gICAgICAgICAgICBsYWJlbD17Y29ubmVjdG9yTWVzc2FnZUxhYmVsKGNvbm5lY3Rvck1lc3NhZ2UpfVxuICAgICAgICAgICAgdGVjaG5pY2FsTGFiZWw9e2Nvbm5lY3Rvck1lc3NhZ2V9XG4gICAgICAgICAgLz5cbiAgICAgICAgICA8YnV0dG9uIGNsYXNzTmFtZT1cInNtYWxsLWJ1dHRvblwiIGRpc2FibGVkPXtidXN5IHx8IGNvbm5lY3RvckJ1c3l9IG9uQ2xpY2s9e3JlZnJlc2hBbGx9IHR5cGU9XCJidXR0b25cIj5cbiAgICAgICAgICAgIDxSZWZyZXNoQ3cgc2l6ZT17MTR9IGNsYXNzTmFtZT17YnVzeSB8fCBjb25uZWN0b3JCdXN5ID8gXCJzcGluXCIgOiBcIlwifSAvPlxuICAgICAgICAgICAg5Yi35pawXG4gICAgICAgICAgPC9idXR0b24+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9oZWFkZXI+XG5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0aWVzLWJvZHlcIj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LXN0YWNrXCI+XG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LWJhbm5lclwiPlxuICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgPHNwYW4+TUNQICsg6L+e5o6l5ZmoPC9zcGFuPlxuICAgICAgICAgICAgICA8aDI+5pyN5Yqh5Zmo44CB5bel5YW344CB6LWE5rqQ44CB5o+Q56S66K+N44CBT0F1dGgg5LiO6L+e5o6l5Zmo566h55CGPC9oMj5cbiAgICAgICAgICAgICAgPHA+5qGM6Z2i56uv5Y+q6K+75Y+WIEFnZW50IOiBmuWQiOeKtuaAgeW5tuiwg+eUqCBBZ2VudCBIVFRQIOeuoeeQhuaOpeWPo++8jOS4jeebtOaOpei/nuaOpSBNQ1Agc2VydmVyIOaIliBtYW5hZ2Vy44CCPC9wPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICA8UGx1Z1phcCBzaXplPXsyMn0gLz5cbiAgICAgICAgICA8L2Rpdj5cblxuICAgICAgICAgIHshaGFzQ29udHJvbFRva2VuICYmIChcbiAgICAgICAgICAgIDxHYXRlZFN0YXRlXG4gICAgICAgICAgICAgIHJlYXNvbj17bG9jYWxpemVCbG9ja2VkUmVhc29uKFwiY29udHJvbCB0b2tlbiByZXF1aXJlZFwiKSB8fCBcIk1DUCDlkozov57mjqXlmajnrqHnkIbpnIDopoHmjqfliLbku6TniYzjgILor7flnKjorr7nva7kuK3loavlhpnmjqfliLbku6TniYzlkI7lho3liLfmlrDjgIJcIn1cbiAgICAgICAgICAgICAgc3RhdHVzPVwiZ2F0ZWRcIlxuICAgICAgICAgICAgICB0aXRsZT1cIui/nuaOpeWZqOeuoeeQhuWPl+mZkFwiXG4gICAgICAgICAgICAvPlxuICAgICAgICAgICl9XG5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImRpYWdub3N0aWNzLXN1bW1hcnkgd2lkZVwiPlxuICAgICAgICAgICAgPE1ldHJpY0NhcmQgbGFiZWw9XCJNQ1Ag54q25oCBXCIgdmFsdWU9e21jcFN0YXR1c30gc3RhdHVzPXttY3BTdGF0dXN9IC8+XG4gICAgICAgICAgICA8TWV0cmljQ2FyZCBsYWJlbD1cIuacjeWKoeWZqFwiIHZhbHVlPXttY3A/LnNlcnZlcnMubGVuZ3RoID8/IDB9IHN0YXR1cz17bWNwPy5zZXJ2ZXJzLmxlbmd0aCA/IFwicmVhZHlcIiA6IFwibm90X2xvYWRlZFwifSAvPlxuICAgICAgICAgICAgPE1ldHJpY0NhcmQgbGFiZWw9XCLlt6XlhbdcIiB2YWx1ZT17bWNwVG9vbENvdW50fSBzdGF0dXM9e21jcFRvb2xDb3VudCA/IFwicmVhZHlcIiA6IFwibm90X2xvYWRlZFwifSAvPlxuICAgICAgICAgICAgPE1ldHJpY0NhcmQgbGFiZWw9XCLotYTmupBcIiB2YWx1ZT17bWNwUmVzb3VyY2VDb3VudH0gc3RhdHVzPXttY3BSZXNvdXJjZUNvdW50ID8gXCJyZWFkeVwiIDogXCJub3RfbG9hZGVkXCJ9IC8+XG4gICAgICAgICAgICA8TWV0cmljQ2FyZCBsYWJlbD1cIuaPkOekuuivjVwiIHZhbHVlPXttY3BQcm9tcHRDb3VudH0gc3RhdHVzPXttY3BQcm9tcHRDb3VudCA/IFwicmVhZHlcIiA6IFwibm90X2xvYWRlZFwifSAvPlxuICAgICAgICAgICAgPE1ldHJpY0NhcmQgbGFiZWw9XCJPQXV0aFwiIHZhbHVlPXtvYXV0aENvdW50fSBzdGF0dXM9e29hdXRoQ291bnQgPyBcInJlYWR5XCIgOiBcIm5vdF9sb2FkZWRcIn0gLz5cbiAgICAgICAgICAgIDxNZXRyaWNDYXJkIGxhYmVsPVwi6L+e5o6l5ZmoXCIgdmFsdWU9e3N1bW1hcnlOdW1iZXJzLnRvdGFsfSBzdGF0dXM9e3N1bW1hcnlOdW1iZXJzLnRvdGFsID8gXCJyZWFkeVwiIDogXCJub3RfbG9hZGVkXCJ9IC8+XG4gICAgICAgICAgICA8TWV0cmljQ2FyZCBsYWJlbD1cIuW3sui/nuaOpVwiIHZhbHVlPXtzdW1tYXJ5TnVtYmVycy5jb25uZWN0ZWR9IHN0YXR1cz17c3VtbWFyeU51bWJlcnMuY29ubmVjdGVkID8gXCJyZWFkeVwiIDogXCJ1bmNvbmZpZ3VyZWRcIn0gLz5cbiAgICAgICAgICA8L2Rpdj5cblxuICAgICAgICAgIHttaXNzaW5nQXV0aC5sZW5ndGggPyAoXG4gICAgICAgICAgICA8R2F0ZWRTdGF0ZVxuICAgICAgICAgICAgICByZWFzb249e2BNQ1Ag5o6I5p2D57y65aSx77yaJHttaXNzaW5nQXV0aC5qb2luKFwiLCBcIil9YH1cbiAgICAgICAgICAgICAgc3RhdHVzPVwidW5jb25maWd1cmVkXCJcbiAgICAgICAgICAgICAgdGl0bGU9XCJNQ1Ag5o6I5p2D5pyq6YWN572uXCJcbiAgICAgICAgICAgIC8+XG4gICAgICAgICAgKSA6IG51bGx9XG5cbiAgICAgICAgICA8c2VjdGlvbiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LXNlY3Rpb24gbWNwLXNtb2tlLXBhbmVsXCI+XG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICAgIDxkaXY+XG4gICAgICAgICAgICAgICAgPHNwYW4+e3Ntb2tlTWVzc2FnZUxhYmVsKHNtb2tlTWVzc2FnZSl9PC9zcGFuPlxuICAgICAgICAgICAgICAgIDxoMz5NQ1Ag5Y+q6K+76LCD55So5YaS54Of5rWL6K+VPC9oMz5cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDxidXR0b25cbiAgICAgICAgICAgICAgICBjbGFzc05hbWU9XCJzbWFsbC1idXR0b25cIlxuICAgICAgICAgICAgICAgIGRpc2FibGVkPXtidXN5IHx8IGNvbm5lY3RvckJ1c3kgfHwgc21va2VCdXN5IHx8ICFoYXNDb250cm9sVG9rZW4gfHwgIWZpcnN0U2VydmVyTmFtZX1cbiAgICAgICAgICAgICAgICBvbkNsaWNrPXtydW5NY3BSZWFkT25seVNtb2tlfVxuICAgICAgICAgICAgICAgIHR5cGU9XCJidXR0b25cIlxuICAgICAgICAgICAgICA+XG4gICAgICAgICAgICAgICAgPFBsYXkgc2l6ZT17MTR9IC8+XG4gICAgICAgICAgICAgICAg6L+Q6KGMIE1DUCDlj6ror7vlhpLng5/mtYvor5VcbiAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWNwLXNtb2tlLXN0ZXBzXCI+XG4gICAgICAgICAgICAgIHsoc21va2VTdGVwcy5sZW5ndGggPyBzbW9rZVN0ZXBzIDogaW5pdGlhbFNtb2tlU3RlcHMoKSkubWFwKChzdGVwKSA9PiAoXG4gICAgICAgICAgICAgICAgPGFydGljbGUgY2xhc3NOYW1lPXtgbWNwLXNtb2tlLXN0ZXAgJHtzdGVwLnN0YXR1c31gfSBrZXk9e3N0ZXAuaWR9PlxuICAgICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtY3Atc21va2Utc3RlcC1oZWFkXCI+XG4gICAgICAgICAgICAgICAgICAgIDxkaXY+XG4gICAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57c3RlcC5sYWJlbH08L3N0cm9uZz5cbiAgICAgICAgICAgICAgICAgICAgICA8c3Bhbj57c3RlcC5lbmRwb2ludH08L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgICA8U3RhdHVzQmFkZ2Ugc3RhdHVzPXtzdGVwLnN0YXR1c30gLz5cbiAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJrdi1ncmlkXCI+XG4gICAgICAgICAgICAgICAgICAgIDxzcGFuPuacjeWKoeWZqDwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57Zmlyc3RTZXJ2ZXJOYW1lIHx8IFwiLVwifTwvc3Ryb25nPlxuICAgICAgICAgICAgICAgICAgICA8c3Bhbj7nm67moIc8L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e3N0ZXAudGFyZ2V0fTwvc3Ryb25nPlxuICAgICAgICAgICAgICAgICAgICA8c3Bhbj7nu5Pmnpw8L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e3N0ZXAuZGV0YWlsfTwvc3Ryb25nPlxuICAgICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAgICB7c3RlcC5yZXN1bHQgIT09IHVuZGVmaW5lZCAmJiA8UmF3RXZpZGVuY2VQYW5lbCB0aXRsZT17YCR7c3RlcC5sYWJlbH3nu5PmnpxgfSB2YWx1ZT17c3RlcC5yZXN1bHR9IC8+fVxuICAgICAgICAgICAgICAgIDwvYXJ0aWNsZT5cbiAgICAgICAgICAgICAgKSl9XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8L3NlY3Rpb24+XG5cbiAgICAgICAgICA8c2VjdGlvbiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LWdyaWQgdHdvXCI+XG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImNhcGFiaWxpdHktc2VjdGlvblwiPlxuICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPnttY3A/LnNlcnZlcnMubGVuZ3RoID8/IDB9IOS4quacjeWKoeWZqDwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxoMz5NQ1Ag5pyN5Yqh5ZmoPC9oMz5cbiAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgICA8U2VydmVyQ29nIHNpemU9ezE4fSAvPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJkYXRhLXRhYmxlXCI+XG4gICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJ0YWJsZS1oZWFkXCI+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7mnI3liqHlmag8L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7kvKDovpM8L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7nirbmgIE8L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7or6bmg4U8L3NwYW4+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICAge21jcD8uc2VydmVycy5tYXAoKHNlcnZlcikgPT4gKFxuICAgICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJ0YWJsZS1yb3dcIiBrZXk9e3NlcnZlci5uYW1lfT5cbiAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57c2VydmVyLm5hbWV9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICAgIDxzcGFuPntzZXJ2ZXIudHJhbnNwb3J0IHx8IFwiLVwifTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPHNwYW4+e3NlcnZlci5jb25maWd1cmVkID09PSBmYWxzZSA/IFwidW5jb25maWd1cmVkXCIgOiBcImNvbmZpZ3VyZWRcIn08L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDxzcGFuPntzaG9ydFRleHQoU3RyaW5nKHNlcnZlci5kb21haW4gfHwgc2VydmVyLnVybCB8fCBzZXJ2ZXIuZGV0YWlsIHx8IFwiLVwiKSwgNzIpfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgICAgIHshbWNwPy5zZXJ2ZXJzLmxlbmd0aCAmJiA8ZGl2IGNsYXNzTmFtZT1cInRhYmxlLWVtcHR5XCI+5pqC5pegIE1DUCDmnI3liqHlmajjgII8L2Rpdj59XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2VjdGlvbi1oZWFkZXJcIj5cbiAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgPHNwYW4+e21jcFRvb2xDb3VudH0g5Liq5bel5YW3PC9zcGFuPlxuICAgICAgICAgICAgICAgICAgPGgzPk1DUCDlt6Xlhbc8L2gzPlxuICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJtaW5pLWxpc3RcIj5cbiAgICAgICAgICAgICAgICB7bWNwPy50b29scy5zbGljZSgwLCAxMikubWFwKCh0b29sKSA9PiAoXG4gICAgICAgICAgICAgICAgICA8YXJ0aWNsZSBrZXk9e2Ake3Rvb2wuc2VydmVyIHx8IFwibWNwXCJ9OiR7dG9vbC5uYW1lfWB9PlxuICAgICAgICAgICAgICAgICAgICA8c3Ryb25nPnt0b29sLndyYXBwZWRfbmFtZSB8fCB0b29sLm5hbWV9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICAgIDxzcGFuPnt0b29sLnNlcnZlciB8fCBcIi1cIn0gLyB7dG9vbC5uYW1lfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPHA+e3Nob3J0VGV4dCh0b29sLmRlc2NyaXB0aW9uIHx8IFwi5pqC5peg5o+P6L+w44CCXCIsIDEyMCl9PC9wPlxuICAgICAgICAgICAgICAgICAgPC9hcnRpY2xlPlxuICAgICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgICAgIHshbWNwPy50b29scy5sZW5ndGggJiYgPHAgY2xhc3NOYW1lPVwibXV0ZWRcIj7mmoLml6AgTUNQIOW3peWFt+OAgjwvcD59XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2VjdGlvbi1oZWFkZXJcIj5cbiAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgPHNwYW4+e21jcFJlc291cmNlQ291bnR9IOS4qui1hOa6kDwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxoMz5NQ1Ag6LWE5rqQPC9oMz5cbiAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwibWluaS1saXN0XCI+XG4gICAgICAgICAgICAgICAge21jcD8ucmVzb3VyY2VzLnNsaWNlKDAsIDgpLm1hcCgocmVzb3VyY2UsIGluZGV4KSA9PiB7XG4gICAgICAgICAgICAgICAgICBjb25zdCBpdGVtID0gYXNSZWNvcmQocmVzb3VyY2UpO1xuICAgICAgICAgICAgICAgICAgcmV0dXJuIChcbiAgICAgICAgICAgICAgICAgICAgPGFydGljbGUga2V5PXtgJHtpdGVtLnVyaSB8fCBpdGVtLm5hbWUgfHwgaW5kZXh9YH0+XG4gICAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57Y29tcGFjdChpdGVtLm5hbWUgfHwgaXRlbS51cmkgfHwgYHJlc291cmNlLSR7aW5kZXggKyAxfWApfTwvc3Ryb25nPlxuICAgICAgICAgICAgICAgICAgICAgIDxzcGFuPntjb21wYWN0KGl0ZW0udXJpIHx8IGl0ZW0uc2VydmVyIHx8IFwiLVwiKX08L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDwvYXJ0aWNsZT5cbiAgICAgICAgICAgICAgICAgICk7XG4gICAgICAgICAgICAgICAgfSl9XG4gICAgICAgICAgICAgICAgeyFtY3A/LnJlc291cmNlcy5sZW5ndGggJiYgPHAgY2xhc3NOYW1lPVwibXV0ZWRcIj7mmoLml6AgTUNQIOi1hOa6kOOAgjwvcD59XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2VjdGlvbi1oZWFkZXJcIj5cbiAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgPHNwYW4+e21jcFByb21wdENvdW50fSDkuKrmj5DnpLror40gLyB7b2F1dGhDb3VudH0g5LiqIE9BdXRoIOeKtuaAgTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxoMz7mj5DnpLror40gLyBPQXV0aDwvaDM+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1pbmktbGlzdFwiPlxuICAgICAgICAgICAgICAgIHttY3A/LnByb21wdHMuc2xpY2UoMCwgNikubWFwKChwcm9tcHQsIGluZGV4KSA9PiB7XG4gICAgICAgICAgICAgICAgICBjb25zdCBpdGVtID0gYXNSZWNvcmQocHJvbXB0KTtcbiAgICAgICAgICAgICAgICAgIHJldHVybiAoXG4gICAgICAgICAgICAgICAgICAgIDxhcnRpY2xlIGtleT17YCR7aXRlbS5uYW1lIHx8IGluZGV4fWB9PlxuICAgICAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e2NvbXBhY3QoaXRlbS5uYW1lIHx8IGBwcm9tcHQtJHtpbmRleCArIDF9YCl9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICAgICAgPHNwYW4+e3Nob3J0VGV4dChTdHJpbmcoaXRlbS5kZXNjcmlwdGlvbiB8fCBpdGVtLnNlcnZlciB8fCBcIi1cIiksIDk2KX08L3NwYW4+XG4gICAgICAgICAgICAgICAgICAgIDwvYXJ0aWNsZT5cbiAgICAgICAgICAgICAgICAgICk7XG4gICAgICAgICAgICAgICAgfSl9XG4gICAgICAgICAgICAgICAge21jcD8ub2F1dGguc2xpY2UoMCwgNikubWFwKChvYXV0aCwgaW5kZXgpID0+IHtcbiAgICAgICAgICAgICAgICAgIGNvbnN0IGl0ZW0gPSBhc1JlY29yZChvYXV0aCk7XG4gICAgICAgICAgICAgICAgICByZXR1cm4gKFxuICAgICAgICAgICAgICAgICAgICA8YXJ0aWNsZSBrZXk9e2BvYXV0aDoke2l0ZW0uc2VydmVyIHx8IGl0ZW0ubmFtZSB8fCBpbmRleH1gfT5cbiAgICAgICAgICAgICAgICAgICAgICA8c3Ryb25nPntjb21wYWN0KGl0ZW0uc2VydmVyIHx8IGl0ZW0ubmFtZSB8fCBgb2F1dGgtJHtpbmRleCArIDF9YCl9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICAgICAgPHNwYW4+e2NvbXBhY3QoaXRlbS5zdGF0dXMgfHwgaXRlbS5hdXRoZW50aWNhdGVkIHx8IGl0ZW0uZXJyb3IgfHwgXCJ1bmtub3duXCIpfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgPC9hcnRpY2xlPlxuICAgICAgICAgICAgICAgICAgKTtcbiAgICAgICAgICAgICAgICB9KX1cbiAgICAgICAgICAgICAgICB7IW1jcD8ucHJvbXB0cy5sZW5ndGggJiYgIW1jcD8ub2F1dGgubGVuZ3RoICYmIDxwIGNsYXNzTmFtZT1cIm11dGVkXCI+5pqC5peg5o+Q56S66K+N5oiWIE9BdXRoIOeKtuaAgeOAgjwvcD59XG4gICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPC9zZWN0aW9uPlxuXG4gICAgICAgICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICAgIDxkaXY+XG4gICAgICAgICAgICAgICAgPHNwYW4+e3N1bW1hcnlOdW1iZXJzLnRvdGFsfSDmgLvmlbAgLyB7c3VtbWFyeU51bWJlcnMuY29ubmVjdGVkfSDlt7Lov57mjqUgLyB7c3VtbWFyeU51bWJlcnMuY29uZmlndXJlZH0g5bey6YWN572uPC9zcGFuPlxuICAgICAgICAgICAgICAgIDxoMz7ov57mjqXlmajmkZjopoE8L2gzPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPFN0YXR1c0JhZGdlXG4gICAgICAgICAgICAgICAgc3RhdHVzPXtjb25uZWN0b3JNZXNzYWdlLnN0YXJ0c1dpdGgoXCJBSUFTS19cIikgPyBcImdhdGVkXCIgOiBcInJlYWR5XCJ9XG4gICAgICAgICAgICAgICAgbGFiZWw9e2Nvbm5lY3Rvck1lc3NhZ2VMYWJlbChjb25uZWN0b3JNZXNzYWdlKX1cbiAgICAgICAgICAgICAgICB0ZWNobmljYWxMYWJlbD17Y29ubmVjdG9yTWVzc2FnZX1cbiAgICAgICAgICAgICAgLz5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjb25uZWN0b3ItdHlwZS1ncmlkXCI+XG4gICAgICAgICAgICAgIHtPYmplY3QuZW50cmllcyhncm91cGVkQ29ubmVjdG9ycykubWFwKChbdHlwZSwgaXRlbXNdKSA9PiAoXG4gICAgICAgICAgICAgICAgPGFydGljbGUga2V5PXt0eXBlfT5cbiAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e3R5cGV9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj57aXRlbXMuZmlsdGVyKChpdGVtKSA9PiBpdGVtLmNvbm5lY3RlZCB8fCBpdGVtLnN0YXR1cyA9PT0gXCJyZWFkeVwiKS5sZW5ndGh9L3tpdGVtcy5sZW5ndGh9IOW3sui/nuaOpTwvc3Bhbj5cbiAgICAgICAgICAgICAgICA8L2FydGljbGU+XG4gICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgICB7IWNvbm5lY3RvcnMubGVuZ3RoICYmIDxwIGNsYXNzTmFtZT1cIm11dGVkXCI+5pqC5peg6L+e5o6l5Zmo44CCPC9wPn1cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgIDwvc2VjdGlvbj5cblxuICAgICAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cImNhcGFiaWxpdHktZ3JpZCB0d29cIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2VjdGlvbi1oZWFkZXJcIj5cbiAgICAgICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICAgICAgPHNwYW4+e2Nvbm5lY3RvcnMubGVuZ3RofSDkuKrov57mjqXlmag8L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8aDM+6L+e5o6l5Zmo5YiX6KGoPC9oMz5cbiAgICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY29ubmVjdG9yLWxpc3RcIj5cbiAgICAgICAgICAgICAgICB7Y29ubmVjdG9ycy5tYXAoKGNvbm5lY3RvciwgaW5kZXgpID0+IChcbiAgICAgICAgICAgICAgICAgIDxhcnRpY2xlIGNsYXNzTmFtZT1cImNvbm5lY3Rvci1pdGVtXCIga2V5PXtgJHtjb25uZWN0b3IudHlwZX06JHtjb25uZWN0b3JSZWYoY29ubmVjdG9yKX06JHtpbmRleH1gfT5cbiAgICAgICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjb25uZWN0b3ItaGVhZGVyXCI+XG4gICAgICAgICAgICAgICAgICAgICAgPHN0cm9uZz57Y29ubmVjdG9yLm5hbWV9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICAgICAgPHNwYW4gY2xhc3NOYW1lPVwidGFnXCI+e2Nvbm5lY3Rvci50eXBlfTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgICAgICA8U3RhdHVzQmFkZ2Ugc3RhdHVzPXtjb25uZWN0b3Iuc3RhdHVzIHx8IChjb25uZWN0b3IuY29ubmVjdGVkID8gXCJyZWFkeVwiIDogXCJ1bmNvbmZpZ3VyZWRcIil9IC8+XG4gICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgICB7Y29ubmVjdG9yLmNhdGVnb3J5ICYmIDxwIGNsYXNzTmFtZT1cIm11dGVkXCI+e2Nvbm5lY3Rvci5jYXRlZ29yeX08L3A+fVxuICAgICAgICAgICAgICAgICAgICB7Y29ubmVjdG9yLm1pc3NpbmdfZW52Py5sZW5ndGggPyA8ZGl2IGNsYXNzTmFtZT1cIm5vdGljZSBpbmZvIGNvbXBhY3RcIj7nvLrlsJHnjq/looPlj5jph4/vvJp7Y29ubmVjdG9yLm1pc3NpbmdfZW52LmpvaW4oXCIsIFwiKX08L2Rpdj4gOiBudWxsfVxuICAgICAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInJvdy1hY3Rpb25zXCI+XG4gICAgICAgICAgICAgICAgICAgICAgPGJ1dHRvbiBjbGFzc05hbWU9XCJzbWFsbC1idXR0b25cIiBkaXNhYmxlZD17Y29ubmVjdG9yQnVzeX0gb25DbGljaz17KCkgPT4gbG9hZENvbm5lY3RvckRldGFpbChjb25uZWN0b3IpfSB0eXBlPVwiYnV0dG9uXCI+XG4gICAgICAgICAgICAgICAgICAgICAgICA8RXllIHNpemU9ezEzfSAvPlxuICAgICAgICAgICAgICAgICAgICAgICAg6K+m5oOFXG4gICAgICAgICAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgICAgICAgICAgPGJ1dHRvbiBjbGFzc05hbWU9XCJzbWFsbC1idXR0b25cIiBkaXNhYmxlZD17Y29ubmVjdG9yQnVzeSB8fCAhaGFzQ29udHJvbFRva2VufSBvbkNsaWNrPXsoKSA9PiB0ZXN0Q29ubmVjdG9yKGNvbm5lY3Rvcil9IHR5cGU9XCJidXR0b25cIj5cbiAgICAgICAgICAgICAgICAgICAgICAgIDxUZXN0VHViZURpYWdvbmFsIHNpemU9ezEzfSAvPlxuICAgICAgICAgICAgICAgICAgICAgICAg5rWL6K+VXG4gICAgICAgICAgICAgICAgICAgICAgPC9idXR0b24+XG4gICAgICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgICAgPC9hcnRpY2xlPlxuICAgICAgICAgICAgICAgICkpfVxuICAgICAgICAgICAgICAgIHshY29ubmVjdG9ycy5sZW5ndGggJiYgPHAgY2xhc3NOYW1lPVwibXV0ZWRcIj7mmoLml6Dov57mjqXlmajliJfooajjgII8L3A+fVxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDwvZGl2PlxuXG4gICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImNhcGFiaWxpdHktc2VjdGlvblwiPlxuICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPuivpuaDhSAvIOa1i+ivlTwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxoMz7ov57mjqXlmajor6bmg4U8L2gzPlxuICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICAgIDxTdGF0dXNCYWRnZSBzdGF0dXM9e3NlbGVjdGVkQ29ubmVjdG9yID8gc2VsZWN0ZWRDb25uZWN0b3Iuc3RhdHVzIHx8IFwicmVhZHlcIiA6IFwibm90X2xvYWRlZFwifSAvPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgICAge3NlbGVjdGVkQ29ubmVjdG9yID8gKFxuICAgICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwia3YtZ3JpZFwiPlxuICAgICAgICAgICAgICAgICAgPHNwYW4+5ZCN56ewPC9zcGFuPlxuICAgICAgICAgICAgICAgICAgPHN0cm9uZz57c2VsZWN0ZWRDb25uZWN0b3IubmFtZX08L3N0cm9uZz5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPuexu+Weizwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e3NlbGVjdGVkQ29ubmVjdG9yLnR5cGV9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7lt7LphY3nva48L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8c3Ryb25nPntTdHJpbmcoc2VsZWN0ZWRDb25uZWN0b3IuY29uZmlndXJlZCA/PyBcInVua25vd25cIil9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgICA8c3Bhbj7lt7Lov57mjqU8L3NwYW4+XG4gICAgICAgICAgICAgICAgICA8c3Ryb25nPntTdHJpbmcoc2VsZWN0ZWRDb25uZWN0b3IuY29ubmVjdGVkID8/IFwidW5rbm93blwiKX08L3N0cm9uZz5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPue8uuWwkeeOr+Wig+WPmOmHjzwvc3Bhbj5cbiAgICAgICAgICAgICAgICAgIDxzdHJvbmc+e3NlbGVjdGVkQ29ubmVjdG9yLm1pc3NpbmdfZW52Py5qb2luKFwiLCBcIikgfHwgXCItXCJ9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICkgOiAoXG4gICAgICAgICAgICAgICAgPHAgY2xhc3NOYW1lPVwibXV0ZWRcIj7or7fpgInmi6nov57mjqXlmajvvIzmiJblhYjov5DooYzkuIDmrKHmtYvor5XjgII8L3A+XG4gICAgICAgICAgICAgICl9XG4gICAgICAgICAgICAgIDxSYXdFdmlkZW5jZVBhbmVsIHRpdGxlPVwi6L+e5o6l5Zmo5Y6f5aeL57uT5p6cXCIgdmFsdWU9e3sgc2VsZWN0ZWRDb25uZWN0b3IsIGNvbm5lY3RvclJlc3VsdCwgY29ubmVjdG9yU3VtbWFyeSB9fSAvPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPC9zZWN0aW9uPlxuXG4gICAgICAgICAgPHNlY3Rpb24gY2xhc3NOYW1lPVwibWNwLW9wZXJhdGlvbnMtcGFuZWxcIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwic2VjdGlvbi1oZWFkZXIgaW5saW5lLXNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICAgIDxkaXY+XG4gICAgICAgICAgICAgICAgPHNwYW4+6auY57qnIE1DUCDmk43kvZw8L3NwYW4+XG4gICAgICAgICAgICAgICAgPGgzPk1DUCDmk43kvZw8L2gzPlxuICAgICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgPE1jcFBhbmVsIGFwaVRva2VuPXthcGlUb2tlbn0gY29udHJvbFRva2VuPXtjb250cm9sVG9rZW59IGVuZHBvaW50PXtlbmRwb2ludH0gb25SZWZyZXNoPXtyZWZyZXNofSBwYXlsb2FkPXtwYXlsb2FkfSAvPlxuICAgICAgICAgIDwvc2VjdGlvbj5cbiAgICAgICAgPC9kaXY+XG4gICAgICA8L2Rpdj5cbiAgICA8L3NlY3Rpb24+XG4gICk7XG59XG4iXSwiZmlsZSI6IkM6L1VzZXJzL3dhbGtpbmcvRGVza3RvcC9haWFzay9kZXNrdG9wL3NyYy9mZWF0dXJlcy9hZ2VudC1wYWdlcy9NY3BDb25uZWN0b3JzUGFnZS50c3gifQ==

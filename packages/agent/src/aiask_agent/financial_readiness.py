@@ -30,7 +30,7 @@ LIVE_SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
     {"name": "financial_manager_catalog", "method": "GET", "path": "/v1/desktop/financial-manager/catalog"},
     {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
     {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
-    {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "configured", "database_configured", "run_count"]},
+    {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "runtime_enabled", "event_runtime_mode", "daily_run_count", "cycle_count"]},
     {"name": "market_temperature_cache", "method": "POST", "path": "/v1/tools/agent_market_temperature_cache_readiness", "observes": ["ready", "status", "blockers", "warnings"]},
     {"name": "market_temperature_forward_validation", "method": "POST", "path": "/v1/tools/agent_market_temperature_forward_validation", "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"]},
     {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
@@ -466,6 +466,7 @@ async def financial_system_readiness(
             "complete_ratio": parity.get("complete_ratio"),
             "live_unverified_count": parity.get("live_unverified_count"),
             "v014_delta": parity.get("v014_delta"),
+            "v016_delta": parity.get("v016_delta"),
         },
         "disclaimer": "Production readiness excludes brokerage credentials and real trading enablement; all stateful strategy actions still require durable intent confirmation.",
     }

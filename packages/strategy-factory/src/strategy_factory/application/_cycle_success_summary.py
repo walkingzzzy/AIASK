@@ -517,6 +517,27 @@ def build_success_run_summary(
         "selected_profile_summary_missing_count": int(
             task_scan_summary.get("selected_profile_summary_missing_count") or 0
         ),
+        "direction_gate_enabled": bool(task_scan_summary.get("direction_gate_enabled")),
+        "direction_gate_candidate_stock_count": int(
+            task_scan_summary.get("direction_gate_candidate_stock_count") or 0
+        ),
+        "direction_gate_evaluated_count": int(task_scan_summary.get("direction_gate_evaluated_count") or 0),
+        "direction_gate_applied_count": int(task_scan_summary.get("direction_gate_applied_count") or 0),
+        "direction_gate_fallback_count": int(task_scan_summary.get("direction_gate_fallback_count") or 0),
+        "direction_gate_status_counts": dict(task_scan_summary.get("direction_gate_status_counts") or {}),
+        "direction_gate_reason_counts": dict(task_scan_summary.get("direction_gate_reason_counts") or {}),
+        "direction_gate_dropped_family_counts": dict(
+            task_scan_summary.get("direction_gate_dropped_family_counts") or {}
+        ),
+        "selected_direction_gate_applied_count": int(
+            task_scan_summary.get("selected_direction_gate_applied_count") or 0
+        ),
+        "selected_direction_gate_fallback_count": int(
+            task_scan_summary.get("selected_direction_gate_fallback_count") or 0
+        ),
+        "selected_direction_gate_task_count": int(
+            task_scan_summary.get("selected_direction_gate_task_count") or 0
+        ),
         "task_source_counts": task_source_counts,
         "scanner_task_types": task_scan_summary.get("task_types") or {},
         "event_snapshot_mixed": bool(

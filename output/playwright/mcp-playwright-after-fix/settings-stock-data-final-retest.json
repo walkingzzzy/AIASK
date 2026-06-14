@@ -1,0 +1,18 @@
+{
+  "screenshots": [
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-10-final-form-filled.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-11-final-saved.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\settings-stock-data-12-final-test-passed.png"
+  ],
+  "testPassed": true,
+  "readyStatus": true,
+  "unconfiguredVisible": false,
+  "secretLeaked": false,
+  "excerpt": [
+    "STOCK_DATA_SOURCE_TEST_PASSED",
+    "Playwright Tushare 源",
+    "ready"
+  ],
+  "errors": [],
+  "console": []
+}

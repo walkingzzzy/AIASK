@@ -33,6 +33,16 @@ describe("McpConnectorsPage", () => {
     expect(screen.getAllByText("discord").length).toBeGreaterThan(0);
   });
 
+  it("keeps connector management gated without a control token", async () => {
+    render(<McpConnectorsPage {...props} controlToken="" />);
+
+    await waitFor(() => expect(screen.getAllByText("能力已同步").length).toBeGreaterThan(0));
+    expect(screen.getByText("连接器管理受限")).toBeInTheDocument();
+    expect(screen.getByText("需要控制令牌后才能查看连接器列表和测试结果。")).toBeInTheDocument();
+    expect(screen.queryByText("discord")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "运行 MCP 只读冒烟测试" })).toBeDisabled();
+  });
+
   it("loads connector detail and test result through Agent HTTP routes", async () => {
     render(<McpConnectorsPage {...props} />);
 

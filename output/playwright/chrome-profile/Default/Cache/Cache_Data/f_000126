@@ -1,0 +1,212 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/components/McpOAuthStatus.tsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=5e7a649d"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+import { CheckCircle, XCircle, AlertCircle, Clock, ExternalLink } from "/node_modules/.vite/deps/lucide-react.js?v=5e7a649d";
+import { StatusBadge } from "/src/components/shared.tsx?t=1781263224906";
+export function McpOAuthStatus({ oauthServers, onReauthorize }) {
+  if (!oauthServers.length) {
+    return /* @__PURE__ */ jsxDEV("div", { className: "notice", children: [
+      /* @__PURE__ */ jsxDEV(AlertCircle, { size: 14 }, void 0, false, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+        lineNumber: 21,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("span", { children: "暂无需要 OAuth 认证的 MCP 服务器。" }, void 0, false, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+        lineNumber: 22,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+      lineNumber: 20,
+      columnNumber: 7
+    }, this);
+  }
+  return /* @__PURE__ */ jsxDEV("div", { className: "mcp-oauth-status", children: [
+    /* @__PURE__ */ jsxDEV("h4", { children: "OAuth 认证状态" }, void 0, false, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+      lineNumber: 29,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("div", { className: "oauth-servers-list", children: oauthServers.map(
+      (server) => /* @__PURE__ */ jsxDEV("div", { className: "oauth-server-card", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "oauth-server-header", children: [
+          /* @__PURE__ */ jsxDEV("strong", { children: server.server }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+            lineNumber: 34,
+            columnNumber: 15
+          }, this),
+          /* @__PURE__ */ jsxDEV(
+            StatusBadge,
+            {
+              status: server.status,
+              label: getStatusLabel(server.status)
+            },
+            void 0,
+            false,
+            {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 35,
+              columnNumber: 15
+            },
+            this
+          )
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+          lineNumber: 33,
+          columnNumber: 13
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "oauth-server-details", children: [
+          server.status === "authenticated" && server.expires_at && /* @__PURE__ */ jsxDEV("div", { className: "oauth-detail-row", children: [
+            /* @__PURE__ */ jsxDEV(Clock, { size: 13 }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 44,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              "过期时间: ",
+              formatDateTime(server.expires_at)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 45,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+            lineNumber: 43,
+            columnNumber: 13
+          }, this),
+          server.last_auth_at && /* @__PURE__ */ jsxDEV("div", { className: "oauth-detail-row", children: [
+            /* @__PURE__ */ jsxDEV(CheckCircle, { size: 13 }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 51,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: [
+              "最后认证: ",
+              formatDateTime(server.last_auth_at)
+            ] }, void 0, true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 52,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+            lineNumber: 50,
+            columnNumber: 13
+          }, this),
+          server.error_message && /* @__PURE__ */ jsxDEV("div", { className: "oauth-detail-row error", children: [
+            /* @__PURE__ */ jsxDEV(XCircle, { size: 13 }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 58,
+              columnNumber: 19
+            }, this),
+            /* @__PURE__ */ jsxDEV("span", { children: server.error_message }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+              lineNumber: 59,
+              columnNumber: 19
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+            lineNumber: 57,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+          lineNumber: 41,
+          columnNumber: 13
+        }, this),
+        (server.status === "expired" || server.status === "missing" || server.status === "error") && /* @__PURE__ */ jsxDEV(
+          "button",
+          {
+            className: "small-button",
+            onClick: () => onReauthorize(server.server),
+            type: "button",
+            children: [
+              /* @__PURE__ */ jsxDEV(ExternalLink, { size: 13 }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+                lineNumber: 70,
+                columnNumber: 17
+              }, this),
+              "重新认证"
+            ]
+          },
+          void 0,
+          true,
+          {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+            lineNumber: 65,
+            columnNumber: 11
+          },
+          this
+        )
+      ] }, server.server, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+        lineNumber: 32,
+        columnNumber: 9
+      }, this)
+    ) }, void 0, false, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+      lineNumber: 30,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx",
+    lineNumber: 28,
+    columnNumber: 5
+  }, this);
+}
+_c = McpOAuthStatus;
+function getStatusLabel(status) {
+  switch (status) {
+    case "authenticated":
+      return "已认证";
+    case "expired":
+      return "已过期";
+    case "missing":
+      return "未认证";
+    case "error":
+      return "错误";
+    default:
+      return status;
+  }
+}
+function formatDateTime(dateStr) {
+  try {
+    const date = new Date(dateStr);
+    return date.toLocaleString("zh-CN", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit"
+    });
+  } catch {
+    return dateStr;
+  }
+}
+var _c;
+$RefreshReg$(_c, "McpOAuthStatus");
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+function $RefreshReg$(type, id) {
+  return RefreshRuntime.register(type, "C:/Users/walking/Desktop/aiask/desktop/src/components/McpOAuthStatus.tsx " + id);
+}
+function $RefreshSig$() {
+  return RefreshRuntime.createSignatureFunctionForTransform();
+}
+
+//# sourceMappingURL=data:application/json;base64,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O0FBQUEsV0F4Q01BLE9BQU9BLFFBQWpCO0FBQUE7QUFBQTtBQUFBO0FBQUEsYUEwQ0E7QUFBQSxJQUNELEtBN0NIO0FBQUE7QUFBQTtBQUFBO0FBQUEsV0E4Q0E7QUFBQSxPQWhERjtBQUFBO0FBQUE7QUFBQTtBQUFBLFNBaURBO0FBRUo7QUFBQ08sS0E5RGVaO0FBZ0VoQixTQUFTTyxlQUFlRCxRQUF3QjtBQUM5QyxVQUFRQSxRQUFNO0FBQUEsSUFDWixLQUFLO0FBQWlCLGFBQU87QUFBQSxJQUM3QixLQUFLO0FBQVcsYUFBTztBQUFBLElBQ3ZCLEtBQUs7QUFBVyxhQUFPO0FBQUEsSUFDdkIsS0FBSztBQUFTLGFBQU87QUFBQSxJQUNyQjtBQUFTLGFBQU9BO0FBQUFBLEVBQ2xCO0FBQ0Y7QUFFQSxTQUFTRyxlQUFlSSxTQUF5QjtBQUMvQyxNQUFJO0FBQ0YsVUFBTUMsT0FBTyxJQUFJQyxLQUFLRixPQUFPO0FBQzdCLFdBQU9DLEtBQUtFLGVBQWUsU0FBUztBQUFBLE1BQ2xDQyxNQUFNO0FBQUEsTUFDTkMsT0FBTztBQUFBLE1BQ1BDLEtBQUs7QUFBQSxNQUNMQyxNQUFNO0FBQUEsTUFDTkMsUUFBUTtBQUFBLElBQ1YsQ0FBQztBQUFBLEVBQ0gsUUFBUTtBQUNOLFdBQU9SO0FBQUFBLEVBQ1Q7QUFDRjtBQUFDLElBQUFEO0FBQUEsYUFBQUEsSUFBQSIsIm5hbWVzIjpbIkNoZWNrQ2lyY2xlIiwiWENpcmNsZSIsIkFsZXJ0Q2lyY2xlIiwiQ2xvY2siLCJFeHRlcm5hbExpbmsiLCJTdGF0dXNCYWRnZSIsIk1jcE9BdXRoU3RhdHVzIiwib2F1dGhTZXJ2ZXJzIiwib25SZWF1dGhvcml6ZSIsImxlbmd0aCIsIm1hcCIsInNlcnZlciIsInN0YXR1cyIsImdldFN0YXR1c0xhYmVsIiwiZXhwaXJlc19hdCIsImZvcm1hdERhdGVUaW1lIiwibGFzdF9hdXRoX2F0IiwiZXJyb3JfbWVzc2FnZSIsIl9jIiwiZGF0ZVN0ciIsImRhdGUiLCJEYXRlIiwidG9Mb2NhbGVTdHJpbmciLCJ5ZWFyIiwibW9udGgiLCJkYXkiLCJob3VyIiwibWludXRlIl0sImlnbm9yZUxpc3QiOltdLCJzb3VyY2VzIjpbIk1jcE9BdXRoU3RhdHVzLnRzeCJdLCJzb3VyY2VzQ29udGVudCI6WyJpbXBvcnQgeyBDaGVja0NpcmNsZSwgWENpcmNsZSwgQWxlcnRDaXJjbGUsIENsb2NrLCBFeHRlcm5hbExpbmsgfSBmcm9tIFwibHVjaWRlLXJlYWN0XCI7XG5pbXBvcnQgeyBTdGF0dXNCYWRnZSB9IGZyb20gXCIuL3NoYXJlZFwiO1xuXG5pbnRlcmZhY2UgT0F1dGhTZXJ2ZXJTdGF0dXMge1xuICBzZXJ2ZXI6IHN0cmluZztcbiAgc3RhdHVzOiBcImF1dGhlbnRpY2F0ZWRcIiB8IFwiZXhwaXJlZFwiIHwgXCJtaXNzaW5nXCIgfCBcImVycm9yXCI7XG4gIGV4cGlyZXNfYXQ/OiBzdHJpbmc7XG4gIGxhc3RfYXV0aF9hdD86IHN0cmluZztcbiAgZXJyb3JfbWVzc2FnZT86IHN0cmluZztcbn1cblxuaW50ZXJmYWNlIE1jcE9BdXRoU3RhdHVzUHJvcHMge1xuICBvYXV0aFNlcnZlcnM6IE9BdXRoU2VydmVyU3RhdHVzW107XG4gIG9uUmVhdXRob3JpemU6IChzZXJ2ZXI6IHN0cmluZykgPT4gdm9pZDtcbn1cblxuZXhwb3J0IGZ1bmN0aW9uIE1jcE9BdXRoU3RhdHVzKHsgb2F1dGhTZXJ2ZXJzLCBvblJlYXV0aG9yaXplIH06IE1jcE9BdXRoU3RhdHVzUHJvcHMpIHtcbiAgaWYgKCFvYXV0aFNlcnZlcnMubGVuZ3RoKSB7XG4gICAgcmV0dXJuIChcbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwibm90aWNlXCI+XG4gICAgICAgIDxBbGVydENpcmNsZSBzaXplPXsxNH0gLz5cbiAgICAgICAgPHNwYW4+5pqC5peg6ZyA6KaBIE9BdXRoIOiupOivgeeahCBNQ1Ag5pyN5Yqh5Zmo44CCPC9zcGFuPlxuICAgICAgPC9kaXY+XG4gICAgKTtcbiAgfVxuXG4gIHJldHVybiAoXG4gICAgPGRpdiBjbGFzc05hbWU9XCJtY3Atb2F1dGgtc3RhdHVzXCI+XG4gICAgICA8aDQ+T0F1dGgg6K6k6K+B54q25oCBPC9oND5cbiAgICAgIDxkaXYgY2xhc3NOYW1lPVwib2F1dGgtc2VydmVycy1saXN0XCI+XG4gICAgICAgIHtvYXV0aFNlcnZlcnMubWFwKChzZXJ2ZXIpID0+IChcbiAgICAgICAgICA8ZGl2IGtleT17c2VydmVyLnNlcnZlcn0gY2xhc3NOYW1lPVwib2F1dGgtc2VydmVyLWNhcmRcIj5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwib2F1dGgtc2VydmVyLWhlYWRlclwiPlxuICAgICAgICAgICAgICA8c3Ryb25nPntzZXJ2ZXIuc2VydmVyfTwvc3Ryb25nPlxuICAgICAgICAgICAgICA8U3RhdHVzQmFkZ2VcbiAgICAgICAgICAgICAgICBzdGF0dXM9e3NlcnZlci5zdGF0dXN9XG4gICAgICAgICAgICAgICAgbGFiZWw9e2dldFN0YXR1c0xhYmVsKHNlcnZlci5zdGF0dXMpfVxuICAgICAgICAgICAgICAvPlxuICAgICAgICAgICAgPC9kaXY+XG5cbiAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwib2F1dGgtc2VydmVyLWRldGFpbHNcIj5cbiAgICAgICAgICAgICAge3NlcnZlci5zdGF0dXMgPT09IFwiYXV0aGVudGljYXRlZFwiICYmIHNlcnZlci5leHBpcmVzX2F0ICYmIChcbiAgICAgICAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm9hdXRoLWRldGFpbC1yb3dcIj5cbiAgICAgICAgICAgICAgICAgIDxDbG9jayBzaXplPXsxM30gLz5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPui/h+acn+aXtumXtDoge2Zvcm1hdERhdGVUaW1lKHNlcnZlci5leHBpcmVzX2F0KX08L3NwYW4+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICl9XG5cbiAgICAgICAgICAgICAge3NlcnZlci5sYXN0X2F1dGhfYXQgJiYgKFxuICAgICAgICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwib2F1dGgtZGV0YWlsLXJvd1wiPlxuICAgICAgICAgICAgICAgICAgPENoZWNrQ2lyY2xlIHNpemU9ezEzfSAvPlxuICAgICAgICAgICAgICAgICAgPHNwYW4+5pyA5ZCO6K6k6K+BOiB7Zm9ybWF0RGF0ZVRpbWUoc2VydmVyLmxhc3RfYXV0aF9hdCl9PC9zcGFuPlxuICAgICAgICAgICAgICAgIDwvZGl2PlxuICAgICAgICAgICAgICApfVxuXG4gICAgICAgICAgICAgIHtzZXJ2ZXIuZXJyb3JfbWVzc2FnZSAmJiAoXG4gICAgICAgICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJvYXV0aC1kZXRhaWwtcm93IGVycm9yXCI+XG4gICAgICAgICAgICAgICAgICA8WENpcmNsZSBzaXplPXsxM30gLz5cbiAgICAgICAgICAgICAgICAgIDxzcGFuPntzZXJ2ZXIuZXJyb3JfbWVzc2FnZX08L3NwYW4+XG4gICAgICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICAgICl9XG4gICAgICAgICAgICA8L2Rpdj5cblxuICAgICAgICAgICAgeyhzZXJ2ZXIuc3RhdHVzID09PSBcImV4cGlyZWRcIiB8fCBzZXJ2ZXIuc3RhdHVzID09PSBcIm1pc3NpbmdcIiB8fCBzZXJ2ZXIuc3RhdHVzID09PSBcImVycm9yXCIpICYmIChcbiAgICAgICAgICAgICAgPGJ1dHRvblxuICAgICAgICAgICAgICAgIGNsYXNzTmFtZT1cInNtYWxsLWJ1dHRvblwiXG4gICAgICAgICAgICAgICAgb25DbGljaz17KCkgPT4gb25SZWF1dGhvcml6ZShzZXJ2ZXIuc2VydmVyKX1cbiAgICAgICAgICAgICAgICB0eXBlPVwiYnV0dG9uXCJcbiAgICAgICAgICAgICAgPlxuICAgICAgICAgICAgICAgIDxFeHRlcm5hbExpbmsgc2l6ZT17MTN9IC8+XG4gICAgICAgICAgICAgICAg6YeN5paw6K6k6K+BXG4gICAgICAgICAgICAgIDwvYnV0dG9uPlxuICAgICAgICAgICAgKX1cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgKSl9XG4gICAgICA8L2Rpdj5cbiAgICA8L2Rpdj5cbiAgKTtcbn1cblxuZnVuY3Rpb24gZ2V0U3RhdHVzTGFiZWwoc3RhdHVzOiBzdHJpbmcpOiBzdHJpbmcge1xuICBzd2l0Y2ggKHN0YXR1cykge1xuICAgIGNhc2UgXCJhdXRoZW50aWNhdGVkXCI6IHJldHVybiBcIuW3suiupOivgVwiO1xuICAgIGNhc2UgXCJleHBpcmVkXCI6IHJldHVybiBcIuW3sui/h+acn1wiO1xuICAgIGNhc2UgXCJtaXNzaW5nXCI6IHJldHVybiBcIuacquiupOivgVwiO1xuICAgIGNhc2UgXCJlcnJvclwiOiByZXR1cm4gXCLplJnor69cIjtcbiAgICBkZWZhdWx0OiByZXR1cm4gc3RhdHVzO1xuICB9XG59XG5cbmZ1bmN0aW9uIGZvcm1hdERhdGVUaW1lKGRhdGVTdHI6IHN0cmluZyk6IHN0cmluZyB7XG4gIHRyeSB7XG4gICAgY29uc3QgZGF0ZSA9IG5ldyBEYXRlKGRhdGVTdHIpO1xuICAgIHJldHVybiBkYXRlLnRvTG9jYWxlU3RyaW5nKFwiemgtQ05cIiwge1xuICAgICAgeWVhcjogXCJudW1lcmljXCIsXG4gICAgICBtb250aDogXCIyLWRpZ2l0XCIsXG4gICAgICBkYXk6IFwiMi1kaWdpdFwiLFxuICAgICAgaG91cjogXCIyLWRpZ2l0XCIsXG4gICAgICBtaW51dGU6IFwiMi1kaWdpdFwiXG4gICAgfSk7XG4gIH0gY2F0Y2gge1xuICAgIHJldHVybiBkYXRlU3RyO1xuICB9XG59XG4iXSwiZmlsZSI6IkM6L1VzZXJzL3dhbGtpbmcvRGVza3RvcC9haWFzay9kZXNrdG9wL3NyYy9jb21wb25lbnRzL01jcE9BdXRoU3RhdHVzLnRzeCJ9

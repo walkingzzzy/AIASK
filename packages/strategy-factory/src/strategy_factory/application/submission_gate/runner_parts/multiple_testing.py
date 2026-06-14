@@ -173,6 +173,77 @@ def _estimate_run_correction_metrics(
 # 提取必要参数 (attempt_adjustment / observed_score / score_series / family_returns
 # / validation_runtime),软降级处理任何缺失。
 # 关联:策略工厂到孵化工厂过渡-开发方案-2026-05-26.md V5 P3 工作流深度调研
+async def _build_family_returns_from_klines(
+    db,
+    strategy: dict,
+    klass,
+    *,
+    min_len: int = 60,
+    max_symbols: int = 6,
+) -> Optional[np.ndarray]:
+    """用真实 K 线 + 真实 signal 生成器合成同族收益矩阵 (打通 PBO/RC/SPA)。
+
+    对策略参数做 ±20% 扰动生成同族变体(_build_strategy_family_returns),每个变体在真实
+    K 线上跑真实 signal × forward_return 得到逐期收益序列,列拼成 (n_obs, n_models) 矩阵。
+    这是 CSCV/White RC/Hansen SPA 检测参数过拟合的合法比较族,非伪造。
+
+    取不到足够真实 K 线 (min_len<24 或无 target_symbols) 时返回 None,
+    让下游 PBO/RC/SPA 诚实地维持 missing,绝不用噪声兜底。
+    """
+    try:
+        if klass is None or db is None:
+            return None
+        get_klines = getattr(db, "get_klines", None)
+        if not callable(get_klines):
+            return None
+
+        params = dict(strategy.get("params") or {})
+        raw_symbols = (
+            params.get("target_symbols")
+            or strategy.get("target_symbols")
+            or []
+        )
+        symbols = [str(s).strip() for s in raw_symbols if str(s or "").strip()][:max_symbols]
+        if not symbols:
+            return None
+
+        close_panels: list[np.ndarray] = []
+        for code in symbols:
+            try:
+                rows = await get_klines(code, limit=max(min_len * 2, 120))
+            except Exception:
+                continue
+            closes = np.asarray(
+                [float(r.get("close") or 0.0) for r in (rows or []) if r.get("close") is not None],
+                dtype=float,
+            )
+            closes = closes[np.isfinite(closes) & (closes > 0)]
+            if closes.size >= 24:
+                close_panels.append(closes)
+
+        if not close_panels:
+            return None
+
+        effective_len = int(min(min_len, min(int(c.size) for c in close_panels)))
+        if effective_len < 24:
+            return None
+
+        family = _build_strategy_family_returns(
+            klass,
+            params,
+            close_panels,
+            min_len=effective_len,
+        )
+        if family is None:
+            return None
+        family = np.asarray(family, dtype=float)
+        if family.ndim != 2 or family.shape[0] < 12 or family.shape[1] < 2:
+            return None
+        return family
+    except Exception:
+        return None
+
+
 def _inject_run_correction_metrics(
     strategy: dict,
     profile: dict[str, Any],
@@ -180,6 +251,7 @@ def _inject_run_correction_metrics(
     *,
     validation_report: Optional[dict] = None,
     backtest_metrics: Optional[dict] = None,
+    family_returns_fallback: Any = None,
 ) -> dict[str, Any]:
     """V5-PR-1: 在 submission_gate 主流程末尾计算多重检验调整指标 (DSR/PBO/RC/SPA)。
 
@@ -193,6 +265,9 @@ def _inject_run_correction_metrics(
         normalized:已经计算好的 quality_gate dict (含 attempt_adjustment / post_cost_sharpe / wf_ic_ir)
         validation_report:可选,用于提取 walk-forward 序列
         backtest_metrics:可选,用于提取 family_returns 矩阵
+        family_returns_fallback:可选,调用方预先用真实 K 线 + 真实 signal 合成的同族收益矩阵
+            (n_obs, n_models)。仅当 backtest_metrics 未直接携带 family_returns 时使用,
+            用于打通 PBO/RC/SPA。必须是真实回测序列,不可为噪声。
 
     Returns:
         要合并到 normalized 的字段 dict;失败时返回空 dict 但带 warning。
@@ -232,8 +307,9 @@ def _inject_run_correction_metrics(
         except Exception:
             score_series = None
 
-        # family_returns:V5-PR-1 第一版不主动合成 (代价大),仅尝试从 backtest_metrics 直接取
-        # 若没有则跳过 PBO/RC/SPA,只算 DSR (sample_size>=3 即可触发)
+        # family_returns:优先取 backtest_metrics 直接携带的矩阵;若没有,
+        # 用调用方预先合成的 family_returns_fallback(真实 K 线 + 真实 signal 的参数扰动族),
+        # 用于打通 PBO/RC/SPA。两条来源都是真实回测序列,缺失时保持 None(诚实 missing,不兜底造假)。
         family_returns = None
         try:
             mt_payload = dict((backtest_metrics or {}).get("multiple_testing") or {})
@@ -243,6 +319,15 @@ def _inject_run_correction_metrics(
                 family_returns = _np.asarray(fam_data, dtype=float)
         except Exception:
             family_returns = None
+
+        if family_returns is None and family_returns_fallback is not None:
+            try:
+                import numpy as _np
+                candidate_matrix = _np.asarray(family_returns_fallback, dtype=float)
+                if candidate_matrix.ndim == 2 and candidate_matrix.shape[0] >= 12 and candidate_matrix.shape[1] >= 2:
+                    family_returns = candidate_matrix
+            except Exception:
+                family_returns = None
 
         # validation_runtime:从 mcp_services 拉真实运行时
         try:

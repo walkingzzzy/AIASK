@@ -18,6 +18,7 @@ from .approvals import ApprovalStore, command_requires_approval
 from .numeric import bounded_float, bounded_int
 from .plugin_runtime import NativePluginManager
 from .process_registry import ProcessRegistry
+from .paths import aiask_agent_home
 from .terminal_backends import TerminalBackendError, TerminalBackendManager, TerminalInvocation, backend_status, command_targets_aiask_runtime
 from .tools.policy import ToolPolicy, build_policy_from_env
 
@@ -133,6 +134,74 @@ def _mutation_verification(path: Path, guard: WorkspaceGuard, *, operation: str,
     }
 
 
+def _checkpoint_public(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "checkpoint_id": metadata.get("checkpoint_id"),
+        "path": metadata.get("path"),
+        "reason": metadata.get("reason"),
+        "created_at": metadata.get("created_at"),
+        "existed": bool(metadata.get("existed")),
+        "size_bytes": metadata.get("size_bytes"),
+        "sha256": metadata.get("sha256"),
+    }
+
+
+def _checkpoint_root(state_path: Path | None) -> Path:
+    base = Path(state_path).expanduser().parent if state_path is not None else aiask_agent_home()
+    return base / "file_checkpoints"
+
+
+def _create_file_checkpoint(path: Path, guard: WorkspaceGuard, checkpoint_dir: Path, *, reason: str) -> dict[str, Any]:
+    resolved = path.resolve()
+    if not guard._is_allowed(resolved):
+        raise PermissionError(f"path is outside allowed AIASK Agent workspace roots: {resolved}")
+    if resolved.exists() and not resolved.is_file():
+        raise IsADirectoryError(str(resolved))
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    checkpoint_id = f"fchk_{uuid4().hex}"
+    backup_path: Path | None = None
+    stat = resolved.stat() if resolved.exists() else None
+    if resolved.exists():
+        backup_path = checkpoint_dir / f"{checkpoint_id}.blob"
+        backup_path.write_bytes(resolved.read_bytes())
+    metadata = {
+        "checkpoint_id": checkpoint_id,
+        "path": str(resolved),
+        "reason": str(reason or "manual").strip()[:500] or "manual",
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "created_at_epoch": time.time(),
+        "existed": bool(resolved.exists()),
+        "size_bytes": stat.st_size if stat else 0,
+        "sha256": _sha256_file(resolved),
+        "backup_path": str(backup_path) if backup_path else None,
+    }
+    (checkpoint_dir / f"{checkpoint_id}.json").write_text(json.dumps(metadata, ensure_ascii=False, sort_keys=True), encoding="utf-8")
+    return metadata
+
+
+def _load_checkpoint_metadata(checkpoint_dir: Path, *, checkpoint_id: str | None = None, path: Path | None = None) -> dict[str, Any]:
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+    records: list[dict[str, Any]] = []
+    target_path = str(path.resolve()) if path is not None else None
+    for metadata_path in checkpoint_dir.glob("fchk_*.json"):
+        try:
+            metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        if checkpoint_id and metadata.get("checkpoint_id") != checkpoint_id:
+            continue
+        if target_path and metadata.get("path") != target_path:
+            continue
+        metadata["_metadata_path"] = str(metadata_path)
+        records.append(metadata)
+    if not records:
+        if checkpoint_id:
+            raise FileNotFoundError(f"checkpoint not found: {checkpoint_id}")
+        raise FileNotFoundError(f"checkpoint not found for path: {target_path}")
+    records.sort(key=lambda item: float(item.get("created_at_epoch") or 0), reverse=True)
+    return records[0]
+
+
 def _python_diagnostics(path: Path) -> list[dict[str, Any]]:
     if path.suffix.lower() != ".py" or not path.exists() or not path.is_file():
         return []
@@ -229,6 +298,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
     guard = WorkspaceGuard(policy)
     processes = ProcessRegistry(state_path)
     approvals = ApprovalStore(state_path)
+    checkpoint_dir = _checkpoint_root(state_path)
     session_cwds: dict[str, str] = {}
     processes.recover_running(allowed_roots=guard.roots)
     terminal_manager = TerminalBackendManager(processes, allowed_roots=guard.roots)
@@ -259,6 +329,9 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         try:
             path = guard.resolve(arguments.get("path"))
             before_sha256 = _sha256_file(path)
+            checkpoint = None
+            if bool(arguments.get("checkpoint", True)):
+                checkpoint = _create_file_checkpoint(path, guard, checkpoint_dir, reason=str(arguments.get("checkpoint_reason") or "pre-write"))
             if bool(arguments.get("create_parent_dirs", False)):
                 path.parent.mkdir(parents=True, exist_ok=True)
             content = str(arguments.get("content") or "")
@@ -268,6 +341,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
                 data={
                     "path": str(path),
                     "bytes": len(content.encode("utf-8")),
+                    "checkpoint": _checkpoint_public(checkpoint) if checkpoint else None,
                     "mutation_verification": _mutation_verification(path, guard, operation="write", before_sha256=before_sha256),
                     "diagnostics": _write_diagnostics(path),
                 },
@@ -335,6 +409,9 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         try:
             path = guard.resolve(arguments.get("path"), must_exist=True)
             before_sha256 = _sha256_file(path)
+            checkpoint = None
+            if bool(arguments.get("checkpoint", True)):
+                checkpoint = _create_file_checkpoint(path, guard, checkpoint_dir, reason=str(arguments.get("checkpoint_reason") or "pre-patch"))
             old = str(arguments.get("old") or "")
             new = str(arguments.get("new") or "")
             if not old:
@@ -353,6 +430,7 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
                 data={
                     "path": str(path),
                     "replacements": min(count, text.count(old)),
+                    "checkpoint": _checkpoint_public(checkpoint) if checkpoint else None,
                     "mutation_verification": _mutation_verification(path, guard, operation="patch", before_sha256=before_sha256),
                     "diagnostics": _write_diagnostics(path),
                 },
@@ -376,6 +454,64 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
             return _envelope(True, data=data, tool_name=tool, level="read_only", target=str(path))
         except Exception as exc:
             return _envelope(False, error=str(exc), tool_name=tool, level="read_only")
+
+    async def file_checkpoint(arguments: dict[str, Any]) -> dict[str, Any]:
+        tool = "agent_file_checkpoint"
+        try:
+            path = guard.resolve(arguments.get("path"), must_exist=False)
+            checkpoint = _create_file_checkpoint(path, guard, checkpoint_dir, reason=str(arguments.get("reason") or "manual"))
+            return _envelope(
+                True,
+                data={"checkpoint": _checkpoint_public(checkpoint)},
+                tool_name=tool,
+                level="filesystem_write",
+                target=str(path),
+                idempotent=False,
+            )
+        except Exception as exc:
+            return _envelope(False, error=str(exc), tool_name=tool, level="filesystem_write", idempotent=False)
+
+    async def file_rollback(arguments: dict[str, Any]) -> dict[str, Any]:
+        tool = "agent_file_rollback"
+        try:
+            checkpoint_id = str(arguments.get("checkpoint_id") or "").strip() or None
+            path_arg = str(arguments.get("path") or "").strip()
+            if not checkpoint_id and not path_arg:
+                raise ValueError("checkpoint_id or path is required")
+            path = guard.resolve(path_arg, must_exist=False) if path_arg else None
+            checkpoint = _load_checkpoint_metadata(checkpoint_dir, checkpoint_id=checkpoint_id, path=path)
+            target = guard.resolve(str(checkpoint.get("path") or ""), must_exist=False)
+            before_sha256 = _sha256_file(target)
+            pre_rollback = _create_file_checkpoint(
+                target,
+                guard,
+                checkpoint_dir,
+                reason=str(arguments.get("reason") or f"pre-rollback:{checkpoint.get('checkpoint_id')}"),
+            )
+            if checkpoint.get("existed"):
+                backup_raw = str(checkpoint.get("backup_path") or "").strip()
+                if not backup_raw:
+                    raise FileNotFoundError("checkpoint backup is missing")
+                backup_path = Path(backup_raw).resolve()
+                backup_path.relative_to(checkpoint_dir.resolve())
+                if not backup_path.exists() or not backup_path.is_file():
+                    raise FileNotFoundError(f"checkpoint backup not found: {checkpoint.get('checkpoint_id')}")
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(backup_path.read_bytes())
+            else:
+                if target.exists():
+                    if not target.is_file():
+                        raise IsADirectoryError(str(target))
+                    target.unlink()
+            data = {
+                "rolled_back_to": _checkpoint_public(checkpoint),
+                "pre_rollback_checkpoint": _checkpoint_public(pre_rollback),
+                "mutation_verification": _mutation_verification(target, guard, operation="rollback", before_sha256=before_sha256),
+                "diagnostics": _write_diagnostics(target),
+            }
+            return _envelope(True, data=data, tool_name=tool, level="filesystem_write", target=str(target), idempotent=False)
+        except Exception as exc:
+            return _envelope(False, error=str(exc), tool_name=tool, level="filesystem_write", idempotent=False)
 
     async def terminal(arguments: dict[str, Any]) -> dict[str, Any]:
         tool = "agent_terminal"
@@ -773,6 +909,8 @@ def build_general_tool_handlers(policy: ToolPolicy | None = None, *, state_path:
         "agent_file_search": file_search,
         "agent_file_patch": file_patch,
         "agent_file_mutation_verify": file_mutation_verify,
+        "agent_file_checkpoint": file_checkpoint,
+        "agent_file_rollback": file_rollback,
         "agent_terminal": terminal,
         "agent_process": process,
         "agent_execute_python": execute_python,

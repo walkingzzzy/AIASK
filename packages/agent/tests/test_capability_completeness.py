@@ -38,6 +38,8 @@ _REGISTERED = {
     "agent_security_scan",
     "agent_file_write",
     "agent_file_patch",
+    "agent_file_checkpoint",
+    "agent_file_rollback",
     "agent_file_mutation_verify",
 }
 

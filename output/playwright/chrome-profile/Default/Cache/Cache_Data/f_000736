@@ -1,0 +1,430 @@
+import { createHotContext as __vite__createHotContext } from "/@vite/client";import.meta.hot = __vite__createHotContext("/src/features/ai-testing/AiTestingPanel.tsx");import __vite__cjsImport0_react_jsxDevRuntime from "/node_modules/.vite/deps/react_jsx-dev-runtime.js?v=5e7a649d"; const jsxDEV = __vite__cjsImport0_react_jsxDevRuntime["jsxDEV"];
+var _s = $RefreshSig$();
+import __vite__cjsImport1_react from "/node_modules/.vite/deps/react.js?v=5e7a649d"; const useEffect = __vite__cjsImport1_react["useEffect"]; const useState = __vite__cjsImport1_react["useState"];
+import { useAiSmoke } from "/src/hooks/useAiSmoke.ts?t=1781336555540";
+import { JsonPanel, StatusBadge } from "/src/components/shared.tsx";
+export function AiTestingPanel({
+  payload,
+  endpoint,
+  apiToken,
+  controlToken
+}) {
+  _s();
+  const { status, result, models, message, busy, refreshStatus, runSmoke, refreshModels } = useAiSmoke(endpoint, apiToken, controlToken);
+  const [prompt, setPrompt] = useState("请回复 AIASK model smoke ok。");
+  const [model, setModel] = useState("");
+  const currentStatus = status || payload?.ai || null;
+  const runtimeMode = currentStatus?.mock ? "mock" : "live";
+  const runtimeLabel = runtimeMode === "mock" ? "Mock 数据" : "真实后端";
+  useEffect(() => {
+    refreshStatus().catch(() => void 0);
+  }, [refreshStatus]);
+  return /* @__PURE__ */ jsxDEV("div", { className: "capability-stack", children: [
+    /* @__PURE__ */ jsxDEV("div", { className: "capability-banner", children: [
+      /* @__PURE__ */ jsxDEV("div", { children: [
+        /* @__PURE__ */ jsxDEV("span", { children: "AI 测试" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 32,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("h2", { children: currentStatus?.model || "模型运行时" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 33,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("p", { children: [
+          "提供方 ",
+          currentStatus?.provider || "-",
+          " / ",
+          runtimeLabel,
+          " / 基础 URL",
+          " ",
+          currentStatus?.base_url_configured ? "已配置" : "默认"
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 34,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 31,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "status-cluster", children: [
+        /* @__PURE__ */ jsxDEV(StatusBadge, { status: runtimeMode === "live" ? "live_backend" : "mock_fixture", label: runtimeLabel }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 40,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV(StatusBadge, { status: currentStatus?.configured ? "implemented" : "unconfigured" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 41,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 39,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+      lineNumber: 30,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("section", { className: "capability-grid two", children: [
+      /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+          /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: "运行时" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+              lineNumber: 49,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "模型配置" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+              lineNumber: 50,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 48,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("button", { className: "small-button", disabled: busy, onClick: () => refreshStatus(), type: "button", children: "刷新" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 52,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 47,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "kv-grid", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "提供方" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 55,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: currentStatus?.provider || "-" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 56,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "模型" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 57,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: currentStatus?.model || "-" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 58,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "Mock 模式" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 59,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: String(currentStatus?.mock ?? "-") }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 60,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "模式" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 61,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: runtimeLabel }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 62,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "基础 URL" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 63,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: currentStatus?.base_url_configured ? "已配置" : "默认" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 64,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "API 密钥" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 65,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: currentStatus?.api_key_configured ? "已配置" : "未配置" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 66,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 54,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 46,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+        /* @__PURE__ */ jsxDEV("div", { className: "section-header", children: [
+          /* @__PURE__ */ jsxDEV("div", { children: [
+            /* @__PURE__ */ jsxDEV("span", { children: "冒烟测试" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+              lineNumber: 73,
+              columnNumber: 15
+            }, this),
+            /* @__PURE__ */ jsxDEV("h3", { children: "运行 AI 冒烟测试" }, void 0, false, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+              lineNumber: 74,
+              columnNumber: 15
+            }, this)
+          ] }, void 0, true, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 72,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV(StatusBadge, { status: result?.success ? "implemented" : result ? "failed" : "not_loaded" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 76,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 71,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("label", { className: "field-row", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "提示词" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 79,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("input", { value: prompt, onChange: (event) => setPrompt(event.target.value) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 80,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 78,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("label", { className: "field-row", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "模型覆盖" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 83,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("input", { value: model, onChange: (event) => setModel(event.target.value), placeholder: currentStatus?.model || "可选" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 84,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 82,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "button-row", children: [
+          /* @__PURE__ */ jsxDEV("button", { disabled: busy, onClick: () => runSmoke(prompt, model || void 0), type: "button", children: "运行 AI 冒烟测试" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 87,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("button", { disabled: busy, onClick: () => refreshModels(), type: "button", children: "列出模型" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 88,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 86,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("p", { className: "status-line", children: message || "就绪" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 90,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 70,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+      lineNumber: 45,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("section", { className: "capability-grid two", children: [
+      /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+        /* @__PURE__ */ jsxDEV("h3", { children: "冒烟测试结果" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 96,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "kv-grid", children: [
+          /* @__PURE__ */ jsxDEV("span", { children: "成功" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 98,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: String(result?.success ?? false) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 99,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "已配置" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 100,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: String(result?.configured ?? false) }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 101,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "模式" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 102,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: result ? result.mock ? "Mock 数据" : "真实后端" : "-" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 103,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "延迟" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 104,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: result?.latency_ms === void 0 ? "-" : `${result.latency_ms}ms` }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 105,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("span", { children: "预览" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 106,
+            columnNumber: 13
+          }, this),
+          /* @__PURE__ */ jsxDEV("strong", { children: result?.response_preview || result?.error || "-" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 107,
+            columnNumber: 13
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 97,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 95,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV("div", { className: "capability-section", children: [
+        /* @__PURE__ */ jsxDEV("h3", { children: "模型" }, void 0, false, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 111,
+          columnNumber: 11
+        }, this),
+        /* @__PURE__ */ jsxDEV("div", { className: "mini-list", children: [
+          models.slice(0, 20).map(
+            (item) => /* @__PURE__ */ jsxDEV("article", { children: [
+              /* @__PURE__ */ jsxDEV("strong", { children: String(item.id || "-") }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+                lineNumber: 115,
+                columnNumber: 17
+              }, this),
+              /* @__PURE__ */ jsxDEV("span", { children: String(item.owned_by || item.object || "model") }, void 0, false, {
+                fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+                lineNumber: 116,
+                columnNumber: 17
+              }, this)
+            ] }, String(item.id || JSON.stringify(item)), true, {
+              fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+              lineNumber: 114,
+              columnNumber: 13
+            }, this)
+          ),
+          !models.length && /* @__PURE__ */ jsxDEV("p", { className: "muted", children: "点击“列出模型”查看 OpenAI-compatible 模型 ID。" }, void 0, false, {
+            fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+            lineNumber: 119,
+            columnNumber: 32
+          }, this)
+        ] }, void 0, true, {
+          fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+          lineNumber: 112,
+          columnNumber: 11
+        }, this)
+      ] }, void 0, true, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 110,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+      lineNumber: 94,
+      columnNumber: 7
+    }, this),
+    /* @__PURE__ */ jsxDEV("details", { className: "raw-details", children: [
+      /* @__PURE__ */ jsxDEV("summary", { children: "原始 AI 诊断" }, void 0, false, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 125,
+        columnNumber: 9
+      }, this),
+      /* @__PURE__ */ jsxDEV(JsonPanel, { value: { status: currentStatus, result, models } }, void 0, false, {
+        fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+        lineNumber: 126,
+        columnNumber: 9
+      }, this)
+    ] }, void 0, true, {
+      fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+      lineNumber: 124,
+      columnNumber: 7
+    }, this)
+  ] }, void 0, true, {
+    fileName: "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx",
+    lineNumber: 29,
+    columnNumber: 5
+  }, this);
+}
+_s(AiTestingPanel, "o/q4q1nne3DvZwvX4zbZpB/E4hQ=", false, function() {
+  return [useAiSmoke];
+});
+_c = AiTestingPanel;
+var _c;
+$RefreshReg$(_c, "AiTestingPanel");
+import * as RefreshRuntime from "/@react-refresh";
+const inWebWorker = typeof WorkerGlobalScope !== "undefined" && self instanceof WorkerGlobalScope;
+if (import.meta.hot && !inWebWorker) {
+  if (!window.$RefreshReg$) {
+    throw new Error(
+      "@vitejs/plugin-react can't detect preamble. Something is wrong."
+    );
+  }
+  RefreshRuntime.__hmr_import(import.meta.url).then((currentExports) => {
+    RefreshRuntime.registerExportsForReactRefresh("C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx", currentExports);
+    import.meta.hot.accept((nextExports) => {
+      if (!nextExports) return;
+      const invalidateMessage = RefreshRuntime.validateRefreshBoundaryAndEnqueueUpdate("C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx", currentExports, nextExports);
+      if (invalidateMessage) import.meta.hot.invalidate(invalidateMessage);
+    });
+  });
+}
+function $RefreshReg$(type, id) {
+  return RefreshRuntime.register(type, "C:/Users/walking/Desktop/aiask/desktop/src/features/ai-testing/AiTestingPanel.tsx " + id);
+}
+function $RefreshSig$() {
+  return RefreshRuntime.createSignatureFunctionForTransform();
+}
+
+//# sourceMappingURL=data:application/json;base64,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V0FHQTtBQUFBLE9BbEdGO0FBQUE7QUFBQTtBQUFBO0FBQUEsU0FtR0E7QUFFSjtBQUFDSCxHQTVIZUwsZ0JBQWM7QUFBQSxVQVc4REgsVUFBVTtBQUFBO0FBQUEsS0FYdEZHO0FBQWMsSUFBQThDO0FBQUEsYUFBQUEsSUFBQSIsIm5hbWVzIjpbInVzZUVmZmVjdCIsInVzZVN0YXRlIiwidXNlQWlTbW9rZSIsIkpzb25QYW5lbCIsIlN0YXR1c0JhZGdlIiwiQWlUZXN0aW5nUGFuZWwiLCJwYXlsb2FkIiwiZW5kcG9pbnQiLCJhcGlUb2tlbiIsImNvbnRyb2xUb2tlbiIsIl9zIiwic3RhdHVzIiwicmVzdWx0IiwibW9kZWxzIiwibWVzc2FnZSIsImJ1c3kiLCJyZWZyZXNoU3RhdHVzIiwicnVuU21va2UiLCJyZWZyZXNoTW9kZWxzIiwicHJvbXB0Iiwic2V0UHJvbXB0IiwibW9kZWwiLCJzZXRNb2RlbCIsImN1cnJlbnRTdGF0dXMiLCJhaSIsInJ1bnRpbWVNb2RlIiwibW9jayIsInJ1bnRpbWVMYWJlbCIsImNhdGNoIiwidW5kZWZpbmVkIiwicHJvdmlkZXIiLCJiYXNlX3VybF9jb25maWd1cmVkIiwiY29uZmlndXJlZCIsIlN0cmluZyIsImFwaV9rZXlfY29uZmlndXJlZCIsInN1Y2Nlc3MiLCJldmVudCIsInRhcmdldCIsInZhbHVlIiwibGF0ZW5jeV9tcyIsInJlc3BvbnNlX3ByZXZpZXciLCJlcnJvciIsInNsaWNlIiwibWFwIiwiaXRlbSIsImlkIiwib3duZWRfYnkiLCJvYmplY3QiLCJKU09OIiwic3RyaW5naWZ5IiwibGVuZ3RoIiwiX2MiXSwiaWdub3JlTGlzdCI6W10sInNvdXJjZXMiOlsiQWlUZXN0aW5nUGFuZWwudHN4Il0sInNvdXJjZXNDb250ZW50IjpbImltcG9ydCB7IHVzZUVmZmVjdCwgdXNlU3RhdGUgfSBmcm9tIFwicmVhY3RcIjtcbmltcG9ydCB7IHVzZUFpU21va2UgfSBmcm9tIFwiLi4vLi4vaG9va3MvdXNlQWlTbW9rZVwiO1xuaW1wb3J0IHR5cGUgeyBDYXBhYmlsaXR5V29ya2JlbmNoUGF5bG9hZCB9IGZyb20gXCIuLi8uLi90eXBlc1wiO1xuaW1wb3J0IHsgSnNvblBhbmVsLCBTdGF0dXNCYWRnZSB9IGZyb20gXCIuLi8uLi9jb21wb25lbnRzL3NoYXJlZFwiO1xuXG5leHBvcnQgZnVuY3Rpb24gQWlUZXN0aW5nUGFuZWwoe1xuICBwYXlsb2FkLFxuICBlbmRwb2ludCxcbiAgYXBpVG9rZW4sXG4gIGNvbnRyb2xUb2tlblxufToge1xuICBwYXlsb2FkOiBDYXBhYmlsaXR5V29ya2JlbmNoUGF5bG9hZCB8IG51bGw7XG4gIGVuZHBvaW50OiBzdHJpbmc7XG4gIGFwaVRva2VuOiBzdHJpbmc7XG4gIGNvbnRyb2xUb2tlbjogc3RyaW5nO1xufSkge1xuICBjb25zdCB7IHN0YXR1cywgcmVzdWx0LCBtb2RlbHMsIG1lc3NhZ2UsIGJ1c3ksIHJlZnJlc2hTdGF0dXMsIHJ1blNtb2tlLCByZWZyZXNoTW9kZWxzIH0gPSB1c2VBaVNtb2tlKGVuZHBvaW50LCBhcGlUb2tlbiwgY29udHJvbFRva2VuKTtcbiAgY29uc3QgW3Byb21wdCwgc2V0UHJvbXB0XSA9IHVzZVN0YXRlKFwi6K+35Zue5aSNIEFJQVNLIG1vZGVsIHNtb2tlIG9r44CCXCIpO1xuICBjb25zdCBbbW9kZWwsIHNldE1vZGVsXSA9IHVzZVN0YXRlKFwiXCIpO1xuICBjb25zdCBjdXJyZW50U3RhdHVzID0gc3RhdHVzIHx8IHBheWxvYWQ/LmFpIHx8IG51bGw7XG4gIGNvbnN0IHJ1bnRpbWVNb2RlID0gY3VycmVudFN0YXR1cz8ubW9jayA/IFwibW9ja1wiIDogXCJsaXZlXCI7XG4gIGNvbnN0IHJ1bnRpbWVMYWJlbCA9IHJ1bnRpbWVNb2RlID09PSBcIm1vY2tcIiA/IFwiTW9jayDmlbDmja5cIiA6IFwi55yf5a6e5ZCO56uvXCI7XG5cbiAgdXNlRWZmZWN0KCgpID0+IHtcbiAgICByZWZyZXNoU3RhdHVzKCkuY2F0Y2goKCkgPT4gdW5kZWZpbmVkKTtcbiAgfSwgW3JlZnJlc2hTdGF0dXNdKTtcblxuICByZXR1cm4gKFxuICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zdGFja1wiPlxuICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LWJhbm5lclwiPlxuICAgICAgICA8ZGl2PlxuICAgICAgICAgIDxzcGFuPkFJIOa1i+ivlTwvc3Bhbj5cbiAgICAgICAgICA8aDI+e2N1cnJlbnRTdGF0dXM/Lm1vZGVsIHx8IFwi5qih5Z6L6L+Q6KGM5pe2XCJ9PC9oMj5cbiAgICAgICAgICA8cD5cbiAgICAgICAgICAgIOaPkOS+m+aWuSB7Y3VycmVudFN0YXR1cz8ucHJvdmlkZXIgfHwgXCItXCJ9IC8ge3J1bnRpbWVMYWJlbH0gLyDln7rnoYAgVVJMe1wiIFwifVxuICAgICAgICAgICAge2N1cnJlbnRTdGF0dXM/LmJhc2VfdXJsX2NvbmZpZ3VyZWQgPyBcIuW3sumFjee9rlwiIDogXCLpu5jorqRcIn1cbiAgICAgICAgICA8L3A+XG4gICAgICAgIDwvZGl2PlxuICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInN0YXR1cy1jbHVzdGVyXCI+XG4gICAgICAgICAgPFN0YXR1c0JhZGdlIHN0YXR1cz17cnVudGltZU1vZGUgPT09IFwibGl2ZVwiID8gXCJsaXZlX2JhY2tlbmRcIiA6IFwibW9ja19maXh0dXJlXCJ9IGxhYmVsPXtydW50aW1lTGFiZWx9IC8+XG4gICAgICAgICAgPFN0YXR1c0JhZGdlIHN0YXR1cz17Y3VycmVudFN0YXR1cz8uY29uZmlndXJlZCA/IFwiaW1wbGVtZW50ZWRcIiA6IFwidW5jb25maWd1cmVkXCJ9IC8+XG4gICAgICAgIDwvZGl2PlxuICAgICAgPC9kaXY+XG5cbiAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cImNhcGFiaWxpdHktZ3JpZCB0d29cIj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LXNlY3Rpb25cIj5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cInNlY3Rpb24taGVhZGVyXCI+XG4gICAgICAgICAgICA8ZGl2PlxuICAgICAgICAgICAgICA8c3Bhbj7ov5DooYzml7Y8L3NwYW4+XG4gICAgICAgICAgICAgIDxoMz7mqKHlnovphY3nva48L2gzPlxuICAgICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgICA8YnV0dG9uIGNsYXNzTmFtZT1cInNtYWxsLWJ1dHRvblwiIGRpc2FibGVkPXtidXN5fSBvbkNsaWNrPXsoKSA9PiByZWZyZXNoU3RhdHVzKCl9IHR5cGU9XCJidXR0b25cIj7liLfmlrA8L2J1dHRvbj5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImt2LWdyaWRcIj5cbiAgICAgICAgICAgIDxzcGFuPuaPkOS+m+aWuTwvc3Bhbj5cbiAgICAgICAgICAgIDxzdHJvbmc+e2N1cnJlbnRTdGF0dXM/LnByb3ZpZGVyIHx8IFwiLVwifTwvc3Ryb25nPlxuICAgICAgICAgICAgPHNwYW4+5qih5Z6LPC9zcGFuPlxuICAgICAgICAgICAgPHN0cm9uZz57Y3VycmVudFN0YXR1cz8ubW9kZWwgfHwgXCItXCJ9PC9zdHJvbmc+XG4gICAgICAgICAgICA8c3Bhbj5Nb2NrIOaooeW8jzwvc3Bhbj5cbiAgICAgICAgICAgIDxzdHJvbmc+e1N0cmluZyhjdXJyZW50U3RhdHVzPy5tb2NrID8/IFwiLVwiKX08L3N0cm9uZz5cbiAgICAgICAgICAgIDxzcGFuPuaooeW8jzwvc3Bhbj5cbiAgICAgICAgICAgIDxzdHJvbmc+e3J1bnRpbWVMYWJlbH08L3N0cm9uZz5cbiAgICAgICAgICAgIDxzcGFuPuWfuuehgCBVUkw8L3NwYW4+XG4gICAgICAgICAgICA8c3Ryb25nPntjdXJyZW50U3RhdHVzPy5iYXNlX3VybF9jb25maWd1cmVkID8gXCLlt7LphY3nva5cIiA6IFwi6buY6K6kXCJ9PC9zdHJvbmc+XG4gICAgICAgICAgICA8c3Bhbj5BUEkg5a+G6ZKlPC9zcGFuPlxuICAgICAgICAgICAgPHN0cm9uZz57Y3VycmVudFN0YXR1cz8uYXBpX2tleV9jb25maWd1cmVkID8gXCLlt7LphY3nva5cIiA6IFwi5pyq6YWN572uXCJ9PC9zdHJvbmc+XG4gICAgICAgICAgPC9kaXY+XG4gICAgICAgIDwvZGl2PlxuXG4gICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiY2FwYWJpbGl0eS1zZWN0aW9uXCI+XG4gICAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJzZWN0aW9uLWhlYWRlclwiPlxuICAgICAgICAgICAgPGRpdj5cbiAgICAgICAgICAgICAgPHNwYW4+5YaS54Of5rWL6K+VPC9zcGFuPlxuICAgICAgICAgICAgICA8aDM+6L+Q6KGMIEFJIOWGkueDn+a1i+ivlTwvaDM+XG4gICAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICAgIDxTdGF0dXNCYWRnZSBzdGF0dXM9e3Jlc3VsdD8uc3VjY2VzcyA/IFwiaW1wbGVtZW50ZWRcIiA6IHJlc3VsdCA/IFwiZmFpbGVkXCIgOiBcIm5vdF9sb2FkZWRcIn0gLz5cbiAgICAgICAgICA8L2Rpdj5cbiAgICAgICAgICA8bGFiZWwgY2xhc3NOYW1lPVwiZmllbGQtcm93XCI+XG4gICAgICAgICAgICA8c3Bhbj7mj5DnpLror408L3NwYW4+XG4gICAgICAgICAgICA8aW5wdXQgdmFsdWU9e3Byb21wdH0gb25DaGFuZ2U9eyhldmVudCkgPT4gc2V0UHJvbXB0KGV2ZW50LnRhcmdldC52YWx1ZSl9IC8+XG4gICAgICAgICAgPC9sYWJlbD5cbiAgICAgICAgICA8bGFiZWwgY2xhc3NOYW1lPVwiZmllbGQtcm93XCI+XG4gICAgICAgICAgICA8c3Bhbj7mqKHlnovopobnm5Y8L3NwYW4+XG4gICAgICAgICAgICA8aW5wdXQgdmFsdWU9e21vZGVsfSBvbkNoYW5nZT17KGV2ZW50KSA9PiBzZXRNb2RlbChldmVudC50YXJnZXQudmFsdWUpfSBwbGFjZWhvbGRlcj17Y3VycmVudFN0YXR1cz8ubW9kZWwgfHwgXCLlj6/pgIlcIn0gLz5cbiAgICAgICAgICA8L2xhYmVsPlxuICAgICAgICAgIDxkaXYgY2xhc3NOYW1lPVwiYnV0dG9uLXJvd1wiPlxuICAgICAgICAgICAgPGJ1dHRvbiBkaXNhYmxlZD17YnVzeX0gb25DbGljaz17KCkgPT4gcnVuU21va2UocHJvbXB0LCBtb2RlbCB8fCB1bmRlZmluZWQpfSB0eXBlPVwiYnV0dG9uXCI+6L+Q6KGMIEFJIOWGkueDn+a1i+ivlTwvYnV0dG9uPlxuICAgICAgICAgICAgPGJ1dHRvbiBkaXNhYmxlZD17YnVzeX0gb25DbGljaz17KCkgPT4gcmVmcmVzaE1vZGVscygpfSB0eXBlPVwiYnV0dG9uXCI+5YiX5Ye65qih5Z6LPC9idXR0b24+XG4gICAgICAgICAgPC9kaXY+XG4gICAgICAgICAgPHAgY2xhc3NOYW1lPVwic3RhdHVzLWxpbmVcIj57bWVzc2FnZSB8fCBcIuWwsee7qlwifTwvcD5cbiAgICAgICAgPC9kaXY+XG4gICAgICA8L3NlY3Rpb24+XG5cbiAgICAgIDxzZWN0aW9uIGNsYXNzTmFtZT1cImNhcGFiaWxpdHktZ3JpZCB0d29cIj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LXNlY3Rpb25cIj5cbiAgICAgICAgICA8aDM+5YaS54Of5rWL6K+V57uT5p6cPC9oMz5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cImt2LWdyaWRcIj5cbiAgICAgICAgICAgIDxzcGFuPuaIkOWKnzwvc3Bhbj5cbiAgICAgICAgICAgIDxzdHJvbmc+e1N0cmluZyhyZXN1bHQ/LnN1Y2Nlc3MgPz8gZmFsc2UpfTwvc3Ryb25nPlxuICAgICAgICAgICAgPHNwYW4+5bey6YWN572uPC9zcGFuPlxuICAgICAgICAgICAgPHN0cm9uZz57U3RyaW5nKHJlc3VsdD8uY29uZmlndXJlZCA/PyBmYWxzZSl9PC9zdHJvbmc+XG4gICAgICAgICAgICA8c3Bhbj7mqKHlvI88L3NwYW4+XG4gICAgICAgICAgICA8c3Ryb25nPntyZXN1bHQgPyAocmVzdWx0Lm1vY2sgPyBcIk1vY2sg5pWw5o2uXCIgOiBcIuecn+WunuWQjuerr1wiKSA6IFwiLVwifTwvc3Ryb25nPlxuICAgICAgICAgICAgPHNwYW4+5bu26L+fPC9zcGFuPlxuICAgICAgICAgICAgPHN0cm9uZz57cmVzdWx0Py5sYXRlbmN5X21zID09PSB1bmRlZmluZWQgPyBcIi1cIiA6IGAke3Jlc3VsdC5sYXRlbmN5X21zfW1zYH08L3N0cm9uZz5cbiAgICAgICAgICAgIDxzcGFuPumihOiniDwvc3Bhbj5cbiAgICAgICAgICAgIDxzdHJvbmc+e3Jlc3VsdD8ucmVzcG9uc2VfcHJldmlldyB8fCByZXN1bHQ/LmVycm9yIHx8IFwiLVwifTwvc3Ryb25nPlxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICA8L2Rpdj5cbiAgICAgICAgPGRpdiBjbGFzc05hbWU9XCJjYXBhYmlsaXR5LXNlY3Rpb25cIj5cbiAgICAgICAgICA8aDM+5qih5Z6LPC9oMz5cbiAgICAgICAgICA8ZGl2IGNsYXNzTmFtZT1cIm1pbmktbGlzdFwiPlxuICAgICAgICAgICAge21vZGVscy5zbGljZSgwLCAyMCkubWFwKChpdGVtKSA9PiAoXG4gICAgICAgICAgICAgIDxhcnRpY2xlIGtleT17U3RyaW5nKGl0ZW0uaWQgfHwgSlNPTi5zdHJpbmdpZnkoaXRlbSkpfT5cbiAgICAgICAgICAgICAgICA8c3Ryb25nPntTdHJpbmcoaXRlbS5pZCB8fCBcIi1cIil9PC9zdHJvbmc+XG4gICAgICAgICAgICAgICAgPHNwYW4+e1N0cmluZyhpdGVtLm93bmVkX2J5IHx8IGl0ZW0ub2JqZWN0IHx8IFwibW9kZWxcIil9PC9zcGFuPlxuICAgICAgICAgICAgICA8L2FydGljbGU+XG4gICAgICAgICAgICApKX1cbiAgICAgICAgICAgIHshbW9kZWxzLmxlbmd0aCAmJiA8cCBjbGFzc05hbWU9XCJtdXRlZFwiPueCueWHu+KAnOWIl+WHuuaooeWei+KAneafpeeciyBPcGVuQUktY29tcGF0aWJsZSDmqKHlnosgSUTjgII8L3A+fVxuICAgICAgICAgIDwvZGl2PlxuICAgICAgICA8L2Rpdj5cbiAgICAgIDwvc2VjdGlvbj5cblxuICAgICAgPGRldGFpbHMgY2xhc3NOYW1lPVwicmF3LWRldGFpbHNcIj5cbiAgICAgICAgPHN1bW1hcnk+5Y6f5aeLIEFJIOiviuaWrTwvc3VtbWFyeT5cbiAgICAgICAgPEpzb25QYW5lbCB2YWx1ZT17eyBzdGF0dXM6IGN1cnJlbnRTdGF0dXMsIHJlc3VsdCwgbW9kZWxzIH19IC8+XG4gICAgICA8L2RldGFpbHM+XG4gICAgPC9kaXY+XG4gICk7XG59XG4iXSwiZmlsZSI6IkM6L1VzZXJzL3dhbGtpbmcvRGVza3RvcC9haWFzay9kZXNrdG9wL3NyYy9mZWF0dXJlcy9haS10ZXN0aW5nL0FpVGVzdGluZ1BhbmVsLnRzeCJ9

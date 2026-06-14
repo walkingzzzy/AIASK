@@ -1,0 +1,52 @@
+[
+  {
+    "ok": true,
+    "name": "最终复测：在线工作台",
+    "heading": "AIASK 工作台",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-workbench-online-final.png",
+    "badPatterns": [],
+    "textSample": "在线，可以开始任务 AIASK 工作台 Codex UI Live Profile 20260522_155200 / codex_ui_live_20260522_155200 · 真实后端 · http://127.0.0.1:8767 真实后端 在线，可以开始任务 新线程 金融安全模式 3 个产物 准备度 Gateway 受限 同步 任务中枢 线程优先工作台 金融安全模式 连接状态 在线，可以开始任务 Agent 已响应，工作台可以同步会话、运行和工具状态。 当前任务 "
+  },
+  {
+    "ok": true,
+    "name": "最终复测：导航唯一展开",
+    "heading": "AIASK 工作台",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-nav-expanded-final.png",
+    "badPatterns": [],
+    "textSample": "在线，可以开始任务 AIASK 工作台 Codex UI Live Profile 20260522_155200 / codex_ui_live_20260522_155200 · 真实后端 · http://127.0.0.1:8767 真实后端 在线，可以开始任务 新线程 金融安全模式 3 个产物 准备度 Gateway 受限 同步 任务中枢 线程优先工作台 金融安全模式 连接状态 在线，可以开始任务 Agent 已响应，工作台可以同步会话、运行和工具状态。 当前任务 "
+  },
+  {
+    "ok": true,
+    "name": "最终复测：集成打开 MCP",
+    "heading": "MCP / 连接器",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-integration-mcp-final.png",
+    "badPatterns": [],
+    "textSample": "运维与连接 MCP / 连接器 就绪 需要控制令牌 刷新 MCP + 连接器 服务器、工具、资源、提示词、OAuth 与连接器管理 桌面端只读取 Agent 聚合状态并调用 Agent HTTP 管理接口，不直接连接 MCP server 或 manager。 连接器管理受限 受限 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。 MCP 状态 未加"
+  },
+  {
+    "ok": true,
+    "name": "最终复测：设置分类关于",
+    "heading": "设置中心",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-settings-about-final.png",
+    "badPatterns": [
+      "null"
+    ],
+    "textSample": "返回工作台 设置 可操作设置、管理入口与只读状态 基础设置 常规 连接 令牌与权限 高级管理 技能管理 自动化管理 应用集成 Webhook 插件与技能包 状态与入口 模型配置 MCP 管理入口 工作流入口 股票数据源 数据路径 学习 / RL 安全扫描 高级诊断入口 关于 设置 设置中心 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。 刷新 关于 AIASK Desktop 桌面端只作为 Agent HTTP API 客户端，不绕过 U"
+  },
+  {
+    "ok": true,
+    "name": "最终复测：金融实验室",
+    "heading": "金融实验室",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-finance-lab-final.png",
+    "badPatterns": [],
+    "textSample": "金融任务 金融实验室 把金融工作作为任务模板启动；结果回到当前线程，沉淀为产物、审批项和运行摘要。 Agent HTTP 等待加载 刷新接力状态 Factor -> Strategy -> Incubation 工厂接力总览 只读汇总 Agent HTTP 证据：因子池是否可用、策略评审是否给出分流、孵化器是否已经产生生命周期和命中率反馈。 接力状态 部分就绪 活跃因子 0 策略评审 未加载 孵化运行 - 挖掘与治理活跃池 因子工厂 未加载 活跃池 - 活跃因子 0 已晋升 "
+  },
+  {
+    "ok": true,
+    "name": "最终复测：审批页",
+    "heading": "工具 / 意图 / 审批",
+    "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/41-approvals-final.png",
+    "badPatterns": [],
+    "textSample": "Agent 安全控制 工具 / 意图 / 审批 未加载 刷新 202 / 202 个工具 工具目录 所有工具 金融安全 仅完整模式 只读 Intent 需审批 已阻塞 排序： 名称 分类 可见性 工具 VISIBILITY SAFETY / INTERACTION 操作 agent_acp_manage full_mode_only full_mode_only approval 详情 agent_action_intent_create api_safe finance_s"
+  }
+]

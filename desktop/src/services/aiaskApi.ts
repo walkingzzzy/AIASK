@@ -2,9 +2,18 @@ import { formatApiError, normalizeEndpoint, parseSseEvents, requestJson } from "
 import { isMockEndpoint } from "../mockApi";
 import type {
   AgentResponse,
+  AgentArtifactRecord,
+  AgentSourceRecord,
+  AiConfigPayload,
+  AiConfigSavePayload,
+  AiConfigSaveResult,
   AiSmokeResult,
   AiStatus,
   ApprovalItem,
+  BrokerAnalyticsPayload,
+  BrokerReadinessPayload,
+  BrokerSnapshotPayload,
+  BrokerSyncPayload,
   CapabilityParity,
   CapabilityWorkbenchPayload,
   ConnectorDetail,
@@ -24,6 +33,7 @@ import type {
   GatewayMessage,
   GatewayPlatform,
   HealthDetailed,
+  HandoffQueuePayload,
   HermesConsoleSnapshot,
   HermesStatus,
   JobRunRecord,
@@ -44,11 +54,28 @@ import type {
   ResponseRecord,
   RlRun,
   RunRecord,
+  RunTraceEvalPayload,
+  SessionArchivePayload,
+  SessionResumeContextPayload,
+  SessionUndoPayload,
+  StockDataSourceConfig,
+  StockDataSourcesStatus,
+  StockDataSourceTestResult,
+  FeedbackEvent,
+  RetentionSweepResult,
   ToolCatalogItem,
   ToolEnvelope,
   TradePredictionMatrix,
   TradePredictionOutcomes,
   TradePredictionStatus,
+  UserAnalyticsSummary,
+  UserActivityEvent,
+  UserActivityPayload,
+  UserDataDeleteResult,
+  UserDataExport,
+  UserDataPolicy,
+  UserLearningDataset,
+  WorkflowRecommendationPayload,
   WebhookSubscription
 } from "../types";
 
@@ -276,6 +303,18 @@ export class AiaskApi {
     return requestJson(this.endpoint, "/v1/ai/models", { token: this.apiToken });
   }
 
+  aiConfig(): Promise<AiConfigPayload> {
+    return requestJson<AiConfigPayload>(this.endpoint, "/v1/ai/config", { token: this.apiToken });
+  }
+
+  aiConfigSave(body: AiConfigSavePayload): Promise<AiConfigSaveResult> {
+    return requestJson<AiConfigSaveResult>(this.endpoint, "/v1/ai/config", {
+      method: "PATCH",
+      token: this.controlToken,
+      body
+    });
+  }
+
   response(body: Record<string, unknown>, token?: string): Promise<AgentResponse> {
     return requestJson<AgentResponse>(this.endpoint, "/v1/responses", { method: "POST", token: token || this.apiToken, body });
   }
@@ -294,6 +333,62 @@ export class AiaskApi {
 
   runGet(runId: string): Promise<RunRecord> {
     return requestJson<RunRecord>(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}`, { token: controlOrApiToken(this) });
+  }
+
+  runTraceEval(runId: string): Promise<RunTraceEvalPayload> {
+    return requestJson<RunTraceEvalPayload>(
+      this.endpoint,
+      `/v1/runs/${encodeURIComponent(runId)}/trace-eval`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  runArtifacts(runId: string, filters: { kind?: string; limit?: number } = {}): Promise<{ object: string; run_id: string; data: AgentArtifactRecord[] }> {
+    const params = new URLSearchParams();
+    if (filters.kind) params.set("kind", filters.kind);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<{ object: string; run_id: string; data: AgentArtifactRecord[] }>(
+      this.endpoint,
+      `/v1/runs/${encodeURIComponent(runId)}/artifacts${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  runSources(runId: string, filters: { source_type?: string; limit?: number } = {}): Promise<{ object: string; run_id: string; data: AgentSourceRecord[] }> {
+    const params = new URLSearchParams();
+    if (filters.source_type) params.set("source_type", filters.source_type);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<{ object: string; run_id: string; data: AgentSourceRecord[] }>(
+      this.endpoint,
+      `/v1/runs/${encodeURIComponent(runId)}/sources${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  sessionArtifacts(sessionId: string, filters: { kind?: string; limit?: number } = {}): Promise<{ object: string; session_id: string; data: AgentArtifactRecord[] }> {
+    const params = new URLSearchParams();
+    if (filters.kind) params.set("kind", filters.kind);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<{ object: string; session_id: string; data: AgentArtifactRecord[] }>(
+      this.endpoint,
+      `/v1/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
+  }
+
+  sessionSources(sessionId: string, filters: { source_type?: string; limit?: number } = {}): Promise<{ object: string; session_id: string; data: AgentSourceRecord[] }> {
+    const params = new URLSearchParams();
+    if (filters.source_type) params.set("source_type", filters.source_type);
+    if (filters.limit) params.set("limit", String(filters.limit));
+    const query = params.toString();
+    return requestJson<{ object: string; session_id: string; data: AgentSourceRecord[] }>(
+      this.endpoint,
+      `/v1/sessions/${encodeURIComponent(sessionId)}/sources${query ? `?${query}` : ""}`,
+      { token: this.apiToken }
+    );
   }
 
   runCancel(runId: string): Promise<Record<string, unknown>> {
@@ -704,6 +799,32 @@ export class AiaskApi {
     });
   }
 
+  stockDataSources(): Promise<StockDataSourcesStatus> {
+    return requestJson<StockDataSourcesStatus>(this.endpoint, "/v1/desktop/stock-data-sources", {
+      token: controlOrApiToken(this)
+    });
+  }
+
+  stockDataSourceSave(body: StockDataSourceConfig): Promise<{ object: string; source: StockDataSourceConfig; secrets_redacted?: boolean }> {
+    return requestJson<{ object: string; source: StockDataSourceConfig; secrets_redacted?: boolean }>(
+      this.endpoint,
+      "/v1/desktop/stock-data-sources",
+      {
+        method: "POST",
+        token: this.controlToken,
+        body
+      }
+    );
+  }
+
+  stockDataSourceTest(body: Record<string, unknown>): Promise<StockDataSourceTestResult> {
+    return requestJson<StockDataSourceTestResult>(this.endpoint, "/v1/desktop/stock-data-sources/test", {
+      method: "POST",
+      token: this.controlToken,
+      body
+    });
+  }
+
   localProfileGet(): Promise<LocalProfile> {
     return requestJson<LocalProfile>(this.endpoint, "/v1/desktop/users/local-profile", { token: this.apiToken });
   }
@@ -714,6 +835,116 @@ export class AiaskApi {
       token: this.apiToken,
       body
     });
+  }
+
+  recordEvents(events: UserActivityEvent | UserActivityEvent[]): Promise<{ object: string; data: UserActivityEvent[]; count: number; secrets_redacted?: boolean }> {
+    const list = Array.isArray(events) ? events : [events];
+    return requestJson<{ object: string; data: UserActivityEvent[]; count: number; secrets_redacted?: boolean }>(
+      this.endpoint,
+      "/v1/desktop/events",
+      {
+        method: "POST",
+        token: this.apiToken,
+        body: { events: list }
+      }
+    );
+  }
+
+  recordFeedback(body: FeedbackEvent): Promise<{ object: string; data: FeedbackEvent; secrets_redacted?: boolean }> {
+    return requestJson<{ object: string; data: FeedbackEvent; secrets_redacted?: boolean }>(
+      this.endpoint,
+      "/v1/desktop/feedback",
+      {
+        method: "POST",
+        token: this.apiToken,
+        body
+      }
+    );
+  }
+
+  userActivity(userId: string, limit = 20): Promise<UserActivityPayload> {
+    return requestJson<UserActivityPayload>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/activity?limit=${encodeURIComponent(String(limit))}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  userAnalyticsSummary(userId?: string, limit = 20): Promise<UserAnalyticsSummary> {
+    const params = new URLSearchParams();
+    if (userId) params.set("user_id", userId);
+    params.set("limit", String(limit));
+    return requestJson<UserAnalyticsSummary>(this.endpoint, `/v1/desktop/analytics/summary?${params.toString()}`, {
+      token: controlOrApiToken(this)
+    });
+  }
+
+  userDataExport(userId: string, limit = 500): Promise<UserDataExport> {
+    return requestJson<UserDataExport>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/export?limit=${encodeURIComponent(String(limit))}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  userDataDelete(userId: string, body: { dry_run?: boolean; hard_delete?: boolean; include_conversations?: boolean; include_audit?: boolean; reason?: string } = {}): Promise<UserDataDeleteResult> {
+    return requestJson<UserDataDeleteResult>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/delete`,
+      {
+        method: "POST",
+        token: this.apiToken,
+        body
+      }
+    );
+  }
+
+  retentionSweep(body: { user_id?: string; dry_run?: boolean } = { dry_run: true }): Promise<RetentionSweepResult> {
+    return requestJson<RetentionSweepResult>(
+      this.endpoint,
+      "/v1/desktop/retention/sweep",
+      {
+        method: "POST",
+        token: this.controlToken,
+        body
+      }
+    );
+  }
+
+  userLearningDataset(userId: string, limit = 100): Promise<UserLearningDataset> {
+    return requestJson<UserLearningDataset>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/learning-dataset?limit=${encodeURIComponent(String(limit))}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  userRecommendations(userId: string, limit = 5): Promise<WorkflowRecommendationPayload> {
+    return requestJson<WorkflowRecommendationPayload>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/recommendations?limit=${encodeURIComponent(String(limit))}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  userDataPolicyGet(userId: string): Promise<{ object: string; data: UserDataPolicy }> {
+    return requestJson<{ object: string; data: UserDataPolicy }>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/data-policy`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  userDataPolicySave(userId: string, patch: Partial<UserDataPolicy>): Promise<{ object: string; data: UserDataPolicy }> {
+    return requestJson<{ object: string; data: UserDataPolicy }>(
+      this.endpoint,
+      `/v1/desktop/users/${encodeURIComponent(userId)}/data-policy`,
+      {
+        method: "PATCH",
+        token: this.apiToken,
+        body: patch
+      }
+    );
   }
 
   factorFactoryStatus(limit = 50): Promise<FactorFactoryStatus> {
@@ -789,13 +1020,34 @@ export class AiaskApi {
     );
   }
 
-  sessionsList(userId?: string, limit = 100): Promise<{ object: string; data: RecentSessionSummary[] }> {
+  sessionsList(userId?: string, limit = 100, includeArchived = false): Promise<{ object: string; data: RecentSessionSummary[] }> {
     const params = new URLSearchParams();
     if (userId) params.set("user_id", userId);
     params.set("limit", String(limit));
+    if (includeArchived) params.set("include_archived", "true");
     return requestJson<{ object: string; data: RecentSessionSummary[] }>(this.endpoint, `/v1/hermes/sessions?${params.toString()}`, {
       token: controlOrApiToken(this)
     });
+  }
+
+  handoffsList(filters: { userId?: string; sessionId?: string; status?: string; limit?: number; includeCompleted?: boolean } = {}): Promise<HandoffQueuePayload> {
+    const params = new URLSearchParams();
+    if (filters.userId) params.set("user_id", filters.userId);
+    if (filters.sessionId) params.set("session_id", filters.sessionId);
+    if (filters.status) params.set("status", filters.status);
+    params.set("limit", String(filters.limit || 100));
+    if (filters.includeCompleted) params.set("include_completed", "true");
+    return requestJson<HandoffQueuePayload>(this.endpoint, `/v1/hermes/handoffs?${params.toString()}`, {
+      token: controlOrApiToken(this)
+    });
+  }
+
+  sessionResumeContext(sessionId: string): Promise<SessionResumeContextPayload> {
+    return requestJson<SessionResumeContextPayload>(
+      this.endpoint,
+      `/v1/hermes/sessions/${encodeURIComponent(sessionId)}/resume-context`,
+      { token: controlOrApiToken(this) }
+    );
   }
 
   sessionMessages(sessionId: string, limit = 200): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
@@ -806,12 +1058,29 @@ export class AiaskApi {
     );
   }
 
-  search(query: string, body: { session_id?: string; user_id?: string; limit?: number } = {}): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
+  sessionUndo(sessionId: string, turns = 1, reason = "desktop session undo"): Promise<SessionUndoPayload> {
+    return requestJson<SessionUndoPayload>(
+      this.endpoint,
+      `/v1/sessions/${encodeURIComponent(sessionId)}/undo`,
+      { method: "POST", token: this.controlToken, body: { turns, reason } }
+    );
+  }
+
+  sessionArchive(sessionId: string, archived = true, reason = "desktop session archive"): Promise<SessionArchivePayload> {
+    return requestJson<SessionArchivePayload>(
+      this.endpoint,
+      `/v1/sessions/${encodeURIComponent(sessionId)}/archive`,
+      { method: "POST", token: this.controlToken, body: { archived, reason } }
+    );
+  }
+
+  search(query: string, body: { session_id?: string; user_id?: string; limit?: number; include_archived?: boolean } = {}): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
     const params = new URLSearchParams();
     params.set("query", query);
     if (body.session_id) params.set("session_id", body.session_id);
     if (body.user_id) params.set("user_id", body.user_id);
     if (body.limit) params.set("limit", String(body.limit));
+    if (body.include_archived) params.set("include_archived", "true");
     return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, `/v1/search?${params.toString()}`, {
       token: this.apiToken
     });
@@ -1132,6 +1401,89 @@ export class AiaskApi {
       token: this.controlToken,
       body
     });
+  }
+
+  brokerReadiness(): Promise<BrokerReadinessPayload> {
+    return requestJson<BrokerReadinessPayload>(this.endpoint, "/v1/desktop/broker-readiness", {
+      token: controlOrApiToken(this)
+    });
+  }
+
+  brokerSync(body: {
+    provider?: string;
+    consent: boolean;
+    user_id?: string;
+    session_id?: string;
+    run_id?: string;
+    trace_id?: string;
+  }): Promise<BrokerSyncPayload> {
+    return requestJson<BrokerSyncPayload>(this.endpoint, "/v1/desktop/broker/sync", {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body
+    });
+  }
+
+  brokerAccounts(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
+    const params = new URLSearchParams();
+    if (userId) params.set("user_id", userId);
+    if (provider) params.set("provider", provider);
+    const query = params.toString();
+    return requestJson<BrokerSnapshotPayload>(
+      this.endpoint,
+      `/v1/desktop/broker/accounts${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  brokerPositions(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
+    const params = new URLSearchParams();
+    if (userId) params.set("user_id", userId);
+    if (provider) params.set("provider", provider);
+    const query = params.toString();
+    return requestJson<BrokerSnapshotPayload>(
+      this.endpoint,
+      `/v1/desktop/broker/positions${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  brokerOrders(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
+    const params = new URLSearchParams();
+    if (userId) params.set("user_id", userId);
+    if (provider) params.set("provider", provider);
+    const query = params.toString();
+    return requestJson<BrokerSnapshotPayload>(
+      this.endpoint,
+      `/v1/desktop/broker/orders${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
+  }
+
+  brokerAnalyticsRun(body: {
+    user_id?: string;
+    provider?: string;
+    broker_profile_id?: string;
+    period_start?: string;
+    period_end?: string;
+  } = {}): Promise<BrokerAnalyticsPayload> {
+    return requestJson<BrokerAnalyticsPayload>(this.endpoint, "/v1/desktop/broker/analytics/run", {
+      method: "POST",
+      token: controlOrApiToken(this),
+      body
+    });
+  }
+
+  brokerAnalyticsLatest(userId?: string, provider?: string): Promise<BrokerAnalyticsPayload> {
+    const params = new URLSearchParams();
+    if (userId) params.set("user_id", userId);
+    if (provider) params.set("provider", provider);
+    const query = params.toString();
+    return requestJson<BrokerAnalyticsPayload>(
+      this.endpoint,
+      `/v1/desktop/broker/analytics/latest${query ? `?${query}` : ""}`,
+      { token: controlOrApiToken(this) }
+    );
   }
 
   mcpRegisterLocal(body: Record<string, unknown> = {}): Promise<unknown> {

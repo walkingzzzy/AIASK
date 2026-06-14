@@ -1,0 +1,87 @@
+{
+  "desktopMetrics": [
+    {
+      "label": "主工作区",
+      "found": true,
+      "width": 263,
+      "height": 34,
+      "text": "主工作区"
+    },
+    {
+      "label": "高级金融",
+      "found": true,
+      "width": 263,
+      "height": 34,
+      "text": "高级金融"
+    },
+    {
+      "label": "高级运维",
+      "found": true,
+      "width": 263,
+      "height": 34,
+      "text": "高级运维"
+    },
+    {
+      "label": "旧入口 / 高级诊断",
+      "found": true,
+      "width": 263,
+      "height": 34,
+      "text": "旧入口 / 高级诊断"
+    }
+  ],
+  "mobileMetrics": {
+    "innerWidth": 390,
+    "bodyWidth": 390,
+    "scrollWidth": 390,
+    "summaryButtons": [
+      {
+        "text": "Mock 研究会话\n2026-05-22T09:00:02Z",
+        "width": 20,
+        "height": 445.375,
+        "clientWidth": 18,
+        "scrollWidth": 21,
+        "clientHeight": 443,
+        "scrollHeight": 443
+      },
+      {
+        "text": "run_mock\ncompleted / tools 1 / approvals 1",
+        "width": 20,
+        "height": 549.28125,
+        "clientWidth": 18,
+        "scrollWidth": 21,
+        "clientHeight": 547,
+        "scrollHeight": 547
+      }
+    ],
+    "groupButtons": [
+      {
+        "label": "主工作区",
+        "found": true,
+        "width": 180,
+        "height": 34
+      },
+      {
+        "label": "高级金融",
+        "found": true,
+        "width": 180,
+        "height": 34
+      },
+      {
+        "label": "高级运维",
+        "found": true,
+        "width": 180,
+        "height": 34
+      },
+      {
+        "label": "旧入口 / 高级诊断",
+        "found": true,
+        "width": 180,
+        "height": 34
+      }
+    ]
+  },
+  "screenshots": [
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\desktop-workbench-after-sidebar-fix.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\mobile-workbench-after-layout-fix.png"
+  ]
+}

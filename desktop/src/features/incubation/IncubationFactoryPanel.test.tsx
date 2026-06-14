@@ -22,5 +22,14 @@ describe("IncubationFactoryPanel trade prediction observability", () => {
     expect(screen.getAllByText(/intraday_missing/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/strategy_momentum_cn/).length).toBeGreaterThan(0);
     expect(screen.getAllByText(/event_driven/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "Family hit-rate breakdown" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Regime hit-rate breakdown" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "What prevents graduation" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "Why each strategy is in its current state" })).toBeInTheDocument();
+    expect(screen.getAllByText(/mean_reversion/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/volatile/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/missing_forward_window_5d/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/execution_audit_pending/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/strategy_event_cn|Event CN/).length).toBeGreaterThan(0);
   });
 });

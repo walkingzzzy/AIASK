@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from aiask_agent.intents import ALLOWED_ACTIONS, ActionIntentStore, IntentExecutor
+from aiask_agent.scheduler import AgentJobStore, BackgroundScheduler
 
 
 @pytest.mark.parametrize("action", ["run_once", "push_digest", "schedule_update"])
@@ -54,6 +55,89 @@ def test_stock_radar_intent_confirm_dispatches_executor(tmp_path, monkeypatch) -
     assert result["success"] is True
     assert calls == [("stock_radar", "push_digest", {"channels": ["wecom", "telegram"], "dry_run": True})]
     assert store.get(intent["intent_id"])["status"] == "succeeded"
+
+
+def test_stock_radar_schedule_update_persists_agent_job(tmp_path, monkeypatch) -> None:
+    import aiask_agent.adapters.desktop_ops as desktop_ops
+
+    monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
+
+    first = asyncio.run(
+        desktop_ops.execute_confirmed_action(
+            "stock_radar",
+            "schedule_update",
+            {"interval_seconds": 3600, "enabled": True, "days": 2, "limit": 12, "allow_network": False, "allow_llm": False},
+        )
+    )
+
+    assert first["success"] is True
+    assert first["data"]["object"] == "stock_radar.schedule_update"
+    assert first["data"]["status"] == "scheduled"
+    assert first["data"]["preview"] is False
+    assert first["data"]["enabled"] is True
+    assert first["data"]["interval_seconds"] == 3600
+    job_id = first["data"]["job_id"]
+    stored = AgentJobStore().get(job_id)
+    assert stored is not None
+    assert stored["enabled"] is True
+    assert stored["toolset"] == "finance_safe"
+    assert stored["payload"]["stock_radar"] is True
+    assert stored["payload"]["run_params"]["days"] == 2
+    assert stored["payload"]["run_params"]["limit"] == 12
+
+    second = asyncio.run(
+        desktop_ops.execute_confirmed_action(
+            "stock_radar",
+            "schedule_update",
+            {"interval_seconds": 7200, "enabled": True, "days": 4, "limit": 24},
+        )
+    )
+
+    assert second["success"] is True
+    assert second["data"]["status"] == "updated"
+    assert second["data"]["job_id"] == job_id
+    updated = AgentJobStore().get(job_id)
+    assert updated is not None
+    assert updated["interval_seconds"] == 7200
+    assert updated["payload"]["run_params"]["days"] == 4
+    assert len([job for job in AgentJobStore().list() if job["payload"].get("stock_radar")]) == 1
+
+
+def test_stock_radar_scheduled_job_executes_adapter(tmp_path, monkeypatch) -> None:
+    import aiask_agent.adapters.desktop_ops as desktop_ops
+
+    store = AgentJobStore(tmp_path / "jobs.sqlite3")
+    job = store.create(
+        name="radar job",
+        prompt="radar",
+        interval_seconds=3600,
+        toolset="finance_safe",
+        enabled=True,
+        payload={"stock_radar": True, "action": "run_once", "run_params": {"days": 2, "limit": 10}},
+    )
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_execute(action: str, params: dict):
+        calls.append((action, params))
+        return {"success": True, "data": {"object": "stock_radar.run", "status": "completed"}, "error": None}
+
+    class FakeSessionStore:
+        path = tmp_path / "runtime.sqlite3"
+
+    class FakeRuntime:
+        session_store = FakeSessionStore()
+
+        async def run(self, *args, **kwargs):
+            raise AssertionError("stock radar jobs should execute the adapter directly")
+
+    monkeypatch.setattr(desktop_ops, "_execute_stock_radar", fake_execute)
+
+    result = asyncio.run(BackgroundScheduler(runtime=FakeRuntime(), store=store).run_job(job["job_id"]))
+
+    assert result["success"] is True
+    assert result["data"]["stock_radar"]["object"] == "stock_radar.run"
+    assert calls == [("run_once", {"days": 2, "limit": 10})]
+    assert store.list_runs(job["job_id"], limit=1)[0]["status"] == "completed"
 
 
 def test_stock_radar_push_digest_dry_run_does_not_send_gateway(tmp_path, monkeypatch) -> None:

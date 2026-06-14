@@ -2,6 +2,11 @@
 
 Date: 2026-06-04
 
+> Historical note (2026-06-12): this review records the former Hermes 0.15.1
+> baseline. Current executable parity now tracks Hermes 0.16.0 / `v2026.6.5`;
+> use `HERMES_AGENT_AIASK_CAPABILITY_COMPLETION_PLAN.md` and
+> `docs/architecture/hermes-financial-product-parity.md` for the active baseline.
+
 ## 审查基线
 
 - Hermes 对比基线采用本地 `vendor/hermes-agent-upstream` 当前快照，HEAD 为 `7402706c5`，版本声明为 `0.15.1`。证据见 `vendor/hermes-agent-upstream/pyproject.toml:10`、`vendor/hermes-agent-upstream/hermes_cli/__init__.py:17`。

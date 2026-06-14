@@ -1,5 +1,8 @@
 # HERMES 0.15.1 新组件集成指南
 
+> Historical note (2026-06-12): this guide was written for the former Hermes
+> 0.15.1 baseline. Current runtime parity tracks Hermes 0.16.0 / `v2026.6.5`.
+
 **版本**: 1.0  
 **日期**: 2026-06-04  
 **目标**: 快速集成新创建的增强组件

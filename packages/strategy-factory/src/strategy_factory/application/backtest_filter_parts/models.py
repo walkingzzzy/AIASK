@@ -524,6 +524,28 @@
         if thresholds["trades_min"] <= strategy_trades <= 80:
             multi_score_g2 += 10
 
+        # 软预筛:把 win_rate / profit_factor 纳入多维评分(observe-first 宽进下不硬淘汰,
+        # 让交易质量双低的候选评分自然被压低、更难达 50 分线)。
+        # 仅在指标真实可得(present_real)时计分;缺数据(0/无交易)不加不减,避免误伤缺数据候选。
+        strategy_win_rate = float(avg.get("win_rate", 0) or 0)
+        strategy_profit_factor = float(avg.get("profit_factor", 0) or 0)
+        quality_score_g2 = 0.0
+        if strategy_win_rate > 0:
+            if strategy_win_rate >= 0.45:
+                quality_score_g2 += 10
+            elif strategy_win_rate >= 0.38:
+                quality_score_g2 += 6
+            elif strategy_win_rate >= 0.30:
+                quality_score_g2 += 2
+        if strategy_profit_factor > 0:
+            if strategy_profit_factor >= 1.8:
+                quality_score_g2 += 8
+            elif strategy_profit_factor >= 1.3:
+                quality_score_g2 += 5
+            elif strategy_profit_factor >= 1.0:
+                quality_score_g2 += 2
+        multi_score_g2 += quality_score_g2
+
         # 综合判定（任一通过即可）
         passed_absolute_g2 = strategy_sharpe >= thresholds["sharpe_min"]
         passed_relative_g2 = excess_sharpe_g2 >= 0.15
@@ -540,6 +562,9 @@
         avg["adaptive_gate_2"] = {
             "regime": regime_g2,
             "multi_score": round(multi_score_g2, 1),
+            "quality_score": round(quality_score_g2, 1),
+            "win_rate": round(strategy_win_rate, 4),
+            "profit_factor": round(strategy_profit_factor, 4),
             "passed_absolute": passed_absolute_g2,
             "passed_relative": passed_relative_g2,
             "passed_regime": passed_regime_g2,

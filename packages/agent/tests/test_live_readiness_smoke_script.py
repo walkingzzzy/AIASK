@@ -107,6 +107,11 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
                 "success": True,
                 "data": {
                     "status": "ready",
+                    "runtime_enabled": True,
+                    "event_runtime_mode": "readonly",
+                    "daily_run_count": 3,
+                    "cycle_count": 9,
+                    "recent_run_diagnostics": {"analyzed_run_count": 2, "recent_runs": [{"run_id": "run_1"}]},
                     "configured": True,
                     "database_configured": True,
                     "run_count": 3,
@@ -183,6 +188,12 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
     assert {item["name"]: item["status"] for item in payload["results"]}["financial_manager_query"] == "ready"
     assert {item["name"]: item["status"] for item in payload["results"]}["data_status"] == "blocked"
     assert {item["name"]: item["status"] for item in payload["results"]}["factory_status"] == "ready"
+    factory = next(item for item in payload["results"] if item["name"] == "factory_status")
+    assert factory["data"]["runtime_enabled"] is True
+    assert factory["data"]["event_runtime_mode"] == "readonly"
+    assert factory["data"]["daily_run_count"] == 3
+    assert factory["data"]["cycle_count"] == 9
+    assert factory["data"]["recent_run_count"] == 1
     assert {item["name"]: item["status"] for item in payload["results"]}["market_temperature_cache"] == "missing"
     assert {item["name"]: item["status"] for item in payload["results"]}["market_temperature_forward_validation"] == "unavailable_fallback_to_weighted_pct_change"
     market_forward = next(item for item in payload["results"] if item["name"] == "market_temperature_forward_validation")
@@ -220,5 +231,6 @@ def test_live_readiness_smoke_plan_is_offline_and_matches_checklist() -> None:
     assert checks["workbench_summary"]["path"] == "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"
     assert checks["mcp_servers"]["path"] == "/v1/mcp/servers?all=true"
     assert checks["mcp_tools"]["path"] == "/v1/mcp/tools?all=true"
-    assert "run_count" in checks["factory_status"]["observes"]
+    assert "runtime_enabled" in checks["factory_status"]["observes"]
+    assert "daily_run_count" in checks["factory_status"]["observes"]
     assert payload["side_effects"].startswith("none")

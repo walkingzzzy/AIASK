@@ -53,6 +53,58 @@ def test_registry_exposes_only_aiask_financial_allowlist(tmp_path) -> None:
     assert catalog["meta"]["side_effect"]["level"] == "read_only"
 
 
+def test_registry_catalog_exposes_formal_tool_contract_annotations(tmp_path) -> None:
+    registry = build_default_tool_registry(ActionIntentStore(tmp_path / "intents.sqlite3"))
+
+    catalog = asyncio.run(registry.call_tool("agent_tool_catalog", {}))
+
+    assert catalog["success"] is True
+    tools = catalog["data"]["tools"]
+    assert tools
+    for item in tools:
+        annotations = item["annotations"]
+        assert set(annotations) >= {
+            "readOnlyHint",
+            "destructiveHint",
+            "idempotentHint",
+            "openWorldHint",
+            "requiresApproval",
+            "tradeRisk",
+        }
+        assert item["outputSchema"]["required"] == ["success", "data", "error", "meta"]
+        assert item["output_schema"] == item["outputSchema"]
+        assert item["contract_version"] == "aiask_tool_contract_v2"
+
+    by_name = {item["name"]: item for item in tools}
+    quote = by_name["agent_stock_live_quote"]
+    assert quote["annotations"]["readOnlyHint"] is True
+    assert quote["annotations"]["destructiveHint"] is False
+    assert quote["annotations"]["openWorldHint"] is True
+    quote_data = quote["outputSchema"]["properties"]["data"]["properties"]
+    assert {"code", "price", "provider", "data_timestamp", "source_chain"} <= set(quote_data)
+
+    news_data = by_name["agent_stock_news_digest"]["outputSchema"]["properties"]["data"]["properties"]
+    assert {"items", "news", "sources", "source_chain"} <= set(news_data)
+
+    market_data = by_name["agent_market_temperature_snapshot"]["outputSchema"]["properties"]["data"]["properties"]
+    assert {"market", "industries", "quality", "source_chain"} <= set(market_data)
+
+    risk_data = by_name["agent_portfolio_risk"]["outputSchema"]["properties"]["data"]["properties"]
+    assert {"portfolio_risk", "risk_metrics", "stress", "source_chain"} <= set(risk_data)
+
+    intent_create = by_name["agent_action_intent_create"]
+    assert intent_create["annotations"]["readOnlyHint"] is False
+    assert intent_create["annotations"]["requiresApproval"] is True
+    assert intent_create["annotations"]["idempotentHint"] is False
+    intent_data = intent_create["outputSchema"]["properties"]["data"]["properties"]
+    assert {"intent", "intent_id", "status", "side_effect"} <= set(intent_data)
+
+    registry_item = registry.get("agent_action_intent_create")
+    assert registry_item is not None
+    assert registry_item.metadata["annotations"] == intent_create["annotations"]
+    assert registry_item.metadata["outputSchema"] == intent_create["outputSchema"]
+
+
 def test_market_temperature_agent_facade_is_read_only(monkeypatch, tmp_path) -> None:
     async def fake_snapshot(**kwargs):
         return {
@@ -440,6 +492,10 @@ def test_mcp_contract_metadata_flows_into_agent_registry_without_raw_leaks(tmp_p
     assert wrapped is not None
     assert wrapped.parameters["required"] == wrapped.metadata["input_schema"]["required"]
     assert wrapped.metadata["output_schema"] == output_schema
+    assert wrapped.metadata["outputSchema"] == output_schema
+    assert wrapped.metadata["annotations"]["readOnlyHint"] is True
+    assert wrapped.metadata["annotations"]["openWorldHint"] is True
+    assert wrapped.metadata["annotations"]["requiresApproval"] is False
     assert wrapped.metadata["freshness"]["expectation"] == "intraday_or_latest_quote_snapshot"
     assert wrapped.metadata["source_policy"]["priority"] == ["tdx_local", "akshare"]
     assert wrapped.metadata["contract_version"] == "ai_tool_contract_v1"
@@ -451,6 +507,8 @@ def test_mcp_contract_metadata_flows_into_agent_registry_without_raw_leaks(tmp_p
     assert wrapped.metadata["form_schema"]["required"] == ["code"]
     catalog_item = next(item for item in registry.catalog if item["name"] == wrapped.name)
     assert catalog_item["contract_source"] == "akshare_mcp.tool_catalog"
+    assert catalog_item["annotations"] == wrapped.metadata["annotations"]
+    assert catalog_item["outputSchema"] == output_schema
 
     macro_wrapped = registry.get("agent_mcp_akshare_demo_get_macro_indicator")
     fund_wrapped = registry.get("agent_mcp_akshare_demo_get_stock_fund_flow")

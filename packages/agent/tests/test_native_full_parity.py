@@ -290,6 +290,8 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
     assert payload["parity"]["core_code_status"] == "present"
     assert payload["parity"]["code_status"] == "present"
     assert payload["parity"]["v014_delta"]["missing_count"] == 0
+    assert payload["parity"]["v016_delta"]["missing_count"] == 0
+    assert payload["parity"]["v016_delta"]["release_tag"] == "v2026.6.5"
     actions = {item["action_id"]: item for item in payload["next_actions"]}
     assert actions["set_control_token"]["priority"] == "critical"
     assert actions["configure_writable_database"]["target_page"] == "data"
@@ -313,7 +315,8 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
     assert len(payload["live_smoke"]["checks"]) == 16
     smoke_check_details = {item["name"]: item for item in payload["live_smoke"]["checks"]}
     assert smoke_check_details["workbench_summary"]["path"] == "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"
-    assert "run_count" in smoke_check_details["factory_status"]["observes"]
+    assert "runtime_enabled" in smoke_check_details["factory_status"]["observes"]
+    assert "daily_run_count" in smoke_check_details["factory_status"]["observes"]
     assert "warnings" in smoke_check_details["market_temperature_cache"]["observes"]
     assert "quality_status" in smoke_check_details["market_temperature_forward_validation"]["observes"]
 

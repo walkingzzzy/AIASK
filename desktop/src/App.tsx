@@ -11,7 +11,8 @@ import { ExtensionsPilotPage, SlotRenderer } from "./extensions/extensionRegistr
 import { useAppConnectionSettings } from "./hooks/useAppConnectionSettings";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
-import type { InspectorTab, MainView, SkillView } from "./types";
+import { AiaskApi } from "./services/aiaskApi";
+import type { InspectorTab, MainView, SessionResumeContextPayload, SkillView } from "./types";
 import { getViewItem, VIEW_GROUPS } from "./views";
 
 const AgentWorkspace = lazy(() => import("./features/agent/AgentWorkspace").then((module) => ({ default: module.AgentWorkspace })));
@@ -128,6 +129,7 @@ export function App() {
     connectionBusy,
     controlToken,
     defaultEndpoint,
+    defaultEndpointActive,
     endpoint,
     health,
     mockMode,
@@ -225,9 +227,11 @@ export function App() {
     setMainView("sessions");
   }
 
-  function resumeSession(sessionId: string) {
+  function resumeSession(sessionId: string, resumeContext?: SessionResumeContextPayload) {
     if (!sessionId.trim()) return;
     workbench.setSessionId(sessionId);
+    const prompt = resumeContext?.resume_context?.resume_prompt;
+    if (prompt) workbench.setPrompt(prompt);
     setSessionDetailId(sessionId);
     setMainView("workbench");
     setInspectorTab("details");
@@ -242,11 +246,29 @@ export function App() {
   }
 
   useEffect(() => {
-    if (mockMode || autoConnectEnabled) {
+    if (mockMode || autoConnectEnabled || defaultEndpointActive) {
       void refreshHealth();
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoConnectEnabled, mockMode]);
+  }, [autoConnectEnabled, defaultEndpointActive, mockMode]);
+
+  useEffect(() => {
+    if (!normalizedEndpoint) return;
+    const api = new AiaskApi({ endpoint: normalizedEndpoint, apiToken, controlToken });
+    void api.recordEvents({
+      user_id: userId,
+      session_id: workbench.sessionId || undefined,
+      page_key: mainView,
+      route: `/${mainView}`,
+      event_type: "page_view",
+      source: mockMode ? "desktop.mock" : "desktop",
+      payload: {
+        agent_mode: agentMode,
+        mock_mode: mockMode,
+        status,
+      },
+    }).catch(() => undefined);
+  }, [agentMode, apiToken, controlToken, mainView, mockMode, normalizedEndpoint, status, userId, workbench.sessionId]);
 
   function renderLegacyShell(view: MainView, child: ReactNode) {
     const meta = legacyMeta(view);
@@ -330,11 +352,7 @@ export function App() {
           tools={tools}
         />
       ),
-    models: () =>
-      renderLegacyShell(
-        "models",
-        <ModelsWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
-      ),
+    models: () => <ModelsWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />,
     data: () => <DataSyncWorkspace apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />,
     mcp: () =>
       renderLegacyShell(
@@ -559,6 +577,8 @@ export function App() {
         profileName={profileName}
         prompt={workbench.prompt}
         recentRuns={workbench.recentRuns}
+        selectedRunArtifacts={workbench.selectedRunArtifacts}
+        selectedRunSources={workbench.selectedRunSources}
         selectedThread={workbench.selectedThread}
         sessionId={workbench.sessionId}
         status={status}
@@ -650,6 +670,7 @@ export function App() {
           onEndpointChange={setEndpoint}
           onFetchIntent={workbench.fetchIntent}
           onLoadRunEvents={workbench.loadRunEvents}
+          onOpenView={selectView}
           onProfileChange={updateLocalProfile}
           onRefreshHealth={refreshHealth}
           onRefreshHermes={refreshHermes}
@@ -664,6 +685,8 @@ export function App() {
           selectedResponse={workbench.selectedResponse}
           selectedResponseRecord={workbench.selectedResponseRecord}
           selectedRunId={workbench.selectedRunId}
+          selectedRunArtifacts={workbench.selectedRunArtifacts}
+          selectedRunSources={workbench.selectedRunSources}
           selectedThread={workbench.selectedThread}
           timelineEvents={workbench.timelineEvents}
           tools={tools}

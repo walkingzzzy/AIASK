@@ -13,14 +13,17 @@ import {
   Zap,
 } from "lucide-react";
 import { Timeline } from "./Timeline";
-import { StatusBadge } from "./shared";
-import { ArtifactsPanel, ReviewPanel, buildTaskArtifacts, buildTaskReviewComments } from "./TaskPanels";
+import { StatusBadge, statusLabel } from "./shared";
+import { ArtifactsPanel, ReviewPanel, SourcesPanel, buildTaskArtifacts, buildTaskReviewComments } from "./TaskPanels";
 import { SlotRenderer } from "../extensions/extensionRegistry";
 import type {
   DesktopRunSummary,
   DesktopWorkbenchSummary,
   HealthDetailed,
   MainView,
+  RecentSessionSummary,
+  AgentArtifactRecord,
+  AgentSourceRecord,
   TaskContextSummary,
   TaskThread,
   TimelineEvent,
@@ -36,13 +39,79 @@ function accessLabel(
   const fullModeReady = Boolean(summary?.access.full_mode_active || health?.hermes?.full_mode_active);
   return {
     fullModeReady,
-    apiToken: hasApiToken ? "configured" : "missing",
-    controlToken: hasControlToken ? "configured" : "missing",
+    apiToken: hasApiToken ? "已填写" : "未填写",
+    controlToken: hasControlToken ? "已填写" : "未填写",
   };
 }
 
-function runLabel(run: DesktopRunSummary): string {
-  return `${run.status} / tools ${run.tool_call_count ?? 0} / approvals ${run.approval_count ?? 0}`;
+function modeDisplay(mode: "finance_safe" | "hermes_full") {
+  return mode === "hermes_full"
+    ? { label: "完整模式", detail: "可使用通用工具；高风险动作仍需审批。" }
+    : { label: "金融安全模式", detail: "默认只做研究、查询和受控审批。" };
+}
+
+function backendDisplay(mockMode?: boolean) {
+  return mockMode
+    ? { label: "演示数据", detail: "当前使用本地 Mock 数据，不会影响真实账户或外部平台。" }
+    : { label: "真实后端", detail: "当前连接本地 Agent 服务，所有受控动作仍走审批和令牌校验。" };
+}
+
+function connectionDisplay(status: string, health: HealthDetailed | null) {
+  const online = status === "AIASK_ONLINE" || health?.status === "online";
+  if (online) return { label: "在线，可以开始任务", detail: "Agent 已响应，工作台可以同步会话、运行和工具状态。", tone: "ready" };
+  if (status === "AIASK_DISCONNECTED") return { label: "尚未连接", detail: "点击同步或检查 Agent 端点后再开始任务。", tone: "gated" };
+  return { label: statusLabel(status), detail: "请先打开准备度 / 健康页查看连接或权限原因。", tone: status };
+}
+
+function shortId(value?: string) {
+  if (!value) return "-";
+  return value.length > 18 ? `${value.slice(0, 10)}...${value.slice(-6)}` : value;
+}
+
+function looksLikeTechnicalId(value?: string) {
+  return Boolean(value && /^[a-f0-9_-]{18,}$/i.test(value.trim()));
+}
+
+function readableTime(value?: string) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value;
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")} ${String(date.getHours()).padStart(2, "0")}:${String(date.getMinutes()).padStart(2, "0")}`;
+}
+
+function runSummary(run: DesktopRunSummary) {
+  const errorCount = run.error_count ?? 0;
+  const approvalCount = run.approval_count ?? 0;
+  const toolCount = run.tool_call_count ?? 0;
+  const detail = [`工具 ${toolCount} 次`, `审批 ${approvalCount} 项`, `错误 ${errorCount} 个`].join(" · ");
+  return {
+    title: `运行${statusLabel(run.status)}`,
+    detail,
+    technical: shortId(run.run_id),
+  };
+}
+
+function sessionSummary(session: RecentSessionSummary) {
+  const status = session.has_pending_approval ? "有待审批" : session.has_errors ? "有错误需查看" : statusLabel(session.status || "completed");
+  const lastSeen = session.last_message_at || session.updated_at || session.created_at || "-";
+  const title = session.title && !looksLikeTechnicalId(session.title) ? session.title : `${status}会话`;
+  return {
+    title,
+    detail: `${status} · ${readableTime(lastSeen)}`,
+    technical: shortId(session.session_id),
+  };
+}
+
+function queueSummary(queue: DesktopWorkbenchSummary["queues"]) {
+  const total = queue.pending_intents + queue.pending_approvals + queue.gateway_failed + queue.mcp_degraded;
+  if (!total) return "暂无待处理事项";
+  const parts = [
+    queue.pending_intents ? `${queue.pending_intents} 个待确认意图` : "",
+    queue.pending_approvals ? `${queue.pending_approvals} 个审批` : "",
+    queue.gateway_failed ? `${queue.gateway_failed} 个消息失败` : "",
+    queue.mcp_degraded ? `${queue.mcp_degraded} 个 MCP 降级` : "",
+  ].filter(Boolean);
+  return parts.join(" · ");
 }
 
 function toolDirectory(tools: ToolCatalogItem[], health: HealthDetailed | null) {
@@ -68,6 +137,8 @@ export function WorkbenchView({
   prompt,
   profileName,
   recentRuns,
+  selectedRunArtifacts,
+  selectedRunSources,
   selectedThread,
   sessionId,
   status,
@@ -94,6 +165,8 @@ export function WorkbenchView({
   prompt: string;
   profileName?: string;
   recentRuns: DesktopRunSummary[];
+  selectedRunArtifacts?: AgentArtifactRecord[];
+  selectedRunSources?: AgentSourceRecord[];
   selectedThread: TaskThread | null;
   sessionId: string;
   status: string;
@@ -113,20 +186,28 @@ export function WorkbenchView({
     selectedThread,
     selectedResponse: selectedThread?.response,
     recentRuns,
-    timelineEvents
+    timelineEvents,
+    durableArtifacts: selectedRunArtifacts,
+    durableSources: selectedRunSources,
+    endpoint
   });
   const reviewComments = buildTaskReviewComments(artifacts);
+  const mode = modeDisplay(agentMode);
+  const backend = backendDisplay(mockMode);
+  const connection = connectionDisplay(status, health);
+  const currentRun = recentRuns[0];
+  const currentRunSummary = currentRun ? runSummary(currentRun) : null;
   const taskContext: TaskContextSummary = {
     projectLabel: profileName || "本地工作区",
     threadLabel: selectedThread?.title || sessionId || "新线程",
-    runLabel: selectedThread?.runId || recentRuns[0]?.run_id || "-",
-    mode: agentMode,
-    backendMode: mockMode ? "mock" : "live",
+    runLabel: selectedThread?.runId || currentRun?.run_id || "-",
+    mode: agentMode as TaskContextSummary["mode"],
+    backendMode: (mockMode ? "mock" : "live") as TaskContextSummary["backendMode"],
     endpoint,
     healthStatus: status,
     pendingApprovals: queue.pending_approvals,
     pendingIntents: queue.pending_intents,
-    artifactCount: artifacts.length,
+    artifactCount: artifacts.length + (selectedRunSources?.length || 0),
   };
   const knownTools = toolDirectory(tools, health);
   const hasTool = (name: string) => knownTools.has(name);
@@ -142,7 +223,7 @@ export function WorkbenchView({
       key: "mode",
       label: "1. 模式 / 模型",
       status: status === "AIASK_ONLINE" || health?.status === "online" ? "ready" : "partial",
-      detail: `${health?.tools?.toolset || agentMode} / ${health?.runtime?.model || "模型待加载"}`,
+      detail: `${mode.label}；当前模型 ${health?.runtime?.model || "待加载"}。${mode.detail}`,
       target: "readiness-health",
       action: "打开准备度",
     },
@@ -192,16 +273,16 @@ export function WorkbenchView({
     <>
       <header className="workbench-header task-object-header">
         <div>
-          <span className="endpoint-chip">{endpoint}</span>
+          <span className="endpoint-chip">{connection.label}</span>
           <h1>{selectedThread?.title || "AIASK 工作台"}</h1>
           <p className="header-subtitle">
-            {(profileName || "本地操作员") + " / " + (userId || "local")}
+            {(profileName || "本地操作员") + " / " + (userId || "local") + " · " + backend.label + " · " + endpoint}
           </p>
           <div className="task-context-strip" aria-label="任务上下文">
-            <StatusBadge status={taskContext.backendMode} label={taskContext.backendMode} />
-            <StatusBadge status={status === "AIASK_ONLINE" ? "ready" : status} label={status === "AIASK_ONLINE" ? "online" : status} />
+            <StatusBadge status={mockMode ? "mock" : "live"} label={backend.label} />
+            <StatusBadge status={connection.tone} label={connection.label} />
             <span><GitBranch size={13} /> {taskContext.threadLabel}</span>
-            <span><Zap size={13} /> {taskContext.mode}</span>
+            <span><Zap size={13} /> {mode.label}</span>
             <span><FileSearch size={13} /> {taskContext.artifactCount} 个产物</span>
           </div>
           <div className="extension-slot-row header-slot">
@@ -241,29 +322,29 @@ export function WorkbenchView({
                 <span>任务中枢</span>
                 <h3>线程优先工作台</h3>
               </div>
-              <StatusBadge status={access.fullModeReady ? "ready" : "partial"} label={agentMode} />
+              <StatusBadge status={access.fullModeReady ? "ready" : "partial"} label={mode.label} />
             </div>
 
             <div className="task-object-grid">
               <div className="metric-card">
-                <span>项目 / 上下文</span>
-                <strong>{taskContext.projectLabel}</strong>
-                <small>{taskContext.backendMode === "mock" ? "Mock 数据已启用" : "真实后端模式"}</small>
+                <span>连接状态</span>
+                <strong>{connection.label}</strong>
+                <small>{connection.detail}</small>
               </div>
               <div className="metric-card">
-                <span>运行</span>
-                <strong>{taskContext.runLabel}</strong>
-                <small>当前线程的当前或最近运行</small>
+                <span>当前任务</span>
+                <strong>{selectedThread?.title || currentRunSummary?.title || "等待新任务"}</strong>
+                <small>{selectedThread?.runId ? `运行编号 ${shortId(selectedThread.runId)}` : currentRunSummary ? currentRunSummary.detail : "输入需求后，AIASK 会在这里显示进度和结果。"}</small>
               </div>
               <div className="metric-card">
-                <span>待处理</span>
-                <strong>{queue.pending_intents + queue.pending_approvals}</strong>
-                <small>{queue.pending_intents} 个意图 / {queue.pending_approvals} 个审批</small>
+                <span>待处理事项</span>
+                <strong>{queue.pending_intents + queue.pending_approvals + queue.gateway_failed + queue.mcp_degraded} 项</strong>
+                <small>{queueSummary(queue)}</small>
               </div>
               <div className="metric-card">
-                <span>权限</span>
-                <strong>{access.fullModeReady ? "完整模式就绪" : "安全模式"}</strong>
-                <small>API {access.apiToken}; 控制 {access.controlToken}</small>
+                <span>可用范围</span>
+                <strong>{mode.label}</strong>
+                <small>{mode.detail} API 令牌{access.apiToken}；控制令牌{access.controlToken}。</small>
               </div>
             </div>
 
@@ -273,12 +354,22 @@ export function WorkbenchView({
                 <div className="summary-list">
                   {(summary?.recent_sessions || []).slice(0, 4).map((session) => (
                     <button
+                      aria-label={`打开会话：${sessionSummary(session).title} ${sessionSummary(session).detail}`}
+                      className="summary-action-button"
                       key={session.session_id}
                       onClick={() => (onOpenSession ? onOpenSession(session.session_id) : onOpenView("runs-events"))}
                       type="button"
                     >
-                      <span>{session.title || session.session_id}</span>
-                      <small>{session.last_message_at || "-"}</small>
+                      {(() => {
+                        const item = sessionSummary(session);
+                        return (
+                          <>
+                            <span>{item.title}</span>
+                            <small>{item.detail}</small>
+                            <em>{item.technical}</em>
+                          </>
+                        );
+                      })()}
                     </button>
                   ))}
                   {!summary?.recent_sessions?.length && <p className="muted">暂无最近会话。</p>}
@@ -289,9 +380,23 @@ export function WorkbenchView({
                 <strong>最近运行</strong>
                 <div className="summary-list">
                   {recentRuns.slice(0, 4).map((run) => (
-                    <button key={run.run_id} onClick={() => onOpenView("runs-events")} type="button">
-                      <span>{run.run_id}</span>
-                      <small>{runLabel(run)}</small>
+                    <button
+                      aria-label={`查看运行：${runSummary(run).title} ${runSummary(run).detail}`}
+                      className="summary-action-button"
+                      key={run.run_id}
+                      onClick={() => onOpenView("runs-events")}
+                      type="button"
+                    >
+                      {(() => {
+                        const item = runSummary(run);
+                        return (
+                          <>
+                            <span>{item.title}</span>
+                            <small>{item.detail}</small>
+                            <em>{item.technical}</em>
+                          </>
+                        );
+                      })()}
                     </button>
                   ))}
                   {!recentRuns.length && <p className="muted">暂无最近运行。</p>}
@@ -300,6 +405,7 @@ export function WorkbenchView({
 
               <article className="summary-card">
                 <strong>操作队列</strong>
+                <p className="summary-card-copy">{queueSummary(queue)}</p>
                 <div className="summary-kv">
                   <span>意图</span>
                   <strong>{queue.pending_intents}</strong>
@@ -369,7 +475,8 @@ export function WorkbenchView({
 
           <div className="task-evidence-column">
             <Timeline events={timelineEvents} />
-            <ArtifactsPanel artifacts={artifacts} compact />
+            <SourcesPanel sources={selectedRunSources} compact endpoint={endpoint} apiToken={controlToken.trim() || apiToken} />
+            <ArtifactsPanel artifacts={artifacts} compact apiToken={controlToken.trim() || apiToken} />
             <ReviewPanel comments={reviewComments} compact />
           </div>
         </div>

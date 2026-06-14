@@ -1,0 +1,103 @@
+- main [ref=e149]:
+  - generic [ref=e2025]:
+    - complementary [ref=e2026]:
+      - button "返回工作台" [ref=e2027] [cursor=pointer]:
+        - img [ref=e2028]
+        - text: 返回工作台
+      - generic [ref=e2030]:
+        - strong [ref=e2031]: 设置
+        - generic [ref=e2032]: 可操作设置、管理入口与只读状态
+      - navigation "设置导航" [ref=e2033]:
+        - generic [ref=e2034]:
+          - generic [ref=e2035]: 基础设置
+          - button "常规" [ref=e2036] [cursor=pointer]:
+            - img [ref=e2037]
+            - generic [ref=e2038]: 常规
+          - button "连接" [ref=e2039] [cursor=pointer]:
+            - img [ref=e2040]
+            - generic [ref=e2045]: 连接
+          - button "令牌与权限" [ref=e2046] [cursor=pointer]:
+            - img [ref=e2047]
+            - generic [ref=e2050]: 令牌与权限
+        - generic [ref=e2051]:
+          - generic [ref=e2052]: 高级管理
+          - button "技能管理" [ref=e2053] [cursor=pointer]:
+            - img [ref=e2054]
+            - generic [ref=e2058]: 技能管理
+          - button "自动化管理" [ref=e2059] [cursor=pointer]:
+            - img [ref=e2060]
+            - generic [ref=e2064]: 自动化管理
+          - button "应用集成" [ref=e2065] [cursor=pointer]:
+            - img [ref=e2066]
+            - generic [ref=e2072]: 应用集成
+          - button "Webhook" [ref=e2073] [cursor=pointer]:
+            - img [ref=e2074]
+            - generic [ref=e2078]: Webhook
+          - button "插件与技能包" [ref=e2079] [cursor=pointer]:
+            - img [ref=e2080]
+            - generic [ref=e2082]: 插件与技能包
+        - generic [ref=e2083]:
+          - generic [ref=e2084]: 状态与入口
+          - button "模型配置" [ref=e2085] [cursor=pointer]:
+            - img [ref=e2086]
+            - generic [ref=e2089]: 模型配置
+          - button "MCP 管理入口" [ref=e2090] [cursor=pointer]:
+            - img [ref=e2091]
+            - generic [ref=e2103]: MCP 管理入口
+          - button "工作流入口" [ref=e2104] [cursor=pointer]:
+            - img [ref=e2105]
+            - generic [ref=e2107]: 工作流入口
+          - button "股票数据源" [ref=e2108] [cursor=pointer]:
+            - img [ref=e2109]
+            - generic [ref=e2113]: 股票数据源
+          - button "数据路径" [ref=e2114] [cursor=pointer]:
+            - img [ref=e2115]
+            - generic [ref=e2119]: 数据路径
+          - button "学习 / RL" [ref=e2120] [cursor=pointer]:
+            - img [ref=e2121]
+            - generic [ref=e2133]: 学习 / RL
+          - button "安全扫描" [ref=e2134] [cursor=pointer]:
+            - img [ref=e2135]
+            - generic [ref=e2138]: 安全扫描
+          - button "高级诊断入口" [ref=e2139] [cursor=pointer]:
+            - img [ref=e2140]
+            - generic [ref=e2142]: 高级诊断入口
+          - button "关于" [ref=e2143] [cursor=pointer]:
+            - img [ref=e2144]
+            - generic [ref=e2146]: 关于
+    - generic [ref=e2147]:
+      - generic [ref=e2148]:
+        - generic [ref=e2149]:
+          - text: 设置
+          - heading "设置中心" [level=1] [ref=e2150]
+          - paragraph [ref=e2151]: 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。
+        - button "刷新" [ref=e2152] [cursor=pointer]:
+          - img [ref=e2153]
+          - text: 刷新
+      - generic [ref=e2159]:
+        - generic [ref=e2160]:
+          - generic [ref=e2161]:
+            - heading "默认行为" [level=3] [ref=e2162]
+            - paragraph [ref=e2163]: 设置智能体默认模式和本地用户身份。
+          - generic "ready / 本地" [ref=e2164]:
+            - img [ref=e2165]
+            - generic [ref=e2168]: 本地
+        - generic [ref=e2169]:
+          - generic [ref=e2170]:
+            - generic [ref=e2171]:
+              - strong [ref=e2172]: 默认模式
+              - generic [ref=e2173]: finance_safe 用于日常金融研究；hermes_full 需要控制令牌和完整模式。
+            - combobox "默认模式 finance_safe 用于日常金融研究；hermes_full 需要控制令牌和完整模式。" [ref=e2174]:
+              - option "finance_safe" [selected]
+              - option "hermes_full"
+          - generic [ref=e2175]:
+            - generic [ref=e2176]:
+              - strong [ref=e2177]: 用户 ID
+              - generic [ref=e2178]: 用于会话、研究运行和本地存储作用域。
+            - textbox "用户 ID 用于会话、研究运行和本地存储作用域。" [ref=e2179]: codex_ui_live_20260522_155200
+          - generic [ref=e2180]:
+            - generic [ref=e2181]:
+              - strong [ref=e2182]: 画像名称
+              - generic [ref=e2183]: 显示在对话、任务和本地用户页面。
+            - textbox "画像名称 显示在对话、任务和本地用户页面。" [ref=e2184]: Codex UI Live Profile 20260522_155200
+          - button "保存画像" [ref=e2186] [cursor=pointer]

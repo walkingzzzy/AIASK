@@ -1,0 +1,90 @@
+- main [ref=e145]:
+  - generic [ref=e1381]:
+    - complementary [ref=e1382]:
+      - button "返回工作台" [ref=e1383] [cursor=pointer]:
+        - img [ref=e1384]
+        - text: 返回工作台
+      - generic [ref=e1386]:
+        - strong [ref=e1387]: 设置
+        - generic [ref=e1388]: 可操作设置、管理入口与只读状态
+      - navigation "设置导航" [ref=e1389]:
+        - generic [ref=e1390]:
+          - generic [ref=e1391]: 基础设置
+          - button "常规" [ref=e1392] [cursor=pointer]:
+            - img [ref=e1393]
+            - generic [ref=e1394]: 常规
+          - button "连接" [ref=e1395] [cursor=pointer]:
+            - img [ref=e1396]
+            - generic [ref=e1401]: 连接
+          - button "令牌与权限" [ref=e1402] [cursor=pointer]:
+            - img [ref=e1403]
+            - generic [ref=e1406]: 令牌与权限
+        - generic [ref=e1407]:
+          - generic [ref=e1408]: 高级管理
+          - button "技能管理" [ref=e1409] [cursor=pointer]:
+            - img [ref=e1410]
+            - generic [ref=e1414]: 技能管理
+          - button "自动化管理" [ref=e1415] [cursor=pointer]:
+            - img [ref=e1416]
+            - generic [ref=e1420]: 自动化管理
+          - button "应用集成" [ref=e1421] [cursor=pointer]:
+            - img [ref=e1422]
+            - generic [ref=e1428]: 应用集成
+          - button "Webhook" [ref=e1429] [cursor=pointer]:
+            - img [ref=e1430]
+            - generic [ref=e1434]: Webhook
+          - button "插件与技能包" [ref=e1435] [cursor=pointer]:
+            - img [ref=e1436]
+            - generic [ref=e1438]: 插件与技能包
+        - generic [ref=e1439]:
+          - generic [ref=e1440]: 状态与入口
+          - button "模型配置" [ref=e1441] [cursor=pointer]:
+            - img [ref=e1442]
+            - generic [ref=e1445]: 模型配置
+          - button "MCP 管理入口" [active] [ref=e1446] [cursor=pointer]:
+            - img [ref=e1447]
+            - generic [ref=e1459]: MCP 管理入口
+          - button "工作流入口" [ref=e1460] [cursor=pointer]:
+            - img [ref=e1461]
+            - generic [ref=e1463]: 工作流入口
+          - button "股票数据源" [ref=e1464] [cursor=pointer]:
+            - img [ref=e1465]
+            - generic [ref=e1469]: 股票数据源
+          - button "数据路径" [ref=e1470] [cursor=pointer]:
+            - img [ref=e1471]
+            - generic [ref=e1475]: 数据路径
+          - button "学习 / RL" [ref=e1476] [cursor=pointer]:
+            - img [ref=e1477]
+            - generic [ref=e1489]: 学习 / RL
+          - button "安全扫描" [ref=e1490] [cursor=pointer]:
+            - img [ref=e1491]
+            - generic [ref=e1494]: 安全扫描
+          - button "高级诊断入口" [ref=e1495] [cursor=pointer]:
+            - img [ref=e1496]
+            - generic [ref=e1498]: 高级诊断入口
+          - button "关于" [ref=e1499] [cursor=pointer]:
+            - img [ref=e1500]
+            - generic [ref=e1502]: 关于
+    - generic [ref=e1503]:
+      - generic [ref=e1504]:
+        - generic [ref=e1505]:
+          - text: 设置
+          - heading "设置中心" [level=1] [ref=e1506]
+          - paragraph [ref=e1507]: 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。
+        - button "刷新" [ref=e1508] [cursor=pointer]:
+          - img [ref=e1509]
+          - text: 刷新
+      - generic [ref=e1911]:
+        - generic [ref=e1912]:
+          - generic [ref=e1913]:
+            - heading "MCP 管理入口" [level=3] [ref=e1914]
+            - paragraph [ref=e1915]: 设置页只显示授权说明和入口；注册、发现、资源读取、提示词获取和 OAuth 在 MCP 管理页执行。
+          - generic "gated / 需要控制权限" [ref=e1916]:
+            - img [ref=e1917]
+            - generic [ref=e1919]: 需要控制权限
+        - generic [ref=e1920]:
+          - generic [ref=e1921]: 桌面端不会读取 .env。请在 Agent 启动环境中配置 MCP 授权，并在“令牌与权限”中填写匹配的控制令牌。
+          - button "打开 MCP 管理页 进入 MCP 服务、资源、提示词和 OAuth 操作页。" [ref=e1923] [cursor=pointer]:
+            - img [ref=e1924]
+            - strong [ref=e1936]: 打开 MCP 管理页
+            - generic [ref=e1937]: 进入 MCP 服务、资源、提示词和 OAuth 操作页。

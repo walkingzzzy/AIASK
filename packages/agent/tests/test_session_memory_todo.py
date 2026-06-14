@@ -18,6 +18,178 @@ def test_session_store_creates_history_and_responses(tmp_path) -> None:
     assert store.get_response("resp_1") is None
 
 
+def test_session_store_soft_undo_removes_last_turn_from_active_context(tmp_path) -> None:
+    store = AgentSessionStore(tmp_path / "state.sqlite3")
+    session_id = store.create_session(user_id="u1", title="undo demo")
+    store.append_message(session_id, {"role": "user", "content": "first question"})
+    store.append_message(session_id, {"role": "assistant", "content": "first answer"})
+    store.append_message(session_id, {"role": "user", "content": "second question"})
+    store.append_message(session_id, {"role": "tool", "name": "agent_echo", "content": "second tool output"})
+    store.append_message(session_id, {"role": "assistant", "content": "second answer"})
+
+    result = store.undo_last_turns(session_id, turns=1, reason="test undo", deleted_by="tester")
+
+    assert result["turns_undone"] == 1
+    assert result["message_count"] == 3
+    assert result["side_effects_rolled_back"] is False
+    assert result["external_side_effects"] == "not_rolled_back"
+    assert [message["content"] for message in store.get_messages(session_id)] == ["first question", "first answer"]
+    assert store.count_session_messages(session_id) == 2
+    assert store.search(query="second", session_id=session_id) == []
+
+    all_messages = store.list_session_messages(session_id, include_deleted=True)
+    assert len(all_messages) == 5
+    assert [item["deleted_reason"] for item in all_messages[-3:]] == ["test undo", "test undo", "test undo"]
+
+
+def test_session_store_archive_filters_lists_and_search(tmp_path) -> None:
+    store = AgentSessionStore(tmp_path / "state.sqlite3")
+    active_id = store.create_session(session_id="active", user_id="u1", title="active demo")
+    archived_id = store.create_session(session_id="archived", user_id="u1", title="archived demo")
+    store.append_message(active_id, {"role": "user", "content": "visible alpha"})
+    store.append_message(archived_id, {"role": "user", "content": "hidden alpha"})
+
+    result = store.set_session_archived(archived_id, archived=True, reason="finished", actor="tester")
+
+    assert result["archived"] is True
+    assert result["session"]["metadata"]["archived_reason"] == "finished"
+    assert [item["session_id"] for item in store.list_sessions(user_id="u1")] == ["active"]
+    assert {item["session_id"] for item in store.list_sessions(user_id="u1", include_archived=True)} == {"active", "archived"}
+    assert [item["session_id"] for item in store.search(query="alpha", user_id="u1")] == ["active"]
+    assert {item["session_id"] for item in store.search(query="alpha", user_id="u1", include_archived=True)} == {"active", "archived"}
+
+    restored = store.set_session_archived(archived_id, archived=False, reason="restore", actor="tester")
+
+    assert restored["archived"] is False
+    assert restored["session"]["metadata"]["unarchived_reason"] == "restore"
+    assert {item["session_id"] for item in store.list_sessions(user_id="u1")} == {"active", "archived"}
+
+
+def test_session_store_records_user_activity_feedback_policy_and_tool_audit(tmp_path) -> None:
+    store = AgentSessionStore(tmp_path / "state.sqlite3")
+    session_id = store.create_session(user_id="u1", title="audit demo")
+
+    events = store.record_activity_events(
+        [
+            {
+                "user_id": "u1",
+                "session_id": session_id,
+                "page_key": "workbench",
+                "route": "/workbench",
+                "event_type": "page_view",
+                "payload": {"api_key": "secret", "safe": "ok"},
+            }
+        ]
+    )
+    assert events[0]["payload"]["api_key"] == "[redacted]"
+    assert store.list_activity_events(user_id="u1")[0]["event_type"] == "page_view"
+
+    invocation = store.start_tool_invocation(
+        tool_name="agent_tool_catalog",
+        arguments={"token": "secret-token", "limit": 1},
+        user_id="u1",
+        session_id=session_id,
+        run_id="run_1",
+        trace_id="trace_1",
+        capability="tool_catalog",
+        category="financial_read",
+        side_effect={"level": "read_only"},
+    )
+    finished = store.finish_tool_invocation(
+        invocation["invocation_id"],
+        status="succeeded",
+        result={"success": True, "data": {"ok": True}, "error": None},
+        duration_ms=12,
+    )
+    assert finished is not None
+    assert finished["input_summary"]["token"] == "[redacted]"
+    assert finished["output_summary"]["data"]["ok"] is True
+    assert store.list_tool_invocations(user_id="u1")[0]["status"] == "succeeded"
+
+    snapshot = store.record_context_snapshot(
+        session_id=session_id,
+        user_id="u1",
+        run_id="run_1",
+        trace_id="trace_1",
+        context_summary_id="ctx_1",
+        compacted=True,
+        message_count=3,
+        source_message_ids=["1", "2"],
+        source_ids=["source_1"],
+        artifact_ids=["artifact_1"],
+        token_estimate_before=120,
+        token_estimate_after=40,
+        summary="compressed facts",
+        summary_model="test-model",
+        risk_flags=["lossy_compression"],
+        metadata={"api_key": "hidden", "safe": "ok"},
+    )
+    assert snapshot["metadata"]["api_key"] == "[redacted]"
+    assert snapshot["source_message_ids"] == ["1", "2"]
+    assert store.get_context_snapshot(snapshot["snapshot_id"])["risk_flags"] == ["lossy_compression"]
+    assert store.list_context_snapshots(user_id="u1")[0]["context_summary_id"] == "ctx_1"
+
+    feedback = store.record_feedback(
+        {
+            "user_id": "u1",
+            "session_id": session_id,
+            "target_type": "message",
+            "target_id": "msg_1",
+            "feedback_type": "thumbs_up",
+            "rating": 5,
+            "allow_learning": True,
+            "payload": {"password": "hidden"},
+        }
+    )
+    assert feedback["allow_learning"] is True
+    assert feedback["payload"]["password"] == "[redacted]"
+
+    policy = store.update_user_data_policy("u1", {"event_ttl_days": 30, "allow_learning": True})
+    assert policy["event_ttl_days"] == 30
+    assert policy["allow_learning"] is True
+
+    summary = store.user_activity_summary(user_id="u1")
+    assert summary["sessions"][0]["session_id"] == session_id
+    assert summary["events"][0]["event_type"] == "page_view"
+    assert summary["tool_invocations"][0]["tool_name"] == "agent_tool_catalog"
+    assert summary["feedback"][0]["feedback_type"] == "thumbs_up"
+
+    analytics = store.analytics_summary(user_id="u1")
+    assert analytics["totals"]["events"] == 1
+    assert analytics["totals"]["tool_invocations"] == 1
+    assert analytics["tools"][0]["tool_name"] == "agent_tool_catalog"
+
+    export_payload = store.export_user_data(user_id="u1")
+    assert export_payload["user_id"] == "u1"
+    assert export_payload["sessions"][0]["session_id"] == session_id
+    assert export_payload["context_snapshots"][0]["snapshot_id"] == snapshot["snapshot_id"]
+    assert export_payload["analytics"]["totals"]["feedback"] == 1
+
+    learning_blocked = store.learning_dataset(user_id="u1")
+    assert learning_blocked["allowed"] is True
+    assert learning_blocked["items"][0]["feedback_type"] == "thumbs_up"
+
+    recommendations = store.workflow_recommendations(user_id="u1")
+    assert recommendations["object"] == "aiask.workflow_recommendations"
+
+    retention_preview = store.apply_retention_policies(user_id="u1", dry_run=True)
+    assert retention_preview["market_data_affected"] is False
+    assert retention_preview["dry_run"] is True
+
+    delete_preview = store.delete_user_data(user_id="u1", dry_run=True)
+    assert delete_preview["counts"]["sessions"] == 1
+    assert delete_preview["counts"]["context_snapshots"] == 1
+    assert store.user_activity_summary(user_id="u1")["events"][0]["event_type"] == "page_view"
+
+    deleted = store.delete_user_data(user_id="u1", dry_run=False, hard_delete=False)
+    assert deleted["anonymized_user_id"] == "deleted:u1"
+    assert store.list_activity_events(user_id="u1") == []
+    assert store.list_activity_events(user_id="deleted:u1")[0]["payload"] == {}
+    anonymized_snapshots = store.list_context_snapshots(user_id="deleted:u1")
+    assert anonymized_snapshots[0]["summary"] is None
+    assert anonymized_snapshots[0]["source_ids"] == []
+
+
 def test_memory_is_scoped_by_financial_context(tmp_path) -> None:
     store = FinancialMemoryStore(tmp_path / "state.sqlite3")
     store.add(content="maotai margin note", user_id="u1", symbol="600519", research_topic="margin")

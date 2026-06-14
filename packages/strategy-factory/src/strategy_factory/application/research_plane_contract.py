@@ -77,6 +77,27 @@ def _router_telemetry_from_task_scan(
     }
 
 
+def _direction_gate_telemetry_from_task_scan(
+    task_scan_summary: dict[str, Any],
+    direction_gate_artifact: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    source = dict(direction_gate_artifact or task_scan_summary or {})
+    return {
+        "direction_gate_artifact_contract_version": source.get("contract_version"),
+        "direction_gate_enabled": bool(source.get("direction_gate_enabled")),
+        "direction_gate_candidate_stock_count": _safe_int(source.get("direction_gate_candidate_stock_count")),
+        "direction_gate_evaluated_count": _safe_int(source.get("direction_gate_evaluated_count")),
+        "direction_gate_applied_count": _safe_int(source.get("direction_gate_applied_count")),
+        "direction_gate_fallback_count": _safe_int(source.get("direction_gate_fallback_count")),
+        "direction_gate_status_counts": dict(source.get("direction_gate_status_counts") or {}),
+        "direction_gate_reason_counts": dict(source.get("direction_gate_reason_counts") or {}),
+        "direction_gate_dropped_family_counts": dict(source.get("direction_gate_dropped_family_counts") or {}),
+        "selected_direction_gate_applied_count": _safe_int(source.get("selected_direction_gate_applied_count")),
+        "selected_direction_gate_fallback_count": _safe_int(source.get("selected_direction_gate_fallback_count")),
+        "selected_direction_gate_task_count": _safe_int(source.get("selected_direction_gate_task_count")),
+    }
+
+
 def _compact_list(values: Any, *, limit: int = 8) -> list[str]:
     items: list[str] = []
     for value in list(values or []):
@@ -425,6 +446,7 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
     task_scan = dict(stage.get("task_scan") or {})
     task_scan_summary = dict(task_scan.get("summary") or {})
     router_artifact = dict(task_scan.get("router_artifact") or {})
+    direction_gate_artifact = dict(task_scan.get("direction_gate_artifact") or {})
     planned_tasks_raw = [
         dict(task or {})
         for task in list(task_scan.get("tasks") or [])
@@ -441,6 +463,10 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         _safe_int(task_scan_summary.get("bulk_stock_task_count")),
     )
     router_telemetry = _router_telemetry_from_task_scan(task_scan_summary, router_artifact)
+    direction_gate_telemetry = _direction_gate_telemetry_from_task_scan(
+        task_scan_summary,
+        direction_gate_artifact,
+    )
     snapshot_task_count = _safe_int(
         stage.get("snapshot_task_count"),
         _safe_int(task_source_counts.get("snapshot")),
@@ -479,6 +505,9 @@ def build_task_artifact(autonomy_stage: dict[str, Any] | None = None) -> dict[st
         "router_telemetry": router_telemetry,
         "router_artifact": router_artifact,
         **router_telemetry,
+        "direction_gate_telemetry": direction_gate_telemetry,
+        "direction_gate_artifact": direction_gate_artifact,
+        **direction_gate_telemetry,
         "feedback_control_mode_counts": dict(stage.get("selected_feedback_control_mode_counts") or {}),
         "feedback_target_pool_control_mode_counts": dict(
             stage.get("selected_feedback_target_pool_control_mode_counts") or {}

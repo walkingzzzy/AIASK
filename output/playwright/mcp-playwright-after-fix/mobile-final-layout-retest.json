@@ -1,0 +1,29 @@
+{
+  "screenshots": [
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\mobile-workbench-final-layout.png",
+    "C:\\Users\\walking\\Desktop\\aiask\\output\\playwright\\mcp-playwright-after-fix\\mobile-settings-final-layout.png"
+  ],
+  "mobileMetrics": {
+    "innerWidth": 390,
+    "scrollWidth": 390,
+    "overflowX": false,
+    "buttons": [
+      {
+        "text": "Mock 研究会话2026-05-22T09:00:02Z",
+        "width": 314,
+        "height": 50
+      },
+      {
+        "text": "run_mockcompleted / tools 1 / approvals 1",
+        "width": 314,
+        "height": 50
+      }
+    ]
+  },
+  "settingsMetrics": {
+    "innerWidth": 390,
+    "scrollWidth": 390,
+    "overflowX": false
+  },
+  "errors": []
+}

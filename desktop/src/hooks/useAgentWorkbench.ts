@@ -6,6 +6,8 @@ import { shortText } from "../components/shared";
 import { AiaskApi } from "../services/aiaskApi";
 import type {
   AgentResponse,
+  AgentArtifactRecord,
+  AgentSourceRecord,
   AgentToolCall,
   DesktopRunSummary,
   DesktopWorkbenchSummary,
@@ -86,6 +88,8 @@ export function useAgentWorkbench({
   const [intentEnvelope, setIntentEnvelope] = useState<ToolEnvelope | null>(null);
   const [intentMessage, setIntentMessage] = useState("");
   const [runEventsByRunId, setRunEventsByRunId] = useState<Record<string, NormalizedRunEvent[]>>({});
+  const [artifactsByRunId, setArtifactsByRunId] = useState<Record<string, AgentArtifactRecord[]>>({});
+  const [sourcesByRunId, setSourcesByRunId] = useState<Record<string, AgentSourceRecord[]>>({});
   const [summary, setSummary] = useState<DesktopWorkbenchSummary | null>(null);
   const [recentRuns, setRecentRuns] = useState<DesktopRunSummary[]>([]);
 
@@ -95,9 +99,10 @@ export function useAgentWorkbench({
   );
   const selectedResponse = selectedThread?.response || null;
   const selectedRunId = selectedResponse?.metadata?.run_id || selectedThread?.runId || "";
+  const visibleRunId = selectedThread ? selectedRunId : recentRuns[0]?.run_id || "";
   const timelineEvents = useMemo(
-    () => buildTimeline(selectedThread, selectedRunId ? runEventsByRunId[selectedRunId] || [] : []),
-    [selectedRunId, runEventsByRunId, selectedThread]
+    () => buildTimeline(selectedThread, visibleRunId ? runEventsByRunId[visibleRunId] || [] : []),
+    [visibleRunId, runEventsByRunId, selectedThread]
   );
   const currentIntent = ((intentEnvelope?.data as { intent?: IntentRecord } | undefined)?.intent || null) as IntentRecord | null;
   const selectedResponseRecord = selectedResponse as (AgentResponse & {
@@ -112,7 +117,8 @@ export function useAgentWorkbench({
     try {
       const payload = await api.workbenchSummary();
       setSummary(payload);
-      setRecentRuns(payload.recent_runs || []);
+      const runs = payload.recent_runs || [];
+      setRecentRuns(runs);
       setThreads((current) => {
         const hydrated = current.filter((item) => item.response || item.status === "in_progress");
         const bySession = new Set(hydrated.map((item) => item.sessionId || item.id));
@@ -121,6 +127,10 @@ export function useAgentWorkbench({
           .filter((item) => !bySession.has(item.sessionId || item.id));
         return [...hydrated, ...summaryThreads].slice(0, 50);
       });
+      const firstRunId = runs[0]?.run_id;
+      if (firstRunId) {
+        void loadRunEvents(firstRunId);
+      }
       return payload;
     } catch (error) {
       onAgentStatus(formatApiError(error));
@@ -162,6 +172,9 @@ export function useAgentWorkbench({
         )
       );
       setSessionId(sid);
+      if (thread?.runId) {
+        void loadRunEvents(thread.runId);
+      }
     } catch (error) {
       onAgentStatus(formatApiError(error));
     }
@@ -223,6 +236,9 @@ export function useAgentWorkbench({
         setIntentIds((items) => Array.from(new Set([...ids, ...items])).slice(0, 50));
         setIntentIdInput(ids[0]);
       }
+      if (response.metadata?.run_id) {
+        await loadRunEvents(response.metadata.run_id);
+      }
       await refreshSummary();
     } catch (error) {
       const message = formatApiError(error);
@@ -261,9 +277,12 @@ export function useAgentWorkbench({
   }
 
   function selectThread(id: string) {
+    const thread = threads.find((item) => item.id === id);
     setSelectedThreadId(id);
     onInspectorTab("details");
     void hydrateThread(id);
+    const runId = thread?.response?.metadata?.run_id || thread?.runId;
+    if (runId) void loadRunEvents(runId);
   }
 
   function removeResponseThread(responseId: string) {
@@ -285,9 +304,20 @@ export function useAgentWorkbench({
     if (!runId) return;
     setBusy(true);
     try {
-      const events = await api.runEvents(runId, controlToken.trim() || apiToken);
+      const [eventsResult, artifactResult, sourceResult] = await Promise.allSettled([
+        api.runEvents(runId, controlToken.trim() || apiToken),
+        api.runArtifacts(runId, { limit: 100 }),
+        api.runSources(runId, { limit: 100 }),
+      ]);
+      const events = eventsResult.status === "fulfilled" ? eventsResult.value : [];
+      const artifacts = artifactResult.status === "fulfilled" ? artifactResult.value.data || [] : [];
+      const sources = sourceResult.status === "fulfilled" ? sourceResult.value.data || [] : [];
       setRunEventsByRunId((current) => ({ ...current, [runId]: events }));
+      setArtifactsByRunId((current) => ({ ...current, [runId]: artifacts }));
+      setSourcesByRunId((current) => ({ ...current, [runId]: sources }));
       onRunEventsLoaded(events);
+      const failed = [eventsResult, artifactResult, sourceResult].find((item) => item.status === "rejected");
+      if (failed?.status === "rejected") onAgentStatus(formatApiError(failed.reason));
     } catch (error) {
       onAgentStatus(formatApiError(error));
     } finally {
@@ -349,7 +379,9 @@ export function useAgentWorkbench({
     selectedAuditEventCount,
     selectedResponse,
     selectedResponseRecord,
-    selectedRunId,
+    selectedRunId: visibleRunId,
+    selectedRunArtifacts: visibleRunId ? artifactsByRunId[visibleRunId] || [] : [],
+    selectedRunSources: visibleRunId ? sourcesByRunId[visibleRunId] || [] : [],
     selectedThread,
     selectedThreadId,
     sendResponse,

@@ -58,6 +58,32 @@ async def analyze_stock(arguments: dict[str, Any]) -> dict[str, Any]:
     return await call_function(fn, payload)
 
 
+async def stock_live_quote(arguments: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(arguments or {})
+    if payload.get("symbol") and not payload.get("code"):
+        payload["code"] = payload["symbol"]
+    if payload.get("stock_code") and not payload.get("code"):
+        payload["code"] = payload["stock_code"]
+    if payload.get("ticker") and not payload.get("code"):
+        payload["code"] = payload["ticker"]
+    fn = getattr(import_module("akshare_mcp.tools.market.quote"), "get_realtime_quote")
+    return await call_function(fn, payload)
+
+
+async def stock_news_digest(arguments: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(arguments or {})
+    if payload.get("symbol") and not payload.get("code"):
+        payload["code"] = payload["symbol"]
+    if payload.get("stock_code") and not payload.get("code"):
+        payload["code"] = payload["stock_code"]
+    if payload.get("ticker") and not payload.get("code"):
+        payload["code"] = payload["ticker"]
+    module = import_module("akshare_mcp.tools.news.news_feed")
+    code = str(payload.get("code") or "").strip()
+    fn = getattr(module, "get_stock_news" if code else "get_market_news")
+    return await call_function(fn, payload)
+
+
 async def governance_check(arguments: dict[str, Any]) -> dict[str, Any]:
     module = import_module("akshare_mcp.tools.governance_workflow")
     fn = getattr(module, "governance_check_workflow")

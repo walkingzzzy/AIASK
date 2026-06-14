@@ -120,6 +120,27 @@ def build_combined_scan_report(
         "selected_profile_summary_missing_count": int(
             bulk_summary.get("selected_profile_summary_missing_count") or 0
         ),
+        "direction_gate_enabled": bool(bulk_summary.get("direction_gate_enabled")),
+        "direction_gate_candidate_stock_count": int(
+            bulk_summary.get("direction_gate_candidate_stock_count") or 0
+        ),
+        "direction_gate_evaluated_count": int(bulk_summary.get("direction_gate_evaluated_count") or 0),
+        "direction_gate_applied_count": int(bulk_summary.get("direction_gate_applied_count") or 0),
+        "direction_gate_fallback_count": int(bulk_summary.get("direction_gate_fallback_count") or 0),
+        "direction_gate_status_counts": dict(bulk_summary.get("direction_gate_status_counts") or {}),
+        "direction_gate_reason_counts": dict(bulk_summary.get("direction_gate_reason_counts") or {}),
+        "direction_gate_dropped_family_counts": dict(
+            bulk_summary.get("direction_gate_dropped_family_counts") or {}
+        ),
+        "selected_direction_gate_applied_count": int(
+            bulk_summary.get("selected_direction_gate_applied_count") or 0
+        ),
+        "selected_direction_gate_fallback_count": int(
+            bulk_summary.get("selected_direction_gate_fallback_count") or 0
+        ),
+        "selected_direction_gate_task_count": int(
+            bulk_summary.get("selected_direction_gate_task_count") or 0
+        ),
         "max_research_tasks": int(task_budget_meta.get("max_research_tasks") or AUTONOMY_MAX_RESEARCH_TASKS),
         "max_bulk_research_tasks": int(task_budget_meta.get("max_bulk_research_tasks") or 0),
         "combined_research_task_budget": int(
@@ -227,6 +248,7 @@ def build_combined_scan_report(
         "summary": summary,
         "tasks": list(tasks or []),
         "router_artifact": dict((bulk_report or {}).get("router_artifact") or {}),
+        "direction_gate_artifact": dict((bulk_report or {}).get("direction_gate_artifact") or {}),
         "opportunity_scan": dict(opportunity_scan or {}),
         "bulk_stock_matrix": dict(bulk_report or {}),
     }

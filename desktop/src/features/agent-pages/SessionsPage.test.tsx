@@ -4,10 +4,12 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { resetMockApiState } from "../../mockApi";
 import { SessionsPage } from "./SessionsPage";
 
 afterEach(() => {
   cleanup();
+  resetMockApiState();
   vi.clearAllMocks();
 });
 
@@ -66,7 +68,39 @@ describe("SessionsPage", () => {
     expect(screen.getByText("approval.intent_created")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("继续会话"));
-    expect(onResumeSession).toHaveBeenCalledWith("sess_mock");
+    await waitFor(() =>
+      expect(onResumeSession).toHaveBeenCalledWith(
+        "sess_mock",
+        expect.objectContaining({
+          resume_context: expect.objectContaining({ context_snapshot_id: "ctxsnap_mock_source" }),
+        })
+      )
+    );
+  });
+
+  it("应该展示会话交接接管状态和上下文快照", async () => {
+    render(<SessionsPage {...mockProps} />);
+
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
+
+    expect(screen.getByText(/交接队列 1/)).toBeInTheDocument();
+    expect(screen.getByText("接管: risk_specialist")).toBeInTheDocument();
+    expect(screen.getByLabelText("会话交接状态")).toHaveTextContent("risk_specialist");
+    expect(screen.getByLabelText("会话交接状态")).toHaveTextContent("ctxsnap_mock_source");
+    expect(screen.getByText("risk escalation")).toBeInTheDocument();
+    expect(screen.getByText("Continue with risk review.")).toBeInTheDocument();
+  });
+
+  it("应该在继续会话后展示恢复上下文", async () => {
+    render(<SessionsPage {...mockProps} />);
+
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("继续会话"));
+
+    await waitFor(() => expect(screen.getByText("RESUME_CONTEXT_LOADED")).toBeInTheDocument());
+    expect(screen.getByLabelText("会话恢复上下文")).toHaveTextContent("ctxsnap_mock_source");
+    expect(screen.getByLabelText("会话恢复上下文")).toHaveTextContent("risk_specialist");
+    expect(screen.getByLabelText("会话恢复上下文")).toHaveTextContent("mock_resume");
   });
 
   it("应该支持有审批筛选", async () => {
@@ -77,5 +111,33 @@ describe("SessionsPage", () => {
 
     expect(screen.getByText("Mock 研究会话")).toBeInTheDocument();
     expect(screen.getByText(/1 \/ 1 个会话/)).toBeInTheDocument();
+  });
+
+  it("supports undoing the last loaded turn", async () => {
+    render(<SessionsPage {...mockProps} />);
+
+    await waitFor(() => expect(screen.getByText("mock question")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Undo last turn"));
+
+    await waitFor(() => expect(screen.getByText("UNDO_1_TURNS")).toBeInTheDocument());
+    expect(screen.queryByText("mock question")).not.toBeInTheDocument();
+  });
+
+  it("supports archiving and restoring a session", async () => {
+    render(<SessionsPage {...mockProps} />);
+
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
+    fireEvent.click(screen.getByText("Archive"));
+
+    await waitFor(() => expect(screen.getByText("SESSION_ARCHIVED")).toBeInTheDocument());
+    expect(screen.queryByText("Mock 研究会话")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("显示归档"));
+    await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
+    expect(screen.getByText("已归档")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText("Restore"));
+    await waitFor(() => expect(screen.getByText("SESSION_RESTORED")).toBeInTheDocument());
+    expect(screen.queryByText("已归档")).not.toBeInTheDocument();
   });
 });

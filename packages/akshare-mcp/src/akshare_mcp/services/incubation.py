@@ -133,6 +133,18 @@ def _runtime_execution_guard(strategy: dict) -> dict:
         and semantic_runtime_match
         and execution_readiness_tier == "formal_runtime_ready"
     )
+    # observe 诊断性纸面交易闸门:打破"要证据才能 formal、但只有 formal 才准下单产证据"的死锁。
+    # observe 样本(零资本模拟)允许下诊断纸面单以积累 forward returns / effective_n,
+    # 但仅限结构合法的样本——契约缺字段等结构性损坏仍禁止。不改变 formal 资格判定。
+    import os as _os
+    observe_paper_enabled = str(
+        _os.getenv("INCUBATION_OBSERVE_PAPER_ENTRIES_ENABLED", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+    allow_observe_paper_entries = (
+        observe_paper_enabled
+        and not allow_signal_entries  # formal 走正常通道,无需此档
+        and not semantic_contract_missing_fields  # 结构性损坏不放行
+    )
     reasons: list[str] = []
     if semantic_contract_missing_fields:
         reasons.append("final_strategy_missing_semantic_contract")
@@ -144,6 +156,7 @@ def _runtime_execution_guard(strategy: dict) -> dict:
         reasons.append("diagnostic_only")
     return {
         "allow_signal_entries": allow_signal_entries,
+        "allow_observe_paper_entries": allow_observe_paper_entries,
         "diagnostic_only": diagnostic_only,
         "proxy_runtime_used": proxy_runtime_used,
         "semantic_runtime_match": semantic_runtime_match,

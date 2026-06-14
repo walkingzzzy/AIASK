@@ -258,10 +258,16 @@
             if not code or latest_signal == 0:
                 continue
             direction = 'buy' if latest_signal > 0 else 'sell'
+            entry_is_observe_paper = False
             if direction == 'buy' and not execution_guard.get("allow_signal_entries"):
-                blocked_by_execution_guard += 1
-                skipped += 1
-                continue
+                # observe 诊断纸面交易:允许 observe 样本下零资本诊断单以积累前向证据,
+                # 打破"无证据→不能formal、不能交易→无证据"死锁。结构损坏样本仍被 guard 拦。
+                if execution_guard.get("allow_observe_paper_entries"):
+                    entry_is_observe_paper = True
+                else:
+                    blocked_by_execution_guard += 1
+                    skipped += 1
+                    continue
             if (code, direction) in existing_keys:
                 skipped += 1
                 continue
@@ -310,7 +316,7 @@
                 direction=direction,
                 shares=shares,
                 price=_order_price(price, direction),
-                source='strategy_signal',
+                source='observe_paper_diagnostic' if entry_is_observe_paper else 'strategy_signal',
                 signal_id=signal_id,
                 position_id=position_id,
             )

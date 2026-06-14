@@ -23,7 +23,10 @@ def _full_policy(tmp_path) -> ToolPolicyEngine:
 
 def test_expanded_hermes_tools_are_full_mode_only(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
-    finance = build_default_tool_registry(session_store=AgentSessionStore(tmp_path / "finance.sqlite3"))
+    finance = build_default_tool_registry(
+        session_store=AgentSessionStore(tmp_path / "finance.sqlite3"),
+        policy_engine=ToolPolicyEngine(ToolPolicy("finance_safe", False, (str(tmp_path),))),
+    )
     assert "agent_gateway_status" not in finance.names()
     assert "agent_rl_list_environments" not in finance.names()
     assert "agent_ha_list_entities" not in finance.names()
@@ -38,6 +41,8 @@ def test_expanded_hermes_tools_are_full_mode_only(tmp_path, monkeypatch) -> None
         "agent_terminal_backends",
         "agent_computer_use",
         "agent_file_mutation_verify",
+        "agent_file_checkpoint",
+        "agent_file_rollback",
         "agent_x_search",
         "agent_video_generate",
         "agent_session_handoff",
@@ -144,11 +149,11 @@ def test_expanded_tools_report_configured_false_without_external_credentials(tmp
     assert computer["data"]["configured"] is False
     assert computer["data"]["os_desktop_control"] is False
 
-
 def test_v014_native_session_file_and_subgoal_tools(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
+    store = AgentSessionStore(tmp_path / "state.sqlite3")
     full = build_default_tool_registry(
-        session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
+        session_store=store,
         policy_engine=_full_policy(tmp_path),
     )
 
@@ -182,9 +187,14 @@ def test_v014_native_session_file_and_subgoal_tools(tmp_path, monkeypatch) -> No
     )
     assert handoff["success"] is True
     handoff_id = handoff["data"]["handoff"]["handoff_id"]
+    state = store.get_session("s1")["metadata"]["handoff_state"]
+    assert state["status"] == "pending"
+    assert state["handoff_id"] == handoff_id
+    assert state["target"] == "ops"
     done = asyncio.run(full.call_tool("agent_session_handoff", {"action": "complete", "handoff_id": handoff_id}))
     assert done["success"] is True
     assert done["data"]["handoff"]["status"] == "completed"
+    assert done["data"]["handoff_state"]["status"] == "completed"
 
 
 def test_moa_runtime_tool_uses_aiask_model_client(tmp_path, monkeypatch) -> None:

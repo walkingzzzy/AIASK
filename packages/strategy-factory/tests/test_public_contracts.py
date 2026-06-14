@@ -157,3 +157,37 @@ def test_stage_result_dto_round_trip() -> None:
     assert asdict(dto)["status"] == "partial"
     assert dto.to_dict()["stage"] == "deduplicate"
     assert dto.to_dict()["warning_count"] == 2
+
+
+def test_factory_status_dto_preserves_strict_incubation_blocker_summary() -> None:
+    from strategy_factory.api.dto import FactoryStatusDTO
+
+    dto = FactoryStatusDTO.from_dict(
+        {
+            "running": False,
+            "runtime_enabled": True,
+            "last_result": {
+                "status": "success",
+                "summary": {
+                    "strict_incubation_ready_count": 0,
+                    "raw_b_or_above_count": 3,
+                },
+            },
+            "strict_incubation_blocker_summary": {
+                "status": "blocked",
+                "top_blockers": [
+                    {
+                        "reason_code": "diagnostic_only_not_allowed_for_incubation",
+                        "count": 3,
+                    }
+                ],
+            },
+        }
+    )
+
+    payload = dto.to_dict()
+
+    assert payload["strict_incubation_blocker_summary"]["status"] == "blocked"
+    assert payload["strict_incubation_blocker_summary"]["top_blockers"][0]["reason_code"] == (
+        "diagnostic_only_not_allowed_for_incubation"
+    )

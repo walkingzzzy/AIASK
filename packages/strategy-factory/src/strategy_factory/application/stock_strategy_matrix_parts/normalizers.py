@@ -435,6 +435,236 @@
         token = str(value or "").strip()
         return token or "__unknown__"
 
+    _DIRECTION_GATE_FALLBACK_FAMILY = "multi_factor"
+    _TREND_DIRECTION_FAMILIES = frozenset(
+        {
+            "momentum",
+            "ma_cross",
+            "growth_factor",
+            "volatility_breakout",
+            "event_structure_breakout",
+            "breakout",
+            "sector_breakout",
+            "rotation_balanced",
+        }
+    )
+    _REVERSAL_DIRECTION_FAMILIES = frozenset({"mean_reversion_short", "gap_fill"})
+
+    @classmethod
+    def _direction_gate_enabled(cls) -> bool:
+        if not bool(STOCK_DIRECTION_GATE_ENABLED):
+            return False
+        try:
+            return bool(stock_direction_gate_enabled())
+        except Exception:
+            return bool(STOCK_DIRECTION_GATE_ENABLED)
+
+    @staticmethod
+    def _first_present_value(payload: dict[str, Any], keys: tuple[str, ...]) -> Any:
+        for key in keys:
+            if key not in payload:
+                continue
+            value = payload.get(key)
+            if value is None:
+                continue
+            if isinstance(value, str) and not value.strip():
+                continue
+            return value
+        return None
+
+    @staticmethod
+    def _record_direction_gate(
+        row: dict[str, Any],
+        *,
+        enabled: bool,
+        status: str,
+        source: str,
+        reason: str,
+        input_families: list[str],
+        output_families: list[str],
+        dropped_families: list[str] | None = None,
+        direction: str | None = None,
+        trend_regime: str | None = None,
+        trend_score: float | None = None,
+        reversal_score: float | None = None,
+        pct_chg: float | None = None,
+        fallback_family: str | None = None,
+    ) -> None:
+        payload = {
+            "enabled": bool(enabled),
+            "status": str(status or "unknown").strip().lower() or "unknown",
+            "source": str(source or "").strip().lower() or "unknown",
+            "reason": str(reason or "").strip() or None,
+            "direction": str(direction or "").strip().lower() or None,
+            "trend_regime": str(trend_regime or "").strip().lower() or None,
+            "trend_score": None if trend_score is None else round(float(trend_score), 4),
+            "reversal_score": None if reversal_score is None else round(float(reversal_score), 4),
+            "pct_chg": None if pct_chg is None else round(float(pct_chg), 4),
+            "input_families": list(input_families or []),
+            "output_families": list(output_families or []),
+            "dropped_families": list(dropped_families or []),
+            "fallback_family": str(fallback_family or "").strip().lower() or None,
+        }
+        row["_stock_direction_gate"] = {
+            key: value
+            for key, value in payload.items()
+            if value not in (None, "", [])
+        }
+
+    @classmethod
+    def _direction_gate_state(
+        cls,
+        *,
+        profile_summary: dict[str, Any] | None,
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        summary = dict(profile_summary or {})
+        dims = dict(summary.get("factor_dimension_scores") or {})
+        regime = dict(summary.get("regime") or {})
+        trend_regime = str(regime.get("trend_regime") or "").strip().lower()
+        trend_raw = dims.get("trend")
+        reversal_raw = dims.get("reversal")
+        pct_raw = cls._first_present_value(
+            row,
+            ("pct_chg", "change_pct", "daily_return", "return_1d"),
+        )
+        has_signal = any(
+            (
+                trend_raw is not None,
+                reversal_raw is not None,
+                pct_raw is not None,
+                bool(trend_regime and trend_regime != "unknown"),
+            )
+        )
+        trend_score = cls._safe_float(trend_raw) if trend_raw is not None else 0.0
+        reversal_score = cls._safe_float(reversal_raw) if reversal_raw is not None else 0.0
+        pct_chg = cls._safe_float(pct_raw) if pct_raw is not None else 0.0
+        explicit_downtrend = trend_regime in {"trend_down", "downtrend", "down", "weak", "bearish"}
+        explicit_uptrend = trend_regime in {"trend_up", "uptrend", "up", "strong", "bullish"}
+        downtrend = explicit_downtrend or (
+            trend_score < 0.15 and (reversal_score >= 0.30 or pct_chg < 0)
+        )
+        uptrend = not downtrend and (explicit_uptrend or trend_score >= 0.35)
+        if downtrend:
+            direction = "downtrend"
+            reason = "downtrend_excludes_trend_families"
+        elif uptrend:
+            direction = "uptrend"
+            reason = "uptrend_excludes_reversal_families"
+        elif has_signal:
+            direction = "neutral"
+            reason = "no_direction_conflict"
+        else:
+            direction = "unknown"
+            reason = "missing_direction_signal"
+        return {
+            "has_signal": has_signal,
+            "direction": direction,
+            "reason": reason,
+            "trend_regime": trend_regime,
+            "trend_score": trend_score if trend_raw is not None else None,
+            "reversal_score": reversal_score if reversal_raw is not None else None,
+            "pct_chg": pct_chg if pct_raw is not None else None,
+        }
+
+    @classmethod
+    def _apply_direction_gate(
+        cls,
+        families: list[str],
+        *,
+        profile_summary: dict[str, Any] | None,
+        row: dict[str, Any],
+        source: str = "legacy",
+    ) -> list[str]:
+        normalized_families = [
+            str(family or "").strip().lower()
+            for family in list(families or [])
+            if str(family or "").strip()
+        ]
+        if not normalized_families:
+            return families
+        enabled = cls._direction_gate_enabled()
+        state = cls._direction_gate_state(profile_summary=profile_summary, row=row)
+        if not enabled:
+            cls._record_direction_gate(
+                row,
+                enabled=False,
+                status="disabled",
+                source=source,
+                reason="toggle_disabled",
+                input_families=normalized_families,
+                output_families=normalized_families,
+                direction=state.get("direction"),
+                trend_regime=state.get("trend_regime"),
+                trend_score=state.get("trend_score"),
+                reversal_score=state.get("reversal_score"),
+                pct_chg=state.get("pct_chg"),
+            )
+            return normalized_families
+        if not bool(state.get("has_signal")):
+            cls._record_direction_gate(
+                row,
+                enabled=True,
+                status="skipped",
+                source=source,
+                reason=str(state.get("reason") or "missing_direction_signal"),
+                input_families=normalized_families,
+                output_families=normalized_families,
+                direction=state.get("direction"),
+            )
+            return normalized_families
+
+        direction = str(state.get("direction") or "").strip().lower()
+        drop: set[str] = set()
+        if direction == "downtrend":
+            drop |= cls._TREND_DIRECTION_FAMILIES
+        elif direction == "uptrend":
+            drop |= cls._REVERSAL_DIRECTION_FAMILIES
+
+        dropped = [family for family in normalized_families if family in drop]
+        if not dropped:
+            existing_status = dict(row.get("_stock_direction_gate") or {})
+            if str(existing_status.get("status") or "").strip().lower() == "applied":
+                return normalized_families
+            cls._record_direction_gate(
+                row,
+                enabled=True,
+                status="passed",
+                source=source,
+                reason=str(state.get("reason") or "no_direction_conflict"),
+                input_families=normalized_families,
+                output_families=normalized_families,
+                direction=direction,
+                trend_regime=state.get("trend_regime"),
+                trend_score=state.get("trend_score"),
+                reversal_score=state.get("reversal_score"),
+                pct_chg=state.get("pct_chg"),
+            )
+            return normalized_families
+
+        filtered = [family for family in normalized_families if family not in drop]
+        fallback_family = None
+        if not filtered:
+            fallback_family = cls._DIRECTION_GATE_FALLBACK_FAMILY
+            filtered = [fallback_family]
+        cls._record_direction_gate(
+            row,
+            enabled=True,
+            status="applied",
+            source=source,
+            reason=str(state.get("reason") or "direction_conflict"),
+            input_families=normalized_families,
+            output_families=filtered,
+            dropped_families=dropped,
+            direction=direction,
+            trend_regime=state.get("trend_regime"),
+            trend_score=state.get("trend_score"),
+            reversal_score=state.get("reversal_score"),
+            pct_chg=state.get("pct_chg"),
+            fallback_family=fallback_family,
+        )
+        return filtered
+
     @classmethod
     def _normalize_sector_labels(
         cls,
@@ -925,6 +1155,66 @@
             "selected_profile_summary_missing_count": selected_profile_missing_count,
         }
 
+    @classmethod
+    def _direction_gate_telemetry_for_rows(
+        cls,
+        rows: list[dict[str, Any]],
+        *,
+        selected_tasks: list[dict[str, Any]] | None = None,
+    ) -> dict[str, Any]:
+        gate_rows = [row for row in list(rows or []) if str((row or {}).get("code") or "").strip()]
+        status_counts: dict[str, int] = {}
+        reason_counts: dict[str, int] = {}
+        dropped_family_counts: dict[str, int] = {}
+        enabled_seen: list[bool] = []
+        evaluated_count = 0
+        applied_count = 0
+        fallback_count = 0
+        for row in gate_rows:
+            status = dict(row.get("_stock_direction_gate") or {})
+            if "enabled" in status:
+                enabled_seen.append(bool(status.get("enabled")))
+            state = str(status.get("status") or "not_evaluated").strip().lower() or "not_evaluated"
+            status_counts[state] = status_counts.get(state, 0) + 1
+            if state not in {"disabled", "not_evaluated"}:
+                evaluated_count += 1
+            if state == "applied":
+                applied_count += 1
+            if status.get("fallback_family"):
+                fallback_count += 1
+            reason = str(status.get("reason") or "").strip().lower()
+            if reason:
+                reason_counts[reason] = reason_counts.get(reason, 0) + 1
+            for family in list(status.get("dropped_families") or []):
+                token = str(family or "").strip().lower()
+                if token:
+                    dropped_family_counts[token] = dropped_family_counts.get(token, 0) + 1
+
+        selected_applied_count = 0
+        selected_fallback_count = 0
+        selected_task_count = 0
+        for task in list(selected_tasks or []):
+            selected_task_count += 1
+            status = dict(task.get("stock_direction_gate") or {})
+            if str(status.get("status") or "").strip().lower() == "applied":
+                selected_applied_count += 1
+            if status.get("fallback_family"):
+                selected_fallback_count += 1
+
+        return {
+            "direction_gate_enabled": bool(cls._direction_gate_enabled() or any(enabled_seen)),
+            "direction_gate_candidate_stock_count": len(gate_rows),
+            "direction_gate_evaluated_count": evaluated_count,
+            "direction_gate_applied_count": applied_count,
+            "direction_gate_fallback_count": fallback_count,
+            "direction_gate_status_counts": status_counts,
+            "direction_gate_reason_counts": reason_counts,
+            "direction_gate_dropped_family_counts": dropped_family_counts,
+            "selected_direction_gate_applied_count": selected_applied_count,
+            "selected_direction_gate_fallback_count": selected_fallback_count,
+            "selected_direction_gate_task_count": selected_task_count,
+        }
+
     @staticmethod
     def _profile_dimension_scores(profile_summary: dict[str, Any]) -> dict[str, float]:
         scores = dict(profile_summary.get("factor_dimension_scores") or {})
@@ -1003,7 +1293,17 @@
                 )
                 routed = route_strategies(profile, max_families=STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)
                 if routed.families:
-                    families = routed.families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                    families = cls._apply_direction_gate(
+                        routed.families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)],
+                        profile_summary=profile_summary,
+                        row=row,
+                        source="router",
+                    )[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                    direction_gate = dict(row.get("_stock_direction_gate") or {})
+                    exclusions = list(routed.exclusions or [])
+                    for family in list(direction_gate.get("dropped_families") or []):
+                        if family not in exclusions:
+                            exclusions.append(family)
                     cls._set_router_status(
                         row,
                         status="applied",
@@ -1012,7 +1312,7 @@
                         families=families,
                         holding_bucket=routed.holding_period_bucket,
                         confidence=float(routed.confidence or 0.0),
-                        exclusions=list(routed.exclusions or []),
+                        exclusions=exclusions,
                     )
                     return families
                 cls._set_router_status(
@@ -1095,7 +1395,13 @@
         for factor_name in active_factors:
             add(*preferred_strategy_types_for_factor(factor_name, default=[]))
 
-        return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+        gated = cls._apply_direction_gate(
+            families,
+            profile_summary=profile_summary,
+            row=row,
+            source="legacy",
+        )
+        return gated[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
 
     @classmethod
     def _row_priority_score(
@@ -1368,10 +1674,22 @@
                 else:
                     add(*allocation_families)
                     add(*intrinsic_families)
-                return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                gated_families = cls._apply_direction_gate(
+                    families,
+                    profile_summary=cls._extract_profile_summary(row),
+                    row=row,
+                    source="allocation_overlay",
+                )
+                return gated_families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
         add(*intrinsic_families)
 
-        return families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+        gated_families = cls._apply_direction_gate(
+            families,
+            profile_summary=cls._extract_profile_summary(row),
+            row=row,
+            source="final",
+        )
+        return gated_families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
 
     @classmethod
     def _family_plans_for_row(
@@ -1436,7 +1754,32 @@
                 )
             )
             if normalized_plans:
-                return normalized_plans[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                normalized_plans = normalized_plans[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]
+                gated_families = cls._apply_direction_gate(
+                    [
+                        str(plan.get("family") or "").strip().lower()
+                        for plan in normalized_plans
+                        if str(plan.get("family") or "").strip()
+                    ],
+                    profile_summary=cls._extract_profile_summary(row),
+                    row=row,
+                    source="allocation_plan",
+                )
+                plan_lookup = {
+                    str(plan.get("family") or "").strip().lower(): dict(plan or {})
+                    for plan in normalized_plans
+                    if str(plan.get("family") or "").strip()
+                }
+                gated_plans: list[dict[str, Any]] = []
+                for family in gated_families[: max(1, STOCK_STRATEGY_MATRIX_FAMILIES_PER_STOCK)]:
+                    plan = dict(plan_lookup.get(family) or {})
+                    if not plan:
+                        fallback_plans = cls._default_family_plans([family], priority=0.5)
+                        plan = dict((fallback_plans or [{}])[0] or {})
+                    if plan:
+                        gated_plans.append(plan)
+                if gated_plans:
+                    return gated_plans
 
         families = cls._families_for_row(
             row,

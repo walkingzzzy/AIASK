@@ -22,6 +22,7 @@ from .quant_research import QuantResearchStore
 from .scheduler import AgentJobStore
 from .session_store import AgentSessionStore
 from .tools.catalog import GENERAL_TOOL_CATALOG, FINANCE_SAFE_TOOL_CATALOG, SAFE_TOOL_CATALOG, catalog_for_toolset, tool_descriptions
+from .tools.contracts import enrich_tool_contract
 from .tools.policy import ToolPolicyEngine, assert_safe_catalog_names, build_policy_from_env, ensure_agent_tool_name
 from .tools.schemas import TOOL_SCHEMAS
 from .tool_risk import mcp_call_side_effect, mcp_tool_metadata, strategy_action_params
@@ -65,18 +66,19 @@ class AgentToolRegistry:
         metadata: dict[str, Any] | None = None,
     ) -> None:
         normalized_name = ensure_agent_tool_name(name)
-        self.policy_engine.require_allowed(normalized_name, metadata)
+        contract_metadata = enrich_tool_contract({"name": normalized_name, "description": description, **dict(metadata or {})})
+        self.policy_engine.require_allowed(normalized_name, contract_metadata)
         self._tools[normalized_name] = AgentTool(
             name=normalized_name,
             description=description,
             parameters=parameters or {"type": "object", "properties": {}, "additionalProperties": True},
             handler=handler,
-            metadata=dict(metadata or {}),
+            metadata=contract_metadata,
         )
         catalog_item = {
             "name": normalized_name,
             "description": description,
-            **dict(metadata or {}),
+            **contract_metadata,
         }
         self.catalog = [item for item in self.catalog if item.get("name") != normalized_name]
         self.catalog.append(catalog_item)
@@ -484,6 +486,8 @@ def build_default_tool_registry(
     finance_registrations: tuple[tuple[str, ToolHandler], ...] = (
         ("agent_tool_catalog", tool_catalog),
         ("agent_analyze_stock", akshare_adapter.analyze_stock),
+        ("agent_stock_live_quote", akshare_adapter.stock_live_quote),
+        ("agent_stock_news_digest", akshare_adapter.stock_news_digest),
         ("agent_governance_check", akshare_adapter.governance_check),
         ("agent_data_validation", akshare_adapter.data_validation),
         ("agent_quant_data_gate", quant_adapter.quant_data_gate),

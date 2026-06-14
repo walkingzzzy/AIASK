@@ -211,3 +211,142 @@ def test_inject_attempt_adjustment_fallback(monkeypatch):
     assert isinstance(result, dict)
     # 至少不崩
     assert result.get("multiple_testing_inject_status") in ("ok", "exception", "validation_runtime_unavailable")
+
+
+# === family_returns 合成 (打通 PBO/RC/SPA) ===
+
+def _import_family_builder():
+    parent = importlib.import_module(
+        "strategy_factory.application.submission_gate.runner"
+    )
+    return parent._build_family_returns_from_klines
+
+
+class _FakeKlineDb:
+    """返回真实形态的 close 序列 (趋势 + 周期波动),供策略 signal 生成器消费。"""
+
+    def __init__(self, length: int = 120):
+        self._length = int(length)
+
+    async def get_klines(self, code: str, limit: int = 500):
+        import numpy as _np
+        n = min(self._length, int(limit))
+        # 趋势 + 正弦波动,确定性 (按 code 派生相位),非纯随机噪声
+        seed = sum(ord(c) for c in str(code)) % 97
+        t = _np.arange(n, dtype=float)
+        closes = 50.0 + 0.05 * t + 4.0 * _np.sin((t + seed) / 7.0)
+        return [{"close": float(round(v, 3))} for v in closes]
+
+
+class _EmptyKlineDb:
+    async def get_klines(self, code: str, limit: int = 500):
+        return []
+
+
+def test_build_family_returns_from_real_klines():
+    """真实 K 线 + MaCross signal 生成器 → 合成 (n_obs>=12, n_models>=2) 矩阵。"""
+    import asyncio
+    import numpy as np
+    from aiask_quant_core.backtest.builtin_strategies import MaCrossStrategy
+
+    build = _import_family_builder()
+    db = _FakeKlineDb(length=120)
+    strategy = {
+        "id": "s1",
+        "strategy_type": "ma_cross",
+        "params": {"short_period": 5, "long_period": 20, "target_symbols": ["600519", "000001"]},
+    }
+
+    family = asyncio.run(build(db, strategy, MaCrossStrategy, min_len=60))
+    assert family is not None
+    assert isinstance(family, np.ndarray)
+    assert family.ndim == 2
+    assert family.shape[0] >= 12  # n_obs
+    assert family.shape[1] >= 2   # n_models (base + 参数扰动变体)
+
+
+def test_build_family_returns_pbo_rc_spa_end_to_end(monkeypatch):
+    """合成的 family_returns 经 inject 喂给 runtime → PBO/RC/SPA 字段被填充。"""
+    import asyncio
+    import strategy_factory.infrastructure.mcp_services as mcp
+    from aiask_quant_core.backtest.builtin_strategies import MaCrossStrategy
+
+    monkeypatch.setattr(mcp, "get_validation_runtime", lambda: _MockValidationRuntime)
+    build = _import_family_builder()
+    inject = _import_helper()
+
+    db = _FakeKlineDb(length=120)
+    strategy = {
+        "id": "s1",
+        "strategy_type": "ma_cross",
+        "params": {"short_period": 5, "long_period": 20, "target_symbols": ["600519", "000001"]},
+    }
+    family = asyncio.run(build(db, strategy, MaCrossStrategy, min_len=60))
+    assert family is not None and family.shape[0] >= 12 and family.shape[1] >= 2
+
+    normalized = {
+        "post_cost_sharpe": 1.0,
+        "attempt_adjustment": {"attempt_count": 3, "cohort_effective_trials": 3.0},
+    }
+    # 提供 24+ fold scores 让 bootstrap proxy 也走到,family_returns_fallback 触发 PBO/RC/SPA
+    fold_scores = [{"oos_sharpe": 0.5 + i * 0.01} for i in range(24)]
+    validation_report = {"walk_forward": {"fold_results": fold_scores}}
+
+    result = inject(
+        strategy,
+        {"profile": "trade_rule_validation"},
+        normalized,
+        validation_report=validation_report,
+        family_returns_fallback=family,
+    )
+    assert result.get("multiple_testing_inject_status") == "ok"
+    assert result.get("multiple_testing_mode") == "formal_runtime"
+    assert result.get("pbo") == 0.45
+    assert result.get("white_reality_check_pvalue") == 0.08
+    assert result.get("hansen_spa_pvalue") == 0.07
+
+
+def test_build_family_returns_none_when_no_klines():
+    """取不到 K 线时返回 None (诚实 missing,不兜底造假)。"""
+    import asyncio
+    from aiask_quant_core.backtest.builtin_strategies import MaCrossStrategy
+
+    build = _import_family_builder()
+    strategy = {
+        "id": "s1",
+        "strategy_type": "ma_cross",
+        "params": {"short_period": 5, "long_period": 20, "target_symbols": ["600519"]},
+    }
+    assert asyncio.run(build(_EmptyKlineDb(), strategy, MaCrossStrategy, min_len=60)) is None
+    # 无 target_symbols 也返回 None
+    strategy_no_sym = {"id": "s2", "strategy_type": "ma_cross", "params": {"short_period": 5}}
+    assert asyncio.run(build(_FakeKlineDb(), strategy_no_sym, MaCrossStrategy, min_len=60)) is None
+    # klass=None 返回 None
+    assert asyncio.run(build(_FakeKlineDb(), strategy, None, min_len=60)) is None
+
+
+def test_inject_fallback_ignored_when_backtest_metrics_has_family():
+    """backtest_metrics 直接携带 family_returns 时,优先用它而非 fallback。"""
+    import numpy as np
+    inject = _import_helper()
+    import strategy_factory.infrastructure.mcp_services as mcp
+
+    # 用 monkeypatch 之外的方式:直接构造两个可区分矩阵不现实(runtime mock 返回固定值),
+    # 这里只验证提供 fallback 不破坏既有 backtest_metrics 路径,且 status=ok。
+    import pytest as _pytest
+    with _pytest.MonkeyPatch.context() as mp:
+        mp.setattr(mcp, "get_validation_runtime", lambda: _MockValidationRuntime)
+        strategy = {"id": "s1", "strategy_type": "ma_cross", "params": {}}
+        normalized = {"post_cost_sharpe": 1.0, "attempt_adjustment": {"attempt_count": 3, "cohort_effective_trials": 3.0}}
+        fold_scores = [{"oos_sharpe": 0.5 + i * 0.01} for i in range(24)]
+        direct_family = np.random.RandomState(7).normal(0.001, 0.02, (24, 3)).tolist()
+        result = inject(
+            strategy,
+            {"profile": "trade_rule_validation"},
+            normalized,
+            validation_report={"walk_forward": {"fold_results": fold_scores}},
+            backtest_metrics={"multiple_testing": {"family_returns": direct_family}},
+            family_returns_fallback=np.zeros((24, 2)),  # 应被忽略
+        )
+        assert result.get("multiple_testing_inject_status") == "ok"
+        assert result.get("pbo") == 0.45

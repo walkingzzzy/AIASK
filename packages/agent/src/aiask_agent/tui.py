@@ -11,7 +11,22 @@ from typing import Any
 from .env_config import load_project_env
 
 
-TUI_COMMANDS = ("/help", "/model", "/tools", "/sessions", "/new", "/stop", "/steer", "/skills", "/approvals", "/resume")
+TUI_COMMANDS = (
+    "/help",
+    "/model",
+    "/tools",
+    "/sessions",
+    "/new",
+    "/stop",
+    "/steer",
+    "/skills",
+    "/approvals",
+    "/resume",
+    "/undo",
+    "/rollback",
+    "/artifacts",
+    "/sources",
+)
 
 
 @dataclass(frozen=True)
@@ -62,6 +77,24 @@ class TUIController:
                 return {"error": "session_id is required"}
             self.session_id = parsed.tokens[0]
             return {"session_id": self.session_id, "status": "resumed"}
+        if parsed.command == "/undo":
+            if not self.session_id:
+                return {"error": "session_id is required"}
+            try:
+                turns = int(parsed.tokens[0]) if parsed.tokens else 1
+            except (TypeError, ValueError):
+                return {"error": "turns must be a positive integer"}
+            if turns < 1:
+                return {"error": "turns must be a positive integer"}
+            return {"session_id": self.session_id, "turns": turns, "status": "pending_remote_undo"}
+        if parsed.command == "/rollback":
+            if not parsed.tokens:
+                return {"error": "checkpoint_id or latest <path> is required"}
+            if parsed.tokens[0] == "latest":
+                if len(parsed.tokens) < 2:
+                    return {"error": "path is required for latest rollback"}
+                return {"path": " ".join(parsed.tokens[1:]), "status": "pending_remote_rollback"}
+            return {"checkpoint_id": parsed.tokens[0], "status": "pending_remote_rollback"}
         return {}
 
     def reduce_sse_event(self, event: dict[str, Any]) -> dict[str, Any]:
@@ -94,6 +127,10 @@ class TUIController:
             "model_state": True,
             "toolset_state": True,
             "session_resume": True,
+            "session_undo": True,
+            "file_rollback": True,
+            "artifact_browser": True,
+            "source_browser": True,
             "sse_event_reducer": True,
             "approval_reducer": True,
             "commands": list(self.commands),
@@ -118,6 +155,10 @@ def status() -> dict[str, Any]:
             "streaming_tool_output": True,
             "approval_prompts": True,
             "session_resume": True,
+            "session_undo": True,
+            "file_rollback": True,
+            "artifact_browser": True,
+            "source_browser": True,
         },
     }
 
@@ -173,7 +214,7 @@ def run() -> None:
             yield Header()
             with Vertical():
                 yield Log(id="log")
-                yield Input(placeholder="AIASK instruction. Slash: /help /model /tools /sessions /new /stop /steer /skills")
+                yield Input(placeholder="AIASK instruction. Slash: /help /model /tools /sessions /new /stop /steer /skills /undo /rollback")
             yield Footer()
 
         def on_mount(self) -> None:
@@ -235,11 +276,74 @@ def run() -> None:
                 data = await self.run_worker_thread(lambda: self.api.request("GET", "/v1/approvals", control=True))
                 approvals = list(data.get("data") or [])
                 log.write_line("approvals: " + ", ".join(str(item.get("approval_id") or item.get("intent_id")) for item in approvals[:30]))
+            elif command == "/artifacts":
+                run_id = parsed.tokens[0] if parsed.tokens else self.controller.current_run_id
+                if not run_id:
+                    log.write_line("usage: /artifacts <run_id> (or run a task first)")
+                    return
+                data = await self.run_worker_thread(lambda: self.api.request("GET", f"/v1/runs/{run_id}/artifacts?limit=20", control=True))
+                artifacts = list(data.get("data") or [])
+                if not artifacts:
+                    log.write_line("artifacts: none")
+                    return
+                for item in artifacts[:20]:
+                    log.write_line(
+                        "artifact: "
+                        + str(item.get("artifact_id") or "")
+                        + " "
+                        + str(item.get("kind") or "")
+                        + " "
+                        + str(item.get("title") or item.get("path") or item.get("uri") or "")
+                    )
+            elif command == "/sources":
+                run_id = parsed.tokens[0] if parsed.tokens else self.controller.current_run_id
+                if not run_id:
+                    log.write_line("usage: /sources <run_id> (or run a task first)")
+                    return
+                data = await self.run_worker_thread(lambda: self.api.request("GET", f"/v1/runs/{run_id}/sources?limit=20", control=True))
+                sources = list(data.get("data") or [])
+                if not sources:
+                    log.write_line("sources: none")
+                    return
+                for item in sources[:20]:
+                    log.write_line(
+                        "source: "
+                        + str(item.get("source_id") or "")
+                        + " "
+                        + str(item.get("source_type") or "")
+                        + " "
+                        + str(item.get("title") or item.get("provider") or item.get("url") or "")
+                    )
             elif command == "/resume":
                 result = self.controller.apply_local_command(parsed)
                 log.write_line(json.dumps(result, ensure_ascii=False))
             elif command == "/new":
                 log.write_line(json.dumps(self.controller.apply_local_command(parsed), ensure_ascii=False))
+            elif command == "/undo":
+                plan = self.controller.apply_local_command(parsed)
+                if plan.get("error"):
+                    log.write_line(str(plan["error"]))
+                    return
+                data = await self.run_worker_thread(
+                    lambda: self.api.request(
+                        "POST",
+                        f"/v1/sessions/{self.controller.session_id}/undo",
+                        {"turns": plan.get("turns") or 1, "reason": "tui /undo"},
+                        control=True,
+                    )
+                )
+                log.write_line(json.dumps(data, ensure_ascii=False)[:2000])
+            elif command == "/rollback":
+                plan = self.controller.apply_local_command(parsed)
+                if plan.get("error"):
+                    log.write_line(str(plan["error"]))
+                    return
+                payload = {key: value for key, value in plan.items() if key in {"checkpoint_id", "path"}}
+                payload["reason"] = "tui /rollback"
+                data = await self.run_worker_thread(
+                    lambda: self.api.request("POST", "/v1/hermes/admin/tools/agent_file_rollback", payload, control=True)
+                )
+                log.write_line(json.dumps(data, ensure_ascii=False)[:2000])
             elif command == "/stop":
                 run_id = parts[1] if len(parts) > 1 else self.controller.current_run_id
                 if not run_id:

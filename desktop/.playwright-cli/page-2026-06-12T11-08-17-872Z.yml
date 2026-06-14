@@ -1,0 +1,364 @@
+- main [ref=e145]:
+  - generic [ref=e1381]:
+    - complementary [ref=e1382]:
+      - button "返回工作台" [ref=e1383] [cursor=pointer]:
+        - img [ref=e1384]
+        - text: 返回工作台
+      - generic [ref=e1386]:
+        - strong [ref=e1387]: 设置
+        - generic [ref=e1388]: 可操作设置、管理入口与只读状态
+      - navigation "设置导航" [ref=e1389]:
+        - generic [ref=e1390]:
+          - generic [ref=e1391]: 基础设置
+          - button "常规" [ref=e1392] [cursor=pointer]:
+            - img [ref=e1393]
+            - generic [ref=e1394]: 常规
+          - button "连接" [ref=e1395] [cursor=pointer]:
+            - img [ref=e1396]
+            - generic [ref=e1401]: 连接
+          - button "令牌与权限" [ref=e1402] [cursor=pointer]:
+            - img [ref=e1403]
+            - generic [ref=e1406]: 令牌与权限
+        - generic [ref=e1407]:
+          - generic [ref=e1408]: 高级管理
+          - button "技能管理" [ref=e1409] [cursor=pointer]:
+            - img [ref=e1410]
+            - generic [ref=e1414]: 技能管理
+          - button "自动化管理" [ref=e1415] [cursor=pointer]:
+            - img [ref=e1416]
+            - generic [ref=e1420]: 自动化管理
+          - button "应用集成" [ref=e1421] [cursor=pointer]:
+            - img [ref=e1422]
+            - generic [ref=e1428]: 应用集成
+          - button "Webhook" [ref=e1429] [cursor=pointer]:
+            - img [ref=e1430]
+            - generic [ref=e1434]: Webhook
+          - button "插件与技能包" [ref=e1435] [cursor=pointer]:
+            - img [ref=e1436]
+            - generic [ref=e1438]: 插件与技能包
+        - generic [ref=e1439]:
+          - generic [ref=e1440]: 状态与入口
+          - button "模型配置" [ref=e1441] [cursor=pointer]:
+            - img [ref=e1442]
+            - generic [ref=e1445]: 模型配置
+          - button "MCP 管理入口" [ref=e1446] [cursor=pointer]:
+            - img [ref=e1447]
+            - generic [ref=e1459]: MCP 管理入口
+          - button "工作流入口" [ref=e1460] [cursor=pointer]:
+            - img [ref=e1461]
+            - generic [ref=e1463]: 工作流入口
+          - button "股票数据源" [ref=e1464] [cursor=pointer]:
+            - img [ref=e1465]
+            - generic [ref=e1469]: 股票数据源
+          - button "数据路径" [ref=e1470] [cursor=pointer]:
+            - img [ref=e1471]
+            - generic [ref=e1475]: 数据路径
+          - button "学习 / RL" [ref=e1476] [cursor=pointer]:
+            - img [ref=e1477]
+            - generic [ref=e1489]: 学习 / RL
+          - button "安全扫描" [ref=e1490] [cursor=pointer]:
+            - img [ref=e1491]
+            - generic [ref=e1494]: 安全扫描
+          - button "高级诊断入口" [ref=e1495] [cursor=pointer]:
+            - img [ref=e1496]
+            - generic [ref=e1498]: 高级诊断入口
+          - button "关于" [ref=e1499] [cursor=pointer]:
+            - img [ref=e1500]
+            - generic [ref=e1502]: 关于
+    - generic [ref=e1503]:
+      - generic [ref=e1504]:
+        - generic [ref=e1505]:
+          - text: 设置
+          - heading "设置中心" [level=1] [ref=e1506]
+          - paragraph [ref=e1507]: 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。
+        - button "刷新" [ref=e1508] [cursor=pointer]:
+          - img [ref=e1509]
+          - text: 刷新
+      - generic [ref=e1543]:
+        - generic [ref=e1544]:
+          - generic [ref=e1545]:
+            - generic [ref=e1546]:
+              - heading "股票数据源" [level=3] [ref=e1547]
+              - paragraph [ref=e1548]: 配置行情、K 线、基本面和搜索类数据源；密钥只写入 Agent，不会在前端回显。
+            - generic "gated / 需要控制令牌" [ref=e1549]:
+              - img [ref=e1550]
+              - generic [ref=e1552]: 需要控制令牌
+          - generic [ref=e1554]: 建议先选择预设，再填写 URL、主机或密钥，最后点击“测试连接”。保存后的密钥会脱敏显示，方便非技术人员确认“已配置”而不暴露原文。
+        - generic [ref=e1555]:
+          - generic [ref=e1556]:
+            - generic [ref=e1557]:
+              - img [ref=e1558]
+              - text: 数据源
+              - heading "数据源配置、调用与测试" [level=2] [ref=e1562]
+              - paragraph [ref=e1563]: 选择联网搜索或股票行情预设，填写 URL、Key、主机等参数后保存；密钥只写入 Agent，不会在页面回显。保存后可直接连通测试，联网搜索源还可以调用 agent_web_search 验证。
+            - generic [ref=e1564]:
+              - generic "ready / STOCK_DATA_SOURCES_LOADED" [ref=e1565]:
+                - img [ref=e1566]
+                - generic [ref=e1569]: STOCK_DATA_SOURCES_LOADED
+              - button "刷新" [ref=e1570] [cursor=pointer]:
+                - img [ref=e1571]
+                - text: 刷新
+          - generic [ref=e1576]: 保存和测试数据源需要控制令牌；请先在“令牌与权限”中填写。
+          - generic [ref=e1577]:
+            - generic [ref=e1578]:
+              - generic [ref=e1579]: 可选预设
+              - strong [ref=e1580]: "16"
+            - generic [ref=e1581]:
+              - generic [ref=e1582]: 已配置
+              - strong [ref=e1583]: "2"
+            - generic [ref=e1584]:
+              - generic [ref=e1585]: 可用
+              - strong [ref=e1586]: "2"
+            - generic [ref=e1587]:
+              - generic [ref=e1588]: 密钥状态
+              - strong [ref=e1589]: 未填写
+            - generic [ref=e1590]:
+              - generic [ref=e1591]: 当前类别
+              - strong [ref=e1592]: 联网搜索
+          - generic [ref=e1593]:
+            - article [ref=e1594]:
+              - generic [ref=e1595]:
+                - generic [ref=e1596]:
+                  - text: 预设
+                  - heading "选择数据源类型" [level=3] [ref=e1597]
+                - generic "ready / 就绪" [ref=e1598]:
+                  - img [ref=e1599]
+                  - generic [ref=e1602]: 就绪
+              - generic [ref=e1603]:
+                - button "AKShare / AKTools none | CN / HK / US / FX / Futures / Options" [ref=e1604] [cursor=pointer]:
+                  - generic [ref=e1605]: AKShare / AKTools
+                  - generic [ref=e1606]: none | CN / HK / US / FX / Futures / Options
+                  - img [ref=e1607]
+                - button "Tushare Pro token | CN" [ref=e1613] [cursor=pointer]:
+                  - generic [ref=e1614]: Tushare Pro
+                  - generic [ref=e1615]: token | CN
+                  - img [ref=e1616]
+                - button "BaoStock login | CN" [ref=e1622] [cursor=pointer]:
+                  - generic [ref=e1623]: BaoStock
+                  - generic [ref=e1624]: login | CN
+                  - img [ref=e1625]
+                - button "TongDaXin HQ host_port | CN" [ref=e1631] [cursor=pointer]:
+                  - generic [ref=e1632]: TongDaXin HQ
+                  - generic [ref=e1633]: host_port | CN
+                  - img [ref=e1634]
+                - button "Eastmoney public endpoints none | CN" [ref=e1640] [cursor=pointer]:
+                  - generic [ref=e1641]: Eastmoney public endpoints
+                  - generic [ref=e1642]: none | CN
+                  - img [ref=e1643]
+                - button "QMT / XtQuant local SDK local_sdk | CN" [ref=e1649] [cursor=pointer]:
+                  - generic [ref=e1650]: QMT / XtQuant local SDK
+                  - generic [ref=e1651]: local_sdk | CN
+                  - img [ref=e1652]
+                - button "Alpha Vantage api_key | US / Global" [ref=e1658] [cursor=pointer]:
+                  - generic [ref=e1659]: Alpha Vantage
+                  - generic [ref=e1660]: api_key | US / Global
+                  - img [ref=e1661]
+                - button "Finnhub token | US / Global" [ref=e1667] [cursor=pointer]:
+                  - generic [ref=e1668]: Finnhub
+                  - generic [ref=e1669]: token | US / Global
+                  - img [ref=e1670]
+                - button "Twelve Data api_key | US / Global / FX / Crypto" [ref=e1676] [cursor=pointer]:
+                  - generic [ref=e1677]: Twelve Data
+                  - generic [ref=e1678]: api_key | US / Global / FX / Crypto
+                  - img [ref=e1679]
+                - button "Polygon / Massive api_key | US" [ref=e1685] [cursor=pointer]:
+                  - generic [ref=e1686]: Polygon / Massive
+                  - generic [ref=e1687]: api_key | US
+                  - img [ref=e1688]
+                - button "Nasdaq Data Link api_key | US / Global" [ref=e1694] [cursor=pointer]:
+                  - generic [ref=e1695]: Nasdaq Data Link
+                  - generic [ref=e1696]: api_key | US / Global
+                  - img [ref=e1697]
+                - button "DuckDuckGo HTML Search none | Global" [active] [ref=e1703] [cursor=pointer]:
+                  - generic [ref=e1704]: DuckDuckGo HTML Search
+                  - generic [ref=e1705]: none | Global
+                  - img [ref=e1890]
+                - button "Tavily Search bearer | Global" [ref=e1712] [cursor=pointer]:
+                  - generic [ref=e1713]: Tavily Search
+                  - generic [ref=e1714]: bearer | Global
+                  - img [ref=e1715]
+                - button "Brave Search API subscription_token | Global" [ref=e1721] [cursor=pointer]:
+                  - generic [ref=e1722]: Brave Search API
+                  - generic [ref=e1723]: subscription_token | Global
+                  - img [ref=e1724]
+                - button "SerpApi api_key | Global" [ref=e1730] [cursor=pointer]:
+                  - generic [ref=e1731]: SerpApi
+                  - generic [ref=e1732]: api_key | Global
+                  - img [ref=e1733]
+                - button "Exa Search api_key_header | Global" [ref=e1739] [cursor=pointer]:
+                  - generic [ref=e1740]: Exa Search
+                  - generic [ref=e1741]: api_key_header | Global
+                  - img [ref=e1742]
+              - generic [ref=e1748]: Global | web_search / news / research | 无必填密钥
+              - generic [ref=e1749]: 联网搜索源用于深度搜索、资料收集和研究问答；股票行情源用于量化研究、数据同步和行情验证。没有搜索 API Key 时可先用 DuckDuckGo fallback。
+              - link "打开官方文档" [ref=e1750] [cursor=pointer]:
+                - /url: https://duckduckgo.com/
+                - img [ref=e1751]
+                - text: 打开官方文档
+            - article [ref=e1755]:
+              - generic [ref=e1756]:
+                - generic [ref=e1757]:
+                  - generic [ref=e1758]: 2 个条目
+                  - heading "已有数据源" [level=3] [ref=e1759]
+                - generic "ready / 就绪" [ref=e1760]:
+                  - img [ref=e1761]
+                  - generic [ref=e1764]: 就绪
+              - generic [ref=e1765]:
+                - button "Tushare env tushare | 已配置 密钥已配置" [ref=e1766] [cursor=pointer]:
+                  - strong [ref=e1767]: Tushare env
+                  - generic [ref=e1768]: tushare | 已配置
+                  - generic "ready / 密钥已配置" [ref=e1769]:
+                    - img [ref=e1770]
+                    - generic [ref=e1773]: 密钥已配置
+                - button "TDX env tdx | 已配置 就绪" [ref=e1774] [cursor=pointer]:
+                  - strong [ref=e1775]: TDX env
+                  - generic [ref=e1776]: tdx | 已配置
+                  - generic "ready / 就绪" [ref=e1777]:
+                    - img [ref=e1778]
+                    - generic [ref=e1781]: 就绪
+          - generic [ref=e1782]:
+            - generic [ref=e1783]:
+              - generic [ref=e1784]:
+                - text: 新增数据源
+                - heading "连接信息" [level=3] [ref=e1785]
+              - generic "partial / 待填写" [ref=e1786]:
+                - img [ref=e1787]
+                - generic [ref=e1789]: 待填写
+            - generic [ref=e1790]:
+              - generic [ref=e1791]:
+                - generic [ref=e1792]: 数据源类型
+                - combobox "数据源类型" [ref=e1793]:
+                  - option "AKShare / AKTools"
+                  - option "Tushare Pro"
+                  - option "BaoStock"
+                  - option "TongDaXin HQ"
+                  - option "Eastmoney public endpoints"
+                  - option "QMT / XtQuant local SDK"
+                  - option "Alpha Vantage"
+                  - option "Finnhub"
+                  - option "Twelve Data"
+                  - option "Polygon / Massive"
+                  - option "Nasdaq Data Link"
+                  - option "DuckDuckGo HTML Search" [selected]
+                  - option "Tavily Search"
+                  - option "Brave Search API"
+                  - option "SerpApi"
+                  - option "Exa Search"
+              - generic [ref=e1794]:
+                - generic [ref=e1795]: 显示名称
+                - textbox "显示名称" [ref=e1796]:
+                  - /placeholder: 例如：Tushare 主账号
+                  - text: DuckDuckGo HTML Search
+              - generic [ref=e1797]:
+                - generic [ref=e1798]: 优先级
+                - textbox "优先级" [ref=e1799]: "100"
+              - generic [ref=e1800]:
+                - generic [ref=e1801]: 超时秒数
+                - textbox "超时秒数" [ref=e1802]: "8"
+              - generic [ref=e1803]:
+                - generic [ref=e1804]: Base URL
+                - textbox "Base URL" [ref=e1805]:
+                  - /placeholder: https://duckduckgo.com/html/
+                  - text: https://duckduckgo.com/html/
+              - generic [ref=e1806]:
+                - generic [ref=e1807]: 主机
+                - textbox "主机" [ref=e1808]:
+                  - /placeholder: 例如 119.147.212.81
+              - generic [ref=e1809]:
+                - generic [ref=e1810]: 端口
+                - textbox "端口" [ref=e1811]:
+                  - /placeholder: ""
+              - generic [ref=e1812]:
+                - generic [ref=e1813]: API Key / Token
+                - textbox "API Key / Token" [ref=e1814]:
+                  - /placeholder: 粘贴数据服务的 API Key 或 Token
+              - generic [ref=e1815]:
+                - generic [ref=e1816]: 用户名
+                - textbox "用户名" [ref=e1817]
+              - generic [ref=e1818]:
+                - generic [ref=e1819]: 密码
+                - textbox "密码" [ref=e1820]:
+                  - /placeholder: ""
+              - generic [ref=e1821]:
+                - generic [ref=e1822]: 本地客户端路径
+                - textbox "本地客户端路径" [ref=e1823]:
+                  - /placeholder: QMT / XtQuant 本地客户端路径，可留空
+              - generic [ref=e1824]:
+                - generic [ref=e1825]: 账号 ID
+                - textbox "账号 ID" [ref=e1826]
+              - generic [ref=e1827]:
+                - generic [ref=e1828]: 会话 ID
+                - textbox "会话 ID" [ref=e1829]
+              - generic [ref=e1830]:
+                - generic [ref=e1831]: 测试代码
+                - textbox "测试代码" [ref=e1832]:
+                  - /placeholder: AAPL / IBM / 600519
+              - generic [ref=e1833]:
+                - generic [ref=e1834]: 周期
+                - textbox "周期" [ref=e1835]:
+                  - /placeholder: 1day / daily
+              - generic [ref=e1836]:
+                - generic [ref=e1837]: 数据集
+                - textbox "数据集" [ref=e1838]
+              - generic [ref=e1839]:
+                - generic [ref=e1840]: 每分钟限流
+                - textbox "每分钟限流" [ref=e1841]
+              - generic [ref=e1893]:
+                - generic [ref=e1894]: 搜索深度
+                - combobox "搜索深度" [ref=e1895]:
+                  - option "basic" [selected]
+                  - option "advanced"
+              - generic [ref=e1896]:
+                - generic [ref=e1897]: 测试查询
+                - textbox "测试查询" [ref=e1898]:
+                  - /placeholder: 输入要搜索的问题或关键词
+                  - text: AIASK deep search data source
+              - generic [ref=e1842]:
+                - generic [ref=e1843]: 覆盖市场
+                - textbox "覆盖市场" [ref=e1844]:
+                  - /placeholder: CN, US, Global
+                  - text: Global
+              - generic [ref=e1845]:
+                - generic [ref=e1846]: 备注
+                - textbox "备注" [ref=e1847]: No-key public fallback used by agent_web_search when no configured search provider is available.
+              - generic [ref=e1848]:
+                - checkbox "启用这个数据源" [checked] [ref=e1849]
+                - generic [ref=e1850]: 启用这个数据源
+            - generic [ref=e1851]:
+              - button "保存数据源" [disabled] [ref=e1852]:
+                - img [ref=e1853]
+                - text: 保存数据源
+              - button "测试连接" [disabled] [ref=e1857]:
+                - img [ref=e1858]
+                - text: 测试连接
+              - button "调用搜索" [ref=e1899] [cursor=pointer]:
+                - img [ref=e1900]
+                - text: 调用搜索
+          - generic [ref=e1861]:
+            - generic [ref=e1862]:
+              - heading "最近测试结果" [level=3] [ref=e1863]
+              - generic "not_loaded / 未测试" [ref=e1864]:
+                - img [ref=e1865]
+                - generic [ref=e1867]: 未测试
+            - generic [ref=e1868]:
+              - generic [ref=e1869]: 提供方
+              - strong [ref=e1870]: duckduckgo
+              - generic [ref=e1871]: 状态
+              - strong [ref=e1872]: "-"
+              - generic [ref=e1873]: 延迟
+              - strong [ref=e1874]: "-"
+              - generic [ref=e1875]: 样本数
+              - strong [ref=e1876]: "-"
+              - generic [ref=e1877]: 错误
+              - strong [ref=e1878]: "-"
+          - generic [ref=e1879]:
+            - generic [ref=e1880]:
+              - generic [ref=e1881]:
+                - text: 如何调用
+                - heading "当前配置调用示例" [level=3] [ref=e1882]
+              - generic "read_only / 只读" [ref=e1883]:
+                - img [ref=e1884]
+                - generic [ref=e1886]: 只读
+            - generic [ref=e1887]: "{ \"route\": \"/v1/tools/agent_web_search\", \"body\": { \"query\": \"AIASK deep search data source\", \"limit\": 5, \"provider\": \"duckduckgo\", \"search_depth\": \"basic\" } }"
+          - group [ref=e1888]:
+            - generic "原始数据源状态" [ref=e1889] [cursor=pointer]

@@ -15,6 +15,8 @@ from typing import Any
 from uuid import uuid4
 
 from .context import ContextManager
+from .context_references import build_context_reference_message
+from .evidence import extract_tool_evidence
 from .env_config import load_project_env
 from .general_tools import WorkspaceGuard, _limit_bytes, _sanitized_env
 from .json_utils import dumps_json
@@ -40,6 +42,74 @@ DEFAULT_SYSTEM_PROMPT = (
     "Never request live trading or direct manager access."
 )
 
+HANDOFF_TARGET_ALIASES = {
+    "risk": "risk_specialist",
+    "risk_review": "risk_specialist",
+    "risk_specialist": "risk_specialist",
+    "portfolio_risk": "risk_specialist",
+    "research": "research_specialist",
+    "market_research": "research_specialist",
+    "research_specialist": "research_specialist",
+    "ops": "ops_specialist",
+    "operations": "ops_specialist",
+    "ops_specialist": "ops_specialist",
+}
+
+HANDOFF_SPECIALIST_POLICIES: dict[str, dict[str, Any]] = {
+    "risk_specialist": {
+        "policy_id": "risk_specialist",
+        "role": "Risk specialist",
+        "requested_toolset": FINANCE_SAFE_TOOLSET,
+        "preferred_tools": (
+            "agent_portfolio_risk",
+            "agent_data_validation",
+            "agent_quant_data_gate",
+            "agent_factor_validation",
+            "agent_market_temperature_cache_readiness",
+            "agent_trade_prediction_status",
+            "agent_trade_prediction_matrix",
+        ),
+        "instructions": (
+            "Prioritize exposure, downside risk, data freshness, concentration, and guardrail status. "
+            "Do not propose or execute live trades; stateful actions must remain ActionIntent-gated."
+        ),
+    },
+    "research_specialist": {
+        "policy_id": "research_specialist",
+        "role": "Market research specialist",
+        "requested_toolset": FINANCE_SAFE_TOOLSET,
+        "preferred_tools": (
+            "agent_analyze_stock",
+            "agent_stock_live_quote",
+            "agent_stock_news_digest",
+            "agent_market_temperature_snapshot",
+            "agent_market_temperature_industry_history",
+            "agent_strategy_review_snapshot",
+        ),
+        "instructions": (
+            "Prioritize evidence-backed market context, source quality, timestamp freshness, and uncertainty. "
+            "Separate facts, model inference, and user-facing conclusions."
+        ),
+    },
+    "ops_specialist": {
+        "policy_id": "ops_specialist",
+        "role": "Operations coordination specialist",
+        "requested_toolset": GENERAL_FULL_TOOLSET,
+        "preferred_tools": (
+            "agent_tool_catalog",
+            "agent_factory_status",
+            "agent_gateway_status",
+            "agent_mcp_manage",
+            "agent_session_handoff",
+            "agent_todo",
+        ),
+        "instructions": (
+            "Prioritize system status, queue ownership, failed handoffs, and recovery steps. "
+            "Keep cross-boundary mutations behind control-token and approval guardrails."
+        ),
+    },
+}
+
 
 @dataclass
 class AgentRunResult:
@@ -54,6 +124,7 @@ class AgentRunResult:
     events: list[dict[str, Any]] = field(default_factory=list)
     status: str = "completed"
     context_summary_id: str | None = None
+    context_snapshot_id: str | None = None
     planner_steps: list[dict[str, Any]] = field(default_factory=list)
     subruns: list[dict[str, Any]] = field(default_factory=list)
 
@@ -155,10 +226,12 @@ class AgentRuntime:
     ) -> AgentRunResult:
         self.subruns = []
         sid = self.session_store.create_session(session_id=session_id, user_id=user_id)
+        trace_id = f"trace_{uuid4().hex}"
         run_id = self.session_store.create_run(
             sid,
             {
                 "user_id": user_id,
+                "trace_id": trace_id,
                 "message_count": len(messages or []),
                 "started_at": now_iso(),
                 "stream": bool(stream),
@@ -172,7 +245,7 @@ class AgentRuntime:
             persisted_events.append(event)
             audit_events.append({"event": event_type, "run_id": run_id, **dict(payload or {}), "created_at": event["created_at"]})
 
-        emit("run.started", {"session_id": sid, "stream": bool(stream)})
+        emit("run.started", {"session_id": sid, "user_id": user_id, "trace_id": trace_id, "stream": bool(stream)})
         try:
             for plugin_event in await self.plugin_manager.on_session_start(session_id=sid, run_id=run_id):
                 emit("plugin.hook", plugin_event)
@@ -182,7 +255,113 @@ class AgentRuntime:
             normalized = self._normalize_message(message)
             self.session_store.append_message(sid, normalized)
 
-        working_messages = self._build_context(sid)
+        handoff_state = self.session_store.consume_session_handoff_state(sid, run_id=run_id, trace_id=trace_id)
+        handoff_resumed = False
+        if not handoff_state:
+            handoff_state = self._active_session_handoff_state(sid)
+            handoff_resumed = bool(handoff_state)
+        handoff_context_message: dict[str, Any] | None = None
+        if handoff_state:
+            if handoff_resumed:
+                emit(
+                    "handoff.resumed",
+                    {
+                        "handoff_id": handoff_state.get("handoff_id"),
+                        "target": handoff_state.get("target"),
+                        "context_snapshot_id": handoff_state.get("context_snapshot_id"),
+                        "source_run_id": handoff_state.get("source_run_id"),
+                    },
+                )
+            else:
+                emit(
+                    "handoff.activated",
+                    {
+                        "handoff_id": handoff_state.get("handoff_id"),
+                        "target": handoff_state.get("target"),
+                        "context_snapshot_id": handoff_state.get("context_snapshot_id"),
+                        "source_run_id": handoff_state.get("source_run_id"),
+                    },
+                )
+            handoff_context_message = {
+                "role": "system",
+                "name": "handoff_state",
+                "content": (
+                    f"AIASK session handoff is {'resumed' if handoff_resumed else 'active'} for this turn.\n"
+                    f"target={handoff_state.get('target') or 'unspecified'}\n"
+                    f"handoff_id={handoff_state.get('handoff_id') or 'unknown'}\n"
+                    f"context_snapshot_id={handoff_state.get('context_snapshot_id') or 'none'}\n"
+                    f"reason={handoff_state.get('reason') or ''}\n"
+                    f"summary={handoff_state.get('summary') or ''}"
+                ),
+                "metadata": {"handoff_state": handoff_state},
+            }
+        handoff_policy = self._handoff_specialist_policy(handoff_state)
+        handoff_policy_message: dict[str, Any] | None = None
+        active_model_tools = self.tool_registry.openai_tools()
+        if handoff_policy:
+            active_model_tools = self._model_tools_for_handoff_policy(handoff_policy)
+            advertised_tools = self._openai_tool_names(active_model_tools)
+            handoff_policy = {
+                **handoff_policy,
+                "advertised_tools": advertised_tools,
+                "advertised_tool_count": len(advertised_tools),
+            }
+            emit(
+                "handoff.policy_applied",
+                {
+                    "target": handoff_policy.get("target"),
+                    "policy_id": handoff_policy.get("policy_id"),
+                    "role": handoff_policy.get("role"),
+                    "requested_toolset": handoff_policy.get("requested_toolset"),
+                    "effective_toolset": handoff_policy.get("effective_toolset"),
+                    "preferred_tools": handoff_policy.get("preferred_tools"),
+                    "advertised_tools": advertised_tools,
+                    "filtered": bool(handoff_policy.get("filtered")),
+                },
+            )
+            handoff_policy_message = {
+                "role": "system",
+                "name": "handoff_specialist_policy",
+                "content": self._handoff_policy_message(handoff_policy),
+                "metadata": {"handoff_policy": handoff_policy},
+            }
+
+        context_message, context_reference_records = build_context_reference_message(
+            messages=[dict(item) for item in messages if isinstance(item, dict)],
+            store=self.session_store,
+            session_id=sid,
+            run_id=run_id,
+            trace_id=trace_id,
+            user_id=user_id,
+        )
+        if context_reference_records:
+            emit(
+                "context.references_resolved",
+                {
+                    "count": len(context_reference_records),
+                    "sources": [
+                        {
+                            "source_id": item.get("source_id"),
+                            "title": item.get("title"),
+                            "url": item.get("url"),
+                        }
+                        for item in context_reference_records
+                        if item.get("source_id")
+                    ],
+                    "artifacts": [
+                        {
+                            "artifact_id": item.get("artifact_id"),
+                            "kind": item.get("kind"),
+                            "title": item.get("title"),
+                            "path": item.get("path"),
+                        }
+                        for item in context_reference_records
+                        if item.get("artifact_id")
+                    ],
+                },
+            )
+        extra_context_messages = [item for item in (handoff_context_message, handoff_policy_message, context_message) if item]
+        working_messages = self._build_context(sid, extra_system_messages=extra_context_messages)
         planner_result = self.planner.plan(messages=working_messages, session_id=sid, user_id=user_id)
         planner_steps = planner_result.steps
         if planner_steps:
@@ -190,15 +369,19 @@ class AgentRuntime:
             if planner_result.prompt_message:
                 insert_at = 1 if working_messages and working_messages[0].get("role") == "system" else 0
                 working_messages.insert(insert_at, planner_result.prompt_message)
+        snapshot_message_rows = self.session_store.list_session_messages(sid, limit=2000)
+        snapshot_source_message_ids = [str(item.get("id")) for item in snapshot_message_rows if item.get("id") is not None]
+        estimated_tokens_before_context = self._estimate_tokens(working_messages)
         context_result = await self.context_manager.prepare(working_messages, user_id=user_id)
         context_summary_id = context_result.summary_id
+        estimated_tokens_after_context = self._estimate_tokens(context_result.messages)
         if context_result.compacted:
             emit(
                 "context.compacted",
                 {
                     "context_summary_id": context_summary_id,
-                    "estimated_tokens_before": self._estimate_tokens(working_messages),
-                    "estimated_tokens_after": self._estimate_tokens(context_result.messages),
+                    "estimated_tokens_before": estimated_tokens_before_context,
+                    "estimated_tokens_after": estimated_tokens_after_context,
                 },
             )
             self.session_store.append_message(
@@ -211,6 +394,69 @@ class AgentRuntime:
                 },
             )
             working_messages = context_result.messages
+        context_snapshot_id: str | None = None
+        try:
+            context_source_ids = [
+                str(item.get("source_id"))
+                for item in context_reference_records
+                if item.get("source_id")
+            ]
+            context_artifact_ids = [
+                str(item.get("artifact_id"))
+                for item in context_reference_records
+                if item.get("artifact_id")
+            ]
+            risk_flags: list[str] = []
+            if context_result.compacted:
+                risk_flags.append("lossy_compression")
+                if estimated_tokens_after_context >= estimated_tokens_before_context:
+                    risk_flags.append("token_estimate_not_reduced")
+            if any(item.get("error") for item in context_reference_records):
+                risk_flags.append("unresolved_reference")
+            snapshot = self.session_store.record_context_snapshot(
+                session_id=sid,
+                user_id=user_id,
+                run_id=run_id,
+                trace_id=trace_id,
+                context_summary_id=context_summary_id,
+                policy="runtime_prepare",
+                compacted=context_result.compacted,
+                message_count=len(context_result.messages),
+                source_message_ids=snapshot_source_message_ids,
+                source_ids=context_source_ids,
+                artifact_ids=context_artifact_ids,
+                token_estimate_before=estimated_tokens_before_context,
+                token_estimate_after=estimated_tokens_after_context,
+                summary=context_result.summary,
+                summary_model=self.model if context_result.compacted else None,
+                risk_flags=risk_flags,
+                metadata={
+                    "context_reference_count": len(context_reference_records),
+                    "context_reference_message": bool(context_message),
+                    "handoff_policy": handoff_policy,
+                    "compaction_policy": {
+                        "max_tokens": self.context_manager.max_tokens,
+                        "head_messages": self.context_manager.head_messages,
+                        "tail_messages": self.context_manager.tail_messages,
+                    },
+                    "role_counts": self._message_role_counts(context_result.messages),
+                },
+            )
+            context_snapshot_id = str(snapshot.get("snapshot_id") or "") or None
+            emit(
+                "context.snapshot_created",
+                {
+                    "context_snapshot_id": context_snapshot_id,
+                    "context_summary_id": context_summary_id,
+                    "compacted": context_result.compacted,
+                    "message_count": len(context_result.messages),
+                    "source_count": len(context_source_ids),
+                    "artifact_count": len(context_artifact_ids),
+                    "risk_flags": risk_flags,
+                },
+            )
+        except Exception as exc:
+            emit("context.snapshot_failed", {"error": str(exc)})
         all_tool_calls: list[dict[str, Any]] = []
         total_usage: dict[str, Any] = {}
         final_content = ""
@@ -242,14 +488,14 @@ class AgentRuntime:
                     model_messages, plugin_events = await self.plugin_manager.pre_llm_call(
                         messages=working_messages,
                         model=self.model,
-                        tools=self.tool_registry.openai_tools(),
+                        tools=active_model_tools,
                     )
                     for plugin_event in plugin_events:
                         emit("plugin.hook", plugin_event)
                     return await asyncio.wait_for(
                         self.model_client.complete(
                             messages=model_messages,
-                            tools=self.tool_registry.openai_tools(),
+                            tools=active_model_tools,
                             model=self.model,
                         ),
                         timeout=self.model_timeout_seconds,
@@ -334,6 +580,24 @@ class AgentRuntime:
                             source_chain=["aiask_agent.plugin_runtime"],
                             error_code="PLUGIN_HOOK_BLOCKED",
                         )
+                        self.session_store.start_tool_invocation(
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            user_id=user_id,
+                            session_id=sid,
+                            run_id=run_id,
+                            trace_id=trace_id,
+                            invocation_id=tool_call_record["id"],
+                            source_chain=["aiask_agent.runtime", "aiask_agent.plugin_runtime"],
+                        )
+                        self.session_store.finish_tool_invocation(
+                            tool_call_record["id"],
+                            status="blocked",
+                            result=result,
+                            error_code=result.get("error_code"),
+                            error_summary=result.get("error"),
+                            duration_ms=int((time.perf_counter() - tool_started) * 1000),
+                        )
                         tool_call_record["result"] = result
                         all_tool_calls.append(tool_call_record)
                         emit(
@@ -363,10 +627,38 @@ class AgentRuntime:
                             "iteration": iteration,
                         },
                     )
+                    tool_metadata = dict(getattr(self.tool_registry.get(tool_name), "metadata", {}) or {})
+                    self.session_store.start_tool_invocation(
+                        tool_name=tool_name,
+                        arguments=arguments,
+                        user_id=user_id,
+                        session_id=sid,
+                        run_id=run_id,
+                        trace_id=trace_id,
+                        invocation_id=tool_call_record["id"],
+                        capability=tool_metadata.get("capability"),
+                        category=tool_metadata.get("category"),
+                        side_effect=tool_metadata.get("side_effect"),
+                        source_chain=["aiask_agent.runtime", "aiask_agent.tool_registry"],
+                    )
+
+                    execution_arguments = arguments
+                    if tool_name in {"agent_execute_python", "agent_delegate_task", "agent_session_handoff"}:
+                        execution_arguments = {
+                            **arguments,
+                            "_aiask_runtime_context": {
+                                "user_id": user_id,
+                                "session_id": sid,
+                                "run_id": run_id,
+                                "trace_id": trace_id,
+                                "parent_tool_call_id": tool_call_record["id"],
+                                "context_snapshot_id": context_snapshot_id,
+                            },
+                        }
 
                     async def call_tool() -> dict[str, Any]:
                         return await asyncio.wait_for(
-                            self.tool_registry.call_tool(tool_name, arguments),
+                            self.tool_registry.call_tool(tool_name, execution_arguments),
                             timeout=self.tool_timeout_seconds,
                         )
 
@@ -396,6 +688,7 @@ class AgentRuntime:
                     except Exception as exc:
                         emit("plugin.hook_failed", {"hook": "post_tool_call", "tool": tool_name, "error": str(exc)})
                     if result.get("error_code") == "APPROVAL_REQUIRED":
+                        approval_id = dict(dict(result.get("data") or {}).get("approval") or {}).get("approval_id")
                         emit(
                             "approval.pending",
                             {
@@ -404,6 +697,8 @@ class AgentRuntime:
                                 "approval": dict(result.get("data") or {}).get("approval"),
                             },
                         )
+                    else:
+                        approval_id = None
                     if tool_name == "agent_clarify" and dict(result.get("data") or {}).get("requires_user_input"):
                         emit(
                             "clarify.pending",
@@ -433,6 +728,123 @@ class AgentRuntime:
                         )
                     tool_call_record["result"] = result
                     all_tool_calls.append(tool_call_record)
+                    result_data = dict(result.get("data") or {}) if isinstance(result.get("data"), dict) else {}
+                    intent_id = result_data.get("intent_id") or dict(result_data.get("intent") or {}).get("intent_id")
+                    self.session_store.finish_tool_invocation(
+                        tool_call_record["id"],
+                        status="succeeded" if result.get("success") else "failed",
+                        result=result,
+                        error_code=result.get("error_code"),
+                        error_summary=result.get("error"),
+                        duration_ms=int((time.perf_counter() - tool_started) * 1000),
+                        approval_id=approval_id,
+                        action_intent_id=intent_id,
+                    )
+                    try:
+                        evidence = extract_tool_evidence(
+                            self.session_store,
+                            user_id=user_id,
+                            session_id=sid,
+                            run_id=run_id,
+                            trace_id=trace_id,
+                            tool_call_id=tool_call_record["id"],
+                            tool_name=tool_name,
+                            arguments=arguments,
+                            result=result,
+                        )
+                        if evidence.get("sources"):
+                            tool_call_record["sources"] = [
+                                {
+                                    "source_id": item.get("source_id"),
+                                    "source_type": item.get("source_type"),
+                                    "title": item.get("title"),
+                                    "url": item.get("url"),
+                                    "provider": item.get("provider"),
+                                }
+                                for item in evidence.get("sources", [])
+                            ]
+                        if evidence.get("artifacts"):
+                            tool_call_record["artifacts"] = [
+                                {
+                                    "artifact_id": item.get("artifact_id"),
+                                    "kind": item.get("kind"),
+                                    "title": item.get("title"),
+                                    "path": item.get("path"),
+                                    "status": item.get("status"),
+                                }
+                                for item in evidence.get("artifacts", [])
+                            ]
+                        for source in evidence.get("sources", []):
+                            emit(
+                                "source.linked",
+                                {
+                                    "tool": tool_name,
+                                    "tool_call_id": tool_call_record["id"],
+                                    "source_id": source.get("source_id"),
+                                    "source_type": source.get("source_type"),
+                                    "provider": source.get("provider"),
+                                    "title": source.get("title"),
+                                    "url": source.get("url"),
+                                    "published_at": source.get("published_at"),
+                                    "data_timestamp": source.get("data_timestamp"),
+                                },
+                            )
+                            if source.get("source_type") == "news":
+                                emit(
+                                    "news.source_linked",
+                                    {
+                                        "tool": tool_name,
+                                        "tool_call_id": tool_call_record["id"],
+                                        "source_id": source.get("source_id"),
+                                        "title": source.get("title"),
+                                        "url": source.get("url"),
+                                        "provider": source.get("provider"),
+                                        "published_at": source.get("published_at"),
+                                    },
+                                )
+                        for artifact in evidence.get("artifacts", []):
+                            emit(
+                                "artifact.created",
+                                {
+                                    "tool": tool_name,
+                                    "tool_call_id": tool_call_record["id"],
+                                    "artifact_id": artifact.get("artifact_id"),
+                                    "kind": artifact.get("kind"),
+                                    "title": artifact.get("title"),
+                                    "path": artifact.get("path"),
+                                    "status": artifact.get("status"),
+                                },
+                            )
+                            if artifact.get("kind") == "quote_snapshot":
+                                emit(
+                                    "market.quote_snapshot",
+                                    {
+                                        "tool": tool_name,
+                                        "tool_call_id": tool_call_record["id"],
+                                        "artifact_id": artifact.get("artifact_id"),
+                                        "title": artifact.get("title"),
+                                        "preview": artifact.get("preview_json"),
+                                    },
+                                )
+                            if artifact.get("kind") == "terminal_output":
+                                emit(
+                                    "terminal.output_artifact",
+                                    {
+                                        "tool": tool_name,
+                                        "tool_call_id": tool_call_record["id"],
+                                        "artifact_id": artifact.get("artifact_id"),
+                                        "title": artifact.get("title"),
+                                    },
+                                )
+                    except Exception as exc:
+                        emit(
+                            "evidence.extract_failed",
+                            {
+                                "tool": tool_name,
+                                "tool_call_id": tool_call_record["id"],
+                                "error": str(exc),
+                            },
+                        )
                     emit(
                         "tool.completed" if result.get("success") else "tool.failed",
                         {
@@ -496,6 +908,7 @@ class AgentRuntime:
             events=persisted_events,
             status=status,
             context_summary_id=context_summary_id,
+            context_snapshot_id=context_snapshot_id,
             planner_steps=planner_steps,
             subruns=list(self.subruns),
         )
@@ -532,11 +945,108 @@ class AgentRuntime:
         self.session_store.update_run(run_id, status=status, payload=payload)
         return result
 
-    def _build_context(self, session_id: str) -> list[dict[str, Any]]:
+    def _active_session_handoff_state(self, session_id: str) -> dict[str, Any] | None:
+        session = self.session_store.get_session(session_id)
+        metadata = dict((session or {}).get("metadata") or {})
+        state = dict(metadata.get("handoff_state") or {})
+        if str(state.get("status") or "").strip().lower() != "active":
+            return None
+        return state
+
+    def _handoff_specialist_policy(self, handoff_state: dict[str, Any] | None) -> dict[str, Any] | None:
+        state = dict(handoff_state or {})
+        target = str(state.get("target") or "").strip()
+        if not target:
+            return None
+        normalized = self._normalize_handoff_target(target)
+        base = HANDOFF_SPECIALIST_POLICIES.get(
+            normalized,
+            {
+                "policy_id": "general_specialist",
+                "role": f"Specialist target: {target}",
+                "requested_toolset": self.tool_registry.policy_engine.toolset,
+                "preferred_tools": (),
+                "instructions": (
+                    "Honor the handoff reason and summary, preserve context continuity, and keep all stateful or "
+                    "external actions behind the active AIASK guardrails."
+                ),
+            },
+        )
+        requested_toolset = str(base.get("requested_toolset") or self.tool_registry.policy_engine.toolset)
+        current_toolset = self.tool_registry.policy_engine.toolset
+        effective_toolset = requested_toolset
+        if requested_toolset == GENERAL_FULL_TOOLSET and (
+            current_toolset != GENERAL_FULL_TOOLSET or not self.tool_registry.policy_engine.policy.general_tools_enabled
+        ):
+            effective_toolset = current_toolset
+        preferred_tools = [
+            str(name)
+            for name in tuple(base.get("preferred_tools") or ())
+            if self.tool_registry.get(str(name)) is not None
+        ]
+        return {
+            "target": target,
+            "normalized_target": normalized,
+            "policy_id": str(base.get("policy_id") or normalized or "general_specialist"),
+            "role": str(base.get("role") or "Specialist"),
+            "requested_toolset": requested_toolset,
+            "effective_toolset": effective_toolset,
+            "preferred_tools": preferred_tools,
+            "instructions": str(base.get("instructions") or ""),
+            "handoff_id": state.get("handoff_id"),
+            "context_snapshot_id": state.get("context_snapshot_id"),
+            "reason": state.get("reason"),
+            "summary": state.get("summary"),
+        }
+
+    def _model_tools_for_handoff_policy(self, policy: dict[str, Any]) -> list[dict[str, Any]]:
+        all_tools = self.tool_registry.openai_tools()
+        preferred = {str(name) for name in list(policy.get("preferred_tools") or []) if str(name)}
+        if not preferred:
+            policy["filtered"] = False
+            return all_tools
+        filtered = [tool for tool in all_tools if self._openai_tool_name(tool) in preferred]
+        if not filtered:
+            policy["filtered"] = False
+            return all_tools
+        policy["filtered"] = True
+        return filtered
+
+    @staticmethod
+    def _handoff_policy_message(policy: dict[str, Any]) -> str:
+        preferred = ", ".join(str(name) for name in list(policy.get("preferred_tools") or [])) or "current advertised tools"
+        advertised = ", ".join(str(name) for name in list(policy.get("advertised_tools") or [])) or "current advertised tools"
+        return (
+            "AIASK handoff specialist policy is active for this turn.\n"
+            f"target={policy.get('target') or 'unspecified'}\n"
+            f"policy_id={policy.get('policy_id') or 'general_specialist'}\n"
+            f"role={policy.get('role') or 'Specialist'}\n"
+            f"effective_toolset={policy.get('effective_toolset') or 'unknown'}\n"
+            f"context_snapshot_id={policy.get('context_snapshot_id') or 'none'}\n"
+            f"preferred_tools={preferred}\n"
+            f"advertised_tools={advertised}\n"
+            f"instructions={policy.get('instructions') or ''}"
+        )
+
+    @staticmethod
+    def _normalize_handoff_target(target: str) -> str:
+        normalized = re.sub(r"[^a-z0-9]+", "_", str(target or "").strip().lower()).strip("_")
+        return HANDOFF_TARGET_ALIASES.get(normalized, normalized or "general_specialist")
+
+    @staticmethod
+    def _openai_tool_name(tool: dict[str, Any]) -> str:
+        return str(dict(tool.get("function") or {}).get("name") or "")
+
+    @classmethod
+    def _openai_tool_names(cls, tools: list[dict[str, Any]]) -> list[str]:
+        return [name for name in (cls._openai_tool_name(tool) for tool in list(tools or [])) if name]
+
+    def _build_context(self, session_id: str, *, extra_system_messages: list[dict[str, Any] | None] | None = None) -> list[dict[str, Any]]:
         history = self.session_store.get_messages(session_id)
+        extras = [dict(item) for item in list(extra_system_messages or []) if isinstance(item, dict)]
         if history and history[0].get("role") == "system":
-            return list(history)
-        return [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}, *history]
+            return [*list(history), *extras]
+        return [{"role": "system", "content": DEFAULT_SYSTEM_PROMPT}, *extras, *history]
 
     @staticmethod
     def _normalize_message(message: dict[str, Any]) -> dict[str, Any]:
@@ -704,6 +1214,12 @@ class AgentRuntime:
         timeout = bounded_float(arguments.get("timeout_seconds"), default=30.0, minimum=1.0, maximum=300.0)
         max_tool_calls = bounded_int(arguments.get("max_tool_calls"), default=20, minimum=0, maximum=50)
         allowed_tools = self._code_rpc_allowed_tools()
+        runtime_context = dict(arguments.get("_aiask_runtime_context") or {})
+        parent_tool_call_id = str(runtime_context.get("parent_tool_call_id") or "").strip()
+        rpc_user_id = runtime_context.get("user_id")
+        rpc_session_id = str(runtime_context.get("session_id") or "").strip() or None
+        rpc_run_id = str(runtime_context.get("run_id") or "").strip() or None
+        rpc_trace_id = str(runtime_context.get("trace_id") or "").strip() or None
         tool_call_log: list[dict[str, Any]] = []
         tool_call_count = 0
 
@@ -748,11 +1264,119 @@ class AgentRuntime:
                                     for blocked in ("background", "approval_id"):
                                         args.pop(blocked, None)
                                 started = time.perf_counter()
+                                rpc_index = tool_call_count + 1
+                                invocation_id = f"{parent_tool_call_id}.rpc.{rpc_index}" if parent_tool_call_id else f"rpc_{uuid4().hex}"
+                                tool_metadata = dict(getattr(self.tool_registry.get(name), "metadata", {}) or {})
+                                self.session_store.start_tool_invocation(
+                                    tool_name=name,
+                                    arguments=args,
+                                    user_id=rpc_user_id,
+                                    session_id=rpc_session_id,
+                                    run_id=rpc_run_id,
+                                    trace_id=rpc_trace_id,
+                                    invocation_id=invocation_id,
+                                    capability=tool_metadata.get("capability"),
+                                    category=tool_metadata.get("category"),
+                                    side_effect=tool_metadata.get("side_effect"),
+                                    source_chain=["aiask_agent.runtime", "agent_execute_python.rpc", "aiask_agent.tool_registry"],
+                                )
+                                if rpc_run_id:
+                                    self.session_store.append_run_event(
+                                        rpc_run_id,
+                                        "tool.rpc.started",
+                                        {
+                                            "tool": name,
+                                            "tool_call_id": invocation_id,
+                                            "parent_tool_call_id": parent_tool_call_id or None,
+                                        },
+                                    )
                                 response = await self.tool_registry.call_tool(name, args)
+                                self.session_store.finish_tool_invocation(
+                                    invocation_id,
+                                    status="succeeded" if response.get("success") else "failed",
+                                    result=response,
+                                    error_code=response.get("error_code"),
+                                    error_summary=response.get("error"),
+                                    duration_ms=int((time.perf_counter() - started) * 1000),
+                                    action_intent_id=(
+                                        dict(response.get("data") or {}).get("intent_id")
+                                        if isinstance(response.get("data"), dict)
+                                        else None
+                                    ),
+                                )
+                                if rpc_run_id:
+                                    self.session_store.append_run_event(
+                                        rpc_run_id,
+                                        "tool.rpc.completed",
+                                        {
+                                            "tool": name,
+                                            "tool_call_id": invocation_id,
+                                            "parent_tool_call_id": parent_tool_call_id or None,
+                                            "success": bool(response.get("success")),
+                                            "error_code": response.get("error_code"),
+                                        },
+                                    )
+                                    try:
+                                        evidence = extract_tool_evidence(
+                                            self.session_store,
+                                            user_id=rpc_user_id,
+                                            session_id=rpc_session_id or "default",
+                                            run_id=rpc_run_id,
+                                            trace_id=rpc_trace_id or "",
+                                            tool_call_id=invocation_id,
+                                            tool_name=name,
+                                            arguments=args,
+                                            result=response,
+                                        )
+                                        for source in evidence.get("sources", []):
+                                            self.session_store.append_run_event(
+                                                rpc_run_id,
+                                                "source.linked",
+                                                {
+                                                    "tool": name,
+                                                    "tool_call_id": invocation_id,
+                                                    "parent_tool_call_id": parent_tool_call_id or None,
+                                                    "source_id": source.get("source_id"),
+                                                    "source_type": source.get("source_type"),
+                                                    "provider": source.get("provider"),
+                                                    "title": source.get("title"),
+                                                    "url": source.get("url"),
+                                                    "published_at": source.get("published_at"),
+                                                    "data_timestamp": source.get("data_timestamp"),
+                                                },
+                                            )
+                                        for artifact in evidence.get("artifacts", []):
+                                            self.session_store.append_run_event(
+                                                rpc_run_id,
+                                                "artifact.created",
+                                                {
+                                                    "tool": name,
+                                                    "tool_call_id": invocation_id,
+                                                    "parent_tool_call_id": parent_tool_call_id or None,
+                                                    "artifact_id": artifact.get("artifact_id"),
+                                                    "kind": artifact.get("kind"),
+                                                    "title": artifact.get("title"),
+                                                    "path": artifact.get("path"),
+                                                    "status": artifact.get("status"),
+                                                },
+                                            )
+                                    except Exception as exc:
+                                        self.session_store.append_run_event(
+                                            rpc_run_id,
+                                            "evidence.extract_failed",
+                                            {
+                                                "tool": name,
+                                                "tool_call_id": invocation_id,
+                                                "parent_tool_call_id": parent_tool_call_id or None,
+                                                "error": str(exc),
+                                            },
+                                        )
                                 tool_call_count += 1
                                 tool_call_log.append(
                                     {
                                         "tool": name,
+                                        "invocation_id": invocation_id,
+                                        "parent_tool_call_id": parent_tool_call_id or None,
                                         "success": bool(response.get("success")),
                                         "latency_ms": int((time.perf_counter() - started) * 1000),
                                     }
@@ -917,6 +1541,7 @@ def retry(fn, max_attempts=3, delay=1.0):
                 source_chain=["aiask_agent.subagents"],
                 error_code="INVALID_REQUEST",
             )
+        runtime_context = dict(arguments.get("_aiask_runtime_context") or {})
         requested_toolset = str(arguments.get("toolset") or FINANCE_SAFE_TOOLSET).strip()
         if requested_toolset == GENERAL_FULL_TOOLSET and not self.tool_registry.policy_engine.policy.general_tools_enabled:
             requested_toolset = FINANCE_SAFE_TOOLSET
@@ -956,8 +1581,18 @@ def retry(fn, max_attempts=3, delay=1.0):
             
         messages.append({"role": "user", "content": task})
         
-        result = await child.run(messages, user_id=arguments.get("user_id"))
-        record = {"run_id": result.run_id, "response_id": result.response_id, "toolset": child_policy.toolset}
+        result = await child.run(messages, user_id=arguments.get("user_id") or runtime_context.get("user_id"))
+        record = {
+            "run_id": result.run_id,
+            "response_id": result.response_id,
+            "toolset": child_policy.toolset,
+            "mode": "delegation_subrun",
+            "parent_session_id": runtime_context.get("session_id"),
+            "parent_run_id": runtime_context.get("run_id"),
+            "parent_tool_call_id": runtime_context.get("parent_tool_call_id"),
+            "parent_context_snapshot_id": runtime_context.get("context_snapshot_id"),
+            "child_context_snapshot_id": result.context_snapshot_id,
+        }
         self.subruns.append(record)
         return aiask_envelope(
             True,
@@ -1075,3 +1710,11 @@ def retry(fn, max_attempts=3, delay=1.0):
     @staticmethod
     def _estimate_tokens(messages: list[dict[str, Any]]) -> int:
         return sum(max(1, len(str(message.get("content") or "")) // 4) + 8 for message in messages)
+
+    @staticmethod
+    def _message_role_counts(messages: list[dict[str, Any]]) -> dict[str, int]:
+        counts: dict[str, int] = {}
+        for message in list(messages or []):
+            role = str(message.get("role") or "message").strip() or "message"
+            counts[role] = counts.get(role, 0) + 1
+        return counts

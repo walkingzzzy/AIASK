@@ -179,12 +179,20 @@ async def run_submission_quality_gate(
         # 计算 deflated_sharpe_ratio / pbo / RC / SPA pvalue 并合并到 normalized,
         # 让下游 _derive_trade_aware_validation_grade 的 evidence_score 公式能用上多重检验调整指标。
         # 任何提取/计算失败软降级,不打断主流程。
+        #
+        # family_returns 合成 (打通 PBO/RC/SPA):用真实 K 线 + 真实 signal 生成器对策略参数
+        # 做 ±20% 扰动,生成同族变体的逐期收益矩阵 (CSCV/RC/SPA 检测参数过拟合的合法比较族)。
+        # 取不到真实 K 线时保持 None,PBO/RC/SPA 诚实地维持 missing,绝不用噪声兜底造假。
+        family_returns_fallback = await _build_family_returns_from_klines(
+            db, strategy, klass,
+        )
         run_correction_fields = _inject_run_correction_metrics(
             strategy,
             profile,
             normalized,
             validation_report=validation_report,
             backtest_metrics=materialized_backtest_metrics,
+            family_returns_fallback=family_returns_fallback,
         )
         if run_correction_fields:
             normalized = normalize_quality_gate_result(

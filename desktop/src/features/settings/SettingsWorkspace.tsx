@@ -33,6 +33,7 @@ import { IntegrationsManagementPanel } from "./IntegrationsManagementPanel";
 import { LearningRlPanel } from "./LearningRlPanel";
 import { SecurityPanel } from "./SecurityPanel";
 import { SkillsPanel } from "../skills/SkillsPanel";
+import { StockDataSourcesPanel } from "./StockDataSourcesPanel";
 import { WebhooksPanel } from "./WebhooksPanel";
 
 type SettingsSectionId =
@@ -50,6 +51,7 @@ type SettingsSectionId =
   | "security"
   | "workflow"
   | "data"
+  | "stockDataSources"
   | "advanced"
   | "about";
 
@@ -70,9 +72,10 @@ const SETTINGS_SECTIONS: Array<{
   { id: "integrations", label: "应用集成", description: "连接器、Gateway 平台与消息审批", icon: Cable, group: "高级管理" },
   { id: "webhooks", label: "Webhook", description: "订阅、删除与受控触发", icon: Webhook, group: "高级管理" },
   { id: "pluginsManagement", label: "插件与技能包", description: "原生插件和 skill pack 治理", icon: Wrench, group: "高级管理" },
-  { id: "models", label: "模型状态", description: "只读查看 LLM 提供方、模型和密钥状态", icon: Bot, group: "状态与入口" },
+  { id: "models", label: "模型配置", description: "配置 LLM 提供方、获取模型并执行测试", icon: Bot, group: "状态与入口" },
   { id: "mcp", label: "MCP 管理入口", description: "进入 MCP 服务、资源、提示词和 OAuth 页面", icon: ServerCog, group: "状态与入口" },
   { id: "workflow", label: "工作流入口", description: "进入数据、策略、因子、孵化和工厂事件", icon: Factory, group: "状态与入口" },
+  { id: "stockDataSources", label: "股票数据源", description: "配置 URL、Key、主机和连通测试", icon: Database, group: "状态与入口" },
   { id: "data", label: "数据路径", description: "只读查看本地数据库与量化数据路径", icon: Database, group: "状态与入口" },
   { id: "learningRl", label: "学习 / RL", description: "学习建议、RL 运行和结果", icon: BrainCircuit, group: "状态与入口" },
   { id: "security", label: "安全扫描", description: "扫描与修复建议", icon: ShieldCheck, group: "状态与入口" },
@@ -304,7 +307,7 @@ export function SettingsWorkspace({
       <aside className="settings-nav">
         <button className="settings-back" onClick={onBackToApp} type="button">
           <ArrowLeft size={15} />
-          返回对话
+          返回工作台
         </button>
         <div className="settings-nav-title">
           <strong>设置</strong>
@@ -436,7 +439,7 @@ export function SettingsWorkspace({
 
         {activeSection === "models" && (
           <div className="settings-section-stack">
-            <SettingsCard title="模型状态" description="只读查看模型提供方、当前模型、基础 URL 和密钥是否配置；密钥不会在前端展示或编辑。" status={llm?.configured ? "implemented" : "unconfigured"} statusLabel="只读状态">
+            <SettingsCard title="模型配置" description="进入模型页选择提供方、保存模型环境变量、获取模型列表并执行冒烟测试；密钥不会在前端回显。" status={llm?.configured ? "implemented" : "unconfigured"} statusLabel={llm?.configured ? "已配置" : "待配置"}>
               <div className="settings-static-grid">
                 <span>提供方</span>
                 <strong>{llm?.provider || "-"}</strong>
@@ -455,8 +458,8 @@ export function SettingsWorkspace({
                 items={[
                   {
                     id: "models",
-                    label: "打开模型状态页",
-                    description: "查看模型状态、列表加载和 AI 冒烟测试结果。",
+                    label: "打开模型配置页",
+                    description: "配置 OpenAI 兼容、DeepSeek、DashScope、Anthropic 或本地 Mock，并测试连通性。",
                     icon: Bot
                   }
                 ]}
@@ -472,7 +475,17 @@ export function SettingsWorkspace({
               <div className="notice">
                 桌面端不会读取 .env。请在 Agent 启动环境中配置 MCP 授权，并在“令牌与权限”中填写匹配的控制令牌。
               </div>
-              <ShortcutGrid items={[{ id: "mcp", label: "打开 MCP 管理页", description: "进入 MCP 服务、资源、提示词和 OAuth 操作页。", icon: ServerCog }]} onOpenView={onOpenView} />
+              <ShortcutGrid
+                items={[
+                  {
+                    id: "mcp-connectors",
+                    label: "打开 MCP / 连接器",
+                    description: "进入 MCP 服务、资源、提示词、OAuth 和连接器状态页。",
+                    icon: ServerCog
+                  }
+                ]}
+                onOpenView={onOpenView}
+              />
             </SettingsCard>
           </div>
         )}
@@ -557,6 +570,17 @@ export function SettingsWorkspace({
                 <strong>{compact((databases.akshare as Record<string, unknown> | undefined)?.path)}</strong>
               </div>
             </SettingsCard>
+          </div>
+        )}
+
+        {activeSection === "stockDataSources" && (
+          <div className="settings-section-stack">
+            <SettingsCard title="股票数据源" description="配置行情、K 线、基本面和搜索类数据源；密钥只写入 Agent，不会在前端回显。" status={controlToken.trim() ? "ready" : "gated"} statusLabel={controlToken.trim() ? "可配置" : "需要控制令牌"}>
+              <div className="notice">
+                建议先选择预设，再填写 URL、主机或密钥，最后点击“测试连接”。保存后的密钥会脱敏显示，方便非技术人员确认“已配置”而不暴露原文。
+              </div>
+            </SettingsCard>
+            <StockDataSourcesPanel apiToken={apiToken} controlToken={controlToken} endpoint={normalizedEndpoint} />
           </div>
         )}
 

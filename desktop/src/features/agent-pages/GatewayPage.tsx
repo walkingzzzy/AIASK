@@ -2,7 +2,7 @@ import { Cable, FolderSync, MessageSquareWarning, RefreshCw, RotateCcw, Send } f
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
 import { GatewayRetryPanel } from "../../components/GatewayRetryPanel";
-import { JsonPanel, MetricCard, StatusBadge, compact, confirmAction, shortText } from "../../components/shared";
+import { JsonPanel, MetricCard, StatusBadge, compact, confirmAction, shortText, statusLabel } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type {
   GatewayDaemonStatus,
@@ -60,6 +60,7 @@ function normalizeGatewayMessage(message: ApiGatewayMessage): RetryableGatewayMe
 }
 
 function gatewayMessageLabel(status: string): string {
+  if (status === "CONTROL_TOKEN_REQUIRED") return "需要控制令牌后刷新";
   if (status === "NOT_LOADED") return "尚未加载";
   if (status === "GATEWAY_LOADED") return "Gateway 已加载";
   if (status === "GATEWAY_DIRECTORY_REFRESHED") return "目录已刷新";
@@ -71,6 +72,19 @@ function gatewayMessageLabel(status: string): string {
   if (status === "GATEWAY_INTENT_CREATING") return "正在创建发送审批";
   if (status === "GATEWAY_INTENT_CREATED") return "发送审批已创建";
   if (status === "GATEWAY_INTENT_FAILED") return "发送审批创建失败";
+  return statusLabel(status);
+}
+
+function gatewayMetricText(status: string): string {
+  if (status === "not_loaded") return "未加载";
+  return statusLabel(status);
+}
+
+function gatewayBadgeStatus(status: string): string {
+  const normalized = status.toUpperCase();
+  if (normalized.includes("CONTROL_TOKEN_REQUIRED") || normalized.includes("REQUIRED")) return "gated";
+  if (normalized.includes("FAILED") || normalized.includes("ERROR")) return "failed";
+  if (status.startsWith("GATEWAY_")) return "ready";
   return status;
 }
 
@@ -104,8 +118,20 @@ export function GatewayPage({
   const statusText = gatewayStatusText(gatewayStatus);
   const daemonRunning = Boolean(daemonStatus?.data?.running);
   const daemonEnabled = Boolean(daemonStatus?.data?.enabled);
+  const hasControlToken = Boolean(controlToken.trim());
+  const daemonPanelStatus = !hasControlToken ? "gated" : daemonRunning ? "ready" : daemonStatus ? "disabled" : "not_loaded";
+  const daemonPanelLabel = !hasControlToken ? "需要控制令牌" : daemonRunning ? "运行中" : daemonStatus ? "已停止" : "未加载";
 
   async function loadGatewayState() {
+    if (!hasControlToken) {
+      setGatewayStatus(null);
+      setDaemonStatus(null);
+      setPlatforms([]);
+      setMessages([]);
+      setDirectory([]);
+      setMessageStatus("CONTROL_TOKEN_REQUIRED");
+      return;
+    }
     setLoading(true);
     try {
       const [statusPayload, daemonPayload, platformPayload, messagePayload, directoryPayload] = await Promise.all([
@@ -206,7 +232,7 @@ export function GatewayPage({
   useEffect(() => {
     loadGatewayState().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlToken, endpoint]);
+  }, [hasControlToken, endpoint]);
 
   return (
     <section className="capabilities-workspace">
@@ -217,12 +243,12 @@ export function GatewayPage({
         </div>
         <div className="header-actions">
           <StatusBadge
-            status={controlToken.trim() ? "ready" : "gated"}
-            label={controlToken.trim() ? "控制已就绪" : "缺少控制令牌"}
-            technicalLabel={controlToken.trim() ? "control ready" : "control token required"}
+            status={hasControlToken ? "ready" : "gated"}
+            label={hasControlToken ? "控制已就绪" : "缺少控制令牌"}
+            technicalLabel={hasControlToken ? "control ready" : "control token required"}
           />
           <StatusBadge
-            status={messageStatus.startsWith("GATEWAY_") ? "ready" : messageStatus}
+            status={gatewayBadgeStatus(messageStatus)}
             label={gatewayMessageLabel(messageStatus)}
             technicalLabel={messageStatus}
           />
@@ -244,13 +270,13 @@ export function GatewayPage({
             <Cable size={22} />
           </div>
 
-          {!controlToken.trim() && (
-            <div className="notice warn">Gateway 管理详情需要控制令牌；发送预览不会绕过 ActionIntent 审批链路。</div>
+          {!hasControlToken && (
+            <div className="notice warn">Gateway 管理详情需要控制令牌。请在设置中填写控制令牌后再刷新；发送预览不会绕过 ActionIntent 审批链路。</div>
           )}
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="Gateway 状态" value={statusText} status={statusText} />
-            <MetricCard label="守护进程" value={daemonRunning ? "running" : daemonStatus ? "stopped" : "not_loaded"} status={daemonRunning ? "ready" : daemonStatus ? "disabled" : "not_loaded"} />
+            <MetricCard label="Gateway 状态" value={gatewayMetricText(statusText)} status={statusText} />
+            <MetricCard label="守护进程" value={daemonPanelLabel} status={daemonPanelStatus} />
             <MetricCard label="平台" value={platforms.length} status={platforms.length ? "ready" : "not_loaded"} />
             <MetricCard label="消息" value={messages.length} status={messages.length ? "ready" : "not_loaded"} />
             <MetricCard label="待重试" value={failedCount} status={failedCount ? "failed" : "ready"} />
@@ -261,20 +287,20 @@ export function GatewayPage({
             <div className="capability-section">
               <div className="section-header">
                 <div>
-                  <span>{daemonEnabled ? "已启用" : "已停用"}</span>
+                  <span>{!hasControlToken ? "管理详情待解锁" : daemonEnabled ? "已启用" : "已停用"}</span>
                   <h3>守护进程状态</h3>
                 </div>
-                <StatusBadge status={daemonRunning ? "ready" : "disabled"} label={daemonRunning ? "运行中" : "已停止"} />
+                <StatusBadge status={daemonPanelStatus} label={daemonPanelLabel} />
               </div>
               <div className="kv-grid">
                 <span>已启用</span>
-                <strong>{String(daemonStatus?.data?.enabled ?? "unknown")}</strong>
+                <strong>{daemonStatus ? (daemonStatus.data?.enabled ? "是" : "否") : "未加载"}</strong>
                 <span>运行中</span>
-                <strong>{String(daemonStatus?.data?.running ?? "unknown")}</strong>
+                <strong>{daemonStatus ? (daemonStatus.data?.running ? "是" : "否") : "未加载"}</strong>
                 <span>监听器</span>
                 <strong>{Object.keys(daemonStatus?.data?.listeners || {}).length}</strong>
                 <span>状态</span>
-                <strong>{statusText}</strong>
+                <strong>{gatewayMetricText(statusText)}</strong>
               </div>
             </div>
 
@@ -298,13 +324,13 @@ export function GatewayPage({
                         {platform.missing_env?.length ? <p>缺少环境变量：{platform.missing_env.join(", ")}</p> : null}
                         {platformHealth[name] ? <p>健康状态：{compact(healthData.status || health.status || health.object)}</p> : null}
                       </div>
-                      <button className="small-button" disabled={loading || !controlToken.trim()} onClick={() => checkPlatformHealth(name)} type="button">
+                      <button className="small-button" disabled={loading || !hasControlToken} onClick={() => checkPlatformHealth(name)} type="button">
                         健康
                       </button>
                     </article>
                   );
                 })}
-                {!platforms.length && <p className="muted">暂无平台状态。</p>}
+                {!platforms.length && <p className="muted">{hasControlToken ? "暂无平台状态。" : "需要控制令牌后才能读取平台健康状态。"}</p>}
               </div>
             </div>
 
@@ -340,7 +366,7 @@ export function GatewayPage({
                   <span>{directory.length} 个目录项</span>
                   <h3>目录刷新</h3>
                 </div>
-                <button className="small-button" disabled={loading || !controlToken.trim()} onClick={refreshDirectory} type="button">
+                <button className="small-button" disabled={loading || !hasControlToken} onClick={refreshDirectory} type="button">
                   <FolderSync size={13} />
                   刷新目录
                 </button>
@@ -352,7 +378,7 @@ export function GatewayPage({
                     <span>{compact(item.platform || "-")} / {compact(item.kind || "-")}</span>
                   </article>
                 ))}
-                {!directory.length && <p className="muted">暂无目录项。</p>}
+                {!directory.length && <p className="muted">{hasControlToken ? "暂无目录项。" : "需要控制令牌后才能读取或刷新目录。"}</p>}
               </div>
             </div>
           </section>
@@ -387,7 +413,7 @@ export function GatewayPage({
             </div>
           </section>
 
-          {controlToken.trim() && (
+          {hasControlToken && (
             <GatewayRetryPanel
               messages={retryMessages}
               onRetry={retryMessage}
@@ -402,7 +428,7 @@ export function GatewayPage({
 
           <div className="notice info compact">
             <RotateCcw size={13} />
-            <span>失败消息重试会调用 `/v1/gateway/messages/:id/retry`；发送预览只创建 `gateway.send_message` ActionIntent。</span>
+            <span>失败消息可以在确认后重试；发送预览只会创建一条待审批请求，不会直接投递到外部平台。</span>
           </div>
         </div>
       </div>

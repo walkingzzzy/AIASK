@@ -1,0 +1,772 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e7]
+      - generic [ref=e9]:
+        - strong [ref=e10]: AIASK
+        - generic [ref=e11]: Agent 工作台
+      - img [ref=e12]
+    - button "新建线程" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+      - text: 新建线程
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: 项目 / 上下文
+        - strong [ref=e19]: aiask-agent
+        - generic [ref=e20]: Agent 已连接 · 桌面客户端
+      - generic "ready / 在线" [ref=e500]:
+        - img [ref=e501]
+        - generic [ref=e26]: 在线
+    - button "会话 受限" [ref=e29] [cursor=pointer]:
+      - img [ref=e30]
+      - text: 会话
+      - generic "gated / 受限" [ref=e32]:
+        - img [ref=e33]
+        - generic [ref=e35]: 受限
+    - generic [ref=e36]:
+      - generic [ref=e37]:
+        - generic [ref=e38]: 任务线程
+        - generic [ref=e39]: "7"
+      - button "搜索与历史" [ref=e40] [cursor=pointer]:
+        - img [ref=e41]
+        - text: 搜索与历史
+      - generic [ref=e44]:
+        - button "已完成会话 已完成 · 最近更新 2026-06-09 18:39 b1acf60a...bf3a78" [ref=e504] [cursor=pointer]:
+          - strong [ref=e505]: 已完成会话
+          - generic [ref=e506]: 已完成 · 最近更新 2026-06-09 18:39
+          - emphasis [ref=e507]: b1acf60a...bf3a78
+        - button "错误会话 错误 · 最近更新 2026-05-29 09:28 7691a0b7...595674" [ref=e508] [cursor=pointer]:
+          - strong [ref=e509]: 错误会话
+          - generic [ref=e510]: 错误 · 最近更新 2026-05-29 09:28
+          - emphasis [ref=e511]: 7691a0b7...595674
+        - button "错误会话 错误 · 最近更新 2026-05-27 13:09 b193cf51...66095a" [ref=e512] [cursor=pointer]:
+          - strong [ref=e513]: 错误会话
+          - generic [ref=e514]: 错误 · 最近更新 2026-05-27 13:09
+          - emphasis [ref=e515]: b193cf51...66095a
+        - button "已完成会话 已完成 · 最近更新 2026-05-27 13:03 264aca64...ba78c5" [ref=e516] [cursor=pointer]:
+          - strong [ref=e517]: 已完成会话
+          - generic [ref=e518]: 已完成 · 最近更新 2026-05-27 13:03
+          - emphasis [ref=e519]: 264aca64...ba78c5
+        - button "错误会话 错误 · 最近更新 2026-05-22 16:02 1ebe800f...176fc7" [ref=e520] [cursor=pointer]:
+          - strong [ref=e521]: 错误会话
+          - generic [ref=e522]: 错误 · 最近更新 2026-05-22 16:02
+          - emphasis [ref=e523]: 1ebe800f...176fc7
+        - button "已完成会话 已完成 · 最近更新 2026-05-22 15:47 5dda21bf...555981" [ref=e524] [cursor=pointer]:
+          - strong [ref=e525]: 已完成会话
+          - generic [ref=e526]: 已完成 · 最近更新 2026-05-22 15:47
+          - emphasis [ref=e527]: 5dda21bf...555981
+        - button "已完成会话 已完成 · 最近更新 2026-05-21 10:45 8c297ffe...e1118e" [ref=e528] [cursor=pointer]:
+          - strong [ref=e529]: 已完成会话
+          - generic [ref=e530]: 已完成 · 最近更新 2026-05-21 10:45
+          - emphasis [ref=e531]: 8c297ffe...e1118e
+    - navigation "Main navigation" [ref=e48]:
+      - generic [ref=e49]:
+        - img [ref=e50]
+        - generic [ref=e55]: 导航
+      - region "主工作区" [ref=e56]:
+        - button "主工作区" [ref=e57] [cursor=pointer]:
+          - generic [ref=e58]: 主工作区
+          - img [ref=e59]
+        - button "工作台" [ref=e62] [cursor=pointer]:
+          - img [ref=e63]
+          - generic [ref=e65]: 工作台
+        - button "项目 / 上下文" [ref=e67] [cursor=pointer]:
+          - img [ref=e68]
+          - generic [ref=e73]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e75] [cursor=pointer]:
+          - img [ref=e76]
+          - generic [ref=e79]: 运行 / 事件
+        - button "审批" [ref=e81] [cursor=pointer]:
+          - img [ref=e82]
+          - generic [ref=e85]: 审批
+        - button "金融实验室" [ref=e87] [cursor=pointer]:
+          - img [ref=e88]
+          - generic [ref=e92]: 金融实验室
+        - button "集成" [ref=e94] [cursor=pointer]:
+          - img [ref=e95]
+          - generic [ref=e101]: 集成
+        - button "自动化" [ref=e103] [cursor=pointer]:
+          - img [ref=e104]
+          - generic [ref=e108]: 自动化
+        - button "设置" [ref=e110] [cursor=pointer]:
+          - img [ref=e111]
+          - generic [ref=e114]: 设置
+      - region "高级金融" [ref=e115]:
+        - button "高级金融" [ref=e116] [cursor=pointer]:
+          - generic [ref=e117]: 高级金融
+          - img [ref=e118]
+      - region "高级运维" [ref=e120]:
+        - button "高级运维" [ref=e121] [cursor=pointer]:
+          - generic [ref=e122]: 高级运维
+          - img [ref=e123]
+      - region "旧入口 / 高级诊断" [ref=e125]:
+        - button "旧入口 / 高级诊断" [ref=e126] [cursor=pointer]:
+          - generic [ref=e127]: 旧入口 / 高级诊断
+          - img [ref=e128]
+    - button "扩展 内部" [ref=e132] [cursor=pointer]:
+      - img [ref=e133]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e136]:
+        - img [ref=e137]
+        - generic [ref=e139]: 内部
+    - generic [ref=e140]:
+      - generic "AIASK_ONLINE / 在线" [ref=e532]:
+        - img [ref=e533]
+        - generic [ref=e146]: 在线
+      - generic [ref=e147]: 202 个可用工具
+      - generic [ref=e148]: 完整工具已启用
+  - main [ref=e149]:
+    - generic [ref=e981]:
+      - generic [ref=e982]:
+        - generic [ref=e983]:
+          - text: 运维与连接
+          - heading "准备度 / 健康" [level=1] [ref=e984]
+        - generic [ref=e985]:
+          - generic "ready / 能力已同步" [ref=e986]:
+            - img [ref=e987]
+            - generic [ref=e990]: 能力已同步
+          - button "刷新" [ref=e991] [cursor=pointer]:
+            - img [ref=e992]
+            - text: 刷新
+      - generic [ref=e998]:
+        - generic [ref=e999]:
+          - generic [ref=e1000]:
+            - text: 准备度诊断
+            - heading "10-20 秒定位主要问题层" [level=2] [ref=e1001]
+            - paragraph [ref=e1002]: 优先检查 AI 提供方、Gateway、插件、MCP、金融系统、记忆搜索、模式与令牌，快速判断是配置、授权还是后端离线问题。
+          - img [ref=e1003]
+        - generic [ref=e1005]:
+          - generic [ref=e1006]:
+            - generic [ref=e1007]: AI 提供方
+            - strong [ref=e1008]: 已实现
+          - generic [ref=e1009]:
+            - generic [ref=e1010]: Gateway
+            - strong [ref=e1011]: 未加载
+          - generic [ref=e1012]:
+            - generic [ref=e1013]: 插件
+            - strong [ref=e1014]: 受限
+          - generic [ref=e1015]:
+            - generic [ref=e1016]: MCP
+            - strong [ref=e1017]: 授权缺失
+          - generic [ref=e1018]:
+            - generic [ref=e1019]: 金融系统
+            - strong [ref=e1020]: 就绪
+          - generic [ref=e1021]:
+            - generic [ref=e1022]: 记忆 / 搜索
+            - strong [ref=e1023]: 就绪
+          - generic [ref=e1024]:
+            - generic [ref=e1025]: 模式 / 令牌
+            - strong [ref=e1026]: 受限
+        - generic [ref=e1027]:
+          - generic [ref=e1028]:
+            - generic [ref=e1029]:
+              - heading "系统健康评分" [level=3] [ref=e1030]
+              - generic [ref=e1031]:
+                - generic [ref=e1032]: "70"
+                - generic [ref=e1033]: /100
+            - generic [ref=e1034]:
+              - generic [ref=e1035]:
+                - img [ref=e1036]
+                - generic [ref=e1040]: 0 个严重问题
+              - generic [ref=e1041]:
+                - img [ref=e1042]
+                - generic [ref=e1044]: 3 个警告
+          - generic [ref=e1045]:
+            - heading "建议处理" [level=4] [ref=e1046]:
+              - img [ref=e1047]
+              - text: 建议处理
+            - generic [ref=e1049]:
+              - generic [ref=e1050]:
+                - generic [ref=e1051]: MCP
+                - strong [ref=e1052]: MCP 服务需要补齐授权变量
+              - paragraph [ref=e1053]: 缺少授权变量：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+              - generic [ref=e1054]:
+                - heading "修复建议" [level=5] [ref=e1055]:
+                  - img [ref=e1056]
+                  - text: 修复建议
+                - list [ref=e1058]:
+                  - listitem [ref=e1059]: 前往 MCP / 连接器页面
+                  - listitem [ref=e1060]: 确认本地 AKShare MCP 注册状态
+                  - listitem [ref=e1061]: 在 Agent 进程中配置缺失环境变量
+                  - listitem [ref=e1062]: 刷新 MCP 发现
+              - button "前往 MCP / 连接器" [ref=e1063] [cursor=pointer]:
+                - img [ref=e1064]
+                - text: 前往 MCP / 连接器
+            - generic [ref=e1066]:
+              - generic [ref=e1067]:
+                - generic [ref=e1068]: 控制令牌
+                - strong [ref=e1069]: 控制令牌未配置
+              - paragraph [ref=e1070]: 部分管理功能、审批流和完整模式能力需要控制令牌。
+              - generic [ref=e1071]:
+                - heading "修复建议" [level=5] [ref=e1072]:
+                  - img [ref=e1073]
+                  - text: 修复建议
+                - list [ref=e1075]:
+                  - listitem [ref=e1076]: 前往设置页面
+                  - listitem [ref=e1077]: 填写控制令牌
+                  - listitem [ref=e1078]: 保存配置后刷新健康页
+              - button "前往 设置" [ref=e1079] [cursor=pointer]:
+                - img [ref=e1080]
+                - text: 前往 设置
+            - generic [ref=e1082]:
+              - generic [ref=e1083]:
+                - generic [ref=e1084]: Gateway
+                - strong [ref=e1085]: Gateway 管理详情未解锁
+              - paragraph [ref=e1086]: 缺少控制令牌，因此尚未读取 Gateway 守护进程、平台和消息详情。
+              - generic [ref=e1087]:
+                - heading "修复建议" [level=5] [ref=e1088]:
+                  - img [ref=e1089]
+                  - text: 修复建议
+                - list [ref=e1091]:
+                  - listitem [ref=e1092]: 前往设置页面
+                  - listitem [ref=e1093]: 填写控制令牌
+                  - listitem [ref=e1094]: 刷新 Gateway 或健康页
+              - button "前往 Gateway" [ref=e1095] [cursor=pointer]:
+                - img [ref=e1096]
+                - text: 前往 Gateway
+        - generic [ref=e1098]:
+          - generic [ref=e1099]:
+            - generic [ref=e1100]:
+              - text: 运行前检查
+              - heading "真实金融流程前置检查" [level=3] [ref=e1101]
+            - img [ref=e1102]
+          - generic [ref=e1105]:
+            - article [ref=e1106]:
+              - generic [ref=e1107]:
+                - text: general_full / 控制 受限
+                - strong [ref=e1108]: 1. 模式与模型
+              - generic "gated / 受限" [ref=e1109]:
+                - img [ref=e1110]
+                - generic [ref=e1112]: 受限
+              - generic [ref=e1113]: 确认 Agent 端点、模型提供方、工具集和控制令牌状态，再进入金融流程。
+              - button "打开设置：1. 模式与模型" [ref=e1114] [cursor=pointer]:
+                - img [ref=e1115]
+                - text: 打开设置
+            - article [ref=e1117]:
+              - generic [ref=e1118]:
+                - text: 1 个服务 / 0 个工具 / 1 个授权缺口
+                - strong [ref=e1119]: 2. MCP 与连接器
+              - generic "auth_missing / 授权缺失" [ref=e1120]:
+                - img [ref=e1121]
+                - generic [ref=e1123]: 授权缺失
+              - generic [ref=e1124]: 确认 MCP 注册、发现、资源、提示词和连接器认证，再依赖真实金融数据。
+              - button "打开MCP / 连接器：2. MCP 与连接器" [ref=e1125] [cursor=pointer]:
+                - img [ref=e1126]
+                - text: 打开MCP / 连接器
+            - article [ref=e1128]:
+              - generic [ref=e1129]:
+                - text: sqlite / 向量 降级
+                - strong [ref=e1130]: 3. 记忆与搜索
+              - generic "ready / 就绪" [ref=e1131]:
+                - img [ref=e1132]
+                - generic [ref=e1135]: 就绪
+              - generic [ref=e1136]: 确认会话搜索和金融记忆搜索能取回历史上下文。
+              - button "打开本地用户 / 记忆：3. 记忆与搜索" [ref=e1137] [cursor=pointer]:
+                - img [ref=e1138]
+                - text: 打开本地用户 / 记忆
+            - article [ref=e1140]:
+              - generic [ref=e1141]:
+                - text: 7/7 个必需门控就绪
+                - strong [ref=e1142]: 4. 金融 Agent 流程
+              - generic "ready / 就绪" [ref=e1143]:
+                - img [ref=e1144]
+                - generic [ref=e1147]: 就绪
+              - generic [ref=e1148]: 先跑金融经理台只读证据链，再创建任何 ActionIntent。
+              - button "打开金融经理台：4. 金融 Agent 流程" [ref=e1149] [cursor=pointer]:
+                - img [ref=e1150]
+                - text: 打开金融经理台
+            - article [ref=e1152]:
+              - generic [ref=e1153]:
+                - text: 联调 smoke 覆盖市场温度与 quant_research
+                - strong [ref=e1154]: 5. 数据与量化研究
+              - generic "ready / 就绪" [ref=e1155]:
+                - img [ref=e1156]
+                - generic [ref=e1159]: 就绪
+              - generic [ref=e1160]: 用数据新鲜度、市场温度和量化研究阶段证明流程已就绪，或明确说明被哪里阻塞。
+              - button "打开数据：5. 数据与量化研究" [ref=e1161] [cursor=pointer]:
+                - img [ref=e1162]
+                - text: 打开数据
+            - article [ref=e1164]:
+              - generic [ref=e1165]:
+                - text: 因子 / 策略 / 孵化接力
+                - strong [ref=e1166]: 6. 工厂接力
+              - generic "gated / 受限" [ref=e1167]:
+                - img [ref=e1168]
+                - generic [ref=e1170]: 受限
+              - generic [ref=e1171]: 在数据和金融只读门控清晰后，再检查因子、策略、孵化的接力链路。
+              - button "打开金融实验室：6. 工厂接力" [ref=e1172] [cursor=pointer]:
+                - img [ref=e1173]
+                - text: 打开金融实验室
+          - generic [ref=e1175]:
+            - img [ref=e1176]
+            - generic [ref=e1179]: 这些步骤都是只读导航检查；涉及状态变更或交易风险的动作仍必须经过 ActionIntent 和后端防护。
+        - generic [ref=e1180]:
+          - generic [ref=e1181]:
+            - generic [ref=e1182]:
+              - generic [ref=e1183]:
+                - text: 下一步行动
+                - heading "现在最该做什么" [level=3] [ref=e1184]
+              - img [ref=e1185]
+            - generic [ref=e1188]:
+              - article [ref=e1189]:
+                - generic [ref=e1190]:
+                  - text: /v1/desktop/financial-manager/query
+                  - strong [ref=e1191]: 运行一次只读金融工作流
+                - generic "partial / 建议" [ref=e1192]:
+                  - img [ref=e1193]
+                  - generic [ref=e1195]: 建议
+                - generic [ref=e1196]: 先运行金融经理台只读查询，再运行量化研究，确认报告完成或被数据新鲜度明确阻塞。
+                - button "前往 金融经理台：运行一次只读金融工作流" [ref=e1197] [cursor=pointer]:
+                  - img [ref=e1198]
+                  - text: 前往 金融经理台
+              - article [ref=e1200]:
+                - generic [ref=e1201]:
+                  - text: /v1/mcp/tools
+                  - strong [ref=e1202]: 配置 MCP 授权变量
+                - generic "partial / 建议" [ref=e1203]:
+                  - img [ref=e1204]
+                  - generic [ref=e1206]: 建议
+                - generic [ref=e1207]: MCP 已注册但缺少授权变量；请在 Agent 进程中配置后刷新发现。
+                - generic [ref=e1208]: 环境变量：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+                - button "前往 MCP / 连接器：配置 MCP 授权变量" [ref=e1209] [cursor=pointer]:
+                  - img [ref=e1210]
+                  - text: 前往 MCP / 连接器
+          - generic [ref=e1212]:
+            - generic [ref=e1213]:
+              - generic [ref=e1214]:
+                - text: 联调 smoke
+                - heading "真实联调检查清单" [level=3] [ref=e1215]
+              - generic "ready / 就绪" [ref=e1216]:
+                - img [ref=e1217]
+                - generic [ref=e1220]: 就绪
+            - generic [ref=e1221]:
+              - generic [ref=e1222]: 脚本
+              - strong [ref=e1223]: scripts/ops/live_readiness_smoke.py
+              - generic [ref=e1224]: 工作目录
+              - strong [ref=e1225]: packages/agent
+              - generic [ref=e1226]: Self-test
+              - strong [ref=e1227]: uv run python ..\..\scripts\ops\live_readiness_smoke.py --self-test --pretty
+              - generic [ref=e1228]: Live 命令
+              - strong [ref=e1229]: uv run python ..\..\scripts\ops\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty
+              - generic [ref=e1230]: 检查数
+              - strong [ref=e1231]: "16"
+              - generic [ref=e1232]: 状态
+              - strong [ref=e1233]: 就绪
+            - paragraph [ref=e1234]: Run from packages/agent so the Agent runtime dependencies are loaded; root or system Python may report missing FastAPI/pandas dependencies.
+            - generic [ref=e1235]:
+              - article [ref=e1236]:
+                - strong [ref=e1237]: health
+                - paragraph [ref=e1238]: GET /health/detailed
+              - article [ref=e1239]:
+                - strong [ref=e1240]: tools
+                - paragraph [ref=e1241]: GET /v1/tools
+              - article [ref=e1242]:
+                - strong [ref=e1243]: financial_readiness
+                - paragraph [ref=e1244]: GET /v1/financial-system/readiness
+              - article [ref=e1245]:
+                - strong [ref=e1246]: workbench_summary
+                - paragraph [ref=e1247]: GET /v1/desktop/workbench/summary?session_limit=5&run_limit=5
+              - article [ref=e1248]:
+                - strong [ref=e1249]: memory_status
+                - paragraph [ref=e1250]: GET /v1/desktop/settings/status
+              - article [ref=e1251]:
+                - strong [ref=e1252]: session_search
+                - paragraph [ref=e1253]: GET /v1/search?query=AIASK&limit=5
+              - article [ref=e1254]:
+                - strong [ref=e1255]: memory_search
+                - paragraph [ref=e1256]: POST /v1/tools/agent_memory_search
+              - article [ref=e1257]:
+                - strong [ref=e1258]: mcp_servers
+                - paragraph [ref=e1259]: GET /v1/mcp/servers?all=true
+              - article [ref=e1260]:
+                - strong [ref=e1261]: mcp_tools
+                - paragraph [ref=e1262]: GET /v1/mcp/tools?all=true
+              - article [ref=e1263]:
+                - strong [ref=e1264]: financial_manager_catalog
+                - paragraph [ref=e1265]: GET /v1/desktop/financial-manager/catalog
+              - article [ref=e1266]:
+                - strong [ref=e1267]: financial_manager_query
+                - paragraph [ref=e1268]: POST /v1/desktop/financial-manager/query
+              - article [ref=e1269]:
+                - strong [ref=e1270]: data_status
+                - paragraph [ref=e1271]: GET /v1/desktop/data/status?codes=600519,000001&max_stale_days=5
+              - article [ref=e1272]:
+                - strong [ref=e1273]: factory_status
+                - paragraph [ref=e1274]: POST /v1/tools/agent_factory_status
+                - generic [ref=e1275]: 观测字段：success, runtime_enabled, event_runtime_mode, daily_run_count, cycle_count
+              - article [ref=e1276]:
+                - strong [ref=e1277]: market_temperature_cache
+                - paragraph [ref=e1278]: POST /v1/tools/agent_market_temperature_cache_readiness
+                - generic [ref=e1279]: 观测字段：ready, status, blockers, warnings
+              - article [ref=e1280]:
+                - strong [ref=e1281]: market_temperature_forward_validation
+                - paragraph [ref=e1282]: POST /v1/tools/agent_market_temperature_forward_validation
+                - generic [ref=e1283]: 观测字段：benchmark_status, quality_status, warnings, sample_count
+              - article [ref=e1284]:
+                - strong [ref=e1285]: quant_research
+                - paragraph [ref=e1286]: POST /v1/desktop/quant/research-runs
+        - generic [ref=e1287]:
+          - img [ref=e1288]
+          - generic [ref=e1290]: 当前缺少控制令牌，会话、Gateway、插件、MCP 管理和完整模式运维数据会被锁定。
+        - generic [ref=e1291]:
+          - generic [ref=e1292]:
+            - generic [ref=e1294]:
+              - text: 系统摘要
+              - heading "快速定位" [level=3] [ref=e1295]
+            - generic [ref=e1296]:
+              - generic [ref=e1297]: Agent
+              - strong [ref=e1298]: 正常
+              - generic [ref=e1299]: 工具集
+              - strong [ref=e1300]: general_full
+              - generic [ref=e1301]: 完整模式
+              - strong [ref=e1302]: 已激活
+              - generic [ref=e1303]: 控制令牌
+              - strong [ref=e1304]: 未填写
+              - generic [ref=e1305]: MCP 缺少授权
+              - strong [ref=e1306]: AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+              - generic [ref=e1307]: 金融门控
+              - strong [ref=e1308]: "7"
+              - generic [ref=e1309]: 记忆提供方
+              - strong [ref=e1310]: sqlite
+              - generic [ref=e1311]: 语义搜索
+              - strong [ref=e1312]: 就绪
+              - generic [ref=e1313]: 向量提供方
+              - strong [ref=e1314]: 降级
+          - generic [ref=e1315]:
+            - generic [ref=e1317]:
+              - text: 问题提示
+              - heading "高优先级缺口" [level=3] [ref=e1318]
+            - generic [ref=e1319]:
+              - article [ref=e1320]:
+                - strong [ref=e1321]: MCP 授权缺失
+                - paragraph [ref=e1322]: AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION
+              - article [ref=e1323]:
+                - strong [ref=e1324]: 控制令牌未填写
+                - paragraph [ref=e1325]: 完整模式管理面与审批流无法完整工作。
+        - generic [ref=e1326]:
+          - generic [ref=e1327]:
+            - generic [ref=e1328]:
+              - text: 深度诊断
+              - heading "完整模式控制台" [level=3] [ref=e1329]
+            - button "刷新完整控制台" [ref=e1330] [cursor=pointer]:
+              - img [ref=e1331]
+              - text: 刷新完整控制台
+          - generic [ref=e1336]:
+            - generic [ref=e1337]:
+              - generic [ref=e1338]:
+                - text: 诊断
+                - heading "Hermes 原生对齐" [level=2] [ref=e1339]
+              - button "刷新" [ref=e1340] [cursor=pointer]:
+                - img [ref=e1341]
+                - text: 刷新
+            - generic [ref=e1346]:
+              - generic [ref=e1347]:
+                - generic [ref=e1348]: 覆盖率
+                - strong [ref=e1349]: 100%
+              - generic [ref=e1350]:
+                - generic [ref=e1351]: 完成率
+                - strong [ref=e1352]: 91%
+              - generic [ref=e1353]:
+                - generic [ref=e1354]: 功能
+                - strong [ref=e1355]: 31/31
+              - generic [ref=e1356]:
+                - generic [ref=e1357]: 真实环境
+                - strong [ref=e1358]: Live 未验证
+            - generic [ref=e1359]:
+              - heading "系统健康中心" [level=3] [ref=e1360]
+              - generic [ref=e1361]:
+                - generic [ref=e1362]:
+                  - img [ref=e1363]
+                  - generic [ref=e1367]: 智能体
+                  - generic "ok / 正常" [ref=e1368]:
+                    - img [ref=e1369]
+                    - generic [ref=e1372]: 正常
+                - generic [ref=e1373]:
+                  - img [ref=e1374]
+                  - generic [ref=e1377]: 语义搜索
+                  - generic "not_loaded / 未知" [ref=e1378]:
+                    - img [ref=e1379]
+                    - generic [ref=e1381]: 未知
+                - generic [ref=e1382]:
+                  - img [ref=e1383]
+                  - generic [ref=e1385]: 孵化
+                  - generic "not_loaded / 未知" [ref=e1386]:
+                    - img [ref=e1387]
+                    - generic [ref=e1389]: 未知
+                - generic [ref=e1390]:
+                  - img [ref=e1391]
+                  - generic [ref=e1394]: 控制
+                  - generic "gated / 需要令牌" [ref=e1395]:
+                    - img [ref=e1396]
+                    - generic [ref=e1398]: 需要令牌
+            - generic [ref=e1399]:
+              - img [ref=e1400]
+              - text: 控制令牌会解锁网关、终端、学习、RL、插件和 MCP 管理详情。
+            - generic [ref=e1403]:
+              - generic [ref=e1404]: 实现
+              - strong [ref=e1405]: aiask_native
+              - generic [ref=e1406]: 基线
+              - strong [ref=e1407]: Hermes v0.15.1 full runtime capability reference
+              - generic [ref=e1408]: 外部运行时
+              - strong [ref=e1409]: "false"
+              - generic [ref=e1410]: 工具集
+              - strong [ref=e1411]: general_full
+            - generic [ref=e1412]:
+              - heading "子系统" [level=3] [ref=e1413]
+              - group [ref=e1414]:
+                - generic "Gateway -" [ref=e1415] [cursor=pointer]:
+                  - generic [ref=e1416]: Gateway
+                  - strong [ref=e1417]: "-"
+              - group [ref=e1418]:
+                - generic "终端 -" [ref=e1419] [cursor=pointer]:
+                  - generic [ref=e1420]: 终端
+                  - strong [ref=e1421]: "-"
+              - group [ref=e1422]:
+                - generic "学习 -" [ref=e1423] [cursor=pointer]:
+                  - generic [ref=e1424]: 学习
+                  - strong [ref=e1425]: "-"
+              - group [ref=e1426]:
+                - generic "RL -" [ref=e1427] [cursor=pointer]:
+                  - generic [ref=e1428]: RL
+                  - strong [ref=e1429]: "-"
+              - group [ref=e1430]:
+                - generic "插件 -" [ref=e1431] [cursor=pointer]:
+                  - generic [ref=e1432]: 插件
+                  - strong [ref=e1433]: "-"
+              - group [ref=e1434]:
+                - generic "MCP -" [ref=e1435] [cursor=pointer]:
+                  - generic [ref=e1436]: MCP
+                  - strong [ref=e1437]: "-"
+            - generic [ref=e1438]:
+              - heading "功能就绪状态" [level=3] [ref=e1439]
+              - generic "Feature-level parity/readiness ledger shared by status and readiness APIs." [ref=e1440]:
+                - generic [ref=e1441]:
+                  - text: parity
+                  - strong [ref=e1442]: feature_ledger
+                - generic "implemented / 已实现" [ref=e1443]:
+                  - img [ref=e1444]
+                  - generic [ref=e1447]: 已实现
+                - generic [ref=e1448]: agent_tool_catalog
+              - generic "Platform/channel/user directory with list, resolve, and refresh actions." [ref=e1449]:
+                - generic [ref=e1450]:
+                  - text: delivery
+                  - strong [ref=e1451]: gateway_channel_directory
+                - generic "implemented / 已实现" [ref=e1452]:
+                  - img [ref=e1453]
+                  - generic [ref=e1456]: 已实现
+                - generic [ref=e1457]: agent_gateway_directory
+              - generic "Direct platform delivery path that bypasses the model queue." [ref=e1458]:
+                - generic [ref=e1459]:
+                  - text: delivery
+                  - strong [ref=e1460]: gateway_direct_delivery
+                - generic "implemented / 已实现" [ref=e1461]:
+                  - img [ref=e1462]
+                  - generic [ref=e1465]: 已实现
+                - generic [ref=e1466]: agent_gateway_direct_deliver, agent_gateway_send_message
+              - generic "Inbound deduplication, slash command detection, approval callbacks, and message records." [ref=e1467]:
+                - generic [ref=e1468]:
+                  - text: delivery
+                  - strong [ref=e1469]: gateway_inbound_controls
+                - generic "implemented / 已实现" [ref=e1470]:
+                  - img [ref=e1471]
+                  - generic [ref=e1474]: 已实现
+                - generic [ref=e1475]: agent_gateway_history, agent_gateway_pairing
+              - generic "MEDIA tag extraction, adapter upload hooks, and failed/unsupported persistence." [ref=e1476]:
+                - generic [ref=e1477]:
+                  - text: delivery
+                  - strong [ref=e1478]: gateway_media_parity
+                - generic "implemented / 已实现" [ref=e1479]:
+                  - img [ref=e1480]
+                  - generic [ref=e1483]: 已实现
+                - generic [ref=e1484]: agent_gateway_send_message
+              - generic "Adapter lifecycle, runtime lock/status, and credential health reporting." [ref=e1485]:
+                - generic [ref=e1486]:
+                  - text: delivery
+                  - strong [ref=e1487]: gateway_runtime_health
+                - generic "implemented / 已实现" [ref=e1488]:
+                  - img [ref=e1489]
+                  - generic [ref=e1492]: 已实现
+                - generic [ref=e1493]: agent_gateway_status, agent_gateway_platforms
+              - generic "Plugin tool runners plus pre/post LLM, tool, session, terminal, and transform hooks." [ref=e1494]:
+                - generic [ref=e1495]:
+                  - text: plugins
+                  - strong [ref=e1496]: plugin_runners_and_hooks
+                - generic "implemented / 已实现" [ref=e1497]:
+                  - img [ref=e1498]
+                  - generic [ref=e1501]: 已实现
+                - generic [ref=e1502]: agent_plugin_manage
+              - generic "Manifest commands registered as agent_plugin_* command tools and testable through APIs." [ref=e1503]:
+                - generic [ref=e1504]:
+                  - text: plugins
+                  - strong [ref=e1505]: plugin_commands
+                - generic "implemented / 已实现" [ref=e1506]:
+                  - img [ref=e1507]
+                  - generic [ref=e1510]: 已实现
+                - generic [ref=e1511]: agent_plugin_manage
+              - generic "Provider inventory, OpenAI-compatible configuration, fallback order, credential pool metadata, and attempt classification." [ref=e1512]:
+                - generic [ref=e1513]:
+                  - text: models
+                  - strong [ref=e1514]: model_provider_registry
+                - generic "implemented / 已实现" [ref=e1515]:
+                  - img [ref=e1516]
+                  - generic [ref=e1519]: 已实现
+                - generic [ref=e1520]: agent_model_manage
+              - generic "Credential pool status and least-recent-failure selection without exposing sensitive values." [ref=e1521]:
+                - generic [ref=e1522]:
+                  - text: models
+                  - strong [ref=e1523]: credential_pool_rotation
+                - generic "implemented / 已实现" [ref=e1524]:
+                  - img [ref=e1525]
+                  - generic [ref=e1528]: 已实现
+                - generic [ref=e1529]: agent_model_manage
+              - generic "SQLite default memory provider with Honcho, vector, and custom provider readiness slots." [ref=e1530]:
+                - generic [ref=e1531]:
+                  - text: memory
+                  - strong [ref=e1532]: pluggable_memory_providers
+                - generic "implemented / 已实现" [ref=e1533]:
+                  - img [ref=e1534]
+                  - generic [ref=e1537]: 已实现
+                - generic [ref=e1538]: agent_memory_manage
+              - generic "ACP client-provided MCP server registration and status through AIASK-native MCP aggregation." [ref=e1539]:
+                - generic [ref=e1540]:
+                  - text: acp
+                  - strong [ref=e1541]: acp_client_mcp_servers
+                - generic "implemented / 已实现" [ref=e1542]:
+                  - img [ref=e1543]
+                  - generic [ref=e1546]: 已实现
+                - generic [ref=e1547]: agent_acp_manage
+              - generic "Sensitive-token pattern, protected path, private URL, and environment key scanning with redacted outputs." [ref=e1548]:
+                - generic [ref=e1549]:
+                  - text: security
+                  - strong [ref=e1550]: security_redaction_scan
+                - generic "implemented / 已实现" [ref=e1551]:
+                  - img [ref=e1552]
+                  - generic [ref=e1555]: 已实现
+                - generic [ref=e1556]: agent_security_scan
+              - generic "AIASK-native rewritten Hermes-class skill pack listing, install, and audit without copying vendor skill text." [ref=e1557]:
+                - generic [ref=e1558]:
+                  - text: skills
+                  - strong [ref=e1559]: skill_pack_governance
+                - generic "implemented / 已实现" [ref=e1560]:
+                  - img [ref=e1561]
+                  - generic [ref=e1564]: 已实现
+                - generic [ref=e1565]: agent_skill_pack_manage
+              - generic "Testable TUI controller for slash commands, state, SSE, approvals, and resume." [ref=e1566]:
+                - generic [ref=e1567]:
+                  - text: interface
+                  - strong [ref=e1568]: tui_controller
+                - generic "implemented / 已实现" [ref=e1569]:
+                  - img [ref=e1570]
+                  - generic [ref=e1573]: 已实现
+                - generic [ref=e1574]: agent_tui_status
+              - generic "Terminal/process guard rails for AIASK server and gateway processes." [ref=e1575]:
+                - generic [ref=e1576]:
+                  - text: terminal
+                  - strong [ref=e1577]: terminal_self_protection
+                - generic "implemented / 已实现" [ref=e1578]:
+                  - img [ref=e1579]
+                  - generic [ref=e1582]: 已实现
+                - generic [ref=e1583]: agent_terminal, agent_process
+              - generic "Process watch snapshots and optional gateway notification on background completion." [ref=e1584]:
+                - generic [ref=e1585]:
+                  - text: terminal
+                  - strong [ref=e1586]: terminal_watch_notify
+                - generic "implemented / 已实现" [ref=e1587]:
+                  - img [ref=e1588]
+                  - generic [ref=e1591]: 已实现
+                - generic [ref=e1592]: agent_terminal, agent_process
+              - generic "Native Atropos-style environment discovery, locked config, subprocess launch, logs, stop, and results." [ref=e1593]:
+                - generic [ref=e1594]:
+                  - text: rl
+                  - strong [ref=e1595]: rl_native_scaffold_runner
+                - generic "live_unverified / Live 未验证" [ref=e1596]:
+                  - img [ref=e1597]
+                  - generic [ref=e1599]: Live 未验证
+                - generic [ref=e1600]: agent_rl_list_environments, agent_rl_start_training, agent_rl_check_status, agent_rl_get_results
+              - generic "Feature-level readiness visible to desktop Full Mode without treating missing live credentials as failure." [ref=e1601]:
+                - generic [ref=e1602]:
+                  - text: desktop
+                  - strong [ref=e1603]: desktop_full_mode_readiness
+                - generic "implemented / 已实现" [ref=e1604]:
+                  - img [ref=e1605]
+                  - generic [ref=e1608]: 已实现
+                - generic [ref=e1609]: agent_gateway_status, agent_tui_status, agent_terminal_backends
+              - generic "AIASK has OpenAI-compatible response/chat routes and model management; a Hermes v0.14-style local proxy for OAuth subscription providers is intentionally excluded by AIASK design." [ref=e1610]:
+                - generic [ref=e1611]:
+                  - text: models
+                  - strong [ref=e1612]: openai_compatible_local_proxy
+                - generic "excluded_by_design / 按设计排除" [ref=e1613]:
+                  - img [ref=e1614]
+                  - generic [ref=e1616]: 按设计排除
+                - generic [ref=e1617]: agent_model_manage
+            - group [ref=e1618]:
+              - generic "原始诊断数据" [ref=e1619] [cursor=pointer]:
+                - text: 原始诊断数据
+                - img [ref=e1620]
+        - group [ref=e1622]:
+          - generic "原始准备度载荷" [ref=e1623] [cursor=pointer]
+  - complementary "环境上下文" [ref=e796]:
+    - generic [ref=e797]:
+      - generic [ref=e798]:
+        - generic [ref=e799]:
+          - generic [ref=e800]: 进度
+          - strong [ref=e801]: 当前运行环境
+        - img [ref=e802]
+      - generic [ref=e804]:
+        - img [ref=e805]
+        - generic [ref=e808]: Agent
+        - generic "ready / 在线，可以使用" [ref=e809]:
+          - img [ref=e810]
+          - generic [ref=e813]: 在线，可以使用
+      - paragraph [ref=e814]: Agent 已响应，当前页面可以读取会话、工具和运行状态。
+      - generic [ref=e815]:
+        - img [ref=e816]
+        - generic [ref=e821]: Agent 端点
+        - code [ref=e822]: http://127.0.0.1:8767
+    - generic [ref=e823]:
+      - generic [ref=e824]:
+        - generic [ref=e825]:
+          - generic [ref=e826]: 环境信息
+          - strong [ref=e827]: 权限与能力
+        - img [ref=e828]
+      - generic [ref=e831]:
+        - generic [ref=e832]:
+          - img [ref=e833]
+          - strong [ref=e837]: 控制令牌未就绪
+          - generic "gated / 受限" [ref=e838]:
+            - img [ref=e839]
+            - generic [ref=e841]: 受限
+        - paragraph [ref=e842]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - button "打开设置" [ref=e844] [cursor=pointer]
+      - generic [ref=e845]:
+        - generic [ref=e846]:
+          - img [ref=e847]
+          - generic [ref=e850]: 控制令牌
+          - generic "gated / 仅可查看/研究" [ref=e851]:
+            - img [ref=e852]
+            - generic [ref=e854]: 仅可查看/研究
+        - generic [ref=e855]:
+          - img [ref=e856]
+          - generic [ref=e868]: 完整模式
+          - generic "ready / 已开启" [ref=e869]:
+            - img [ref=e870]
+            - generic [ref=e873]: 已开启
+        - generic [ref=e874]:
+          - img [ref=e875]
+          - generic [ref=e877]: 工具集
+          - strong [ref=e878]: 完整工具集
+        - paragraph [ref=e879]: 可查看通用工具；写入、外部平台和高风险动作仍需控制令牌与审批。
+        - generic [ref=e880]:
+          - img [ref=e881]
+          - generic [ref=e885]: 工具数量
+          - strong [ref=e886]: "202"
+    - generic [ref=e887]:
+      - generic [ref=e888]:
+        - generic [ref=e889]:
+          - generic [ref=e890]: 当前任务
+          - strong [ref=e891]: 等待任务线程
+        - img [ref=e892]
+      - generic [ref=e896]:
+        - strong [ref=e897]: 暂无选中线程
+        - generic [ref=e898]: 开始任务后，这里会汇总当前回复、模型、审批和事件状态。
+        - button "返回工作台" [ref=e899] [cursor=pointer]

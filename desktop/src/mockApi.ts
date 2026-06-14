@@ -1,11 +1,19 @@
 import type { ApiHeaders } from "./api";
 import type {
+  AgentArtifactRecord,
+  AgentSourceRecord,
   CapabilityWorkbenchPayload,
   DesktopRunSummary,
   DesktopWorkbenchSummary,
+  HandoffQueuePayload,
+  HandoffRecord,
   NormalizedRunEvent,
   RecentSessionSummary,
+  RunTraceEvalPayload,
+  SessionResumeContextPayload,
   ToolCatalogItem,
+  UserActivityEvent,
+  UserDataPolicy,
 } from "./types";
 
 interface MockOptions {
@@ -16,10 +24,16 @@ interface MockOptions {
 }
 
 const CONTROL_TOKEN = "mock-control-token";
+const HERMES_BASELINE = "Hermes v0.16.0 full runtime capability reference";
+const HERMES_BASELINE_VERSION = "0.16.0";
+const HERMES_RELEASE_TAG = "v2026.6.5";
+const HERMES_V016_BASELINE = "Hermes v0.16.0 Surface Release capability reference";
 
 const financeTools: ToolCatalogItem[] = [
   { name: "agent_tool_catalog", capability: "tool_catalog", category: "financial_read", side_effect: "read_only", description: "Return the AIASK Agent tool catalog." },
   { name: "agent_analyze_stock", capability: "stock_analysis", category: "financial_read", side_effect: "read_only", description: "Run a stock analysis workflow.", input_schema: { type: "object", properties: { code: { type: "string" }, include_decision: { type: "boolean" } } }, examples: [{ arguments: { code: "600519", include_decision: false } }] },
+  { name: "agent_stock_live_quote", capability: "stock_live_quote", category: "financial_read", side_effect: "read_only", description: "Fetch realtime stock quotes with provider and source-chain evidence.", input_schema: { type: "object", properties: { code: { type: "string" }, include_source_chain: { type: "boolean" } }, required: ["code"] }, examples: [{ arguments: { code: "600519", include_source_chain: true } }] },
+  { name: "agent_stock_news_digest", capability: "stock_news_digest", category: "financial_read", side_effect: "read_only", description: "Fetch linked stock or market news and preserve citation evidence.", input_schema: { type: "object", properties: { code: { type: "string" }, limit: { type: "integer" }, include_links: { type: "boolean" } } }, examples: [{ arguments: { code: "600519", limit: 10, include_links: true } }] },
   { name: "agent_data_validation", capability: "data_validation", category: "financial_read", side_effect: "read_only", description: "Validate financial datasets.", input_schema: { type: "object", properties: { action: { type: "string" } } }, examples: [{ arguments: { action: "backend" } }] },
   { name: "agent_quant_data_gate", capability: "quant_data_gate", category: "financial_read", side_effect: "read_only", description: "Check local market data readiness.", input_schema: { type: "object", properties: { codes: { type: "array" }, max_stale_days: { type: "integer" } } }, examples: [{ arguments: { codes: ["600519", "000001"], max_stale_days: 5 } }] },
   { name: "agent_market_temperature_snapshot", capability: "market_temperature_snapshot", category: "financial_read", side_effect: "read_only", description: "Read the market temperature and industry breadth snapshot.", input_schema: { type: "object", properties: { limit: { type: "integer" }, top_n: { type: "integer" }, as_of: { type: "string" }, min_bars: { type: "integer" }, use_cache: { type: "boolean" } } }, examples: [{ arguments: { limit: 300, top_n: 8, min_bars: 20, use_cache: true } }] },
@@ -88,6 +102,66 @@ let profile = {
   secrets_redacted: true
 };
 
+let mockActivityEvents: UserActivityEvent[] = [];
+let mockToolInvocations: Array<Record<string, unknown>> = [];
+let mockFeedbackEvents: Array<Record<string, unknown>> = [];
+let mockUserDataPolicies: Record<string, UserDataPolicy> = {};
+
+function mockNow() {
+  return "2026-06-12T00:00:00Z";
+}
+
+function redactedAuditValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(redactedAuditValue);
+  if (!value || typeof value !== "object") return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    const lowered = key.toLowerCase();
+    result[key] = lowered.includes("token") || lowered.includes("secret") || lowered.includes("password") || lowered.includes("api_key")
+      ? "[redacted]"
+      : redactedAuditValue(item);
+  }
+  return result;
+}
+
+function userPolicy(userId = String(profile.user_id || "local")): UserDataPolicy {
+  if (!mockUserDataPolicies[userId]) {
+    mockUserDataPolicies[userId] = {
+      user_id: userId,
+      event_ttl_days: 90,
+      audit_ttl_days: 180,
+      run_event_ttl_days: 180,
+      tool_payload_ttl_days: 90,
+      conversation_retention: "keep_until_user_deletes",
+      allow_product_analytics: true,
+      allow_learning: false,
+      updated_at: mockNow()
+    };
+  }
+  return mockUserDataPolicies[userId];
+}
+
+function recordMockToolInvocation(tool: string, body: Record<string, unknown>) {
+  const item = {
+    id: mockToolInvocations.length + 1,
+    invocation_id: `tool_mock_${mockToolInvocations.length + 1}`,
+    user_id: String(body.user_id || profile.user_id || "local"),
+    session_id: body.session_id || "sess_mock",
+    run_id: body.run_id || null,
+    trace_id: body.trace_id || `trace_mock_${mockToolInvocations.length + 1}`,
+    tool_name: tool,
+    status: "succeeded",
+    input_summary: redactedAuditValue(body),
+    output_summary: { success: true },
+    duration_ms: 5,
+    source_chain: ["desktop.mockApi"],
+    secrets_redacted: true,
+    created_at: mockNow(),
+    updated_at: mockNow()
+  };
+  mockToolInvocations = [item, ...mockToolInvocations].slice(0, 100);
+}
+
 let jobs: Array<Record<string, unknown>> = [
   {
     job_id: "job_mock_research",
@@ -103,6 +177,46 @@ let jobs: Array<Record<string, unknown>> = [
 const intents = new Map<string, Record<string, unknown>>();
 
 const mockRunEvents: NormalizedRunEvent[] = [
+  {
+    id: "evt_quote",
+    event: "market.quote_snapshot",
+    event_type: "market.quote_snapshot",
+    run_id: "run_mock",
+    created_at: "2026-05-22T09:00:00Z",
+    kind: "tool",
+    title: "market.quote_snapshot: 600519",
+    severity: "info",
+    status: "completed",
+    tool_name: "agent_stock_live_quote",
+    jump_target: "runs-events",
+    data: {
+      artifact_id: "art_mock_quote",
+      code: "600519",
+      price: 123.45,
+      provider: "akshare/sina",
+      data_timestamp: "2026-05-22T09:00:00+08:00"
+    },
+  },
+  {
+    id: "evt_source",
+    event: "news.source_linked",
+    event_type: "news.source_linked",
+    run_id: "run_mock",
+    created_at: "2026-05-22T09:00:00Z",
+    kind: "tool",
+    title: "news.source_linked: Mock 财经新闻",
+    severity: "info",
+    status: "completed",
+    tool_name: "agent_stock_news_digest",
+    jump_target: "runs-events",
+    data: {
+      source_id: "src_mock_news",
+      title: "Mock 财经新闻",
+      url: "https://example.com/aiask/mock-news",
+      provider: "eastmoney",
+      published_at: "2026-05-22T08:55:00+08:00"
+    },
+  },
   {
     id: "evt_tool",
     event: "tool.called",
@@ -130,6 +244,138 @@ const mockRunEvents: NormalizedRunEvent[] = [
     jump_target: "tools-intents-approvals",
     data: { intent_id: "intent_mock_pending", status: "pending" },
   },
+];
+
+const mockAgentArtifacts: AgentArtifactRecord[] = [
+  {
+    artifact_id: "art_mock_quote",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_quote",
+    tool_name: "agent_stock_live_quote",
+    kind: "quote_snapshot",
+    title: "600519 实时行情快照",
+    preview_text: "价格 123.45，来源 akshare/sina，时间 2026-05-22T09:00:00+08:00",
+    preview_json: {
+      code: "600519",
+      price: 123.45,
+      change_pct: 1.23,
+      provider: "akshare/sina",
+      data_timestamp: "2026-05-22T09:00:00+08:00"
+    },
+    status: "ready",
+    metadata: { source_chain: ["desktop.mockApi", "akshare", "sina"] },
+    created_at: "2026-05-22T09:00:00Z",
+    updated_at: "2026-05-22T09:00:00Z"
+  },
+  {
+    artifact_id: "art_mock_news",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_news",
+    tool_name: "agent_stock_news_digest",
+    kind: "news_digest",
+    title: "600519 新闻摘要",
+    preview_text: "1 条带链接的新闻来源已保存。",
+    preview_json: {
+      items: [
+        {
+          title: "Mock 财经新闻",
+          url: "https://example.com/aiask/mock-news",
+          provider: "eastmoney",
+          published_at: "2026-05-22T08:55:00+08:00"
+        }
+      ]
+    },
+    status: "ready",
+    metadata: { source_chain: ["desktop.mockApi", "eastmoney"] },
+    created_at: "2026-05-22T09:00:00Z",
+    updated_at: "2026-05-22T09:00:00Z"
+  },
+  {
+    artifact_id: "art_mock_script",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_script",
+    tool_name: "agent_execute_python",
+    kind: "script",
+    title: "call_mock_script_snippet.py",
+    path: "mock://aiask/artifacts/sess_mock/run_mock/call_mock_script_snippet.py",
+    mime_type: "text/x-python",
+    size_bytes: 54,
+    sha256: "mock-sha256",
+    preview_text: "print('AIASK mock script artifact')",
+    status: "ready",
+    metadata: { language: "python", persisted_from: "agent_execute_python" },
+    created_at: "2026-05-22T09:00:01Z",
+    updated_at: "2026-05-22T09:00:01Z"
+  },
+  {
+    artifact_id: "art_mock_terminal",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_terminal",
+    tool_name: "agent_terminal",
+    kind: "terminal_output",
+    title: "agent_terminal output",
+    mime_type: "text/plain",
+    preview_text: "PS> npm test -- --runInBand\nPASS workbench evidence smoke",
+    preview_json: {
+      command: "npm test -- --runInBand",
+      exit_code: 0,
+      stdout: "PASS workbench evidence smoke",
+      stderr: ""
+    },
+    status: "ready",
+    metadata: { persisted_from: "agent_terminal" },
+    created_at: "2026-05-22T09:00:02Z",
+    updated_at: "2026-05-22T09:00:02Z"
+  }
+];
+
+const mockAgentSources: AgentSourceRecord[] = [
+  {
+    source_id: "src_mock_quote_provider",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_quote",
+    tool_name: "agent_stock_live_quote",
+    provider: "sina",
+    source_type: "market_quote",
+    title: "sina data source",
+    fetched_at: "2026-05-22T09:00:00Z",
+    data_timestamp: "2026-05-22T09:00:00+08:00",
+    metadata: { source_chain: ["desktop.mockApi", "akshare", "sina"] },
+    created_at: "2026-05-22T09:00:00Z"
+  },
+  {
+    source_id: "src_mock_news",
+    user_id: "local",
+    session_id: "sess_mock",
+    run_id: "run_mock",
+    trace_id: "trace_mock",
+    tool_call_id: "call_mock_news",
+    tool_name: "agent_stock_news_digest",
+    provider: "eastmoney",
+    source_type: "news",
+    title: "Mock 财经新闻",
+    url: "https://example.com/aiask/mock-news",
+    published_at: "2026-05-22T08:55:00+08:00",
+    fetched_at: "2026-05-22T09:00:00Z",
+    excerpt: "Mock 新闻来源链接，用于验证 Desktop 证据展示。",
+    metadata: { source_chain: ["desktop.mockApi", "eastmoney"] },
+    created_at: "2026-05-22T09:00:00Z"
+  }
 ];
 
 const mockRunSummaries: DesktopRunSummary[] = [
@@ -165,13 +411,343 @@ const mockSessionSummaries: RecentSessionSummary[] = [
     has_errors: false,
     has_pending_approval: true,
     status: "completed",
-    metadata: { source: "desktop.mockApi" },
+    archived: false,
+    archived_at: null,
+    archived_reason: null,
+    handoff_state: {
+      status: "active",
+      handoff_id: "handoff_mock",
+      target: "risk_specialist",
+      source_run_id: "run_source_mock",
+      source_tool_call_id: "call_handoff_mock",
+      context_snapshot_id: "ctxsnap_mock_source",
+      active_run_id: "run_mock",
+      summary: "Continue with risk review.",
+      reason: "risk escalation",
+      updated_at: "2026-05-22T09:00:02Z",
+      activated_at: "2026-05-22T09:00:02Z",
+      metadata: { handoff_kind: "ownership_transfer" },
+    },
+    handoff_status: "active",
+    handoff_target: "risk_specialist",
+    handoff_id: "handoff_mock",
+    handoff_context_snapshot_id: "ctxsnap_mock_source",
+    active_agent: "risk_specialist",
+    active_context_snapshot_id: "ctxsnap_mock_source",
+    metadata: {
+      source: "desktop.mockApi",
+      handoff_status: "active",
+      handoff_target: "risk_specialist",
+      active_agent: "risk_specialist",
+      active_context_snapshot_id: "ctxsnap_mock_source",
+    },
   },
 ];
 
+const initialMockSessionMessages: Array<Record<string, unknown>> = [
+  { id: 1, message_id: "msg_user", role: "user", content: "mock question", created_at: "2026-05-22T09:00:01Z" },
+  { id: 2, message_id: "msg_assistant", role: "assistant", content: "mock answer", created_at: "2026-05-22T09:00:02Z" },
+];
+
+let mockSessionMessages: Array<Record<string, unknown>> = initialMockSessionMessages.map((item) => ({ ...item }));
+
+export function resetMockApiState(): void {
+  mockSessionSummaries.splice(0, mockSessionSummaries.length, {
+    session_id: "sess_mock",
+    title: "Mock 研究会话",
+    user_id: profile.user_id,
+    created_at: "2026-05-22T09:00:00Z",
+    updated_at: "2026-05-22T09:00:02Z",
+    last_message_at: "2026-05-22T09:00:02Z",
+    last_run_id: "run_mock",
+    last_run_summary: mockRunSummaries[0],
+    last_event: mockRunEvents[mockRunEvents.length - 1],
+    message_count: 2,
+    has_errors: false,
+    has_pending_approval: true,
+    status: "completed",
+    archived: false,
+    archived_at: null,
+    archived_reason: null,
+    handoff_state: {
+      status: "active",
+      handoff_id: "handoff_mock",
+      target: "risk_specialist",
+      source_run_id: "run_source_mock",
+      source_tool_call_id: "call_handoff_mock",
+      context_snapshot_id: "ctxsnap_mock_source",
+      active_run_id: "run_mock",
+      summary: "Continue with risk review.",
+      reason: "risk escalation",
+      updated_at: "2026-05-22T09:00:02Z",
+      activated_at: "2026-05-22T09:00:02Z",
+      metadata: { handoff_kind: "ownership_transfer" },
+    },
+    handoff_status: "active",
+    handoff_target: "risk_specialist",
+    handoff_id: "handoff_mock",
+    handoff_context_snapshot_id: "ctxsnap_mock_source",
+    active_agent: "risk_specialist",
+    active_context_snapshot_id: "ctxsnap_mock_source",
+    metadata: {
+      source: "desktop.mockApi",
+      handoff_status: "active",
+      handoff_target: "risk_specialist",
+      active_agent: "risk_specialist",
+      active_context_snapshot_id: "ctxsnap_mock_source",
+    },
+  });
+  mockSessionMessages = initialMockSessionMessages.map((item) => ({ ...item }));
+}
+
+function filterMockArtifacts({
+  runId,
+  sessionId,
+  kind,
+  limit = 100
+}: {
+  runId?: string;
+  sessionId?: string;
+  kind?: string | null;
+  limit?: number;
+}): AgentArtifactRecord[] {
+  return mockAgentArtifacts
+    .filter((item) => !runId || item.run_id === runId)
+    .filter((item) => !sessionId || item.session_id === sessionId)
+    .filter((item) => !kind || item.kind === kind)
+    .slice(0, Math.max(1, Math.min(limit || 100, 1000)));
+}
+
+function filterMockSources({
+  runId,
+  sessionId,
+  sourceType,
+  limit = 100
+}: {
+  runId?: string;
+  sessionId?: string;
+  sourceType?: string | null;
+  limit?: number;
+}): AgentSourceRecord[] {
+  return mockAgentSources
+    .filter((item) => !runId || item.run_id === runId)
+    .filter((item) => !sessionId || item.session_id === sessionId)
+    .filter((item) => !sourceType || item.source_type === sourceType)
+    .slice(0, Math.max(1, Math.min(limit || 100, 1000)));
+}
+
+function mockRunTraceEval(runId: string): RunTraceEvalPayload {
+  const runSources = filterMockSources({ runId, limit: 100 });
+  const runArtifacts = filterMockArtifacts({ runId, limit: 100 });
+  const runToolInvocations = mockToolInvocations.filter((item) => item.run_id === runId);
+  const toolInvocationCount = Math.max(1, runToolInvocations.length);
+  return {
+    object: "aiask.run_trace_eval",
+    implementation: "desktop_mock",
+    run_id: runId,
+    session_id: runId === "run_mock" ? "sess_mock" : null,
+    status: "healthy",
+    score: 100,
+    checks: [
+      {
+        id: "model_trace",
+        label: "Model call trace",
+        status: "pass",
+        detail: "model.started=1, model.completed=1",
+        evidence: { started: 1, completed: 1 },
+      },
+      {
+        id: "tool_trace",
+        label: "Tool invocation trace",
+        status: "pass",
+        detail: `tool_invocations=${toolInvocationCount}, failed=0`,
+        evidence: { invocations: toolInvocationCount, failed: 0 },
+      },
+      {
+        id: "context_snapshot",
+        label: "Context snapshot",
+        status: "pass",
+        detail: "context snapshot present",
+        evidence: {
+          context_snapshot_id: "ctxsnap_mock_source",
+          source_message_count: 2,
+          source_count: runSources.length,
+          artifact_count: runArtifacts.length,
+          risk_flags: [],
+        },
+      },
+      {
+        id: "evidence_chain",
+        label: "Evidence chain",
+        status: "pass",
+        detail: `sources=${runSources.length}, artifacts=${runArtifacts.length}`,
+        evidence: { sources: runSources.length, artifacts: runArtifacts.length },
+      },
+      {
+        id: "handoff_trace",
+        label: "Handoff trace",
+        status: "pass",
+        detail: "handoff_events=1",
+        evidence: { events: ["handoff.policy_applied"] },
+      },
+      {
+        id: "guardrail_trace",
+        label: "Guardrail trace",
+        status: "pass",
+        detail: "guardrail_events=0",
+        evidence: { events: [] },
+      },
+    ],
+    summary: {
+      event_count: mockRunEvents.filter((item) => item.run_id === runId).length || mockRunEvents.length,
+      tool_invocation_count: toolInvocationCount,
+      failed_tool_invocation_count: 0,
+      context_snapshot_count: 1,
+      source_count: runSources.length,
+      artifact_count: runArtifacts.length,
+      handoff_event_count: 1,
+      guardrail_event_count: 0,
+      error_event_count: 0,
+    },
+    latest_context_snapshot: {
+      snapshot_id: "ctxsnap_mock_source",
+      session_id: "sess_mock",
+      run_id: runId,
+      trace_id: "trace_mock",
+      context_summary_id: "ctxsum_mock",
+      compacted: false,
+      message_count: 2,
+      source_message_ids: ["msg_user", "msg_assistant"],
+      source_ids: runSources.map((item) => item.source_id),
+      artifact_ids: runArtifacts.map((item) => item.artifact_id),
+      risk_flags: [],
+      created_at: "2026-05-22T09:00:02Z",
+    },
+    risk_flags: [],
+    secrets_redacted: true,
+  };
+}
+
+function mockArtifactContent(artifactId: string) {
+  const artifact = mockAgentArtifacts.find((item) => item.artifact_id === artifactId);
+  if (!artifact) return null;
+  return {
+    object: "artifact.content",
+    artifact_id: artifactId,
+    encoding: "text",
+    mime_type: artifact.mime_type || "text/plain",
+    bytes: String(artifact.preview_text || "").length,
+    truncated: false,
+    content: artifact.preview_text || JSON.stringify(artifact.preview_json || artifact, null, 2)
+  };
+}
+
+function currentMockSessionSummaries(): RecentSessionSummary[] {
+  return mockSessionSummaries.map((session) => {
+    if (session.session_id !== "sess_mock") return session;
+    const lastMessage = mockSessionMessages[mockSessionMessages.length - 1];
+    return {
+      ...session,
+      message_count: mockSessionMessages.length,
+      last_message_at: String(lastMessage?.created_at || session.last_message_at || ""),
+    };
+  });
+}
+
+function mockHandoffRecord(session = currentMockSessionSummaries()[0]): HandoffRecord {
+  const state = session.handoff_state || {};
+  return {
+    handoff_id: String(session.handoff_id || state.handoff_id || "handoff_mock"),
+    session_id: session.session_id,
+    user_id: session.user_id || String(profile.user_id || "local"),
+    target: session.handoff_target || state.target || "risk_specialist",
+    status: "requested",
+    runtime_status: session.handoff_status || state.status || "active",
+    reason: String(state.reason || "risk escalation"),
+    summary: String(state.summary || "Continue with risk review."),
+    metadata: { context_snapshot_id: session.handoff_context_snapshot_id || state.context_snapshot_id || "ctxsnap_mock_source" },
+    created_at: session.created_at,
+    updated_at: session.updated_at,
+    session_title: session.title,
+    handoff_state: state,
+    active_agent: session.active_agent || state.target || "risk_specialist",
+    active_context_snapshot_id: session.active_context_snapshot_id || state.context_snapshot_id || "ctxsnap_mock_source",
+    resume_context_snapshot_id: session.active_context_snapshot_id || session.handoff_context_snapshot_id || state.context_snapshot_id || "ctxsnap_mock_source",
+    resume_ready: true,
+    secrets_redacted: true,
+  };
+}
+
+function mockHandoffQueue(filters: { userId?: string | null; sessionId?: string | null; status?: string | null; includeCompleted?: boolean; limit?: number } = {}): HandoffQueuePayload {
+  const status = String(filters.status || "").toLowerCase();
+  const rows = currentMockSessionSummaries()
+    .filter((session) => !filters.userId || session.user_id === filters.userId)
+    .filter((session) => !filters.sessionId || session.session_id === filters.sessionId)
+    .filter((session) => session.handoff_state || session.handoff_status || session.active_agent)
+    .map((session) => mockHandoffRecord(session))
+    .filter((item) => !status || status === "all" || item.runtime_status === status)
+    .filter((item) => filters.includeCompleted || !["completed", "failed", "cancelled", "canceled"].includes(String(item.runtime_status || item.status || "")));
+  const limited = rows.slice(0, Math.max(1, Math.min(filters.limit || 100, 500)));
+  const summary = limited.reduce<Record<string, number>>((acc, item) => {
+    const key = String(item.runtime_status || item.status || "unknown");
+    acc[key] = (acc[key] || 0) + 1;
+    return acc;
+  }, { total: limited.length });
+  return {
+    object: "aiask.handoff_queue",
+    implementation: "aiask_native",
+    data: limited,
+    count: limited.length,
+    summary,
+    filters,
+    secrets_redacted: true,
+  };
+}
+
+function mockSessionResumeContext(sessionId: string): SessionResumeContextPayload {
+  const session = currentMockSessionSummaries().find((item) => item.session_id === sessionId) || currentMockSessionSummaries()[0];
+  const handoff = mockHandoffRecord(session);
+  const snapshotId = String(handoff.resume_context_snapshot_id || "ctxsnap_mock_source");
+  return {
+    object: "aiask.session_resume_context",
+    implementation: "aiask_native",
+    session_id: sessionId,
+    session,
+    handoff,
+    handoff_state: session.handoff_state || null,
+    context_snapshot: {
+      snapshot_id: snapshotId,
+      session_id: session.session_id,
+      context_summary_id: "ctxsum_mock_source",
+      risk_flags: ["mock_resume"],
+      source_message_ids: ["msg_user", "msg_assistant"],
+      source_ids: ["src_mock_news"],
+      artifact_ids: ["art_mock_quote"],
+      summary: "Mock resume snapshot",
+      secrets_redacted: true,
+    },
+    resume_context: {
+      session_id: session.session_id,
+      handoff_id: handoff.handoff_id,
+      target: handoff.target,
+      status: handoff.runtime_status,
+      context_snapshot_id: snapshotId,
+      context_summary_id: "ctxsum_mock_source",
+      risk_flags: ["mock_resume"],
+      source_message_ids: ["msg_user", "msg_assistant"],
+      source_ids: ["src_mock_news"],
+      artifact_ids: ["art_mock_quote"],
+      summary: String(session.handoff_state?.summary || "Continue with risk review."),
+      reason: String(session.handoff_state?.reason || "risk escalation"),
+      resume_prompt: `继续会话 ${session.session_id}。当前任务接管目标为 ${handoff.target || "risk_specialist"}；请基于上下文快照 ${snapshotId} 继续推进。`,
+    },
+    secrets_redacted: true,
+  };
+}
+
 function mockWorkbenchSummary(): DesktopWorkbenchSummary {
   return {
-    recent_sessions: mockSessionSummaries,
+    recent_sessions: currentMockSessionSummaries(),
     recent_runs: mockRunSummaries,
     queues: {
       pending_intents: 1,
@@ -218,6 +794,282 @@ function financialManagerCatalog() {
   };
 }
 
+const mockBrokerProfile = {
+  broker_profile_id: "broker_profile_mock_qmt",
+  user_id: "local",
+  provider: "qmt",
+  display_name: "QMT / MiniQMT",
+  account_ref_hash: "mock_hash_3f7c2a81",
+  market: "cn_a",
+  read_only_enabled: true,
+  write_enabled: false,
+  consent_status: "granted",
+  last_sync_at: "2026-06-12T00:00:00Z",
+  status: "ready",
+  error_code: null
+};
+
+const mockThsBrokerProfile = {
+  ...mockBrokerProfile,
+  broker_profile_id: "broker_profile_mock_ths",
+  provider: "tonghuashun",
+  display_name: "同花顺",
+  account_ref_hash: "mock_ths_hash_91c6b4d0"
+};
+
+const mockBrokerAccounts = [
+  {
+    snapshot_id: "broker_account_mock_1",
+    broker_profile_id: mockBrokerProfile.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    account_ref_hash: mockBrokerProfile.account_ref_hash,
+    currency: "CNY",
+    total_asset: 100000,
+    cash_available: 12000,
+    market_value: 88000,
+    frozen_cash: 0,
+    buying_power: 12000,
+    observed_at: "2026-06-12T00:00:00Z",
+    created_at: "2026-06-12T00:00:00Z"
+  }
+];
+
+const mockThsBrokerAccounts = [
+  {
+    ...mockBrokerAccounts[0],
+    snapshot_id: "broker_account_mock_ths_1",
+    broker_profile_id: mockThsBrokerProfile.broker_profile_id,
+    provider: "tonghuashun",
+    account_ref_hash: mockThsBrokerProfile.account_ref_hash,
+    total_asset: 86000,
+    cash_available: 24000,
+    market_value: 62000,
+    buying_power: 24000
+  }
+];
+
+const mockBrokerPositions = [
+  {
+    snapshot_id: "broker_position_mock_1",
+    broker_profile_id: mockBrokerProfile.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    symbol: "600519",
+    exchange: "SH",
+    name: "Kweichow Moutai",
+    quantity: 100,
+    available_quantity: 100,
+    cost_basis: 420,
+    last_price: 450,
+    market_value: 45000,
+    unrealized_pnl: 3000,
+    unrealized_pnl_pct: 0.0714,
+    observed_at: "2026-06-12T00:00:00Z"
+  },
+  {
+    snapshot_id: "broker_position_mock_2",
+    broker_profile_id: mockBrokerProfile.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    symbol: "000001",
+    exchange: "SZ",
+    name: "Ping An Bank",
+    quantity: 1000,
+    available_quantity: 1000,
+    cost_basis: 43.8,
+    last_price: 43,
+    market_value: 43000,
+    unrealized_pnl: -800,
+    unrealized_pnl_pct: -0.0183,
+    observed_at: "2026-06-12T00:00:00Z"
+  }
+];
+
+const mockThsBrokerPositions = [
+  {
+    ...mockBrokerPositions[0],
+    snapshot_id: "broker_position_mock_ths_1",
+    broker_profile_id: mockThsBrokerProfile.broker_profile_id,
+    provider: "tonghuashun",
+    symbol: "300750",
+    exchange: "SZ",
+    name: "CATL",
+    quantity: 200,
+    available_quantity: 200,
+    cost_basis: 210,
+    last_price: 220,
+    market_value: 44000,
+    unrealized_pnl: 2000,
+    unrealized_pnl_pct: 0.0476
+  },
+  {
+    ...mockBrokerPositions[1],
+    snapshot_id: "broker_position_mock_ths_2",
+    broker_profile_id: mockThsBrokerProfile.broker_profile_id,
+    provider: "tonghuashun",
+    symbol: "600036",
+    exchange: "SH",
+    name: "CMB",
+    quantity: 600,
+    cost_basis: 30,
+    last_price: 30,
+    market_value: 18000,
+    unrealized_pnl: 0,
+    unrealized_pnl_pct: 0
+  }
+];
+
+const mockBrokerOrders = [
+  {
+    snapshot_id: "broker_order_mock_1",
+    broker_profile_id: mockBrokerProfile.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    order_ref_hash: "mock_order_hash_1",
+    symbol: "600519",
+    side: "buy",
+    order_type: "limit",
+    price: 450,
+    quantity: 100,
+    filled_quantity: 100,
+    status: "filled",
+    submitted_at: "2026-06-12T09:35:00+08:00",
+    observed_at: "2026-06-12T00:00:00Z"
+  }
+];
+
+const mockThsBrokerOrders = [
+  {
+    ...mockBrokerOrders[0],
+    snapshot_id: "broker_order_mock_ths_1",
+    broker_profile_id: mockThsBrokerProfile.broker_profile_id,
+    provider: "tonghuashun",
+    order_ref_hash: "mock_ths_order_hash_1",
+    symbol: "300750",
+    side: "sell",
+    price: 220,
+    quantity: 100,
+    filled_quantity: 100
+  }
+];
+
+const mockBrokerDeals = [
+  {
+    snapshot_id: "broker_deal_mock_1",
+    broker_profile_id: mockBrokerProfile.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    deal_ref_hash: "mock_deal_hash_1",
+    order_ref_hash: "mock_order_hash_1",
+    symbol: "600519",
+    side: "buy",
+    price: 450,
+    quantity: 100,
+    amount: 45000,
+    fee: 12,
+    occurred_at: "2026-06-12T09:36:00+08:00",
+    observed_at: "2026-06-12T00:00:00Z"
+  }
+];
+
+const mockThsBrokerDeals = [
+  {
+    ...mockBrokerDeals[0],
+    snapshot_id: "broker_deal_mock_ths_1",
+    broker_profile_id: mockThsBrokerProfile.broker_profile_id,
+    provider: "tonghuashun",
+    deal_ref_hash: "mock_ths_deal_hash_1",
+    order_ref_hash: "mock_ths_order_hash_1",
+    symbol: "300750",
+    side: "sell",
+    price: 220,
+    quantity: 100,
+    amount: 22000
+  }
+];
+
+function mockBrokerAnalytics(provider = "qmt") {
+  const isThs = provider === "tonghuashun" || provider === "ths";
+  const profile = isThs ? mockThsBrokerProfile : mockBrokerProfile;
+  const accounts = isThs ? mockThsBrokerAccounts : mockBrokerAccounts;
+  const positions = isThs ? mockThsBrokerPositions : mockBrokerPositions;
+  const orders = isThs ? mockThsBrokerOrders : mockBrokerOrders;
+  const deals = isThs ? mockThsBrokerDeals : mockBrokerDeals;
+  const totalAsset = isThs ? 86000 : 100000;
+  const cashAvailable = isThs ? 24000 : 12000;
+  const marketValue = isThs ? 62000 : 88000;
+  const topPositions = isThs
+    ? [
+        { symbol: "300750", name: "CATL", market_value: 44000, position_pct: 0.7097 },
+        { symbol: "600036", name: "CMB", market_value: 18000, position_pct: 0.2903 }
+      ]
+    : [
+        { symbol: "600519", name: "Kweichow Moutai", market_value: 45000, position_pct: 0.5114 },
+        { symbol: "000001", name: "Ping An Bank", market_value: 43000, position_pct: 0.4886 }
+      ];
+  return {
+    analytics_id: isThs ? "broker_analytics_mock_ths" : "broker_analytics_mock_qmt",
+    broker_profile_id: profile.broker_profile_id,
+    user_id: "local",
+    provider: profile.provider,
+    period_start: null,
+    period_end: null,
+    metrics: {
+      account_count: accounts.length,
+      position_count: positions.length,
+      order_count: orders.length,
+      deal_count: deals.length,
+      total_asset: totalAsset,
+      cash_available: cashAvailable,
+      market_value: marketValue,
+      cash_ratio: cashAvailable / totalAsset,
+      top_position_concentration: Number(topPositions[0].position_pct),
+      top_positions: topPositions,
+      trade_count: isThs ? 2 : 2,
+      buy_count: isThs ? 0 : 2,
+      sell_count: isThs ? 2 : 0,
+      buy_sell_imbalance: isThs ? -1 : 1,
+      deal_amount_total: isThs ? 22000 : 45000
+    },
+    signals: {
+      limitations: ["historical account snapshots are insufficient for drawdown analytics"],
+      generated_at: "2026-06-12T00:00:00Z"
+    },
+    risk_flags: [{ code: "HIGH_SINGLE_POSITION_CONCENTRATION", severity: "warning", value: 0.5114 }],
+    source_snapshot_ids: {
+      accounts: accounts.map((item) => item.snapshot_id),
+      positions: positions.map((item) => item.snapshot_id),
+      orders: orders.map((item) => item.snapshot_id),
+      deals: deals.map((item) => item.snapshot_id)
+    },
+    model_version: "deterministic-p0",
+    created_at: "2026-06-12T00:00:00Z"
+  };
+}
+
+function brokerSnapshotPayload(provider = "qmt") {
+  const isThs = provider === "tonghuashun" || provider === "ths";
+  return {
+    object: "aiask.desktop.broker_readonly",
+    success: true,
+    data: {
+      profiles: [isThs ? mockThsBrokerProfile : mockBrokerProfile],
+      accounts: isThs ? mockThsBrokerAccounts : mockBrokerAccounts,
+      positions: isThs ? mockThsBrokerPositions : mockBrokerPositions,
+      orders: isThs ? mockThsBrokerOrders : mockBrokerOrders,
+      deals: isThs ? mockThsBrokerDeals : mockBrokerDeals,
+      analytics: mockBrokerAnalytics(provider)
+    },
+    error: null,
+    read_only: true,
+    live_trading_enabled: false,
+    secrets_redacted: true,
+    source_chain: ["desktop.mockApi", "aiask_agent.broker_readonly"],
+    generated_at: 1781193600
+  };
+}
+
 export function isMockEndpoint(endpoint: string): boolean {
   return endpoint.trim().replace(/\/+$/, "") === "mock://aiask";
 }
@@ -240,17 +1092,258 @@ function envelope(tool: string, data: unknown, success = true) {
   };
 }
 
+let mockModelConfig = {
+  preset: "openai",
+  provider: "openai",
+  model: "gpt-5.4",
+  base_url: "https://api.openai.com/v1",
+  api_key_configured: true,
+  mock: true,
+  prompt_cache_enabled: false,
+  prompt_cache_recent_messages: 3
+};
+
+const stockDataSourcePresets = [
+  {
+    provider: "akshare",
+    label: "AKShare / AKTools",
+    markets: ["CN", "HK", "US", "FX", "Futures", "Options"],
+    categories: ["quote", "kline", "fundamental", "macro", "news"],
+    auth_type: "none",
+    default_base_url: "",
+    required_fields: [],
+    optional_fields: ["base_url", "timeout_seconds", "user_agent"],
+    env_keys: ["AKSHARE_MCP_SQLITE_PATH", "AIASK_SQLITE_PATH"],
+    documentation_url: "https://akshare.akfamily.xyz/introduction.html",
+    note: "开源数据采集器；也可以配置 AKTools HTTP base_url。"
+  },
+  {
+    provider: "tushare",
+    label: "Tushare Pro",
+    markets: ["CN"],
+    categories: ["quote", "kline", "fundamental", "calendar", "finance"],
+    auth_type: "token",
+    default_base_url: "http://api.tushare.pro",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "timeout_seconds", "rate_limit_per_minute", "fields"],
+    env_keys: ["TUSHARE_TOKEN"],
+    documentation_url: "https://tushare.pro/document/1?doc_id=40",
+    note: "Tushare Pro HTTP API；部分接口需要积分或权限。"
+  },
+  {
+    provider: "tdx",
+    label: "TongDaXin HQ",
+    markets: ["CN"],
+    categories: ["quote", "kline", "local_vipdoc"],
+    auth_type: "host_port",
+    default_host: "119.147.212.81",
+    default_port: 7709,
+    required_fields: ["host", "port"],
+    optional_fields: ["timeout_seconds", "local_vipdoc_path"],
+    env_keys: ["TDX_SERVER_IP", "TDX_SERVER_PORT", "TDX_LOCAL_ONLY", "TDX_VIPDOC_PATH"],
+    documentation_url: null,
+    note: "通达信行情 TCP 或本地 vipdoc 数据源；只读行情无需 API Key。"
+  },
+  {
+    provider: "finnhub",
+    label: "Finnhub",
+    markets: ["US", "Global"],
+    categories: ["quote", "kline", "fundamental", "news", "economic"],
+    auth_type: "token",
+    default_base_url: "https://finnhub.io/api/v1",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "symbol", "timeout_seconds", "rate_limit_per_minute"],
+    env_keys: ["FINNHUB_API_KEY", "FINNHUB_TOKEN"],
+    documentation_url: "https://finnhub.io/docs/api/introduction",
+    note: "Token REST API；测试会使用示例股票代码。"
+  },
+  {
+    provider: "duckduckgo",
+    label: "DuckDuckGo HTML Search",
+    markets: ["Global"],
+    categories: ["web_search", "news", "research"],
+    auth_type: "none",
+    default_base_url: "https://duckduckgo.com/html/",
+    required_fields: [],
+    optional_fields: ["base_url", "timeout_seconds", "rate_limit_per_minute"],
+    env_keys: [],
+    documentation_url: "https://duckduckgo.com/",
+    note: "无密钥公开搜索 fallback。"
+  },
+  {
+    provider: "tavily",
+    label: "Tavily Search",
+    markets: ["Global"],
+    categories: ["web_search", "deep_research", "news", "research"],
+    auth_type: "bearer",
+    default_base_url: "https://api.tavily.com",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "timeout_seconds", "search_depth"],
+    env_keys: ["TAVILY_API_KEY"],
+    documentation_url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+    note: "深度联网搜索 API；保存后可通过 agent_web_search 调用。"
+  },
+  {
+    provider: "brave_search",
+    label: "Brave Search API",
+    markets: ["Global"],
+    categories: ["web_search", "news", "research"],
+    auth_type: "subscription_token",
+    default_base_url: "https://api.search.brave.com/res/v1",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "timeout_seconds", "country", "search_lang"],
+    env_keys: ["BRAVE_SEARCH_API_KEY", "BRAVE_SEARCH_SUBSCRIPTION_TOKEN"],
+    documentation_url: "https://api-dashboard.search.brave.com/app/documentation/web-search/get-started",
+    note: "使用 X-Subscription-Token 的搜索 API。"
+  },
+  {
+    provider: "serpapi",
+    label: "SerpApi",
+    markets: ["Global"],
+    categories: ["web_search", "search_engine_results", "news", "research"],
+    auth_type: "api_key",
+    default_base_url: "https://serpapi.com/search.json",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "engine", "location"],
+    env_keys: ["SERPAPI_API_KEY"],
+    documentation_url: "https://serpapi.com/search-api",
+    note: "搜索引擎结果 API；适合 Google/Bing SERP。"
+  },
+  {
+    provider: "exa",
+    label: "Exa Search",
+    markets: ["Global"],
+    categories: ["web_search", "neural_search", "research"],
+    auth_type: "api_key_header",
+    default_base_url: "https://api.exa.ai",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "search_type"],
+    env_keys: ["EXA_API_KEY"],
+    documentation_url: "https://docs.exa.ai/reference/search",
+    note: "神经/相似度搜索 API。"
+  }
+];
+
+let mockStockDataSources: Array<Record<string, unknown>> = [
+  {
+    id: "mock:akshare",
+    provider: "akshare",
+    name: "Mock AKShare 本地源",
+    enabled: true,
+    priority: 10,
+    base_url: "",
+    source: "mock",
+    status: "ready",
+    configured: true,
+    categories: ["quote", "kline", "fundamental"],
+    markets: ["CN", "HK", "US"],
+    timeout_seconds: 8,
+    notes: "Mock 默认数据源"
+  },
+  {
+    id: "mock:tushare",
+    provider: "tushare",
+    name: "Mock Tushare Pro",
+    enabled: true,
+    priority: 20,
+    base_url: "http://api.tushare.pro",
+    api_key: "mock-tushare-token",
+    source: "mock",
+    status: "ready",
+    configured: true,
+    categories: ["quote", "kline", "fundamental"],
+    markets: ["CN"],
+    symbol: "600519",
+    timeout_seconds: 8,
+    rate_limit_per_minute: 120,
+    notes: "用于前端连通性验证的脱敏条目"
+  },
+  {
+    id: "mock:duckduckgo",
+    provider: "duckduckgo",
+    name: "DuckDuckGo fallback",
+    enabled: true,
+    priority: 50,
+    base_url: "https://duckduckgo.com/html/",
+    source: "mock",
+    status: "ready",
+    configured: true,
+    categories: ["web_search", "research"],
+    markets: ["Global"]
+  }
+];
+
+const aiProviderPresets = [
+  { id: "openai", label: "OpenAI", provider: "openai", provider_type: "openai", base_url: "https://api.openai.com/v1", default_model: "gpt-4.1-mini", model_list_supported: true },
+  { id: "deepseek", label: "DeepSeek", provider: "openai", provider_type: "openai_compatible", base_url: "https://api.deepseek.com", default_model: "deepseek-chat", model_list_supported: true },
+  { id: "dashscope-qwen-cn", label: "通义千问 / DashScope 北京", provider: "openai", provider_type: "openai_compatible", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", default_model: "qwen-plus", model_list_supported: true },
+  { id: "dashscope-qwen-intl", label: "Qwen / DashScope 美国弗吉尼亚", provider: "openai", provider_type: "openai_compatible", base_url: "https://dashscope-us.aliyuncs.com/compatible-mode/v1", default_model: "qwen-plus", model_list_supported: true },
+  { id: "anthropic", label: "Anthropic Claude", provider: "anthropic", provider_type: "anthropic_messages", base_url: "https://api.anthropic.com/v1", default_model: "claude-sonnet-4-5", model_list_supported: true },
+  { id: "custom-openai-compatible", label: "自定义 OpenAI 兼容", provider: "openai", provider_type: "openai_compatible", base_url: "", default_model: "", model_list_supported: true },
+  { id: "mock", label: "本地 Mock", provider: "mock", provider_type: "mock", base_url: "", default_model: "mock-local", model_list_supported: false }
+];
+
 function aiStatus() {
+  const promptCacheSupported = mockModelConfig.provider === "anthropic";
+  const promptCache = {
+    object: "aiask.prompt_cache_policy",
+    enabled: Boolean(mockModelConfig.prompt_cache_enabled && promptCacheSupported),
+    requested_enabled: Boolean(mockModelConfig.prompt_cache_enabled),
+    supported: promptCacheSupported,
+    provider: mockModelConfig.provider,
+    provider_type: promptCacheSupported ? "anthropic_messages" : mockModelConfig.provider === "mock" ? "mock" : "openai_compatible",
+    strategy: "system_and_recent",
+    system_prompt: Boolean(mockModelConfig.prompt_cache_enabled && promptCacheSupported),
+    recent_non_system_messages: mockModelConfig.prompt_cache_enabled && promptCacheSupported ? mockModelConfig.prompt_cache_recent_messages : 0,
+    cache_control: mockModelConfig.prompt_cache_enabled && promptCacheSupported ? { type: "ephemeral" } : null,
+    secrets_redacted: true,
+  };
   return {
     object: "aiask.ai_status",
-    provider: "project-root-api",
-    model: "gpt-5.4",
-    base_url_configured: true,
-    api_key_configured: true,
-    mock: true,
+    provider: mockModelConfig.provider,
+    model: mockModelConfig.model,
+    base_url_configured: Boolean(mockModelConfig.base_url),
+    base_url: mockModelConfig.base_url || null,
+    api_key_configured: mockModelConfig.api_key_configured,
+    mock: mockModelConfig.mock,
     configured: true,
     runtime_client: "mock",
+    prompt_cache: promptCache,
     config_source: { loaded: true, path: "mock://aiask/.env", source: "project_root", secrets_redacted: true },
+    secrets_redacted: true
+  };
+}
+
+function aiConfig() {
+  const status = aiStatus();
+  return {
+    object: "aiask.ai_config",
+    status: "ready",
+    current: {
+      provider: status.provider,
+      model: status.model,
+      base_url: status.base_url,
+      api_key_configured: status.api_key_configured,
+      base_url_configured: status.base_url_configured,
+      mock: status.mock,
+      configured: status.configured,
+      prompt_cache: status.prompt_cache,
+      secrets_redacted: true
+    },
+    editable: {
+      provider_env: "AIASK_AGENT_MODEL_PROVIDER",
+      model_env: "AIASK_AGENT_MODEL",
+      base_url_env: "OPENAI_BASE_URL",
+      api_key_env: "OPENAI_API_KEY",
+      env_file: "mock://aiask/.env",
+      env_source: "project_root"
+    },
+    presets: aiProviderPresets,
+    actions: {
+      save: { method: "PATCH", path: "/v1/ai/config", requires_control_token: true },
+      models: { method: "GET", path: "/v1/ai/models" },
+      smoke: { method: "POST", path: "/v1/ai/smoke" }
+    },
     secrets_redacted: true
   };
 }
@@ -276,6 +1369,124 @@ function dataStatus() {
     max_stale_days: 5,
     missing_count: 0,
     stale_count: 0,
+    secrets_redacted: true
+  };
+}
+
+function stockDataSourceConfigured(source: Record<string, unknown>): boolean {
+  const preset = stockDataSourcePresets.find((item) => item.provider === source.provider);
+  const required = preset?.required_fields || [];
+  if (!required.length) return true;
+  return required.every((field) => {
+    if (field === "api_key") return Boolean(String(source.api_key || source.token || "").trim());
+    if (field === "port") return Number(source.port || 0) > 0;
+    return Boolean(String(source[field] || "").trim());
+  });
+}
+
+function redactStockDataSource(source: Record<string, unknown>): Record<string, unknown> {
+  const configured = stockDataSourceConfigured(source);
+  const enabled = source.enabled !== false;
+  return {
+    ...source,
+    api_key: source.api_key ? "[redacted]" : "",
+    token: source.token ? "[redacted]" : "",
+    password: source.password ? "[redacted]" : "",
+    api_key_configured: Boolean(String(source.api_key || source.token || source.password || "").trim()),
+    configured,
+    enabled,
+    status: enabled ? configured ? "ready" : "unconfigured" : "disabled",
+    secrets_redacted: true
+  };
+}
+
+function mergeStockDataSourceDraft(
+  base: Record<string, unknown> | undefined,
+  draft: Record<string, unknown>
+): Record<string, unknown> {
+  const merged = { ...(base || {}) };
+  for (const [key, value] of Object.entries(draft)) {
+    const lowered = key.toLowerCase();
+    const secretField = lowered.includes("api_key") || lowered.includes("token") || lowered.includes("secret") || lowered.includes("password");
+    if (secretField && (value === null || value === "" || value === undefined) && base) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
+
+function stockDataSourcesStatus() {
+  const sources = mockStockDataSources.map(redactStockDataSource);
+  return {
+    object: "aiask.stock_data_sources",
+    status: sources.some((source) => source.status === "ready") ? "ready" : "unconfigured",
+    configured_count: sources.filter((source) => source.configured).length,
+    ready_count: sources.filter((source) => source.status === "ready").length,
+    presets: stockDataSourcePresets,
+    sources,
+    config_path: "mock://aiask/stock_data_sources.json",
+    config_source: { source: "desktop.mockApi", loaded: true },
+    secrets_redacted: true
+  };
+}
+
+function saveMockStockDataSource(body: Record<string, unknown>) {
+  const provider = String(body.provider || "").trim();
+  const preset = stockDataSourcePresets.find((item) => item.provider === provider);
+  if (!provider || !preset) {
+    return { object: "aiask.stock_data_source", source: { provider, status: "unsupported", configured: false }, secrets_redacted: true };
+  }
+  const id = String(body.id || "").trim() || `mock:${provider}:${Date.now()}`;
+  const existing = mockStockDataSources.find((source) => source.id === id);
+  const next: Record<string, unknown> = {
+    ...(existing || {}),
+    ...body,
+    id,
+    provider,
+    name: String(body.name || existing?.name || preset.label),
+    enabled: body.enabled !== false,
+    updated_at: "2026-06-12T00:00:00Z",
+    source: "mock"
+  };
+  if (!body.api_key && existing?.api_key) next.api_key = existing.api_key;
+  if (!body.password && existing?.password) next.password = existing.password;
+  if (existing) {
+    mockStockDataSources = mockStockDataSources.map((source) => source.id === id ? next : source);
+  } else {
+    mockStockDataSources = [next, ...mockStockDataSources];
+  }
+  return { object: "aiask.stock_data_source", source: redactStockDataSource(next), secrets_redacted: true };
+}
+
+function testMockStockDataSource(body: Record<string, unknown>) {
+  const inline = body.source && typeof body.source === "object" && !Array.isArray(body.source)
+    ? body.source as Record<string, unknown>
+    : body;
+  const inlineId = String(inline.id || body.id || "").trim();
+  const stored = inlineId
+    ? mockStockDataSources.find((item) => item.id === inlineId)
+    : undefined;
+  const source = body.source && typeof body.source === "object" && !Array.isArray(body.source)
+    ? mergeStockDataSourceDraft(stored, inline)
+    : String(inline.provider || "").trim()
+      ? inline
+      : mockStockDataSources.find((item) => item.id === body.id) || mockStockDataSources.find((item) => item.provider === body.provider) || {};
+  const provider = String(source.provider || body.provider || "").trim();
+  const configured = stockDataSourceConfigured(source);
+  const enabled = source.enabled !== false;
+  const success = Boolean(provider && configured && enabled);
+  return {
+    object: "aiask.stock_data_source_test",
+    provider,
+    mode: String(body.mode || "connectivity"),
+    success,
+    status: success ? "ready" : enabled ? "unconfigured" : "disabled",
+    configured,
+    latency_ms: 8,
+    sample_count: success ? 3 : 0,
+    http_status: provider && !["akshare", "tdx"].includes(provider) ? 200 : undefined,
+    error_code: success ? undefined : "MOCK_SOURCE_UNCONFIGURED",
+    error: success ? null : "Mock 数据源缺少必填字段或已停用。",
+    source: redactStockDataSource(source),
     secrets_redacted: true
   };
 }
@@ -672,7 +1883,80 @@ function marketTemperatureForwardValidation(body: Record<string, unknown> = {}) 
 
 function strategyFactory() {
   return {
-    status: envelope("agent_factory_status", { status: "ready", configured: true, database_configured: true, run_count: 7 }),
+    status: envelope("agent_factory_status", {
+      status: "ready",
+      runtime_enabled: true,
+      event_runtime_mode: "readonly",
+      daily_run_count: 7,
+      cycle_count: 24,
+      recent_run_diagnostics: {
+        analyzed_run_count: 5,
+        quality_progress: {
+          recent_raw_b_or_above_rate_mean: 0.5,
+          recent_strict_ready_given_raw_b_rate_mean: 0
+        },
+        blocker_reason_topn: [
+          { reason_code: "diagnostic_only_not_allowed_for_incubation", count: 15 },
+          { reason_code: "default_profile_not_allowed_for_single_name_runtime", count: 10 },
+          { reason_code: "execution_readiness_tier:missing_executable_contract", count: 10 }
+        ],
+        recent_runs: [{ run_id: "run_factory_1", status: "completed" }]
+      },
+      strict_incubation_blocker_summary: {
+        contract_version: "strategy_factory.strict_incubation_blockers.v1",
+        status: "blocked",
+        headline: "Recent runs still fail formal admission because strict incubation readiness is zero.",
+        window_size: 5,
+        analyzed_run_count: 5,
+        analyzed_strategy_count: 20,
+        submitted_count: 35,
+        strict_not_ready_count: 20,
+        raw_b_or_above_count: 10,
+        raw_b_or_above_rate: 0.5,
+        strict_ready_given_raw_b_count: 0,
+        strict_ready_given_raw_b_rate: 0,
+        observe_lane_count: 18,
+        diagnostic_lane_count: 2,
+        top_blockers: [
+          {
+            reason_code: "diagnostic_only_not_allowed_for_incubation",
+            count: 15,
+            label: "Diagnostic-only runtime cannot enter formal incubation.",
+            next_action: "Route only non-diagnostic runtime evidence to formal incubation; keep diagnostic samples in observe."
+          },
+          {
+            reason_code: "default_profile_not_allowed_for_single_name_runtime",
+            count: 10,
+            label: "Default runtime profile is not allowed for single-name formal runtime.",
+            next_action: "Attach a single-name runtime profile before requesting formal admission."
+          },
+          {
+            reason_code: "execution_readiness_tier:missing_executable_contract",
+            count: 10,
+            label: "Executable contract readiness is missing.",
+            next_action: "Persist the executable DSL/runtime contract and replay admission."
+          }
+        ],
+        sample_blocked_strategies: [
+          {
+            strategy_id: "factory_mock_strict_1",
+            family: "momentum",
+            grade: "A",
+            submission_lane: "observe_incubation",
+            strict_incubation_ready: false,
+            blockers: [
+              "diagnostic_only_not_allowed_for_incubation",
+              "default_profile_not_allowed_for_single_name_runtime",
+              "execution_readiness_tier:missing_executable_contract"
+            ]
+          }
+        ],
+        next_action: "Route only non-diagnostic runtime evidence to formal incubation; keep diagnostic samples in observe."
+      },
+      configured: true,
+      database_configured: true,
+      run_count: 7
+    }),
     runs: envelope("agent_factory_runs", { runs: [{ run_id: "factory_run_mock", status: "completed", candidates: 12 }] }),
     review_snapshot: envelope("agent_strategy_review_snapshot", { status: "ready", reviews: [{ strategy_id: "strategy_mock", decision: "incubate" }] })
   };
@@ -991,6 +2275,313 @@ function tradePredictionMatrix(filters: Record<string, unknown> = {}) {
   };
 }
 
+const mockIncubationHitRateReport = {
+  report_date: "2026-06-05",
+  generated_at: "2026-06-05T02:45:00Z",
+  summary: {
+    total_incubating: 8,
+    total_with_signals: 7,
+    auto_promoted: 1,
+    stage_counts: {
+      candidate: 3,
+      observe: 2,
+      graduation_ready: 1,
+      blocked: 2
+    }
+  },
+  hit_rate_dashboard: {
+    overall: {
+      total_signals: 38,
+      hit_count: 23,
+      hit_rate: 0.6053,
+      avg_skill_lcb: 0.018,
+      avg_forward_sharpe: 0.86,
+      strategy_count: 8
+    },
+    by_family: {
+      momentum: {
+        hit_rate: 0.667,
+        total_n: 18,
+        avg_skill_lcb: 0.041,
+        avg_forward_sharpe: 1.22,
+        strategy_count: 3,
+        promotion_ready_count: 1,
+        blocked_count: 0,
+        missing_forward_windows: 0
+      },
+      mean_reversion: {
+        hit_rate: 0.455,
+        total_n: 11,
+        avg_skill_lcb: -0.012,
+        avg_forward_sharpe: 0.21,
+        strategy_count: 2,
+        promotion_ready_count: 0,
+        blocked_count: 1,
+        missing_forward_windows: 2
+      },
+      event_driven: {
+        hit_rate: 0.52,
+        total_n: 9,
+        avg_skill_lcb: 0.005,
+        avg_forward_sharpe: 0.48,
+        strategy_count: 3,
+        promotion_ready_count: 0,
+        blocked_count: 2,
+        missing_forward_windows: 3
+      }
+    },
+    by_regime: {
+      bull: {
+        hit_rate: 0.71,
+        total_n: 14,
+        avg_skill_lcb: 0.052,
+        avg_forward_sharpe: 1.34,
+        strategy_count: 3,
+        promotion_ready_count: 1,
+        blocked_count: 0,
+        missing_forward_windows: 0
+      },
+      range: {
+        hit_rate: 0.46,
+        total_n: 13,
+        avg_skill_lcb: -0.018,
+        avg_forward_sharpe: 0.16,
+        strategy_count: 3,
+        promotion_ready_count: 0,
+        blocked_count: 1,
+        missing_forward_windows: 2
+      },
+      volatile: {
+        hit_rate: 0.5,
+        total_n: 11,
+        avg_skill_lcb: 0.002,
+        avg_forward_sharpe: 0.32,
+        strategy_count: 2,
+        promotion_ready_count: 0,
+        blocked_count: 2,
+        missing_forward_windows: 3
+      }
+    },
+    by_stage: {
+      candidate: { hit_rate: 0.54, total_n: 18, avg_skill_lcb: 0.006, strategy_count: 3, blocked_count: 1 },
+      observe: { hit_rate: 0.49, total_n: 9, avg_skill_lcb: -0.004, strategy_count: 2, blocked_count: 1 },
+      graduation_ready: { hit_rate: 0.667, total_n: 6, avg_skill_lcb: 0.041, strategy_count: 1, promotion_ready_count: 1 },
+      blocked: { hit_rate: 0.42, total_n: 5, avg_skill_lcb: -0.022, strategy_count: 2, blocked_count: 2 }
+    },
+    trend: {
+      available: true,
+      improvement: 0.074,
+      direction: "improving"
+    }
+  },
+  promotion_blocker_summary: {
+    status: "blocked",
+    blocked_strategy_count: 3,
+    top_blockers: [
+      {
+        reason_code: "missing_forward_window_5d",
+        count: 3,
+        label: "5d forward window is not complete.",
+        next_action: "Wait for the 5d forward verification window or exclude incomplete samples from promotion review."
+      },
+      {
+        reason_code: "execution_audit_pending",
+        count: 2,
+        label: "Execution audit replay has not accepted the strategy.",
+        next_action: "Run execution audit replay and attach acceptance evidence before graduation."
+      },
+      {
+        reason_code: "governance_review_required",
+        count: 1,
+        label: "Governance review is required before promotion.",
+        next_action: "Complete governance review for the graduation-ready strategy."
+      }
+    ]
+  },
+  feedback_actions: {
+    families_to_boost: ["momentum"],
+    families_to_cooldown: ["mean_reversion"],
+    families_to_freeze: ["event_driven"]
+  },
+  lifecycle_evidence: [
+    {
+      strategy_id: "strategy_momentum_cn",
+      strategy_name: "Momentum CN",
+      family: "momentum",
+      regime: "bull",
+      current_stage: "graduation_ready",
+      lifecycle_state: "graduation_ready",
+      observed_days: 24,
+      trade_days: 18,
+      hit_rate: 0.667,
+      skill_lcb: 0.041,
+      forward_sharpe: 1.22,
+      forward_windows_completed: ["1d", "3d", "5d"],
+      execution_audit: { status: "passed", accepted: true, replay_count: 12 },
+      risk_gate: "passed",
+      governance_status: "review_required",
+      promotion_blockers: ["governance_review_required"],
+      next_action: "Complete governance review and attach reviewer acceptance."
+    },
+    {
+      strategy_id: "strategy_event_cn",
+      strategy_name: "Event CN",
+      family: "event_driven",
+      regime: "volatile",
+      current_stage: "blocked",
+      lifecycle_state: "blocked",
+      observed_days: 11,
+      trade_days: 6,
+      hit_rate: 0.5,
+      skill_lcb: 0.002,
+      forward_sharpe: 0.32,
+      forward_windows_completed: ["1d", "3d"],
+      execution_audit: { status: "pending", accepted: false, replay_count: 0 },
+      risk_gate: "passed",
+      governance_status: "not_started",
+      promotion_blockers: ["missing_forward_window_5d", "execution_audit_pending"],
+      next_action: "Finish the 5d forward window and rerun execution audit."
+    },
+    {
+      strategy_id: "strategy_reversal_cn",
+      strategy_name: "Mean Reversion CN",
+      family: "mean_reversion",
+      regime: "range",
+      current_stage: "observe",
+      lifecycle_state: "observe",
+      observed_days: 14,
+      trade_days: 9,
+      hit_rate: 0.455,
+      skill_lcb: -0.012,
+      forward_sharpe: 0.21,
+      forward_windows_completed: ["1d"],
+      execution_audit: { status: "not_started", accepted: false, replay_count: 0 },
+      risk_gate: "soft_fail",
+      governance_status: "not_started",
+      promotion_blockers: ["weak_skill_lcb", "missing_forward_window_3d", "missing_forward_window_5d"],
+      next_action: "Keep in observe until skill LCB and forward windows recover."
+    }
+  ],
+  source_chain: ["desktop.mockApi", "incubation_factory.hit_rate_report_generated"]
+};
+
+const mockIncubationDomainEvents = [
+  {
+    id: "inc_evt_report_001",
+    event_id: "inc_evt_report_001",
+    event_type: "incubation_factory.hit_rate_report_generated",
+    aggregate_id: "incubation_factory",
+    severity: "info",
+    created_at: "2026-06-05T02:45:00Z",
+    payload: mockIncubationHitRateReport
+  },
+  {
+    id: "inc_evt_stage_001",
+    event_id: "inc_evt_stage_001",
+    event_type: "incubation.stage_transitioned",
+    aggregate_id: "strategy_momentum_cn",
+    strategy_id: "strategy_momentum_cn",
+    status: "graduation_ready",
+    severity: "info",
+    created_at: "2026-06-05T02:40:00Z",
+    payload: {
+      strategy_id: "strategy_momentum_cn",
+      strategy_name: "Momentum CN",
+      from_stage: "observe",
+      to_stage: "graduation_ready",
+      family: "momentum",
+      regime: "bull",
+      lifecycle_state: "graduation_ready",
+      evidence: mockIncubationHitRateReport.lifecycle_evidence[0]
+    }
+  },
+  {
+    id: "inc_evt_stage_002",
+    event_id: "inc_evt_stage_002",
+    event_type: "incubation.stage_transitioned",
+    aggregate_id: "strategy_event_cn",
+    strategy_id: "strategy_event_cn",
+    status: "blocked",
+    severity: "warn",
+    created_at: "2026-06-05T02:35:00Z",
+    payload: {
+      strategy_id: "strategy_event_cn",
+      strategy_name: "Event CN",
+      from_stage: "candidate",
+      to_stage: "blocked",
+      family: "event_driven",
+      regime: "volatile",
+      lifecycle_state: "blocked",
+      evidence: mockIncubationHitRateReport.lifecycle_evidence[1],
+      promotion_blockers: ["missing_forward_window_5d", "execution_audit_pending"]
+    }
+  },
+  {
+    id: "inc_evt_stage_003",
+    event_id: "inc_evt_stage_003",
+    event_type: "incubation.stage_transitioned",
+    aggregate_id: "strategy_reversal_cn",
+    strategy_id: "strategy_reversal_cn",
+    status: "observe",
+    severity: "warn",
+    created_at: "2026-06-05T02:30:00Z",
+    payload: {
+      strategy_id: "strategy_reversal_cn",
+      strategy_name: "Mean Reversion CN",
+      from_stage: "candidate",
+      to_stage: "observe",
+      family: "mean_reversion",
+      regime: "range",
+      lifecycle_state: "observe",
+      evidence: mockIncubationHitRateReport.lifecycle_evidence[2],
+      promotion_blockers: ["weak_skill_lcb", "missing_forward_window_3d", "missing_forward_window_5d"]
+    }
+  },
+  {
+    id: "factory_evt_run_001",
+    event_id: "factory_evt_run_001",
+    event_type: "factory.run_completed",
+    aggregate_id: "factory_run_mock",
+    strategy_id: "strategy_mock",
+    status: "completed",
+    severity: "info",
+    created_at: "2026-06-05T01:55:00Z",
+    payload: {
+      decision: "review",
+      strategy_id: "strategy_mock",
+      candidate_count: 12
+    }
+  }
+];
+
+function incubationFactoryStatusPayload() {
+  return {
+    status: "ready",
+    run_count: 3,
+    error_count: 0,
+    last_run_at: "2026-06-05T02:45:00Z",
+    last_result_status: "completed",
+    report: mockIncubationHitRateReport,
+    latest_lifecycle_state: mockIncubationHitRateReport.lifecycle_evidence[0],
+    promotion_blocker_summary: mockIncubationHitRateReport.promotion_blocker_summary,
+    source_chain: ["desktop.mockApi", "agent_incubation_factory_status"]
+  };
+}
+
+function strategyDomainEventsPayload(body: Record<string, unknown>) {
+  const requestedType = String(body.event_type || "");
+  const limit = safeLimit(body.limit, 20);
+  const events = requestedType
+    ? mockIncubationDomainEvents.filter((event) => event.event_type === requestedType)
+    : mockIncubationDomainEvents;
+  return {
+    events: events.slice(0, limit),
+    count: events.length,
+    event_type: requestedType || "all",
+    source_chain: ["desktop.mockApi", "agent_strategy_domain_events"]
+  };
+}
+
 function capabilities(): CapabilityWorkbenchPayload {
   const allTools = [...financeTools, ...hermesTools];
   return {
@@ -1013,7 +2604,9 @@ function capabilities(): CapabilityWorkbenchPayload {
       status: {
         object: "aiask.hermes_status",
         implementation: "aiask_native",
-        baseline: "Hermes full parity",
+        baseline: HERMES_BASELINE,
+        baseline_version: HERMES_BASELINE_VERSION,
+        baseline_release_tag: HERMES_RELEASE_TAG,
         embedded_vendor_runtime: false,
         full_mode_enabled: true,
         full_mode_active: true,
@@ -1021,28 +2614,88 @@ function capabilities(): CapabilityWorkbenchPayload {
       },
       parity: {
         object: "aiask.capability_parity",
-        baseline: "hermes_native",
+        baseline: HERMES_BASELINE,
+        baseline_version: HERMES_BASELINE_VERSION,
+        baseline_release_tag: HERMES_RELEASE_TAG,
         scope: "hermes_full_runtime",
+        legacy_scope: "financial_product_runtime",
         embedded_vendor_runtime: false,
         required_count: 12,
         covered_count: 12,
         complete_count: 11,
         coverage_ratio: 1,
         complete_ratio: 0.92,
-        status: "implemented",
+        status: "in_progress",
         strict_status: "in_progress",
+        strict_hermes_tool_count: 58,
+        strict_gateway_platform_count: 22,
+        code_status: "present",
+        core_code_status: "present",
+        mock_status: "passed",
+        live_status: "live_unverified",
+        live_unverified_count: 27,
+        feature_count: 19,
+        implemented_features_count: 19,
         matrix: [],
         v014_delta: {
-          total: 4,
-          implemented_count: 3,
-          partial_count: 1,
+          baseline: "Hermes v0.14.0 full runtime capability reference",
+          release_tag: "v2026.5.16",
+          total: 18,
+          implemented_count: 11,
+          partial_count: 5,
           missing_count: 0,
+          excluded_by_design_count: 2,
           implemented: [{ reference: "browser_snapshot", area: "browser", aiask_tools: ["agent_browser_snapshot"], missing_aiask_tools: [], status: "implemented" }],
-          partial: [{ reference: "rl_training", area: "rl", aiask_tools: ["agent_rl_list_environments"], missing_aiask_tools: [], status: "skipped_missing_credentials", required_env: ["TINKER_API_KEY"] }],
+          partial: [{ reference: "rl_training", area: "rl", aiask_tools: ["agent_rl_list_environments"], missing_aiask_tools: [], status: "live_unverified", required_env: ["TINKER_API_KEY", "WANDB_API_KEY"] }],
+          missing: [],
+          excluded_by_design: [{ reference: "openai_compatible_local_proxy", area: "models", aiask_tools: ["agent_model_manage"], missing_aiask_tools: [], status: "excluded_by_design" }]
+        },
+        v016_delta: {
+          baseline: HERMES_V016_BASELINE,
+          release_tag: HERMES_RELEASE_TAG,
+          total: 19,
+          implemented_count: 6,
+          partial_count: 13,
+          missing_count: 0,
+          excluded_by_design_count: 0,
+          implemented: [
+            { reference: "desktop_native_shell", feature: "desktop_native_shell", area: "desktop", aiask_tools: ["agent_tool_catalog"], missing_aiask_tools: [], status: "implemented" },
+            { reference: "undo_last_turns", feature: "undo_last_turns", area: "session", aiask_tools: ["agent_tui_status"], missing_aiask_tools: [], status: "implemented" },
+            { reference: "checkpoint_and_rollback", feature: "checkpoint_and_rollback", area: "file", aiask_tools: ["agent_file_checkpoint", "agent_file_rollback"], missing_aiask_tools: [], status: "implemented" },
+            { reference: "model_picker_profiles_and_fallback", feature: "model_picker_profiles_and_fallback", area: "models", aiask_tools: ["agent_model_manage"], missing_aiask_tools: [], status: "implemented" }
+          ],
+          partial: [
+            { reference: "prompt_caching_controls", feature: "prompt_caching_controls", area: "models", aiask_tools: ["agent_model_manage"], missing_aiask_tools: [], status: "implemented", description: "AIASK exposes prompt-cache policy/status and applies Anthropic cache_control markers when enabled." },
+            { reference: "session_archive_search_and_links", feature: "session_archive_search_and_links", area: "session", aiask_tools: ["agent_session_search", "agent_session_handoff"], missing_aiask_tools: [], status: "partial", description: "Mock parity includes session search, archive/unarchive list filtering, include_archived flags, and Desktop archive/restore controls; cross-profile links remain partial." },
+            { reference: "browser_backend_matrix", feature: "browser_backend_matrix", area: "browser", aiask_tools: ["agent_browser_navigate"], missing_aiask_tools: [], status: "partial" }
+          ],
           missing: []
         }
       },
-      readiness: { status: "ready" },
+      readiness: {
+        object: "aiask.hermes_readiness",
+        status: "ready",
+        parity_baseline: HERMES_BASELINE,
+        baseline_version: HERMES_BASELINE_VERSION,
+        baseline_release_tag: HERMES_RELEASE_TAG,
+        live_evidence: {
+          object: "aiask.hermes_live_evidence",
+          baseline: HERMES_BASELINE,
+          baseline_version: HERMES_BASELINE_VERSION,
+          baseline_release_tag: HERMES_RELEASE_TAG,
+          code_status: "present",
+          core_code_status: "present",
+          mock_status: "passed",
+          live_status: "live_unverified",
+          strict_status: "in_progress",
+          live_unverified_count: 27,
+          required_env_names: ["OPENAI_API_KEY", "TINKER_API_KEY", "WANDB_API_KEY"],
+          required_env_groups: ["OPENAI_API_KEY", "TINKER_API_KEY", "WANDB_API_KEY"],
+          items: [
+            { kind: "tool", name: "rl_start_training", area: "rl", code_status: "present", mock_status: "passed", live_status: "skipped_missing_credentials", required_env: ["TINKER_API_KEY", "WANDB_API_KEY"], safe_to_smoke: true }
+          ]
+        }
+      },
       tool_mapping: allTools.map((tool) => ({
         hermes_tool: tool.name.replace(/^agent_/, ""),
         reference: tool.name,
@@ -1177,7 +2830,7 @@ function capabilities(): CapabilityWorkbenchPayload {
           { name: "financial_manager_catalog", method: "GET", path: "/v1/desktop/financial-manager/catalog" },
           { name: "financial_manager_query", method: "POST", path: "/v1/desktop/financial-manager/query" },
           { name: "data_status", method: "GET", path: "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5" },
-          { name: "factory_status", method: "POST", path: "/v1/tools/agent_factory_status", observes: ["success", "configured", "database_configured", "run_count"] },
+          { name: "factory_status", method: "POST", path: "/v1/tools/agent_factory_status", observes: ["success", "runtime_enabled", "event_runtime_mode", "daily_run_count", "cycle_count"] },
           { name: "market_temperature_cache", method: "POST", path: "/v1/tools/agent_market_temperature_cache_readiness", observes: ["ready", "status", "blockers", "warnings"] },
           { name: "market_temperature_forward_validation", method: "POST", path: "/v1/tools/agent_market_temperature_forward_validation", observes: ["benchmark_status", "quality_status", "warnings", "sample_count"] },
           { name: "quant_research", method: "POST", path: "/v1/desktop/quant/research-runs" }
@@ -1241,6 +2894,7 @@ function settingsStatus() {
       quant_research: { path: "mock://aiask/quant.sqlite3", writable: true },
       akshare: { path: "mock://aiask/akshare.sqlite3", writable: true }
     },
+    stock_data_sources: stockDataSourcesStatus(),
     profile,
     secrets_redacted: true
   };
@@ -1285,11 +2939,43 @@ function toolResult(tool: string, body: Record<string, unknown>) {
       summary: { signal: "watch", source: "desktop.mockApi", investment_advice: false }
     });
   }
+  if (tool === "agent_stock_live_quote") {
+    const code = String(body.code || body.stock_code || body.symbol || body.ticker || "600519");
+    return envelope(tool, {
+      code,
+      price: 123.45,
+      change: 1.5,
+      change_pct: 1.23,
+      volume: 1200000,
+      amount: 148140000,
+      provider: "sina",
+      data_timestamp: "2026-05-22T09:00:00+08:00",
+      source_chain: ["desktop.mockApi", "akshare", "sina"],
+      fallback_reason: null
+    });
+  }
+  if (tool === "agent_stock_news_digest") {
+    const code = String(body.code || body.stock_code || body.symbol || body.ticker || "600519");
+    return envelope(tool, {
+      code,
+      items: [
+        {
+          title: "Mock 财经新闻",
+          url: "https://example.com/aiask/mock-news",
+          provider: "eastmoney",
+          published_at: "2026-05-22T08:55:00+08:00",
+          excerpt: "Mock 新闻来源链接，用于验证 Desktop 证据展示。"
+        }
+      ],
+      source_chain: ["desktop.mockApi", "eastmoney"],
+      fetched_at: "2026-05-22T09:00:00Z"
+    });
+  }
   if (tool === "agent_factory_status") return strategyFactory().status;
   if (tool === "agent_factory_runs") return strategyFactory().runs;
   if (tool === "agent_strategy_review_snapshot") return strategyFactory().review_snapshot;
-  if (tool === "agent_incubation_factory_status") return envelope(tool, { run_count: 3, error_count: 0, last_result_status: "completed" });
-  if (tool === "agent_strategy_domain_events") return envelope(tool, { events: [{ event_type: body.event_type || "factory.run_completed", payload: { decision: "review" } }] });
+  if (tool === "agent_incubation_factory_status") return envelope(tool, incubationFactoryStatusPayload());
+  if (tool === "agent_strategy_domain_events") return envelope(tool, strategyDomainEventsPayload(body));
   if (tool === "agent_trade_prediction_status") return envelope(tool, tradePredictionStatus(body));
   if (tool === "agent_trade_prediction_outcomes") return envelope(tool, tradePredictionOutcomes(body));
   if (tool === "agent_trade_prediction_matrix") return envelope(tool, tradePredictionMatrix(body));
@@ -1506,6 +3192,9 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/desktop/runs") return ok({ object: "list", data: mockRunSummaries } as T);
   if (cleanPath === "/v1/desktop/settings/status") return ok(settingsStatus() as T);
   if (cleanPath === "/v1/desktop/data/status") return ok(dataStatus() as T);
+  if (cleanPath === "/v1/desktop/stock-data-sources" && method === "GET") return ok(stockDataSourcesStatus() as T);
+  if (cleanPath === "/v1/desktop/stock-data-sources" && method === "POST") return ok(saveMockStockDataSource(body) as T);
+  if (cleanPath === "/v1/desktop/stock-data-sources/test") return ok(testMockStockDataSource(body) as T);
   if (cleanPath === "/v1/desktop/data/sync-plan") {
     return ok({
       object: "aiask.desktop_data_sync_plan",
@@ -1532,6 +3221,209 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     profile = { ...profile, user_id: String(body.user_id || profile.user_id), profile_name: String(body.profile_name || profile.profile_name), updated_at: "2026-05-22T09:05:00Z" };
     return ok(profile as T);
   }
+  if (cleanPath === "/v1/desktop/events" && method === "POST") {
+    const rawEvents = Array.isArray(body.events) ? body.events : [body];
+    const events = rawEvents
+      .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)))
+      .map((item, index) => ({
+        id: mockActivityEvents.length + index + 1,
+        user_id: String(item.user_id || profile.user_id || "local"),
+        session_id: item.session_id ? String(item.session_id) : "sess_mock",
+        run_id: item.run_id ? String(item.run_id) : null,
+        trace_id: item.trace_id ? String(item.trace_id) : `trace_mock_event_${mockActivityEvents.length + index + 1}`,
+        page_key: item.page_key ? String(item.page_key) : null,
+        route: item.route ? String(item.route) : null,
+        event_type: String(item.event_type || "event"),
+        target_type: item.target_type ? String(item.target_type) : null,
+        target_id: item.target_id ? String(item.target_id) : null,
+        target_label: item.target_label ? String(item.target_label) : null,
+        target_testid: item.target_testid ? String(item.target_testid) : null,
+        payload: redactedAuditValue(item.payload || {}) as Record<string, unknown>,
+        source: String(item.source || "desktop.mock"),
+        created_at: mockNow()
+      }));
+    mockActivityEvents = [...events, ...mockActivityEvents].slice(0, 200);
+    return ok({ object: "list", data: events, count: events.length, secrets_redacted: true } as T);
+  }
+  if (cleanPath === "/v1/desktop/feedback" && method === "POST") {
+    const feedback = {
+      id: mockFeedbackEvents.length + 1,
+      feedback_id: String(body.feedback_id || `feedback_mock_${mockFeedbackEvents.length + 1}`),
+      user_id: String(body.user_id || profile.user_id || "local"),
+      session_id: body.session_id || "sess_mock",
+      run_id: body.run_id || null,
+      target_type: String(body.target_type || "page"),
+      target_id: body.target_id || null,
+      feedback_type: String(body.feedback_type || "thumbs_up"),
+      rating: body.rating ?? null,
+      comment: body.comment || null,
+      allow_learning: Boolean(body.allow_learning),
+      payload: redactedAuditValue(body.payload || {}),
+      created_at: mockNow()
+    };
+    mockFeedbackEvents = [feedback, ...mockFeedbackEvents].slice(0, 100);
+    return ok({ object: "aiask.feedback", data: feedback, secrets_redacted: true } as T);
+  }
+  const userActivityMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/activity$/);
+  if (userActivityMatch) {
+    const userId = decodeURIComponent(userActivityMatch[1]);
+    const limit = Number(query.get("limit") || 20);
+    return ok({
+      object: "aiask.user_activity",
+      user_id: userId,
+      sessions: currentMockSessionSummaries().filter((session) => !session.user_id || session.user_id === userId).slice(0, limit),
+      runs: mockRunSummaries.slice(0, limit),
+      events: mockActivityEvents.filter((event) => !event.user_id || event.user_id === userId).slice(0, limit),
+      tool_invocations: mockToolInvocations.filter((item) => !item.user_id || item.user_id === userId).slice(0, limit),
+      feedback: mockFeedbackEvents.filter((item) => !item.user_id || item.user_id === userId).slice(0, limit),
+      policy: userPolicy(userId),
+      secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/analytics/summary") {
+    const userId = query.get("user_id") || undefined;
+    const events = mockActivityEvents.filter((event) => !userId || event.user_id === userId);
+    const tools = mockToolInvocations.filter((item) => !userId || item.user_id === userId);
+    const feedback = mockFeedbackEvents.filter((item) => !userId || item.user_id === userId);
+    const toolNames = Array.from(new Set(tools.map((item) => String(item.tool_name || "tool"))));
+    return ok({
+      object: "aiask.analytics_summary",
+      scope: userId ? "user" : "aggregate",
+      user_id: userId || null,
+      totals: { events: events.length, tool_invocations: tools.length, feedback: feedback.length },
+      events_by_type: Array.from(new Set(events.map((event) => event.event_type))).map((event_type) => ({
+        event_type,
+        count: events.filter((event) => event.event_type === event_type).length
+      })),
+      pages: Array.from(new Set(events.map((event) => event.page_key || event.route || "unknown"))).map((page_key) => ({
+        page_key,
+        count: events.filter((event) => (event.page_key || event.route || "unknown") === page_key).length
+      })),
+      tools: toolNames.map((tool_name) => {
+        const rows = tools.filter((item) => item.tool_name === tool_name);
+        const failed = rows.filter((item) => item.status !== "succeeded").length;
+        return { tool_name, count: rows.length, succeeded: rows.length - failed, failed, failure_rate: rows.length ? failed / rows.length : 0, avg_duration_ms: 5 };
+      }),
+      feedback: Array.from(new Set(feedback.map((item) => `${item.target_type}:${item.feedback_type}`))).map((key) => {
+        const [target_type, feedback_type] = key.split(":");
+        return { target_type, feedback_type, count: feedback.filter((item) => `${item.target_type}:${item.feedback_type}` === key).length, avg_rating: null };
+      }),
+      secrets_redacted: true
+    } as T);
+  }
+  const userExportMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/export$/);
+  if (userExportMatch) {
+    const userId = decodeURIComponent(userExportMatch[1]);
+    return ok({
+      object: "aiask.user_data_export",
+      user_id: userId,
+      exported_at: mockNow(),
+      profile_policy: userPolicy(userId),
+      sessions: currentMockSessionSummaries().filter((session) => !session.user_id || session.user_id === userId),
+      messages: mockSessionMessages,
+      runs: mockRunSummaries,
+      run_events: mockRunEvents,
+      activity_events: mockActivityEvents.filter((event) => !event.user_id || event.user_id === userId),
+      tool_invocations: mockToolInvocations.filter((item) => !item.user_id || item.user_id === userId),
+      feedback: mockFeedbackEvents.filter((item) => !item.user_id || item.user_id === userId),
+      sources: mockAgentSources.filter((item) => !item.user_id || item.user_id === userId),
+      artifacts: mockAgentArtifacts.filter((item) => !item.user_id || item.user_id === userId),
+      analytics: {
+        object: "aiask.analytics_summary",
+        scope: "user",
+        user_id: userId,
+        totals: { events: mockActivityEvents.length, tool_invocations: mockToolInvocations.length, feedback: mockFeedbackEvents.length },
+        events_by_type: [],
+        pages: [],
+        tools: [],
+        feedback: [],
+        secrets_redacted: true
+      },
+      secrets_redacted: true
+    } as T);
+  }
+  const userDeleteMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/delete$/);
+  if (userDeleteMatch && method === "POST") {
+    const userId = decodeURIComponent(userDeleteMatch[1]);
+    const dryRun = body.dry_run !== false;
+    const counts = {
+      sessions: currentMockSessionSummaries().filter((session) => !session.user_id || session.user_id === userId).length,
+      messages: mockSessionMessages.length,
+      responses: 0,
+      runs: mockRunSummaries.length,
+      run_events: mockRunEvents.length,
+      activity_events: mockActivityEvents.filter((event) => !event.user_id || event.user_id === userId).length,
+      tool_invocations: mockToolInvocations.filter((item) => !item.user_id || item.user_id === userId).length,
+      feedback: mockFeedbackEvents.filter((item) => !item.user_id || item.user_id === userId).length,
+      sources: mockAgentSources.filter((item) => !item.user_id || item.user_id === userId).length,
+      artifacts: mockAgentArtifacts.filter((item) => !item.user_id || item.user_id === userId).length,
+      search_rows: 0
+    };
+    if (!dryRun) {
+      mockActivityEvents = mockActivityEvents.filter((event) => event.user_id !== userId);
+      mockToolInvocations = mockToolInvocations.filter((item) => item.user_id !== userId);
+      mockFeedbackEvents = mockFeedbackEvents.filter((item) => item.user_id !== userId);
+    }
+    return ok({
+      object: "aiask.user_data_delete",
+      user_id: userId,
+      dry_run: dryRun,
+      hard_delete: Boolean(body.hard_delete),
+      anonymized_user_id: body.hard_delete ? null : `deleted:${userId}`,
+      counts,
+      deleted_at: dryRun ? undefined : mockNow(),
+      external_side_effects: "not_rolled_back",
+      secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/retention/sweep" && method === "POST") {
+    return ok({
+      object: "aiask.retention_sweep",
+      dry_run: body.dry_run !== false,
+      user_id: body.user_id || null,
+      counts: { user_activity_events: 0, tool_invocations_payloads: 0, run_events: 0, feedback_events: 0, messages: 0 },
+      tables: ["user_activity_events", "tool_invocations_payloads", "run_events", "feedback_events", "messages"],
+      market_data_affected: false,
+      secrets_redacted: true
+    } as T);
+  }
+  const learningMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/learning-dataset$/);
+  if (learningMatch) {
+    const userId = decodeURIComponent(learningMatch[1]);
+    const policy = userPolicy(userId);
+    const items = policy.allow_learning ? mockFeedbackEvents.filter((item) => item.user_id === userId && item.allow_learning) : [];
+    return ok({
+      object: "aiask.learning_dataset",
+      user_id: userId,
+      allowed: Boolean(policy.allow_learning),
+      items,
+      count: items.length,
+      reason: policy.allow_learning ? undefined : "learning_not_allowed",
+      secrets_redacted: true
+    } as T);
+  }
+  const recommendationMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/recommendations$/);
+  if (recommendationMatch) {
+    const userId = decodeURIComponent(recommendationMatch[1]);
+    return ok({
+      object: "aiask.workflow_recommendations",
+      user_id: userId,
+      data_source: "local_user_activity",
+      data: [
+        { id: "feedback:collect", kind: "feedback_collection", priority: "medium", title: "Collect explicit feedback", reason: "Mock recommendation." }
+      ],
+      count: 1,
+      secrets_redacted: true
+    } as T);
+  }
+  const userPolicyMatch = cleanPath.match(/^\/v1\/desktop\/users\/([^/]+)\/data-policy$/);
+  if (userPolicyMatch) {
+    const userId = decodeURIComponent(userPolicyMatch[1]);
+    if (method === "PATCH") {
+      mockUserDataPolicies[userId] = { ...userPolicy(userId), ...body, user_id: userId, updated_at: mockNow() };
+    }
+    return ok({ object: "aiask.user_data_policy", data: userPolicy(userId) } as T);
+  }
   if (cleanPath === "/v1/desktop/factor-factory/status") {
     return ok({
       object: "aiask.factor_factory_status",
@@ -1554,8 +3446,40 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
     return ok(envelope("agent_trade_prediction_matrix", tradePredictionMatrix(queryRecord(query))) as T);
   }
   if (cleanPath === "/v1/ai/status") return ok(aiStatus() as T);
-  if (cleanPath === "/v1/ai/smoke") return ok({ object: "aiask.ai_smoke", configured: true, success: true, provider: "project-root-api", model: body.model || "gpt-5.4", mock: true, latency_ms: 5, response_preview: "AI_SMOKE_PASSED", secrets_redacted: true } as T);
-  if (cleanPath === "/v1/ai/models") return ok({ data: [{ id: "gpt-5.4", object: "model", owned_by: "project-root-api" }, { id: "gpt-5.4-mini", object: "model", owned_by: "project-root-api" }], configured: true } as T);
+  if (cleanPath === "/v1/ai/config" && method === "GET") return ok(aiConfig() as T);
+  if (cleanPath === "/v1/ai/config" && method === "PATCH") {
+    const preset = aiProviderPresets.find((item) => item.id === body.preset);
+    const provider = String(body.provider || preset?.provider || mockModelConfig.provider);
+    const model = String(body.model || preset?.default_model || mockModelConfig.model);
+    const baseUrl = String(body.base_url ?? preset?.base_url ?? mockModelConfig.base_url);
+    mockModelConfig = {
+      preset: String(body.preset || preset?.id || "custom-openai-compatible"),
+      provider,
+      model,
+      base_url: baseUrl,
+      api_key_configured: Boolean(body.api_key || mockModelConfig.api_key_configured || provider === "mock"),
+      mock: true,
+      prompt_cache_enabled: Boolean(body.prompt_cache_enabled),
+      prompt_cache_recent_messages: Math.max(0, Math.min(Number(body.prompt_cache_recent_messages || 3), 20))
+    };
+    const status = aiStatus();
+    return ok({
+      object: "aiask.ai_config",
+      saved: true,
+      provider: mockModelConfig.provider,
+      model: mockModelConfig.model,
+      base_url_configured: Boolean(mockModelConfig.base_url),
+      api_key_configured: mockModelConfig.api_key_configured,
+      mock: mockModelConfig.mock,
+      configured: true,
+      prompt_cache: status.prompt_cache,
+      updated_keys: ["AIASK_AGENT_MODEL_PROVIDER", "AIASK_AGENT_MODEL", "OPENAI_BASE_URL", "AIASK_AGENT_PROMPT_CACHE_ENABLED", "AIASK_AGENT_PROMPT_CACHE_RECENT_MESSAGES", ...(body.api_key ? ["OPENAI_API_KEY"] : [])],
+      env_file: "mock://aiask/.env",
+      secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/ai/smoke") return ok({ object: "aiask.ai_smoke", configured: true, success: true, provider: mockModelConfig.provider, model: body.model || mockModelConfig.model, mock: true, latency_ms: 5, response_preview: "AI_SMOKE_PASSED", secrets_redacted: true } as T);
+  if (cleanPath === "/v1/ai/models") return ok({ data: [{ id: mockModelConfig.model, object: "model", owned_by: mockModelConfig.provider }, { id: `${mockModelConfig.model}-mini`, object: "model", owned_by: mockModelConfig.provider }], configured: true } as T);
   if (cleanPath === "/v1/responses") return ok({ id: "resp_mock", object: "response", status: "completed", output_text: "AIASK_OK", metadata: { session_id: body.session_id || "sess_mock", run_id: "run_mock", mode: body.mode || "finance_safe", audit_events: [{ event: "mock" }] } } as T);
   const responseMatch = cleanPath.match(/^\/v1\/responses\/([^/]+)$/);
   if (responseMatch) {
@@ -1573,10 +3497,182 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   if (cleanPath === "/v1/runs/run_mock/events" || cleanPath === "/v1/runs/run_mock/events/stream") {
     return ok({ object: "list", data: mockRunEvents } as T);
   }
-  if (cleanPath === "/v1/search") return ok({ object: "list", data: [{ kind: "response", object_id: "resp_mock", session_id: "sess_mock", user_id: profile.user_id, content: "Mock 回复命中" }] } as T);
-  if (cleanPath === "/v1/hermes/sessions") return ok({ object: "list", data: mockSessionSummaries } as T);
+  const runTraceEvalMatch = cleanPath.match(/^\/v1\/runs\/([^/]+)\/trace-eval$/);
+  if (runTraceEvalMatch) {
+    return ok(mockRunTraceEval(decodeURIComponent(runTraceEvalMatch[1])) as T);
+  }
+  const runArtifactsMatch = cleanPath.match(/^\/v1\/runs\/([^/]+)\/artifacts$/);
+  if (runArtifactsMatch) {
+    const runId = decodeURIComponent(runArtifactsMatch[1]);
+    return ok({
+      object: "list",
+      run_id: runId,
+      data: filterMockArtifacts({
+        runId,
+        kind: query.get("kind"),
+        limit: Number(query.get("limit") || 100)
+      })
+    } as T);
+  }
+  const runSourcesMatch = cleanPath.match(/^\/v1\/runs\/([^/]+)\/sources$/);
+  if (runSourcesMatch) {
+    const runId = decodeURIComponent(runSourcesMatch[1]);
+    return ok({
+      object: "list",
+      run_id: runId,
+      data: filterMockSources({
+        runId,
+        sourceType: query.get("source_type"),
+        limit: Number(query.get("limit") || 100)
+      })
+    } as T);
+  }
+  const runToolInvocationsMatch = cleanPath.match(/^\/v1\/runs\/([^/]+)\/tool-invocations$/);
+  if (runToolInvocationsMatch) {
+    const runId = decodeURIComponent(runToolInvocationsMatch[1]);
+    const limit = Number(query.get("limit") || 100);
+    return ok({
+      object: "list",
+      run_id: runId,
+      data: mockToolInvocations.filter((item) => item.run_id === runId).slice(0, Math.max(1, Math.min(limit || 100, 1000)))
+    } as T);
+  }
+  const sessionArtifactsMatch = cleanPath.match(/^\/v1\/sessions\/([^/]+)\/artifacts$/);
+  if (sessionArtifactsMatch) {
+    const sessionId = decodeURIComponent(sessionArtifactsMatch[1]);
+    return ok({
+      object: "list",
+      session_id: sessionId,
+      data: filterMockArtifacts({
+        sessionId,
+        kind: query.get("kind"),
+        limit: Number(query.get("limit") || 100)
+      })
+    } as T);
+  }
+  const sessionSourcesMatch = cleanPath.match(/^\/v1\/sessions\/([^/]+)\/sources$/);
+  if (sessionSourcesMatch) {
+    const sessionId = decodeURIComponent(sessionSourcesMatch[1]);
+    return ok({
+      object: "list",
+      session_id: sessionId,
+      data: filterMockSources({
+        sessionId,
+        sourceType: query.get("source_type"),
+        limit: Number(query.get("limit") || 100)
+      })
+    } as T);
+  }
+  const artifactContentMatch = cleanPath.match(/^\/v1\/artifacts\/([^/]+)\/content$/);
+  if (artifactContentMatch) {
+    const artifactId = decodeURIComponent(artifactContentMatch[1]);
+    const content = mockArtifactContent(artifactId);
+    return ok((content || { object: "error", error: "artifact not found", artifact_id: artifactId }) as T);
+  }
+  const artifactMatch = cleanPath.match(/^\/v1\/artifacts\/([^/]+)$/);
+  if (artifactMatch) {
+    const artifactId = decodeURIComponent(artifactMatch[1]);
+    return ok(({ object: "artifact", ...(mockAgentArtifacts.find((item) => item.artifact_id === artifactId) || { artifact_id: artifactId, status: "missing" }) }) as T);
+  }
+  const sourceMatch = cleanPath.match(/^\/v1\/sources\/([^/]+)$/);
+  if (sourceMatch) {
+    const sourceId = decodeURIComponent(sourceMatch[1]);
+    return ok(({ object: "source", ...(mockAgentSources.find((item) => item.source_id === sourceId) || { source_id: sourceId, source_type: "missing" }) }) as T);
+  }
+  if (cleanPath === "/v1/search") {
+    const includeArchived = query.get("include_archived") === "true";
+    const activeSessions = currentMockSessionSummaries().filter((session) => includeArchived || !session.archived);
+    return ok({
+      object: "list",
+      include_archived: includeArchived,
+      data: activeSessions.map((session) => ({
+        kind: "response",
+        object_id: "resp_mock",
+        session_id: session.session_id,
+        user_id: session.user_id || profile.user_id,
+        content: "Mock 回复命中",
+      })),
+    } as T);
+  }
+  if (cleanPath === "/v1/hermes/sessions") {
+    const includeArchived = query.get("include_archived") === "true";
+    return ok({
+      object: "list",
+      include_archived: includeArchived,
+      data: currentMockSessionSummaries().filter((session) => includeArchived || !session.archived),
+    } as T);
+  }
+  if (cleanPath === "/v1/hermes/handoffs") {
+    return ok(mockHandoffQueue({
+      userId: query.get("user_id"),
+      sessionId: query.get("session_id"),
+      status: query.get("status"),
+      includeCompleted: query.get("include_completed") === "true",
+      limit: Number(query.get("limit") || 100),
+    }) as T);
+  }
+  const sessionResumeContextMatch = cleanPath.match(/^\/v1\/hermes\/sessions\/([^/]+)\/resume-context$/);
+  if (sessionResumeContextMatch) {
+    return ok(mockSessionResumeContext(decodeURIComponent(sessionResumeContextMatch[1])) as T);
+  }
+  const sessionUndoMatch = cleanPath.match(/^\/v1\/sessions\/([^/]+)\/undo$/);
+  if (sessionUndoMatch && method === "POST") {
+    const sessionId = decodeURIComponent(sessionUndoMatch[1]);
+    const turnsValue = Number(body.turns || 1);
+    const turns = Math.max(1, Math.min(Math.floor(Number.isFinite(turnsValue) ? turnsValue : 1), 100));
+    const userIndexes = mockSessionMessages
+      .map((item, index) => ({ role: String(item.role || ""), index }))
+      .filter((item) => item.role === "user")
+      .map((item) => item.index)
+      .reverse()
+      .slice(0, turns);
+    const cutoff = userIndexes.length ? Math.min(...userIndexes) : -1;
+    const deleted = cutoff >= 0 ? mockSessionMessages.slice(cutoff) : [];
+    if (cutoff >= 0) mockSessionMessages = mockSessionMessages.slice(0, cutoff);
+    return ok({
+      object: "aiask.session_undo",
+      implementation: "aiask_native",
+      session_id: sessionId,
+      turns_requested: turns,
+      turns_undone: userIndexes.length,
+      message_ids: deleted.map((item) => item.id || item.message_id),
+      message_count: deleted.length,
+      deleted_at: "2026-05-22T09:00:03Z",
+      deleted_reason: String(body.reason || "desktop session undo"),
+      deleted_by: "mock-control-token",
+      soft_deleted: true,
+      side_effects_rolled_back: false,
+      external_side_effects: "not_rolled_back",
+    } as T);
+  }
+  const sessionArchiveMatch = cleanPath.match(/^\/v1\/sessions\/([^/]+)\/archive$/);
+  if (sessionArchiveMatch && method === "POST") {
+    const sessionId = decodeURIComponent(sessionArchiveMatch[1]);
+    const archived = body.archived !== false;
+    const target = mockSessionSummaries.find((session) => session.session_id === sessionId);
+    if (target) {
+      target.archived = archived;
+      target.archived_at = archived ? "2026-05-22T09:00:04Z" : null;
+      target.archived_reason = archived ? String(body.reason || "desktop session archive") : null;
+      target.metadata = {
+        ...(target.metadata || {}),
+        archived,
+        archived_at: target.archived_at,
+        archived_reason: target.archived_reason,
+      };
+    }
+    return ok({
+      object: "aiask.session_archive",
+      implementation: "aiask_native",
+      session_id: sessionId,
+      archived,
+      archived_at: target?.archived_at || null,
+      archived_reason: target?.archived_reason || null,
+      session: target,
+    } as T);
+  }
   if (cleanPath.startsWith("/v1/sessions/") && cleanPath.endsWith("/messages")) {
-    return ok({ object: "list", data: [{ message_id: "msg_user", role: "user", content: "mock question" }, { message_id: "msg_assistant", role: "assistant", content: "mock answer" }] } as T);
+    return ok({ object: "list", data: mockSessionMessages } as T);
   }
   if (cleanPath === "/v1/hermes/status" || cleanPath === "/v1/capabilities/parity" || cleanPath === "/v1/hermes/readiness") {
     const payload = cleanPath.includes("parity") ? capabilities().hermes.parity : cleanPath.includes("readiness") ? capabilities().hermes.readiness : capabilities().hermes.status;
@@ -1761,9 +3857,17 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
   }
 
   const toolMatch = cleanPath.match(/^\/v1\/tools\/([^/]+)$/);
-  if (toolMatch) return ok(toolResult(decodeURIComponent(toolMatch[1]), body) as T);
+  if (toolMatch) {
+    const toolName = decodeURIComponent(toolMatch[1]);
+    recordMockToolInvocation(toolName, body);
+    return ok(toolResult(toolName, body) as T);
+  }
   const hermesToolMatch = cleanPath.match(/^\/v1\/hermes\/admin\/tools\/([^/]+)$/);
-  if (hermesToolMatch) return ok(toolResult(decodeURIComponent(hermesToolMatch[1]), body) as T);
+  if (hermesToolMatch) {
+    const toolName = decodeURIComponent(hermesToolMatch[1]);
+    recordMockToolInvocation(toolName, body);
+    return ok(toolResult(toolName, body) as T);
+  }
 
   if (cleanPath === "/v1/skills" && method === "GET") return ok({ data: capabilities().skills } as T);
   if (cleanPath === "/v1/skills" && method === "POST") return ok({ object: "skill", status: "installed", name: body.name } as T);
@@ -1810,6 +3914,129 @@ export async function mockRequestJson<T>(path: string, options: MockOptions = {}
       broker: { live_trading_enabled: false, read_only_surfaces: ["ths_query_position", "qmt_query_account"], blocked_actions: ["ths_place_order", "qmt_place_order"] },
       recent_intents: Array.from(intents.values()).slice(-5),
       secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/broker-readiness") {
+    return ok({
+      object: "aiask.desktop.broker_readiness",
+      status: "ready",
+      connectors: [
+        {
+          provider: "qmt",
+          label: "QMT / MiniQMT",
+          status: "ready",
+          configured: true,
+          ready: true,
+          read_only: true,
+          live_trading_enabled: false,
+          required_env: ["QMT_PATH", "QMT_ACCOUNT"],
+          missing_env: [],
+          optional_env: ["QMT_ACCOUNT_TYPE", "QMT_SESSION_ID"],
+          required_tools: ["qmt_query_account", "qmt_query_position", "qmt_query_orders"],
+          missing_tools: [],
+          environment_checks: [
+            "Install and sign in to MiniQMT on the same Windows host as the Agent.",
+            "Install the XtQuant SDK in the Agent Python environment.",
+            "Set QMT_PATH and QMT_ACCOUNT in the Agent startup environment, then restart Agent.",
+            "Register a financial MCP server exposing QMT read-only tools."
+          ],
+          authorization_notes: [
+            "Desktop only sends provider and explicit read-only consent to Agent HTTP.",
+            "Account identifiers are hashed before snapshots are stored.",
+            "Live order placement and cancellation remain disabled from this surface."
+          ],
+          test_entry: { method: "POST", path: "/v1/desktop/broker/sync", consent_required: true }
+        },
+        {
+          provider: "tonghuashun",
+          label: "Tonghuashun",
+          status: "unconfigured",
+          configured: false,
+          ready: false,
+          read_only: true,
+          live_trading_enabled: false,
+          required_env: ["THS_CLIENT_PATH"],
+          missing_env: ["THS_CLIENT_PATH"],
+          optional_env: ["THS_TRADE_ACCOUNT", "THS_BROKER"],
+          required_tools: ["ths_query_balance", "ths_query_position", "ths_query_orders", "ths_query_deals"],
+          missing_tools: ["ths_query_balance", "ths_query_position", "ths_query_orders", "ths_query_deals"],
+          environment_checks: [
+            "Install and sign in to the Tonghuashun desktop trading client on Windows.",
+            "Install easytrader in the Agent Python environment.",
+            "Set THS_CLIENT_PATH and restart Agent.",
+            "Register a financial MCP server exposing THS read-only tools."
+          ],
+          authorization_notes: [
+            "Desktop only sends provider and explicit read-only consent to Agent HTTP.",
+            "Credentials stay in Agent startup environment or OS secret store.",
+            "Live order placement and cancellation remain disabled from this surface."
+          ],
+          test_entry: { method: "POST", path: "/v1/desktop/broker/sync", consent_required: true }
+        }
+      ],
+      mcp: { registration: { status: "mock" }, servers: [{ name: "qmt-local", domain: "financial", status: "ready" }] },
+      latest_analytics: mockBrokerAnalytics(),
+      live_trading_enabled: false,
+      read_only: true,
+      secrets_redacted: true
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/broker/sync") {
+    const provider = String(body.provider || "qmt");
+    const isThs = provider === "tonghuashun" || provider === "ths";
+    const accounts = isThs ? mockThsBrokerAccounts : mockBrokerAccounts;
+    const positions = isThs ? mockThsBrokerPositions : mockBrokerPositions;
+    const orders = isThs ? mockThsBrokerOrders : mockBrokerOrders;
+    const deals = isThs ? mockThsBrokerDeals : mockBrokerDeals;
+    if (!body.consent) {
+      return ok({
+        object: "aiask.desktop.broker_readonly",
+        success: false,
+        data: null,
+        error: "broker read-only sync requires explicit user consent",
+        error_code: "BROKER_CONSENT_REQUIRED",
+        read_only: true,
+        live_trading_enabled: false,
+        secrets_redacted: true
+      } as T);
+    }
+    return ok({
+      object: "aiask.desktop.broker_readonly",
+      success: true,
+      data: {
+        sync_id: isThs ? "broker_sync_mock_ths" : "broker_sync_mock_qmt",
+        profile: isThs ? mockThsBrokerProfile : mockBrokerProfile,
+        counts: {
+          accounts: accounts.length,
+          positions: positions.length,
+          orders: orders.length,
+          deals: deals.length
+        },
+        errors: [],
+        analytics: mockBrokerAnalytics(provider)
+      },
+      error: null,
+      read_only: true,
+      live_trading_enabled: false,
+      secrets_redacted: true,
+      source_chain: ["desktop.mockApi", "aiask_agent.broker_readonly"],
+      generated_at: 1781193600
+    } as T);
+  }
+  if (cleanPath === "/v1/desktop/broker/accounts" || cleanPath === "/v1/desktop/broker/positions" || cleanPath === "/v1/desktop/broker/orders") {
+    return ok(brokerSnapshotPayload(String(query.get("provider") || "qmt")) as T);
+  }
+  if (cleanPath === "/v1/desktop/broker/analytics/latest" || cleanPath === "/v1/desktop/broker/analytics/run") {
+    const provider = cleanPath.endsWith("/run") ? String(body.provider || "qmt") : String(query.get("provider") || "qmt");
+    return ok({
+      object: "aiask.desktop.broker_readonly.analytics",
+      success: true,
+      data: { analytics: mockBrokerAnalytics(provider) },
+      error: null,
+      read_only: true,
+      live_trading_enabled: false,
+      secrets_redacted: true,
+      source_chain: ["desktop.mockApi", "aiask_agent.broker_readonly"]
     } as T);
   }
   if (cleanPath === "/v1/desktop/financial-manager/query") {

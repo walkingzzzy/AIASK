@@ -137,14 +137,33 @@ class AgentJobStore:
         return [item for row in rows if (item := self._row(row)) is not None]
 
     def update(self, job_id: str, **fields: Any) -> dict[str, Any] | None:
-        allowed = {"name", "prompt", "schedule", "interval_seconds", "toolset", "enabled"}
+        current = self.get(job_id)
+        if current is None:
+            return None
+        allowed = {"name", "prompt", "schedule", "interval_seconds", "toolset", "enabled", "payload"}
         assignments: list[str] = []
         values: list[Any] = []
         for key, value in fields.items():
             if key not in allowed:
                 continue
-            assignments.append(f"{key} = ?")
-            values.append(1 if key == "enabled" and bool(value) else 0 if key == "enabled" else value)
+            if key == "payload":
+                assignments.append("payload_json = ?")
+                values.append(_dumps(dict(value or {})))
+            else:
+                assignments.append(f"{key} = ?")
+                if key == "enabled":
+                    values.append(1 if bool(value) else 0)
+                elif key == "interval_seconds":
+                    values.append(int(value or 0) or None)
+                else:
+                    values.append(value)
+        if {"schedule", "interval_seconds", "enabled"} & set(fields):
+            next_schedule = fields.get("schedule", current.get("schedule"))
+            next_interval = fields.get("interval_seconds", current.get("interval_seconds"))
+            interval = int(next_interval or 0) or None
+            enabled = bool(fields.get("enabled", current.get("enabled")))
+            assignments.append("next_run_at = ?")
+            values.append(self._next_run_at(schedule=next_schedule, interval_seconds=interval) if enabled else None)
         if not assignments:
             return self.get(job_id)
         assignments.append("updated_at = ?")
@@ -330,8 +349,33 @@ class BackgroundScheduler:
             return {"success": False, "error": f"job not found: {job_id}", "error_code": "NOT_FOUND"}
         started = time.time()
         run_record = self.store.record_run_start(job_id, {"job": {k: job.get(k) for k in ("job_id", "name", "toolset")}})
+        payload = dict(job.get("payload") or {})
         prompt = self._build_prompt(job)
         try:
+            if payload.get("stock_radar") is True and payload.get("action") == "run_once":
+                from .adapters.desktop_ops import _execute_stock_radar
+
+                result = await _execute_stock_radar("run_once", dict(payload.get("run_params") or {}))
+                result_dict = result if isinstance(result, dict) else {"success": True, "data": result, "error": None}
+                success = bool(result_dict.get("success") is not False)
+                self.store.mark_ran(job_id)
+                finished = self.store.record_run_finish(
+                    str(run_record["job_run_id"]),
+                    status="completed" if success else "failed",
+                    error=None if success else str(result_dict.get("error") or result_dict.get("error_code") or "stock radar job failed"),
+                    duration_ms=int((time.time() - started) * 1000),
+                    payload={"stock_radar": result_dict},
+                )
+                return {
+                    "success": success,
+                    "data": {
+                        "job": self.store.get(job_id),
+                        "job_run": finished,
+                        "stock_radar": result_dict.get("data"),
+                    },
+                    "error": None if success else str(result_dict.get("error") or result_dict.get("error_code") or "stock radar job failed"),
+                    "error_code": None if success else result_dict.get("error_code"),
+                }
             result = await self.runtime.run([{"role": "user", "content": prompt}], user_id=None)
             self.store.mark_ran(job_id)
             silent_pattern = str(dict(job.get("payload") or {}).get("silent_pattern") or "").strip()

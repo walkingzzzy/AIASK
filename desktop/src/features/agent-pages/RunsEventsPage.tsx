@@ -1,9 +1,9 @@
 import { ArrowRight, Clock3, Filter, RefreshCw } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { JsonPanel, StatusBadge } from "../../components/shared";
+import { JsonPanel, MetricCard, StatusBadge } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
-import type { DesktopRunSummary, MainView, NormalizedRunEvent } from "../../types";
+import type { DesktopRunSummary, MainView, NormalizedRunEvent, RunTraceEvalPayload } from "../../types";
 
 const KIND_OPTIONS = ["all", "tool", "approval", "gateway", "mcp", "error", "system"] as const;
 type EventKind = Exclude<(typeof KIND_OPTIONS)[number], "all">;
@@ -61,6 +61,33 @@ function lastEventLabel(run: DesktopRunSummary): string {
   return event ? String(event.title || event.event_type || event.event || "event") : "not_loaded";
 }
 
+function traceCount(traceEval: RunTraceEvalPayload | null, key: keyof RunTraceEvalPayload["summary"]): number {
+  const value = traceEval?.summary?.[key];
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
+}
+
+function checkBadgeStatus(status?: string): string {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "pass") return "passed";
+  if (normalized === "warn") return "warning";
+  if (normalized === "fail") return "failed";
+  return normalized || "unknown";
+}
+
+function checkBadgeLabel(status?: string): string {
+  const normalized = String(status || "").toLowerCase();
+  if (normalized === "pass") return "通过";
+  if (normalized === "warn") return "警告";
+  if (normalized === "fail") return "失败";
+  return status || "unknown";
+}
+
+function snapshotId(traceEval: RunTraceEvalPayload | null): string {
+  const snapshot = traceEval?.latest_context_snapshot || {};
+  const value = snapshot.snapshot_id || snapshot.context_snapshot_id;
+  return typeof value === "string" && value ? value : "none";
+}
+
 export function RunsEventsPage({
   endpoint,
   apiToken,
@@ -76,14 +103,24 @@ export function RunsEventsPage({
   const [runs, setRuns] = useState<DesktopRunSummary[]>([]);
   const [selectedRunId, setSelectedRunId] = useState("");
   const [events, setEvents] = useState<NormalizedRunEvent[]>([]);
+  const [traceEval, setTraceEval] = useState<RunTraceEvalPayload | null>(null);
+  const [traceEvalError, setTraceEvalError] = useState("");
   const [filterKind, setFilterKind] = useState<(typeof KIND_OPTIONS)[number]>("all");
   const [viewMode, setViewMode] = useState<"timeline" | "list">("timeline");
   const [message, setMessage] = useState("NOT_LOADED");
   const [busy, setBusy] = useState(false);
 
   async function loadRunEvents(runId: string) {
-    const runEvents = await api.runEvents(runId, controlToken.trim() || apiToken);
+    setTraceEvalError("");
+    const [runEvents, tracePayload] = await Promise.all([
+      api.runEvents(runId, controlToken.trim() || apiToken),
+      api.runTraceEval(runId).catch((error) => {
+        setTraceEvalError(formatApiError(error));
+        return null;
+      }),
+    ]);
     setEvents((runEvents || []).map(normalizeEvent));
+    setTraceEval(tracePayload);
   }
 
   async function loadRuns() {

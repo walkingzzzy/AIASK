@@ -209,17 +209,19 @@ function capabilityPayload(authorized: boolean, factoryMode: FactoryMode) {
     hermes: {
       status: {
         implementation: "aiask_native",
-        baseline: "Hermes v0.15.1 full runtime capability reference",
+        baseline: "Hermes v0.16.0 full runtime capability reference",
         embedded_vendor_runtime: false,
         full_mode_enabled: true,
         full_mode_active: authorized
       },
       parity: {
-        baseline: "Hermes v0.15.1 full runtime capability reference",
+        baseline: "Hermes v0.16.0 full runtime capability reference",
+        baseline_version: "0.16.0",
+        baseline_release_tag: "v2026.6.5",
         scope: "hermes_full_runtime",
         strict_status: "in_progress",
         status: "in_progress",
-        strict_hermes_tool_count: 57,
+        strict_hermes_tool_count: 58,
         strict_gateway_platform_count: 22,
         missing_hermes_tools: [],
         missing_gateway_platforms: [],
@@ -231,23 +233,68 @@ function capabilityPayload(authorized: boolean, factoryMode: FactoryMode) {
         v014_delta: {
           baseline: "Hermes v0.14.0 full runtime capability reference",
           release_tag: "v2026.5.16",
-          total: 6,
-          implemented_count: 6,
-          partial_count: 0,
+          total: 18,
+          implemented_count: 11,
+          partial_count: 5,
           missing_count: 0,
+          excluded_by_design_count: 2,
           missing: [],
-          partial: [],
+          partial: [
+            { hermes_tool: "video_generate", area: "multimodal", status: "live_unverified", aiask_tools: ["agent_video_generate"], required_env: ["AIASK_VIDEO_API_URL", "AIASK_VIDEO_API_KEY"] },
+            { hermes_tool: "x_search", area: "web", status: "live_unverified", aiask_tools: ["agent_x_search"], required_env: ["X_BEARER_TOKEN|X_API_KEY"] }
+          ],
           implemented: [
             { hermes_tool: "computer_use", area: "computer_use", status: "implemented", aiask_tools: ["agent_computer_use"] },
-            { hermes_tool: "video_generate", area: "multimodal", status: "live_unverified", aiask_tools: ["agent_video_generate"] },
-            { hermes_tool: "x_search", area: "web", status: "live_unverified", aiask_tools: ["agent_x_search"] },
             { platform: "line", area: "platform", status: "implemented", aiask_adapter: "line" },
             { platform: "simplex", area: "platform", status: "implemented", aiask_adapter: "simplex" },
             { platform: "teams", area: "platform", status: "implemented", aiask_adapter: "teams" }
+          ],
+          excluded_by_design: [
+            { feature: "openai_compatible_local_proxy", area: "models", status: "excluded_by_design", aiask_tools: ["agent_model_manage"] },
+            { feature: "oauth_subscription_providers", area: "models", status: "excluded_by_design", aiask_tools: ["agent_model_manage"] }
+          ]
+        },
+        v016_delta: {
+          baseline: "Hermes v0.16.0 Surface Release capability reference",
+          release_tag: "v2026.6.5",
+          total: 19,
+          implemented_count: 3,
+          partial_count: 16,
+          missing_count: 0,
+          excluded_by_design_count: 0,
+          missing: [],
+          partial: [
+            { feature: "model_picker_profiles_and_fallback", area: "models", status: "partial", aiask_tools: ["agent_model_manage"] },
+            { feature: "undo_last_turns", area: "session", status: "partial", aiask_tools: ["agent_tui_status"] },
+            { feature: "checkpoint_and_rollback", area: "file", status: "partial", aiask_tools: ["agent_file_patch"] }
+          ],
+          implemented: [
+            { feature: "desktop_native_shell", area: "desktop", status: "implemented", aiask_tools: ["agent_tool_catalog"] }
           ]
         }
       },
-      readiness: { object: "aiask.hermes_readiness", embedded_vendor_runtime: false, missing_features: [] },
+      readiness: {
+        object: "aiask.hermes_readiness",
+        embedded_vendor_runtime: false,
+        parity_baseline: "Hermes v0.16.0 full runtime capability reference",
+        baseline_version: "0.16.0",
+        baseline_release_tag: "v2026.6.5",
+        missing_features: [],
+        live_evidence: {
+          object: "aiask.hermes_live_evidence",
+          baseline_version: "0.16.0",
+          baseline_release_tag: "v2026.6.5",
+          code_status: "present",
+          core_code_status: "present",
+          mock_status: "passed",
+          live_status: "live_unverified",
+          strict_status: "in_progress",
+          live_unverified_count: 27,
+          required_env_names: ["OPENAI_API_KEY", "TINKER_API_KEY", "WANDB_API_KEY"],
+          required_env_groups: ["OPENAI_API_KEY", "TINKER_API_KEY", "WANDB_API_KEY"],
+          items: []
+        }
+      },
       tool_mapping: tools,
       platform_mapping: platforms,
       feature_mapping: features,
@@ -297,6 +344,49 @@ function aiStatus() {
     mock: false,
     configured: true,
     runtime_client: "OpenAIChatClient",
+    secrets_redacted: true
+  };
+}
+
+const aiProviderPresets = [
+  { id: "openai", label: "OpenAI", provider: "openai", provider_type: "openai", base_url: "https://api.openai.com/v1", default_model: "gpt-4.1-mini", model_list_supported: true },
+  { id: "deepseek", label: "DeepSeek", provider: "openai", provider_type: "openai_compatible", base_url: "https://api.deepseek.com", default_model: "deepseek-chat", model_list_supported: true },
+  { id: "dashscope-qwen-cn", label: "通义千问 / DashScope 北京", provider: "openai", provider_type: "openai_compatible", base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1", default_model: "qwen-plus", model_list_supported: true },
+  { id: "dashscope-qwen-intl", label: "Qwen / DashScope 美国弗吉尼亚", provider: "openai", provider_type: "openai_compatible", base_url: "https://dashscope-us.aliyuncs.com/compatible-mode/v1", default_model: "qwen-plus", model_list_supported: true },
+  { id: "anthropic", label: "Anthropic Claude", provider: "anthropic", provider_type: "anthropic_messages", base_url: "https://api.anthropic.com/v1", default_model: "claude-sonnet-4-5", model_list_supported: true },
+  { id: "custom-openai-compatible", label: "自定义 OpenAI 兼容", provider: "openai", provider_type: "openai_compatible", base_url: "", default_model: "", model_list_supported: true },
+  { id: "mock", label: "本地 Mock", provider: "mock", provider_type: "mock", base_url: "", default_model: "mock-local", model_list_supported: false }
+];
+
+function aiConfigPayload() {
+  const status = aiStatus();
+  return {
+    object: "aiask.ai_config",
+    status: "ready",
+    current: {
+      provider: status.provider,
+      model: status.model,
+      base_url: status.base_url,
+      api_key_configured: status.api_key_configured,
+      base_url_configured: status.base_url_configured,
+      mock: status.mock,
+      configured: status.configured,
+      secrets_redacted: true
+    },
+    editable: {
+      provider_env: "AIASK_AGENT_MODEL_PROVIDER",
+      model_env: "AIASK_AGENT_MODEL",
+      base_url_env: "OPENAI_BASE_URL",
+      api_key_env: "OPENAI_API_KEY",
+      env_file: "/tmp/aiask/.env",
+      env_source: "project_root"
+    },
+    presets: aiProviderPresets,
+    actions: {
+      save: { method: "PATCH", path: "/v1/ai/config", requires_control_token: true },
+      models: { method: "GET", path: "/v1/ai/models" },
+      smoke: { method: "POST", path: "/v1/ai/smoke" }
+    },
     secrets_redacted: true
   };
 }
@@ -428,6 +518,109 @@ function desktopDataStatusPayload(codes = ["600519", "000001", "000858"], maxSta
     max_stale_days: maxStaleDays,
     missing_count: 1,
     stale_count: 1,
+    secrets_redacted: true
+  };
+}
+
+const stockDataSourcePresets = [
+  {
+    provider: "akshare",
+    label: "AKShare / AKTools",
+    markets: ["CN", "HK", "US"],
+    categories: ["quote", "kline", "fundamental"],
+    auth_type: "none",
+    default_base_url: "",
+    required_fields: [],
+    optional_fields: ["base_url", "timeout_seconds"],
+    documentation_url: "https://akshare.akfamily.xyz/introduction.html",
+    note: "Open data source for local market data checks."
+  },
+  {
+    provider: "tushare",
+    label: "Tushare Pro",
+    markets: ["CN"],
+    categories: ["quote", "kline", "fundamental"],
+    auth_type: "token",
+    default_base_url: "http://api.tushare.pro",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "timeout_seconds", "rate_limit_per_minute"],
+    documentation_url: "https://tushare.pro/document/1?doc_id=40",
+    note: "Token based China market data source."
+  },
+  {
+    provider: "tdx",
+    label: "TongDaXin HQ",
+    markets: ["CN"],
+    categories: ["quote", "kline", "local_vipdoc"],
+    auth_type: "host_port",
+    default_host: "119.147.212.81",
+    default_port: 7709,
+    required_fields: ["host", "port"],
+    optional_fields: ["timeout_seconds", "local_vipdoc_path"],
+    documentation_url: null,
+    note: "Read-only quote host or local vipdoc source."
+  },
+  {
+    provider: "duckduckgo",
+    label: "DuckDuckGo HTML Search",
+    markets: ["Global"],
+    categories: ["web_search", "research"],
+    auth_type: "none",
+    default_base_url: "https://duckduckgo.com/html/",
+    required_fields: [],
+    optional_fields: ["base_url", "timeout_seconds"],
+    documentation_url: "https://duckduckgo.com/",
+    note: "No-key web search fallback."
+  },
+  {
+    provider: "tavily",
+    label: "Tavily Search",
+    markets: ["Global"],
+    categories: ["web_search", "deep_research"],
+    auth_type: "bearer",
+    default_base_url: "https://api.tavily.com",
+    required_fields: ["api_key"],
+    optional_fields: ["base_url", "search_depth"],
+    documentation_url: "https://docs.tavily.com/documentation/api-reference/endpoint/search",
+    note: "Deep web search API."
+  }
+];
+
+function redactStockDataSource(source: Record<string, unknown>): Record<string, unknown> {
+  return {
+    ...source,
+    api_key: source.api_key ? "[redacted]" : "",
+    password: source.password ? "[redacted]" : "",
+    token: source.token ? "[redacted]" : "",
+    api_key_configured: Boolean(source.api_key || source.token || source.password),
+    configured: source.configured ?? true,
+    status: source.enabled === false ? "disabled" : source.status || "ready",
+    secrets_redacted: true
+  };
+}
+
+function mergeStockDataSourceDraft(base: Record<string, unknown> | undefined, draft: Record<string, unknown>): Record<string, unknown> {
+  const merged = { ...(base || {}) };
+  for (const [key, value] of Object.entries(draft)) {
+    const lowered = key.toLowerCase();
+    const secretField = lowered.includes("api_key") || lowered.includes("token") || lowered.includes("secret") || lowered.includes("password");
+    if (secretField && (value === null || value === "" || value === undefined) && base) continue;
+    merged[key] = value;
+  }
+  return merged;
+}
+
+function stockDataSourcesPayload(sources: Array<Record<string, unknown>>) {
+  const redactedSources = sources.map(redactStockDataSource);
+  return {
+    object: "aiask.stock_data_sources",
+    status: "ready",
+    configured_count: redactedSources.filter((source) => source.configured !== false).length,
+    ready_count: redactedSources.filter((source) => source.status === "ready").length,
+    presets: stockDataSourcePresets,
+    sources: redactedSources,
+    config_path: "/tmp/aiask-stock-data-sources.json",
+    config_source: { source: "e2e_fixture", loaded: true },
     secrets_redacted: true
   };
 }
@@ -1343,6 +1536,217 @@ function financialManagerCatalogPayload() {
   };
 }
 
+const brokerProfileFixture = {
+  broker_profile_id: "broker_profile_e2e_qmt",
+  user_id: "local",
+  provider: "qmt",
+  display_name: "QMT / MiniQMT",
+  account_ref_hash: "broker_hash_e2e",
+  market: "cn_a",
+  read_only_enabled: true,
+  write_enabled: false,
+  consent_status: "granted",
+  last_sync_at: "2026-06-12T00:00:00.000Z",
+  status: "ready",
+  error_code: null
+};
+
+const brokerAccountsFixture = [
+  {
+    snapshot_id: "broker_account_e2e_1",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    account_ref_hash: brokerProfileFixture.account_ref_hash,
+    currency: "CNY",
+    total_asset: 100000,
+    cash_available: 12000,
+    market_value: 88000,
+    frozen_cash: 0,
+    buying_power: 12000,
+    observed_at: "2026-06-12T00:00:00.000Z",
+    created_at: "2026-06-12T00:00:00.000Z"
+  }
+];
+
+const brokerPositionsFixture = [
+  {
+    snapshot_id: "broker_position_e2e_1",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    symbol: "600519",
+    exchange: "SH",
+    name: "Kweichow Moutai",
+    quantity: 100,
+    available_quantity: 100,
+    cost_basis: 420,
+    last_price: 450,
+    market_value: 45000,
+    unrealized_pnl: 3000,
+    unrealized_pnl_pct: 0.0714,
+    observed_at: "2026-06-12T00:00:00.000Z"
+  },
+  {
+    snapshot_id: "broker_position_e2e_2",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    symbol: "000001",
+    exchange: "SZ",
+    name: "Ping An Bank",
+    quantity: 1000,
+    available_quantity: 1000,
+    cost_basis: 43.8,
+    last_price: 43,
+    market_value: 43000,
+    unrealized_pnl: -800,
+    unrealized_pnl_pct: -0.0183,
+    observed_at: "2026-06-12T00:00:00.000Z"
+  }
+];
+
+const brokerOrdersFixture = [
+  {
+    snapshot_id: "broker_order_e2e_1",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    order_ref_hash: "broker_order_hash_e2e_1",
+    symbol: "600519",
+    side: "buy",
+    order_type: "limit",
+    price: 450,
+    quantity: 100,
+    filled_quantity: 100,
+    status: "filled",
+    submitted_at: "2026-06-12T09:35:00+08:00",
+    observed_at: "2026-06-12T00:00:00.000Z"
+  }
+];
+
+const brokerDealsFixture = [
+  {
+    snapshot_id: "broker_deal_e2e_1",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    deal_ref_hash: "broker_deal_hash_e2e_1",
+    order_ref_hash: "broker_order_hash_e2e_1",
+    symbol: "600519",
+    side: "buy",
+    price: 450,
+    quantity: 100,
+    amount: 45000,
+    fee: 12,
+    occurred_at: "2026-06-12T09:36:00+08:00",
+    observed_at: "2026-06-12T00:00:00.000Z"
+  }
+];
+
+function brokerAnalyticsFixture() {
+  return {
+    analytics_id: "broker_analytics_e2e_qmt",
+    broker_profile_id: brokerProfileFixture.broker_profile_id,
+    user_id: "local",
+    provider: "qmt",
+    period_start: null,
+    period_end: null,
+    metrics: {
+      account_count: brokerAccountsFixture.length,
+      position_count: brokerPositionsFixture.length,
+      order_count: brokerOrdersFixture.length,
+      deal_count: brokerDealsFixture.length,
+      total_asset: 100000,
+      cash_available: 12000,
+      market_value: 88000,
+      cash_ratio: 0.12,
+      top_position_concentration: 0.5114,
+      top_positions: [
+        { symbol: "600519", name: "Kweichow Moutai", market_value: 45000, position_pct: 0.5114 },
+        { symbol: "000001", name: "Ping An Bank", market_value: 43000, position_pct: 0.4886 }
+      ],
+      trade_count: 1,
+      buy_count: 1,
+      sell_count: 0,
+      buy_sell_imbalance: 1,
+      deal_amount_total: 45000
+    },
+    signals: {
+      limitations: ["historical account snapshots are insufficient for drawdown analytics"],
+      generated_at: "2026-06-12T00:00:00.000Z"
+    },
+    risk_flags: [{ code: "HIGH_SINGLE_POSITION_CONCENTRATION", severity: "warning", value: 0.5114 }],
+    source_snapshot_ids: {
+      accounts: ["broker_account_e2e_1"],
+      positions: ["broker_position_e2e_1", "broker_position_e2e_2"],
+      orders: ["broker_order_e2e_1"],
+      deals: ["broker_deal_e2e_1"]
+    },
+    model_version: "deterministic-e2e",
+    created_at: "2026-06-12T00:00:00.000Z"
+  };
+}
+
+function brokerSnapshotPayload() {
+  return {
+    object: "aiask.desktop.broker_readonly",
+    success: true,
+    data: {
+      profiles: [brokerProfileFixture],
+      accounts: brokerAccountsFixture,
+      positions: brokerPositionsFixture,
+      orders: brokerOrdersFixture,
+      deals: brokerDealsFixture,
+      analytics: brokerAnalyticsFixture()
+    },
+    error: null,
+    read_only: true,
+    live_trading_enabled: false,
+    secrets_redacted: true,
+    source_chain: ["desktop.e2e.fixture", "aiask_agent.broker_readonly"],
+    generated_at: 1781193600
+  };
+}
+
+function brokerReadinessPayload() {
+  return {
+    object: "aiask.desktop.broker_readiness",
+    status: "ready",
+    connectors: [
+      {
+        provider: "qmt",
+        configured: true,
+        ready: true,
+        read_only: true,
+        live_trading_enabled: false,
+        required_env: [],
+        missing_env: [],
+        optional_env: [],
+        required_tools: ["qmt_query_account", "qmt_query_position", "qmt_query_orders"],
+        missing_tools: []
+      },
+      {
+        provider: "ths",
+        configured: false,
+        ready: false,
+        read_only: true,
+        live_trading_enabled: false,
+        required_env: ["THS_MCP_SERVER"],
+        missing_env: ["THS_MCP_SERVER"],
+        optional_env: [],
+        required_tools: ["ths_query_position"],
+        missing_tools: ["ths_query_position"]
+      }
+    ],
+    mcp: { registration: "registered", servers: [{ name: "finance-demo", domain: "financial" }] },
+    latest_analytics: brokerAnalyticsFixture(),
+    live_trading_enabled: false,
+    read_only: true,
+    secrets_redacted: true
+  };
+}
+
 function financialManagerQueryPayload(body: Record<string, unknown>) {
   const capabilityId = String(body.capability_id || "");
   const actionId = String(body.action_id || "");
@@ -1438,6 +1842,49 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       status: "ready"
     }
   ];
+  let stockDataSources: Array<Record<string, unknown>> = [
+    {
+      id: "e2e:akshare",
+      provider: "akshare",
+      name: "E2E AKShare 本地源",
+      enabled: true,
+      priority: 10,
+      base_url: "",
+      status: "ready",
+      configured: true,
+      categories: ["quote", "kline", "fundamental"],
+      markets: ["CN", "HK", "US"],
+      timeout_seconds: 8,
+      notes: "E2E default source"
+    },
+    {
+      id: "e2e:tushare",
+      provider: "tushare",
+      name: "Tushare 主账号",
+      enabled: true,
+      priority: 20,
+      base_url: "http://api.tushare.pro",
+      api_key: "mock-stock-token",
+      status: "ready",
+      configured: true,
+      categories: ["quote", "kline", "fundamental"],
+      markets: ["CN"],
+      symbol: "600519",
+      timeout_seconds: 8
+    },
+    {
+      id: "e2e:duckduckgo",
+      provider: "duckduckgo",
+      name: "DuckDuckGo fallback",
+      enabled: true,
+      priority: 50,
+      base_url: "https://duckduckgo.com/html/",
+      status: "ready",
+      configured: true,
+      categories: ["web_search", "research"],
+      markets: ["Global"]
+    }
+  ];
   await page.route(`${API_ORIGIN}/**`, async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -1473,7 +1920,9 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
       return fulfillJson(route, {
         object: "aiask.hermes_status",
         implementation: "aiask_native",
-        baseline: "Hermes v0.15.1 full runtime capability reference",
+        baseline: "Hermes v0.16.0 full runtime capability reference",
+        baseline_version: "0.16.0",
+        baseline_release_tag: "v2026.6.5",
         embedded_vendor_runtime: false,
         full_mode_enabled: true,
         parity: capabilityPayload(authorized, factoryMode).hermes.parity
@@ -1485,16 +1934,242 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path === "/v1/desktop/workbench/summary") {
       return fulfillJson(route, workbenchSummaryPayload());
     }
+    if (path === "/v1/desktop/events") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      const events = Array.isArray(body.events) ? body.events : [];
+      return fulfillJson(route, {
+        object: "list",
+        data: events.map((event: Record<string, unknown>, index: number) => ({
+          id: `event_${index + 1}`,
+          recorded_at: "2026-06-12T00:00:00.000Z",
+          ...event,
+          payload: event.payload || {},
+        })),
+        count: events.length,
+        secrets_redacted: true,
+      });
+    }
+    if (path === "/v1/desktop/feedback") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        object: "aiask.feedback",
+        data: {
+          feedback_id: "feedback_e2e",
+          user_id: body.user_id || "local-e2e",
+          session_id: body.session_id || "session_fixture",
+          target_type: body.target_type || "page",
+          target_id: body.target_id || "workbench",
+          feedback_type: body.feedback_type || "thumbs_up",
+          rating: body.rating ?? 5,
+          allow_learning: body.allow_learning === true,
+          payload: {},
+          created_at: "2026-06-12T00:00:00.000Z"
+        },
+        secrets_redacted: true
+      });
+    }
+    if (path === "/v1/desktop/analytics/summary") {
+      const userId = url.searchParams.get("user_id");
+      return fulfillJson(route, {
+        object: "aiask.analytics_summary",
+        scope: userId ? "user" : "aggregate",
+        user_id: userId || null,
+        totals: { events: 1, tool_invocations: 1, feedback: 1 },
+        events_by_type: [{ event_type: "page_view", count: 1 }],
+        pages: [{ page_key: "workbench", count: 1 }],
+        tools: [{ tool_name: "agent_tool_catalog", count: 1, succeeded: 1, failed: 0, failure_rate: 0, avg_duration_ms: 5 }],
+        feedback: [{ target_type: "page", feedback_type: "thumbs_up", count: 1, avg_rating: 5 }],
+        secrets_redacted: true
+      });
+    }
+    if (path === "/v1/desktop/retention/sweep") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        object: "aiask.retention_sweep",
+        dry_run: body.dry_run !== false,
+        user_id: body.user_id || null,
+        counts: { user_activity_events: 0, tool_invocations_payloads: 0, run_events: 0, feedback_events: 0, messages: 0 },
+        tables: ["user_activity_events", "tool_invocations_payloads", "run_events", "feedback_events", "messages"],
+        market_data_affected: false,
+        secrets_redacted: true
+      });
+    }
     if (path === "/v1/desktop/runs") {
       return fulfillJson(route, { object: "list", data: workbenchSummaryPayload().recent_runs });
     }
     if (path === "/v1/desktop/settings/status") {
       return fulfillJson(route, settingsStatusPayload(authorized));
     }
+    const userActivityMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/activity$/);
+    if (userActivityMatch) {
+      const userId = decodeURIComponent(userActivityMatch[1]);
+      return fulfillJson(route, {
+        object: "aiask.user_activity",
+        user_id: userId,
+        sessions: workbenchSummaryPayload().recent_sessions,
+        runs: workbenchSummaryPayload().recent_runs,
+        events: [
+          {
+            id: "activity_page_view",
+            user_id: userId,
+            page_key: "workbench",
+            event_type: "page_view",
+            source: "desktop.e2e",
+            created_at: "2026-06-12T00:00:00.000Z",
+          },
+        ],
+        tool_invocations: [],
+        feedback: [],
+        policy: {
+          user_id: userId,
+          event_ttl_days: 30,
+          audit_ttl_days: 90,
+          run_event_ttl_days: 90,
+          tool_payload_ttl_days: 14,
+          conversation_retention: "local",
+          allow_product_analytics: false,
+          allow_learning: true,
+          updated_at: "2026-06-12T00:00:00.000Z",
+        },
+        secrets_redacted: true,
+      });
+    }
+    const userExportMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/export$/);
+    if (userExportMatch) {
+      const userId = decodeURIComponent(userExportMatch[1]);
+      return fulfillJson(route, {
+        object: "aiask.user_data_export",
+        user_id: userId,
+        exported_at: "2026-06-12T00:00:00.000Z",
+        profile_policy: {
+          user_id: userId,
+          event_ttl_days: 30,
+          audit_ttl_days: 90,
+          run_event_ttl_days: 90,
+          tool_payload_ttl_days: 14,
+          conversation_retention: "local",
+          allow_product_analytics: false,
+          allow_learning: true,
+          updated_at: "2026-06-12T00:00:00.000Z"
+        },
+        sessions: workbenchSummaryPayload().recent_sessions,
+        messages: [{ message_id: "msg_fixture", role: "assistant", content: "AIASK_OK" }],
+        runs: workbenchSummaryPayload().recent_runs,
+        run_events: runEventsPayload().data,
+        activity_events: [{ id: "activity_page_view", user_id: userId, page_key: "workbench", event_type: "page_view", payload: {}, created_at: "2026-06-12T00:00:00.000Z" }],
+        tool_invocations: [{ invocation_id: "tool_e2e", tool_name: "agent_tool_catalog", status: "succeeded", secrets_redacted: true }],
+        feedback: [{ feedback_id: "feedback_e2e", target_type: "page", feedback_type: "thumbs_up", allow_learning: true }],
+        sources: [],
+        artifacts: [],
+        analytics: {
+          object: "aiask.analytics_summary",
+          scope: "user",
+          user_id: userId,
+          totals: { events: 1, tool_invocations: 1, feedback: 1 },
+          events_by_type: [{ event_type: "page_view", count: 1 }],
+          pages: [{ page_key: "workbench", count: 1 }],
+          tools: [{ tool_name: "agent_tool_catalog", count: 1, succeeded: 1, failed: 0, failure_rate: 0, avg_duration_ms: 5 }],
+          feedback: [{ target_type: "page", feedback_type: "thumbs_up", count: 1, avg_rating: 5 }],
+          secrets_redacted: true
+        },
+        secrets_redacted: true
+      });
+    }
+    const userDeleteMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/delete$/);
+    if (userDeleteMatch) {
+      const userId = decodeURIComponent(userDeleteMatch[1]);
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        object: "aiask.user_data_delete",
+        user_id: userId,
+        dry_run: body.dry_run !== false,
+        hard_delete: body.hard_delete === true,
+        anonymized_user_id: body.hard_delete === true ? null : `deleted:${userId}`,
+        counts: { sessions: 1, messages: 1, responses: 1, runs: 1, run_events: 5, activity_events: 1, tool_invocations: 1, feedback: 1, sources: 0, artifacts: 0, search_rows: 0 },
+        external_side_effects: "not_rolled_back",
+        secrets_redacted: true
+      });
+    }
+    const userLearningMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/learning-dataset$/);
+    if (userLearningMatch) {
+      const userId = decodeURIComponent(userLearningMatch[1]);
+      return fulfillJson(route, {
+        object: "aiask.learning_dataset",
+        user_id: userId,
+        allowed: true,
+        items: [{ kind: "feedback", target_type: "page", feedback_type: "thumbs_up", rating: 5, created_at: "2026-06-12T00:00:00.000Z" }],
+        count: 1,
+        secrets_redacted: true
+      });
+    }
+    const userRecommendationsMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/recommendations$/);
+    if (userRecommendationsMatch) {
+      const userId = decodeURIComponent(userRecommendationsMatch[1]);
+      return fulfillJson(route, {
+        object: "aiask.workflow_recommendations",
+        user_id: userId,
+        data_source: "local_user_activity",
+        data: [{ id: "feedback:collect", kind: "feedback_collection", priority: "medium", title: "Collect explicit feedback", reason: "E2E recommendation." }],
+        count: 1,
+        secrets_redacted: true
+      });
+    }
+    const userPolicyMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/data-policy$/);
+    if (userPolicyMatch) {
+      const userId = decodeURIComponent(userPolicyMatch[1]);
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        object: "aiask.user_data_policy",
+        data: {
+          user_id: userId,
+          event_ttl_days: body.event_ttl_days ?? 30,
+          audit_ttl_days: body.audit_ttl_days ?? 90,
+          run_event_ttl_days: body.run_event_ttl_days ?? 90,
+          tool_payload_ttl_days: body.tool_payload_ttl_days ?? 14,
+          conversation_retention: body.conversation_retention || "local",
+          allow_product_analytics: body.allow_product_analytics ?? false,
+          allow_learning: body.allow_learning ?? true,
+          updated_at: "2026-06-12T00:00:00.000Z",
+        },
+        secrets_redacted: true,
+      });
+    }
     if (path === "/v1/desktop/data/status") {
       const codes = url.searchParams.get("codes")?.split(",").filter(Boolean) || ["600519", "000001", "000858"];
       const maxStaleDays = Number(url.searchParams.get("max_stale_days") || 5);
       return fulfillJson(route, desktopDataStatusPayload(codes, maxStaleDays));
+    }
+    if (path === "/v1/desktop/stock-data-sources") {
+      if (request.method() === "POST") {
+        const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+        const id = String(body.id || `e2e:${body.provider || "source"}:${stockDataSources.length + 1}`);
+        const saved = { ...body, id, status: "ready", configured: true, updated_at: "2026-06-12T00:00:00Z" };
+        stockDataSources = [saved, ...stockDataSources.filter((source) => source.id !== id)];
+        return fulfillJson(route, { object: "aiask.stock_data_source", source: redactStockDataSource(saved), secrets_redacted: true });
+      }
+      return fulfillJson(route, stockDataSourcesPayload(stockDataSources));
+    }
+    if (path === "/v1/desktop/stock-data-sources/test") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      const inline = body.source && typeof body.source === "object" && !Array.isArray(body.source)
+        ? body.source as Record<string, unknown>
+        : null;
+      const inlineId = String(inline?.id || body.id || "");
+      const source = inline
+        ? mergeStockDataSourceDraft(stockDataSources.find((item) => item.id === inlineId), inline)
+        : stockDataSources.find((item) => item.id === body.id) || stockDataSources[0];
+      return fulfillJson(route, {
+        object: "aiask.stock_data_source_test",
+        provider: source.provider || "akshare",
+        mode: body.mode || "connectivity",
+        success: true,
+        status: "ready",
+        configured: true,
+        latency_ms: 12,
+        sample_count: 3,
+        source: redactStockDataSource(source),
+        secrets_redacted: true
+      });
     }
     if (path === "/v1/desktop/data/sync-plan") {
       const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
@@ -1516,6 +2191,47 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path === "/v1/desktop/financial-manager/query") {
       const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
       return fulfillJson(route, financialManagerQueryPayload(body));
+    }
+    if (path === "/v1/desktop/broker-readiness") {
+      return fulfillJson(route, brokerReadinessPayload());
+    }
+    if (path === "/v1/desktop/broker/sync") {
+      return fulfillJson(route, {
+        object: "aiask.desktop.broker_readonly",
+        success: true,
+        data: {
+          sync_id: "broker_sync_e2e_qmt",
+          profile: brokerProfileFixture,
+          counts: {
+            accounts: brokerAccountsFixture.length,
+            positions: brokerPositionsFixture.length,
+            orders: brokerOrdersFixture.length,
+            deals: brokerDealsFixture.length
+          },
+          errors: [],
+          analytics: brokerAnalyticsFixture()
+        },
+        error: null,
+        read_only: true,
+        live_trading_enabled: false,
+        secrets_redacted: true,
+        source_chain: ["desktop.e2e.fixture", "aiask_agent.broker_readonly"]
+      });
+    }
+    if (path === "/v1/desktop/broker/accounts" || path === "/v1/desktop/broker/positions" || path === "/v1/desktop/broker/orders") {
+      return fulfillJson(route, brokerSnapshotPayload());
+    }
+    if (path === "/v1/desktop/broker/analytics/latest" || path === "/v1/desktop/broker/analytics/run") {
+      return fulfillJson(route, {
+        object: "aiask.desktop.broker_readonly.analytics",
+        success: true,
+        data: brokerAnalyticsFixture(),
+        error: null,
+        read_only: true,
+        live_trading_enabled: false,
+        secrets_redacted: true,
+        source_chain: ["desktop.e2e.fixture", "aiask_agent.broker_readonly"]
+      });
     }
     if (path === "/v1/desktop/stock-radar/status") {
       return fulfillJson(route, { success: true, data: stockRadarStatusPayload(), error: null, error_code: null });
@@ -1670,6 +2386,25 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     if (path === "/v1/ai/status") {
       return fulfillJson(route, aiStatus());
     }
+    if (path === "/v1/ai/config") {
+      if (request.method() === "PATCH") {
+        const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+        return fulfillJson(route, {
+          object: "aiask.ai_config",
+          saved: true,
+          provider: body.provider || "openai",
+          model: body.model || "gpt-5.4",
+          base_url_configured: true,
+          api_key_configured: true,
+          mock: false,
+          configured: true,
+          updated_keys: ["AIASK_AGENT_MODEL_PROVIDER", "AIASK_AGENT_MODEL", "OPENAI_BASE_URL"],
+          env_file: "/tmp/aiask/.env",
+          secrets_redacted: true
+        });
+      }
+      return fulfillJson(route, aiConfigPayload());
+    }
     if (path === "/v1/ai/smoke") {
       return fulfillJson(route, {
         object: "aiask.ai_smoke",
@@ -1749,6 +2484,92 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
           "",
           ""
         ].join("\n")
+      });
+    }
+    const runArtifactsMatch = path.match(/^\/v1\/runs\/([^/]+)\/artifacts$/);
+    if (runArtifactsMatch) {
+      const runId = decodeURIComponent(runArtifactsMatch[1]);
+      return fulfillJson(route, {
+        object: "list",
+        run_id: runId,
+        data: [
+          {
+            artifact_id: "artifact_e2e_summary",
+            run_id: runId,
+            session_id: "session_fixture",
+            user_id: "local-e2e",
+            kind: "report",
+            title: "Agent 回复摘要",
+            preview_text: "AIASK_OK",
+            status: "completed",
+            created_at: "2026-05-21T08:00:03.000Z"
+          }
+        ]
+      });
+    }
+    const runSourcesMatch = path.match(/^\/v1\/runs\/([^/]+)\/sources$/);
+    if (runSourcesMatch) {
+      const runId = decodeURIComponent(runSourcesMatch[1]);
+      return fulfillJson(route, {
+        object: "list",
+        run_id: runId,
+        data: [
+          {
+            source_id: "source_e2e_run",
+            run_id: runId,
+            session_id: "session_fixture",
+            user_id: "local-e2e",
+            provider: "e2e",
+            source_type: "fixture",
+            title: "E2E run source",
+            excerpt: "Mock source for run evidence.",
+            source_tier: "fixture",
+            credibility_score: 1,
+            created_at: "2026-05-21T08:00:03.000Z"
+          }
+        ]
+      });
+    }
+    const sessionArtifactsMatch = path.match(/^\/v1\/sessions\/([^/]+)\/artifacts$/);
+    if (sessionArtifactsMatch) {
+      const sessionId = decodeURIComponent(sessionArtifactsMatch[1]);
+      return fulfillJson(route, {
+        object: "list",
+        session_id: sessionId,
+        data: [
+          {
+            artifact_id: "artifact_e2e_session",
+            session_id: sessionId,
+            user_id: "local-e2e",
+            kind: "note",
+            title: "Session fixture artifact",
+            preview_text: "AIASK_OK session artifact",
+            status: "completed",
+            created_at: "2026-05-21T08:00:03.000Z"
+          }
+        ]
+      });
+    }
+    const sessionSourcesMatch = path.match(/^\/v1\/sessions\/([^/]+)\/sources$/);
+    if (sessionSourcesMatch) {
+      const sessionId = decodeURIComponent(sessionSourcesMatch[1]);
+      return fulfillJson(route, {
+        object: "list",
+        session_id: sessionId,
+        data: [
+          {
+            source_id: "source_e2e_session",
+            session_id: sessionId,
+            user_id: "local-e2e",
+            provider: "e2e",
+            source_type: "fixture",
+            title: "E2E session source",
+            excerpt: "Mock source for session evidence.",
+            source_tier: "fixture",
+            credibility_score: 1,
+            created_at: "2026-05-21T08:00:03.000Z"
+          }
+        ]
       });
     }
     if (path === "/v1/jobs") {
@@ -1894,6 +2715,22 @@ async function setupApiMocks(page: Page, options: { factoryMode?: FactoryMode } 
     }
     if (path === "/v1/tools/agent_quant_data_gate") {
       return fulfillJson(route, { success: true, data: { status: "partial", missing: ["000858"], stale: ["000001"] }, error: null, error_code: null });
+    }
+    if (path === "/v1/tools/agent_web_search") {
+      const body = request.postData() ? JSON.parse(request.postData() || "{}") : {};
+      return fulfillJson(route, {
+        success: true,
+        data: {
+          provider: body.provider || "duckduckgo",
+          results: [
+            { title: "AIASK data source guide", url: "https://example.test/aiask-data-source", snippet: "Mock search result for E2E." },
+            { title: "Market data connectivity", url: "https://example.test/market-data", snippet: "Connectivity check passed." }
+          ],
+          query: body.query || "AIASK"
+        },
+        error: null,
+        error_code: null
+      });
     }
     if (path === "/v1/tools/agent_memory_search") {
       return fulfillJson(route, { success: true, data: [{ kind: "memory", content: "mock memory hit" }], error: null, error_code: null });
@@ -2069,7 +2906,7 @@ const VIEW_LABELS: Record<string, string> = {
   Sessions: "会话",
   "Runs / Events": "运行 / 事件",
   "Coverage Matrix": "覆盖矩阵",
-  Models: "模型",
+  Models: "模型配置",
   "Data & Sync": "数据",
   MCP: "MCP / 连接器",
   Skills: "插件 / 技能",
@@ -2110,6 +2947,7 @@ const TAB_LABELS: Record<string, string> = {
 };
 
 const CONTROL_LABELS: Record<string, string> = {
+  "Sync QMT read-only": "Sync QMT read-only",
   Connect: "连接 AIASK",
   Refresh: "刷新",
   Run: "运行线程任务",
@@ -2175,6 +3013,8 @@ const CONTROL_LABELS: Record<string, string> = {
   "Finance Lab": "金融实验室",
   Integrations: "集成",
   "Load messages": "加载消息",
+  "Preview Export/Delete": "Preview Export/Delete",
+  "Preview Aggregate Governance": "Preview Aggregate Governance",
   "Run the first registered plugin tool": "运行第一个已注册插件工具",
   "Load plugin commands": "加载插件命令",
   "Test plugin command": "测试插件命令",
@@ -2205,7 +3045,9 @@ const PLACEHOLDER_LABELS: Record<string, string> = {
 };
 
 const EXPECTED_TEXT_LABELS: Record<string, string> = {
+  BROKER_SYNCED: "BROKER_SYNCED",
   AGENT_STATUS_LOADED: "智能体状态已加载",
+  AGGREGATE_GOVERNANCE_PREVIEWED: "AGGREGATE_GOVERNANCE_PREVIEWED",
   AIASK_ONLINE: "在线",
   CONNECTORS_LOADED: "连接器已加载",
   DATA_STATUS_LOADED: "数据状态已加载",
@@ -2213,7 +3055,7 @@ const EXPECTED_TEXT_LABELS: Record<string, string> = {
   FACTOR_FACTORY_LOADED: "因子工厂已加载",
   FACTOR_MAINTENANCE_INTENT_CREATED: "因子维护意图已创建",
   FACTOR_RUN_INTENT_CREATED: "因子运行意图已创建",
-  FACTORY_RELAY_LOADED: "工厂接力状态已加载",
+  FACTORY_RELAY_LOADED: "接力状态已加载",
   INCUBATION_DRY_RUN_INTENT_CREATED: "孵化试运行意图已创建",
   INCUBATION_LOADED: "孵化状态已加载",
   INCUBATION_MAINTENANCE_INTENT_CREATED: "孵化维护意图已创建",
@@ -2222,16 +3064,21 @@ const EXPECTED_TEXT_LABELS: Record<string, string> = {
   LOCAL_PROFILE_LOADED: "本地画像已加载",
   LOCAL_PROFILE_SAVED: "本地画像已保存",
   MARKET_TEMPERATURE_LOADED: "快照已加载",
+  MODELS_LOADED: "模型列表已加载",
   MODEL_STATUS_LOADED: "模型状态已加载",
   RADAR_LOADED: "雷达已加载",
+  STOCK_DATA_SOURCE_TEST_PASSED: "数据源测试通过",
   STRATEGY_FACTORY_INTENT_CREATED: "策略工厂意图已创建",
   SYNC_INTENT_CREATED: "同步审批意图已创建",
   SYNC_PLAN_READY: "同步计划已生成",
-  USER_DATA_SEARCHED: "用户数据已搜索"
+  USER_DATA_EXPORT_PREVIEWED: "USER_DATA_EXPORT_PREVIEWED",
+  USER_DATA_SEARCHED: "用户数据已搜索",
+  WEB_SEARCH_PASSED: "搜索调用成功"
 };
 
 const SETTINGS_STRUCTURE_BUTTONS = [
   "返回对话",
+  "返回工作台",
   "常规",
   "连接",
   "令牌与权限",
@@ -2240,9 +3087,10 @@ const SETTINGS_STRUCTURE_BUTTONS = [
   "应用集成",
   "Webhook",
   "插件与技能包",
-  "模型状态",
+  "模型配置",
   "MCP 管理入口",
   "工作流入口",
+  "股票数据源",
   "数据路径",
   "学习 / RL",
   "安全扫描",
@@ -2295,6 +3143,15 @@ function expectedTextLabel(text: string) {
   return EXPECTED_TEXT_LABELS[text] || text;
 }
 
+async function expandAdvancedMcpOperations(page: Page) {
+  const advanced = page.locator("details.mcp-operations-panel");
+  if (await advanced.count()) {
+    await advanced.evaluate((node) => {
+      if (node instanceof HTMLDetailsElement) node.open = true;
+    });
+  }
+}
+
 Object.assign(VIEW_LABELS, {
   Overview: "总览",
   Agent: "工作台",
@@ -2302,7 +3159,7 @@ Object.assign(VIEW_LABELS, {
   Sessions: "会话",
   "Runs / Events": "运行 / 事件",
   "Coverage Matrix": "覆盖矩阵",
-  Models: "模型",
+  Models: "模型配置",
   "Data & Sync": "数据",
   MCP: "MCP / 连接器",
   Skills: "插件 / 技能",
@@ -2384,6 +3241,7 @@ const VIEW_GROUP_IDS: Record<string, string> = {
   gateway: "advanced-ops",
   "readiness-health": "advanced-ops",
   "extensions-pilot": "advanced-ops",
+  models: "advanced-ops",
   overview: "legacy",
   agent: "legacy",
   capabilities: "legacy",
@@ -2393,8 +3251,7 @@ const VIEW_GROUP_IDS: Record<string, string> = {
   diagnostics: "legacy",
   "event-console": "legacy",
   skills: "legacy",
-  user: "legacy",
-  models: "legacy"
+  user: "legacy"
 };
 
 Object.assign(CONTROL_LABELS, {
@@ -2422,8 +3279,12 @@ async function openOverview(page: Page) {
 }
 
 async function openSettings(page: Page) {
-  if (await page.getByRole("button", { name: "返回对话", exact: true }).count()) return;
+  if (await settingsReturnButton(page).count()) return;
   await page.getByRole("region", { name: "主工作区" }).getByRole("button", { name: viewLabel("Settings"), exact: true }).click();
+}
+
+function settingsReturnButton(page: Page) {
+  return page.locator(".settings-shell").getByRole("button", { name: /^(返回对话|返回工作台)$/ });
 }
 
 async function openSettingsSection(page: Page, sectionLabel: string) {
@@ -2444,7 +3305,7 @@ async function setControlToken(page: Page, token = CONTROL_TOKEN) {
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Test connection") }).click();
   await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
-  await page.getByRole("button", { name: "返回对话", exact: true }).click();
+  await settingsReturnButton(page).click();
 }
 
 const WORKFLOW_ENTRY_VIEWS = new Set<string>();
@@ -2499,7 +3360,7 @@ async function waitForMainViewReady(page: Page, context: string) {
 }
 
 async function openMainView(page: Page, name: string) {
-  const backToChat = page.getByRole("button", { name: "返回对话", exact: true });
+  const backToChat = settingsReturnButton(page);
   if (name !== "Settings" && (await backToChat.count())) {
     await backToChat.click();
   }
@@ -2535,8 +3396,8 @@ async function openMainView(page: Page, name: string) {
 
   if (SETTINGS_MODEL_VIEWS.has(name)) {
     await openSettings(page);
-    await page.getByRole("button", { name: "模型状态", exact: true }).click();
-    await clickShortcutByLabel(page, "打开模型状态页");
+    await page.getByRole("button", { name: "模型配置", exact: true }).click();
+    await clickShortcutByLabel(page, "打开模型配置页");
     return;
   }
 
@@ -2951,11 +3812,11 @@ test("AI Tests panel runs model status, smoke, model list, and Workbench respons
   await page.getByRole("button", { name: controlLabel("Run"), exact: true }).click();
   await expect(page.getByRole("heading", { name: "智能体回复" })).toBeVisible();
   await expect(page.getByText("AIASK_OK").first()).toBeVisible();
-  await expect(page.getByRole("heading", { name: "run.started" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "model.started" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "model.completed" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "model.delta" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "run.completed" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "run.started" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "model.started" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "model.completed" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "model.delta" }).first()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "run.completed" }).first()).toBeVisible();
 
   await page.getByRole("button", { name: controlLabel("Load run events for selected task"), exact: true }).click();
   await expect(page.getByRole("heading", { name: "run.completed" }).first()).toBeVisible();
@@ -3106,6 +3967,16 @@ test("Settings advanced management panels execute integrations, webhooks, RL, se
   await expect(page.locator(".raw-details")).not.toContainText("password=secret");
   await expect(page.locator(".raw-details")).not.toContainText("AIASK_AGENT_CONTROL_TOKEN=token");
 
+  await openSettingsSection(page, "股票数据源");
+  await expect(page.getByRole("button", { name: /Tushare 主账号/ }).first()).toBeVisible();
+  await page.getByRole("button", { name: "测试连接", exact: true }).click();
+  await expect(page.getByText(expectedTextLabel("STOCK_DATA_SOURCE_TEST_PASSED"))).toBeVisible();
+  await page.getByRole("button", { name: /DuckDuckGo fallback/ }).click();
+  await page.getByRole("button", { name: "调用搜索", exact: true }).click();
+  await expect(page.getByText(expectedTextLabel("WEB_SEARCH_PASSED"))).toBeVisible();
+  await expect(page.locator(".raw-details")).toContainText("[redacted]");
+  await expect(page.locator(".raw-details")).not.toContainText("mock-stock-token");
+
   await openSettingsSection(page, "自动化管理");
   await clickSettingsPanelRefresh(page);
   const managedJobRow = page.locator(".job-row").filter({ hasText: "每日研究监控" }).first();
@@ -3149,7 +4020,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByRole("button", { name: controlLabel("Hermes full") })).toHaveAttribute("aria-pressed", "true");
 
   await openMainView(page, "Models");
-  await expect(page.getByRole("heading", { name: "LLM 提供方配置" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "LLM 提供方、模型获取与测试" })).toBeVisible();
   const providerSection = page.locator(".capability-section").filter({ has: page.getByRole("heading", { name: "已配置提供方" }) });
   await expect(providerSection).toBeVisible();
   await expect(providerSection.locator("strong", { hasText: "openai" }).first()).toBeVisible();
@@ -3163,6 +4034,7 @@ test("Unified control console opens every primary page and exercises safe mock c
   await expect(page.getByText(expectedTextLabel("SYNC_INTENT_CREATED"))).toBeVisible();
 
   await openMainView(page, "MCP");
+  await expandAdvancedMcpOperations(page);
   await expect(page.getByRole("heading", { name: "连接器评审队列" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Discover or refresh MCP server") }).click();
   await expect(page.locator("body")).toContainText("finance-demo");
@@ -3283,15 +4155,20 @@ test("Unified control console opens every primary page and exercises safe mock c
   await openMainView(page, "Settings");
   await expect(page.getByRole("heading", { name: "设置中心" })).toBeVisible();
   await page.getByRole("button", { name: controlLabel("Refresh") }).click();
-  await page.getByRole("button", { name: "模型状态", exact: true }).click();
-  await expect(page.getByText("只读查看模型提供方")).toBeVisible();
+  await page.getByRole("button", { name: "模型配置", exact: true }).click();
+  await expect(page.getByText("进入模型页选择提供方")).toBeVisible();
+  await page.getByRole("button", { name: "股票数据源", exact: true }).click();
+  await expect(page.getByText("配置行情、K 线、基本面和搜索类数据源")).toBeVisible();
+  await expect(page.getByRole("button", { name: /Tushare 主账号/ }).first()).toBeVisible();
+  await page.getByRole("button", { name: "测试连接", exact: true }).click();
+  await expect(page.getByText(expectedTextLabel("STOCK_DATA_SOURCE_TEST_PASSED"))).toBeVisible();
   await page.getByRole("button", { name: "常规", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Save profile") }).click();
   await expect(page.locator("label.settings-row").filter({ hasText: "画像名称" }).locator("input")).toHaveValue("E2E 本地操作者");
   await page.getByRole("button", { name: "连接", exact: true }).click();
   await page.getByRole("button", { name: controlLabel("Test connection") }).click();
   await expect(page.getByText(expectedTextLabel("AIASK_ONLINE")).first()).toBeVisible();
-  await page.getByRole("button", { name: "返回对话", exact: true }).click();
+  await settingsReturnButton(page).click();
 });
 
 test("Full frontend matrix inventories every page, classifies every button, and validates Codex-style layout in mock mode", async ({ page }) => {
@@ -3336,8 +4213,8 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Finance safe",
     "Hermes full",
     "Run thread task",
-    "E2E session 2026-05-21T08:00:00.000Z",
-    "run_fixture completed / tools 0 / approvals 0",
+    "打开会话：E2E session 已完成 · 2026-05-21 16:00",
+    "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个",
     ...WORKBENCH_SAFE_PATH_BUTTONS,
     "准备度",
     "Readiness",
@@ -3351,6 +4228,8 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Plugins / Skills gated",
     "扩展 内部",
     "Extensions internal",
+    "Open evidence",
+    "source_e2e_run",
   ]);
 
   await openMainView(page, "Data & Sync");
@@ -3360,6 +4239,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expectDisabledAndRecord(report, page, "Data & Sync gated", "Create approval intent", "control token required");
 
   await openMainView(page, "MCP");
+  await expandAdvancedMcpOperations(page);
   await expectDisabledAndRecord(report, page, "MCP gated", "Register local MCP server", "control token required or already registered");
   await expectDisabledAndRecord(report, page, "MCP gated", "Discover or refresh MCP server", "control token required");
   await expectDisabledAndRecord(report, page, "MCP gated", "Run MCP read-only smoke", "control token required");
@@ -3409,8 +4289,8 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "Hermes full",
     "Hermes full mode",
     "Run thread task",
-    "E2E session 2026-05-21T08:00:00.000Z",
-    "run_fixture completed / tools 0 / approvals 0",
+    "打开会话：E2E session 已完成 · 2026-05-21 16:00",
+    "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个",
     ...WORKBENCH_SAFE_PATH_BUTTONS,
     "准备度",
     "Readiness",
@@ -3424,6 +4304,8 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "插件 / 技能 就绪",
     "扩展 内部",
     "Extensions internal",
+    "Open evidence",
+    "source_e2e_run",
   ]);
 
   await openMainView(page, "Models");
@@ -3433,7 +4315,19 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expect(matrixProviderSection.locator("strong", { hasText: "openai" }).first()).toBeVisible();
   report.actions.push({ page: "Models", control: "Provider status", result: "visible", note: "modelProviderStatus payload visible" });
   await clickAndRecord(report, page, "Models", "Refresh", "MODEL_STATUS_LOADED");
-  assertMainButtonCoverage(modelsInventory, ["Refresh"]);
+  await clickAndRecord(report, page, "Models", "获取模型", "MODELS_LOADED");
+  await clickAndRecord(report, page, "Models", "测试模型", "AIASK model smoke ok.");
+  assertMainButtonCoverage(modelsInventory, ["Refresh", "保存配置", "获取模型", "测试模型"], {
+    allowedPrefixes: [
+      "OpenAI",
+      "DeepSeek",
+      "通义千问 / DashScope 北京",
+      "Qwen / DashScope 美国弗吉尼亚",
+      "Anthropic Claude",
+      "自定义 OpenAI 兼容",
+      "本地 Mock"
+    ]
+  });
 
   await openMainView(page, "Readiness");
   const readinessInventory = await recordInventory(report, page, "Readiness");
@@ -3520,6 +4414,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await firstConnector.getByRole("button", { name: controlLabel("Connector test"), exact: true }).click();
   await expect(page.locator("body")).toContainText("连接器测试完成");
   report.actions.push({ page: "MCP", control: "Connector test", result: "clicked", note: "连接器测试完成" });
+  await expandAdvancedMcpOperations(page);
   await expectDisabledAndRecord(report, page, "MCP", "Register local MCP server", "already registered in mock");
   await clickAndRecord(report, page, "MCP", "Discover or refresh MCP server", "finance-demo");
   await clickAndRecord(report, page, "MCP", "Run MCP read-only smoke", "只读冒烟测试已完成");
@@ -3600,11 +4495,16 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await openMainView(page, "Finance Lab");
   await expect(page.locator("body")).toContainText(expectedTextLabel("FACTORY_RELAY_LOADED"));
   const financeLabInventory = await recordInventory(report, page, "Finance Lab");
+  await page.getByLabel(/我确认本次只读测试可读取/).check();
+  await clickAndRecord(report, page, "Finance Lab", "Sync QMT read-only", "BROKER_SYNCED");
   await clickAndRecord(report, page, "Finance Lab", "刷新接力状态", "FACTORY_RELAY_LOADED");
   await expect(page.locator("body")).toContainText("20d momentum");
   await expect(page.locator("body")).toContainText("risk-review");
   await expect(page.locator("body")).toContainText("completed");
   assertMainButtonCoverage(financeLabInventory, [
+    "Sync QMT read-only",
+    "检查环境",
+    "运行只读测试并生成分析",
     "刷新接力状态",
     "查看因子池",
     "打开策略评审",
@@ -3619,7 +4519,9 @@ test("Full frontend matrix inventories every page, classifies every button, and 
     "孵化工厂",
     "数据",
     "事件工厂"
-  ]);
+  ], {
+    allowedPrefixes: ["QMT / MiniQMT", "同花顺"]
+  });
   await clickAndRecord(report, page, "Finance Lab", "查看因子池", "因子挖掘与活跃池");
 
   await openMainView(page, "Market Temperature");
@@ -3695,7 +4597,9 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await expectDisabledAndRecord(report, page, "Local User", "Search", "query required");
   await page.getByPlaceholder(placeholderLabel("Search local sessions, responses, and memory")).fill("AIASK");
   await clickAndRecord(report, page, "Local User", "Search", "USER_DATA_SEARCHED");
-  assertMainButtonCoverage(userInventory, ["Refresh", "Load messages", "Save local profile", "Search"], {
+  await clickAndRecord(report, page, "Local User", "Preview Export/Delete", "USER_DATA_EXPORT_PREVIEWED");
+  await clickAndRecord(report, page, "Local User", "Preview Aggregate Governance", "AGGREGATE_GOVERNANCE_PREVIEWED");
+  assertMainButtonCoverage(userInventory, ["Refresh", "Load messages", "Save local profile", "Search", "Preview Export/Delete", "Preview Aggregate Governance"], {
     structural: LEGACY_REPLACEMENT_BUTTONS
   });
 
@@ -3792,8 +4696,18 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   await page.locator("label.settings-row").filter({ hasText: "API 令牌" }).locator("input").fill("api-token-mock");
   await page.locator("label.settings-row").filter({ hasText: "控制令牌" }).locator("input").fill(CONTROL_TOKEN);
   await clickAndRecord(report, page, "Settings", "Refresh");
-  await page.getByRole("button", { name: "模型状态", exact: true }).click();
-  await expect(page.getByText("只读查看模型提供方")).toBeVisible();
+  await page.getByRole("button", { name: "模型配置", exact: true }).click();
+  await expect(page.getByText("进入模型页选择提供方")).toBeVisible();
+  await page.getByRole("button", { name: "股票数据源", exact: true }).click();
+  const stockDataSourcesInventory = await recordInventory(report, page, "Settings / Stock data sources");
+  await expect(page.getByRole("button", { name: /Tushare 主账号/ }).first()).toBeVisible();
+  await clickAndRecord(report, page, "Settings / Stock data sources", "测试连接", expectedTextLabel("STOCK_DATA_SOURCE_TEST_PASSED"));
+  await page.getByRole("button", { name: /DuckDuckGo fallback/ }).click();
+  await clickAndRecord(report, page, "Settings / Stock data sources", "调用搜索", expectedTextLabel("WEB_SEARCH_PASSED"));
+  assertMainButtonCoverage(stockDataSourcesInventory, ["Refresh", "打开官方文档", "保存数据源", "测试连接", "调用搜索"], {
+    structural: SETTINGS_STRUCTURE_BUTTONS,
+    allowedPrefixes: ["AKShare / AKTools", "Tushare Pro", "TongDaXin HQ", "DuckDuckGo HTML Search", "Tavily Search", "E2E AKShare", "Tushare 主账号", "DuckDuckGo fallback"]
+  });
   await page.getByRole("button", { name: "常规", exact: true }).click();
   await clickAndRecord(report, page, "Settings", "Save profile");
   await expect(page.locator("label.settings-row").filter({ hasText: "画像名称" }).locator("input")).toHaveValue("E2E 本地操作者");
@@ -3802,7 +4716,7 @@ test("Full frontend matrix inventories every page, classifies every button, and 
   assertMainButtonCoverage(settingsInventory, ["Refresh", "Reset endpoint to default Agent endpoint", "Save profile", "Test connection"], {
     structural: SETTINGS_STRUCTURE_BUTTONS
   });
-  await page.getByRole("button", { name: "返回对话", exact: true }).click();
+  await settingsReturnButton(page).click();
 
   await page.setViewportSize({ width: 980, height: 760 });
   await openMainView(page, "Overview");
@@ -3999,7 +4913,7 @@ test.describe("optional live desktop smoke", () => {
     await openSettings(page);
     await page.getByRole("button", { name: "令牌与权限", exact: true }).click();
     await page.locator("label.settings-row").filter({ hasText: "控制令牌" }).locator("input").fill(token);
-    await page.getByRole("button", { name: "返回对话", exact: true }).click();
+    await settingsReturnButton(page).click();
     await openMainView(page, "Capabilities");
     await openCapabilityTab(page, "AI Tests");
     await expect(page.locator(".capability-banner").filter({ hasText: "AI 测试" })).toBeVisible();
@@ -4036,7 +4950,7 @@ test.describe("optional live desktop smoke", () => {
       { name: "Skills", pattern: /插件|技能|plugin|skill|受限|就绪/i },
       { name: "Gateway", pattern: /Gateway|平台|daemon|消息|目录|受限|就绪/i },
       { name: "Models", pattern: /模型|provider|AI|status|提供方|mock-live-model/i },
-      { name: "Settings", pattern: /设置|Agent 端点|令牌|模型状态|连接/i },
+      { name: "Settings", pattern: /设置|Agent 端点|令牌|模型配置|连接/i },
       { name: "Overview", pattern: /总览|运行概览|系统|健康|Agent/i },
       { name: "Coverage Matrix", pattern: /覆盖矩阵|能力|implemented|partial|Hermes/i },
       { name: "Tools", pattern: /工具|agent_|safe|probe|目录/i },
@@ -4060,9 +4974,10 @@ test.describe("optional live desktop smoke", () => {
       { label: "应用集成", pattern: /应用集成|连接器|Gateway|平台|消息/i },
       { label: "Webhook", pattern: /Webhook|订阅|触发|受控/i },
       { label: "插件与技能包", pattern: /插件与技能包|插件|skill pack|技能包/i },
-      { label: "模型状态", pattern: /模型状态|提供方|模型|密钥|只读/i },
+      { label: "模型配置", pattern: /模型配置|提供方|模型|密钥|冒烟测试/i },
       { label: "MCP 管理入口", pattern: /MCP 管理入口|MCP 服务|资源|提示词|OAuth/i },
       { label: "工作流入口", pattern: /工作流入口|数据与同步|策略工厂|因子工厂|孵化/i },
+      { label: "股票数据源", pattern: /股票数据源|数据源配置|Tushare|DuckDuckGo|测试连接/i },
       { label: "数据路径", pattern: /数据路径|数据库|Agent|量化|AKShare/i },
       { label: "学习 / RL", pattern: /学习|RL|环境|运行|结果/i },
       { label: "安全扫描", pattern: /安全扫描|扫描|修复建议|环境变量/i },

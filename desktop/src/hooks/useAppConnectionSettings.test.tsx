@@ -21,6 +21,8 @@ describe("useAppConnectionSettings", () => {
 
     expect(result.current.mockMode).toBe(false);
     expect(result.current.endpoint).toBe("http://127.0.0.1:8767");
+    expect(result.current.defaultEndpointActive).toBe(true);
+    expect(result.current.agentReachable).toBe(true);
     expect(result.current.profileName).toBe("本地操作者");
   });
 

@@ -232,6 +232,10 @@ def strategy_factory_gate3_record_only_enabled() -> bool:
     return _env_bool("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", default=False)
 
 
+def stock_direction_gate_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_DIRECTION_GATE_ENABLED", default=True)
+
+
 __all__ = [
     "GRADE_RANKS",
     "normalize_validation_grade",
@@ -261,4 +265,5 @@ __all__ = [
     "strategy_trade_prediction_factor_decay_enabled",
     "strategy_factory_min_validation_grade",
     "strategy_factory_gate3_record_only_enabled",
+    "stock_direction_gate_enabled",
 ]

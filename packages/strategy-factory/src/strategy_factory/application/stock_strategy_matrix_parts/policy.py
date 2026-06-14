@@ -260,6 +260,9 @@
         router_status = dict(row.get("_stock_first_router") or {})
         if router_status:
             task["stock_first_router"] = router_status
+        direction_gate_status = dict(row.get("_stock_direction_gate") or {})
+        if direction_gate_status:
+            task["stock_direction_gate"] = direction_gate_status
         if profile_param_band:
             task["profile_param_band"] = profile_param_band
         if param_search_space:
@@ -901,12 +904,19 @@
             "full_market_score_rows": full_market_score_rows,
         }
         router_telemetry = self._router_telemetry_for_rows(filtered_rows, selected_tasks=tasks)
+        direction_gate_telemetry = self._direction_gate_telemetry_for_rows(filtered_rows, selected_tasks=tasks)
         report["router_artifact"] = {
             "contract_version": "strategy_factory.router_artifact.v1",
             "available": bool(STOCK_FIRST_ROUTER_TELEMETRY_ENABLED),
             **router_telemetry,
         }
+        report["direction_gate_artifact"] = {
+            "contract_version": "strategy_factory.direction_gate_artifact.v1",
+            "available": True,
+            **direction_gate_telemetry,
+        }
         report["summary"].update(router_telemetry)
+        report["summary"].update(direction_gate_telemetry)
         task_artifact = build_task_artifact(
             {
                 "task_scan": report,

@@ -1,0 +1,152 @@
+[
+  {
+    "ok": true,
+    "label": "集成页卡片打开 MCP / 连接器",
+    "state": {
+      "viewId": "retest-integrations-open-mcp-after-aria",
+      "label": "集成页卡片打开 MCP / 连接器",
+      "url": "http://127.0.0.1:1420/",
+      "documentTitle": "AIASK Desktop",
+      "headings": [
+        {
+          "tag": "H1",
+          "text": "MCP / 连接器"
+        },
+        {
+          "tag": "H2",
+          "text": "服务器、工具、资源、提示词、OAuth 与连接器管理"
+        },
+        {
+          "tag": "H3",
+          "text": "MCP 只读调用冒烟测试"
+        },
+        {
+          "tag": "H3",
+          "text": "MCP 服务器"
+        },
+        {
+          "tag": "H3",
+          "text": "MCP 工具"
+        },
+        {
+          "tag": "H3",
+          "text": "MCP 资源"
+        },
+        {
+          "tag": "H3",
+          "text": "提示词 / OAuth"
+        },
+        {
+          "tag": "H3",
+          "text": "连接器摘要"
+        }
+      ],
+      "buttons": [
+        {
+          "text": "刷新",
+          "disabled": true,
+          "aria": null
+        },
+        {
+          "text": "运行 MCP 只读冒烟测试",
+          "disabled": true,
+          "aria": null
+        }
+      ],
+      "inputs": [],
+      "alerts": [],
+      "textSample": "运维与连接 MCP / 连接器 就绪 需要控制令牌 刷新 MCP + 连接器 服务器、工具、资源、提示词、OAuth 与连接器管理 桌面端只读取 Agent 聚合状态并调用 Agent HTTP 管理接口，不直接连接 MCP server 或 manager。 连接器管理受限 受限 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。 MCP 状态 未加载 服务器 0 工具 0 资源 0 提示词 0 OAUTH 0 连接器 0 已连接 0 只读冒烟测试未运行 MCP 只读调用冒烟测试 运行 MCP 只读冒烟测试 读取 MCP 资源 /v1/mcp/resources/read 空闲 服务器 - 目标 未发现资源 结果 无可用资源 获取 MCP 提示词 /v1/mcp/prompts/get 空闲 服务器 - 目标 未发现提示词 结果 无可用提示词 0 个服务器 MCP 服务器 服务器 传输 状态 详情 暂无 MCP 服务器。 0 个工具 MCP 工具 暂无 MCP 工具。 0 个资源 MCP 资源 暂无 MCP 资源。 0 个提示词 / 0 个 OAuth 状态 提示词 / OAuth 暂无提示词或 OAuth 状态。 0 总数 / 0 已连接 / 0 已配置 连接器摘要 需要控制令牌 需要控制令牌后才能查看连接器列表和测试结果。 0 个连接器 连接器列表 连接器列表需要控制令牌后加载。 详情 / 测试 连接器详情 未加载 请选择连接器，或先运行一次测试。 连接器原始结果 高级 MCP 操作 包含原始诊断字段，仅在排障时展开。",
+      "textLength": 736,
+      "badPatterns": [],
+      "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/39-integrations-open-mcp-after-aria.png"
+    }
+  },
+  {
+    "ok": true,
+    "label": "集成页卡片打开 Gateway",
+    "state": {
+      "viewId": "retest-integrations-open-gateway-after-aria",
+      "label": "集成页卡片打开 Gateway",
+      "url": "http://127.0.0.1:1420/",
+      "documentTitle": "AIASK Desktop",
+      "headings": [
+        {
+          "tag": "H1",
+          "text": "Gateway"
+        },
+        {
+          "tag": "H2",
+          "text": "平台健康、守护进程、目录、消息与重试"
+        },
+        {
+          "tag": "H3",
+          "text": "守护进程状态"
+        },
+        {
+          "tag": "H3",
+          "text": "平台健康"
+        },
+        {
+          "tag": "H3",
+          "text": "消息发送预览"
+        },
+        {
+          "tag": "H3",
+          "text": "目录刷新"
+        },
+        {
+          "tag": "H3",
+          "text": "消息列表"
+        }
+      ],
+      "buttons": [
+        {
+          "text": "刷新",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "创建发送审批",
+          "disabled": true,
+          "aria": null
+        },
+        {
+          "text": "刷新目录",
+          "disabled": true,
+          "aria": null
+        }
+      ],
+      "inputs": [
+        {
+          "tag": "INPUT",
+          "type": null,
+          "placeholder": null,
+          "label": null,
+          "value": "local"
+        },
+        {
+          "tag": "INPUT",
+          "type": null,
+          "placeholder": "channel/user/room",
+          "label": null,
+          "value": ""
+        },
+        {
+          "tag": "TEXTAREA",
+          "type": null,
+          "placeholder": null,
+          "label": null,
+          "value": "AIASK gateway delivery preview"
+        }
+      ],
+      "alerts": [
+        "Gateway 管理详情需要控制令牌。请在设置中填写控制令牌后再刷新；发送预览不会绕过 ActionIntent 审批链路。",
+        "失败消息可以在确认后重试；发送预览只会创建一条待审批请求，不会直接投递到外部平台。"
+      ],
+      "textSample": "运维与连接 Gateway 缺少控制令牌 需要控制令牌后刷新 刷新 平台 Gateway 平台健康、守护进程、目录、消息与重试 消息发送只创建 ActionIntent，投递仍等待审批确认。 Gateway 管理详情需要控制令牌。请在设置中填写控制令牌后再刷新；发送预览不会绕过 ActionIntent 审批链路。 GATEWAY 状态 未加载 守护进程 需要控制令牌 平台 0 消息 0 待重试 0 目录 0 管理详情待解锁 守护进程状态 需要控制令牌 已启用 未加载 运行中 未加载 监听器 0 状态 未加载 0 个平台 平台健康 需要控制令牌后才能读取平台健康状态。 仅创建审批 消息发送预览 需要审批 平台 目标 消息 创建发送审批 0 个目录项 目录刷新 刷新目录 需要控制令牌后才能读取或刷新目录。 0 条消息 消息列表 消息 平台 状态 错误 / 目标 暂无 Gateway 消息。 Gateway 原始载荷 失败消息可以在确认后重试；发送预览只会创建一条待审批请求，不会直接投递到外部平台。",
+      "textLength": 454,
+      "badPatterns": [],
+      "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/39-integrations-open-gateway-after-aria.png"
+    }
+  }
+]

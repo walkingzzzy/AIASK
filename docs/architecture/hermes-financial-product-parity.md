@@ -2,10 +2,10 @@
 
 Date: 2026-04-27
 
-This matrix tracks AIASK-native parity against the vendored Hermes 0.15.1
-snapshot at `7402706c5`. The original financial-product runtime scope is
-retained as a compatibility label, and `v0.14_delta` remains a historical
-capability layer rather than the current baseline.
+This matrix tracks AIASK-native parity against Hermes Agent 0.16.0, release tag
+`v2026.6.5` ("The Surface Release"). The original financial-product runtime
+scope is retained as a compatibility label, `v0.14_delta` remains a historical
+capability layer, and `v0.16_delta` tracks the Surface Release additions.
 
 The executable source of truth is
 `packages/agent/src/aiask_agent/capabilities.py`; `/v1/capabilities/parity` and
@@ -19,7 +19,7 @@ Included:
   memory, todo, clarification, subagent delegation, and audit records.
 - AIASK-native terminal/process/file/code/browser/web/skills/plugins/MCP/cron
   webhook, platform gateway, Home Assistant, TUI status, RL/Atropos, MoA, and
-  terminal-backend controls for `hermes_full`.
+  terminal-backend controls for the AIASK `general_full` runtime.
 - Provider-backed multimodal hooks that report `configured=false` when required
   credentials are missing.
 

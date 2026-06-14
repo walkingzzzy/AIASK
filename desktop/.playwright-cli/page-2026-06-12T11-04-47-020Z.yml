@@ -1,0 +1,102 @@
+- main [ref=e145]:
+  - generic [ref=e659]:
+    - complementary [ref=e660]:
+      - button "返回工作台" [ref=e661] [cursor=pointer]:
+        - img [ref=e662]
+        - text: 返回工作台
+      - generic [ref=e664]:
+        - strong [ref=e665]: 设置
+        - generic [ref=e666]: 可操作设置、管理入口与只读状态
+      - navigation "设置导航" [ref=e667]:
+        - generic [ref=e668]:
+          - generic [ref=e669]: 基础设置
+          - button "常规" [ref=e670] [cursor=pointer]:
+            - img [ref=e671]
+            - generic [ref=e672]: 常规
+          - button "连接" [ref=e673] [cursor=pointer]:
+            - img [ref=e674]
+            - generic [ref=e679]: 连接
+          - button "令牌与权限" [ref=e680] [cursor=pointer]:
+            - img [ref=e681]
+            - generic [ref=e684]: 令牌与权限
+        - generic [ref=e685]:
+          - generic [ref=e686]: 高级管理
+          - button "技能管理" [ref=e687] [cursor=pointer]:
+            - img [ref=e688]
+            - generic [ref=e692]: 技能管理
+          - button "自动化管理" [ref=e693] [cursor=pointer]:
+            - img [ref=e694]
+            - generic [ref=e698]: 自动化管理
+          - button "应用集成" [ref=e699] [cursor=pointer]:
+            - img [ref=e700]
+            - generic [ref=e706]: 应用集成
+          - button "Webhook" [ref=e707] [cursor=pointer]:
+            - img [ref=e708]
+            - generic [ref=e712]: Webhook
+          - button "插件与技能包" [ref=e713] [cursor=pointer]:
+            - img [ref=e714]
+            - generic [ref=e716]: 插件与技能包
+        - generic [ref=e717]:
+          - generic [ref=e718]: 状态与入口
+          - button "模型配置" [active] [ref=e719] [cursor=pointer]:
+            - img [ref=e720]
+            - generic [ref=e723]: 模型配置
+          - button "MCP 管理入口" [ref=e724] [cursor=pointer]:
+            - img [ref=e725]
+            - generic [ref=e737]: MCP 管理入口
+          - button "工作流入口" [ref=e738] [cursor=pointer]:
+            - img [ref=e739]
+            - generic [ref=e741]: 工作流入口
+          - button "股票数据源" [ref=e742] [cursor=pointer]:
+            - img [ref=e743]
+            - generic [ref=e747]: 股票数据源
+          - button "数据路径" [ref=e748] [cursor=pointer]:
+            - img [ref=e749]
+            - generic [ref=e753]: 数据路径
+          - button "学习 / RL" [ref=e754] [cursor=pointer]:
+            - img [ref=e755]
+            - generic [ref=e767]: 学习 / RL
+          - button "安全扫描" [ref=e768] [cursor=pointer]:
+            - img [ref=e769]
+            - generic [ref=e772]: 安全扫描
+          - button "高级诊断入口" [ref=e773] [cursor=pointer]:
+            - img [ref=e774]
+            - generic [ref=e776]: 高级诊断入口
+          - button "关于" [ref=e777] [cursor=pointer]:
+            - img [ref=e778]
+            - generic [ref=e780]: 关于
+    - generic [ref=e781]:
+      - generic [ref=e782]:
+        - generic [ref=e783]:
+          - text: 设置
+          - heading "设置中心" [level=1] [ref=e784]
+          - paragraph [ref=e785]: 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。
+        - button "刷新" [ref=e786] [cursor=pointer]:
+          - img [ref=e787]
+          - text: 刷新
+      - generic [ref=e822]:
+        - generic [ref=e823]:
+          - generic [ref=e824]:
+            - heading "模型配置" [level=3] [ref=e825]
+            - paragraph [ref=e826]: 进入模型页选择提供方、保存模型环境变量、获取模型列表并执行冒烟测试；密钥不会在前端回显。
+          - generic "implemented / 已配置" [ref=e827]:
+            - img [ref=e828]
+            - generic [ref=e831]: 已配置
+        - generic [ref=e832]:
+          - generic [ref=e833]:
+            - generic [ref=e834]: 提供方
+            - strong [ref=e835]: openai
+            - generic [ref=e836]: 模型
+            - strong [ref=e837]: gpt-5.4
+            - generic [ref=e838]: 基础 URL
+            - strong [ref=e839]: 已配置
+            - generic [ref=e840]: API 密钥
+            - strong [ref=e841]: 已配置
+            - generic [ref=e842]: 配置来源
+            - strong [ref=e843]: project_root .env
+            - generic [ref=e844]: 密钥
+            - strong [ref=e845]: 已脱敏
+          - button "打开模型配置页 配置 OpenAI 兼容、DeepSeek、DashScope、Anthropic 或本地 Mock，并测试连通性。" [ref=e847] [cursor=pointer]:
+            - img [ref=e848]
+            - strong [ref=e851]: 打开模型配置页
+            - generic [ref=e852]: 配置 OpenAI 兼容、DeepSeek、DashScope、Anthropic 或本地 Mock，并测试连通性。

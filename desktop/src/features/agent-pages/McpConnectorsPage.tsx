@@ -1,7 +1,7 @@
 import { Eye, Play, PlugZap, RefreshCw, ServerCog, TestTubeDiagonal } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { GatedState, JsonPanel, MetricCard, RawEvidencePanel, StatusBadge, compact, localizeBlockedReason, shortText } from "../../components/shared";
+import { GatedState, JsonPanel, MetricCard, RawEvidencePanel, StatusBadge, compact, localizeBlockedReason, shortText, statusLabel } from "../../components/shared";
 import { useCapabilityWorkbench } from "../../hooks/useCapabilityWorkbench";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { CapabilityWorkbenchPayload, ConnectorDetail } from "../../types";
@@ -70,7 +70,13 @@ function connectorMessageLabel(status: string): string {
   if (status === "CONNECTORS_LOADED") return "连接器已加载";
   if (status === "CONNECTOR_DETAIL_LOADED") return "连接器详情已加载";
   if (status === "CONNECTOR_TESTED") return "连接器测试完成";
-  return status;
+  return statusLabel(status);
+}
+
+function yesNo(value: unknown): string {
+  if (value === true) return "是";
+  if (value === false) return "否";
+  return "未知";
 }
 
 function smokeMessageLabel(status: string): string {
@@ -78,6 +84,14 @@ function smokeMessageLabel(status: string): string {
   if (status === "MCP_SMOKE_RUNNING") return "只读冒烟测试运行中";
   if (status === "MCP_SMOKE_DONE") return "只读冒烟测试已完成";
   return status;
+}
+
+function messageStatus(status: string): string {
+  const normalized = status.toUpperCase();
+  if (normalized.includes("CONTROL_TOKEN_REQUIRED") || normalized.includes("REQUIRED")) return "gated";
+  if (normalized.includes("FAILED") || normalized.includes("ERROR")) return "failed";
+  if (status.startsWith("AIASK_")) return "gated";
+  return "ready";
 }
 
 export function McpConnectorsPage({
@@ -112,6 +126,7 @@ export function McpConnectorsPage({
   const mcpPromptCount = mcp?.discovered_counts?.prompts ?? mcp?.prompts.length ?? 0;
   const oauthCount = mcp?.oauth.length ?? 0;
   const missingAuth = mcp?.missing_auth_env_vars || [];
+  const hasControlToken = Boolean(controlToken.trim());
   const groupedConnectors = connectors.reduce<Record<string, ConnectorDetail[]>>((acc, connector) => {
     const key = connector.type || "unknown";
     if (!acc[key]) acc[key] = [];
@@ -120,6 +135,14 @@ export function McpConnectorsPage({
   }, {});
 
   async function loadConnectors() {
+    if (!hasControlToken) {
+      setConnectorSummary(null);
+      setConnectors([]);
+      setSelectedConnector(null);
+      setConnectorResult(null);
+      setConnectorMessage("CONTROL_TOKEN_REQUIRED");
+      return;
+    }
     setConnectorBusy(true);
     try {
       const [summaryPayload, listPayload] = await Promise.all([
@@ -226,7 +249,7 @@ export function McpConnectorsPage({
   useEffect(() => {
     refreshAll().catch(() => undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [controlToken, endpoint]);
+  }, [hasControlToken, endpoint]);
 
   return (
     <section className="capabilities-workspace">
@@ -236,9 +259,9 @@ export function McpConnectorsPage({
           <h1>MCP / 连接器</h1>
         </div>
         <div className="header-actions">
-          <StatusBadge status={message.startsWith("AIASK_") ? "gated" : "ready"} label={message || "ready"} />
+          <StatusBadge status={messageStatus(message || "ready")} label={statusLabel(message || "ready")} technicalLabel={message} />
           <StatusBadge
-            status={connectorMessage.startsWith("AIASK_") ? "gated" : "ready"}
+            status={messageStatus(connectorMessage)}
             label={connectorMessageLabel(connectorMessage)}
             technicalLabel={connectorMessage}
           />
@@ -260,16 +283,16 @@ export function McpConnectorsPage({
             <PlugZap size={22} />
           </div>
 
-          {!controlToken.trim() && (
+          {!hasControlToken && (
             <GatedState
-              reason={localizeBlockedReason("control token required") || "MCP 和连接器管理需要控制令牌。"}
+              reason={localizeBlockedReason("control token required") || "MCP 和连接器管理需要控制令牌。请在设置中填写控制令牌后再刷新。"}
               status="gated"
               title="连接器管理受限"
             />
           )}
 
           <div className="diagnostics-summary wide">
-            <MetricCard label="MCP 状态" value={mcpStatus} status={mcpStatus} />
+            <MetricCard label="MCP 状态" value={statusLabel(mcpStatus)} status={mcpStatus} />
             <MetricCard label="服务器" value={mcp?.servers.length ?? 0} status={mcp?.servers.length ? "ready" : "not_loaded"} />
             <MetricCard label="工具" value={mcpToolCount} status={mcpToolCount ? "ready" : "not_loaded"} />
             <MetricCard label="资源" value={mcpResourceCount} status={mcpResourceCount ? "ready" : "not_loaded"} />
@@ -295,7 +318,7 @@ export function McpConnectorsPage({
               </div>
               <button
                 className="small-button"
-                disabled={busy || connectorBusy || smokeBusy || !controlToken.trim() || !firstServerName}
+                disabled={busy || connectorBusy || smokeBusy || !hasControlToken || !firstServerName}
                 onClick={runMcpReadOnlySmoke}
                 type="button"
               >
@@ -347,7 +370,7 @@ export function McpConnectorsPage({
                   <div className="table-row" key={server.name}>
                     <strong>{server.name}</strong>
                     <span>{server.transport || "-"}</span>
-                    <span>{server.configured === false ? "unconfigured" : "configured"}</span>
+                    <span>{statusLabel(server.configured === false ? "unconfigured" : "configured")}</span>
                     <span>{shortText(String(server.domain || server.url || server.detail || "-"), 72)}</span>
                   </div>
                 ))}
@@ -370,7 +393,11 @@ export function McpConnectorsPage({
                     <p>{shortText(tool.description || "暂无描述。", 120)}</p>
                   </article>
                 ))}
-                {!mcp?.tools.length && <p className="muted">暂无 MCP 工具。</p>}
+                {!mcp?.tools.length && (
+                  <p className="muted">
+                    {mcpToolCount && !hasControlToken ? `已发现 ${mcpToolCount} 个工具；缺少控制令牌，暂不展开工具明细。` : "暂无 MCP 工具。"}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -391,7 +418,11 @@ export function McpConnectorsPage({
                     </article>
                   );
                 })}
-                {!mcp?.resources.length && <p className="muted">暂无 MCP 资源。</p>}
+                {!mcp?.resources.length && (
+                  <p className="muted">
+                    {mcpResourceCount && !hasControlToken ? `已发现 ${mcpResourceCount} 个资源；缺少控制令牌，暂不展开资源明细。` : "暂无 MCP 资源。"}
+                  </p>
+                )}
               </div>
             </div>
 
@@ -417,11 +448,15 @@ export function McpConnectorsPage({
                   return (
                     <article key={`oauth:${item.server || item.name || index}`}>
                       <strong>{compact(item.server || item.name || `oauth-${index + 1}`)}</strong>
-                      <span>{compact(item.status || item.authenticated || item.error || "unknown")}</span>
+                      <span>{statusLabel(compact(item.status || item.authenticated || item.error || "unknown"))}</span>
                     </article>
                   );
                 })}
-                {!mcp?.prompts.length && !mcp?.oauth.length && <p className="muted">暂无提示词或 OAuth 状态。</p>}
+                {!mcp?.prompts.length && !mcp?.oauth.length && (
+                  <p className="muted">
+                    {mcpPromptCount && !hasControlToken ? `已发现 ${mcpPromptCount} 个提示词；缺少控制令牌，暂不展开提示词明细。` : "暂无提示词或 OAuth 状态。"}
+                  </p>
+                )}
               </div>
             </div>
           </section>
@@ -433,7 +468,7 @@ export function McpConnectorsPage({
                 <h3>连接器摘要</h3>
               </div>
               <StatusBadge
-                status={connectorMessage.startsWith("AIASK_") ? "gated" : "ready"}
+                status={messageStatus(connectorMessage)}
                 label={connectorMessageLabel(connectorMessage)}
                 technicalLabel={connectorMessage}
               />
@@ -445,7 +480,7 @@ export function McpConnectorsPage({
                   <span>{items.filter((item) => item.connected || item.status === "ready").length}/{items.length} 已连接</span>
                 </article>
               ))}
-              {!connectors.length && <p className="muted">暂无连接器。</p>}
+              {!connectors.length && <p className="muted">{hasControlToken ? "暂无连接器。" : "需要控制令牌后才能查看连接器列表和测试结果。"}</p>}
             </div>
           </section>
 
@@ -472,14 +507,14 @@ export function McpConnectorsPage({
                         <Eye size={13} />
                         详情
                       </button>
-                      <button className="small-button" disabled={connectorBusy || !controlToken.trim()} onClick={() => testConnector(connector)} type="button">
+                      <button className="small-button" disabled={connectorBusy || !hasControlToken} onClick={() => testConnector(connector)} type="button">
                         <TestTubeDiagonal size={13} />
                         测试
                       </button>
                     </div>
                   </article>
                 ))}
-                {!connectors.length && <p className="muted">暂无连接器列表。</p>}
+                {!connectors.length && <p className="muted">{hasControlToken ? "暂无连接器列表。" : "连接器列表需要控制令牌后加载。"}</p>}
               </div>
             </div>
 
@@ -498,9 +533,9 @@ export function McpConnectorsPage({
                   <span>类型</span>
                   <strong>{selectedConnector.type}</strong>
                   <span>已配置</span>
-                  <strong>{String(selectedConnector.configured ?? "unknown")}</strong>
+                  <strong>{yesNo(selectedConnector.configured)}</strong>
                   <span>已连接</span>
-                  <strong>{String(selectedConnector.connected ?? "unknown")}</strong>
+                  <strong>{yesNo(selectedConnector.connected)}</strong>
                   <span>缺少环境变量</span>
                   <strong>{selectedConnector.missing_env?.join(", ") || "-"}</strong>
                 </div>
@@ -511,15 +546,15 @@ export function McpConnectorsPage({
             </div>
           </section>
 
-          <section className="mcp-operations-panel">
-            <div className="section-header inline-section-header">
-              <div>
-                <span>高级 MCP 操作</span>
-                <h3>MCP 操作</h3>
-              </div>
-            </div>
+          <details className="mcp-operations-panel">
+            <summary>
+              <span>
+                <strong>高级 MCP 操作</strong>
+                <small>包含原始诊断字段，仅在排障时展开。</small>
+              </span>
+            </summary>
             <McpPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />
-          </section>
+          </details>
         </div>
       </div>
     </section>

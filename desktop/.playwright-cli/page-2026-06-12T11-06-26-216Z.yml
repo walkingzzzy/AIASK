@@ -1,0 +1,374 @@
+- generic [ref=e3]:
+  - complementary [ref=e853]:
+    - generic [ref=e854]:
+      - img [ref=e856]
+      - generic [ref=e858]:
+        - strong [ref=e859]: AIASK
+        - generic [ref=e860]: Agent 工作台
+      - img [ref=e861]
+    - button "新建线程" [ref=e863] [cursor=pointer]:
+      - img [ref=e864]
+      - text: 新建线程
+    - generic [ref=e865]:
+      - generic [ref=e866]:
+        - generic [ref=e867]: 项目 / 上下文
+        - strong [ref=e868]: aiask-agent
+        - generic [ref=e869]: Agent 已连接 · 桌面客户端
+      - generic "ready / 在线" [ref=e870]:
+        - img [ref=e871]
+        - generic [ref=e874]: 在线
+    - button "会话 受限" [ref=e877] [cursor=pointer]:
+      - img [ref=e878]
+      - text: 会话
+      - generic "gated / 受限" [ref=e880]:
+        - img [ref=e881]
+        - generic [ref=e883]: 受限
+    - generic [ref=e884]:
+      - generic [ref=e885]:
+        - generic [ref=e886]: 任务线程
+        - generic [ref=e887]: "7"
+      - button "搜索与历史" [ref=e888] [cursor=pointer]:
+        - img [ref=e889]
+        - text: 搜索与历史
+      - generic [ref=e892]:
+        - button "b1acf60a-b97a-4869-9e7e-637df6bf3a78 已完成 · 最近更新 2026-06-09T10:39:39.929095+00:00 b1acf60a-b97a-4869-9e7e-637df6bf3a78" [ref=e893] [cursor=pointer]:
+          - strong [ref=e894]: b1acf60a-b97a-4869-9e7e-637df6bf3a78
+          - generic [ref=e895]: 已完成 · 最近更新 2026-06-09T10:39:39.929095+00:00
+          - emphasis [ref=e896]: b1acf60a-b97a-4869-9e7e-637df6bf3a78
+        - button "7691a0b7-d071-4406-9b83-5f5f19595674 错误 · 最近更新 2026-05-29T01:28:43.977806+00:00 7691a0b7-d071-4406-9b83-5f5f19595674" [ref=e897] [cursor=pointer]:
+          - strong [ref=e898]: 7691a0b7-d071-4406-9b83-5f5f19595674
+          - generic [ref=e899]: 错误 · 最近更新 2026-05-29T01:28:43.977806+00:00
+          - emphasis [ref=e900]: 7691a0b7-d071-4406-9b83-5f5f19595674
+        - button "b193cf51-db27-40ba-bb30-d7425966095a 错误 · 最近更新 2026-05-27T05:09:42.404506+00:00 b193cf51-db27-40ba-bb30-d7425966095a" [ref=e901] [cursor=pointer]:
+          - strong [ref=e902]: b193cf51-db27-40ba-bb30-d7425966095a
+          - generic [ref=e903]: 错误 · 最近更新 2026-05-27T05:09:42.404506+00:00
+          - emphasis [ref=e904]: b193cf51-db27-40ba-bb30-d7425966095a
+        - button "264aca64-5f27-4504-b3d1-e48cc9ba78c5 已完成 · 最近更新 2026-05-27T05:03:38.029820+00:00 264aca64-5f27-4504-b3d1-e48cc9ba78c5" [ref=e905] [cursor=pointer]:
+          - strong [ref=e906]: 264aca64-5f27-4504-b3d1-e48cc9ba78c5
+          - generic [ref=e907]: 已完成 · 最近更新 2026-05-27T05:03:38.029820+00:00
+          - emphasis [ref=e908]: 264aca64-5f27-4504-b3d1-e48cc9ba78c5
+        - button "1ebe800f-cd3b-49a1-aa4d-8379db176fc7 错误 · 最近更新 2026-05-22T08:02:16.043812+00:00 1ebe800f-cd3b-49a1-aa4d-8379db176fc7" [ref=e909] [cursor=pointer]:
+          - strong [ref=e910]: 1ebe800f-cd3b-49a1-aa4d-8379db176fc7
+          - generic [ref=e911]: 错误 · 最近更新 2026-05-22T08:02:16.043812+00:00
+          - emphasis [ref=e912]: 1ebe800f-cd3b-49a1-aa4d-8379db176fc7
+        - button "5dda21bf-7055-42bc-908e-257b03555981 已完成 · 最近更新 2026-05-22T07:47:31.918801+00:00 5dda21bf-7055-42bc-908e-257b03555981" [ref=e913] [cursor=pointer]:
+          - strong [ref=e914]: 5dda21bf-7055-42bc-908e-257b03555981
+          - generic [ref=e915]: 已完成 · 最近更新 2026-05-22T07:47:31.918801+00:00
+          - emphasis [ref=e916]: 5dda21bf-7055-42bc-908e-257b03555981
+        - button "8c297ffe-a2b0-4204-8e52-ec24b8e1118e 已完成 · 最近更新 2026-05-21T02:45:52.464805+00:00 8c297ffe-a2b0-4204-8e52-ec24b8e1118e" [ref=e917] [cursor=pointer]:
+          - strong [ref=e918]: 8c297ffe-a2b0-4204-8e52-ec24b8e1118e
+          - generic [ref=e919]: 已完成 · 最近更新 2026-05-21T02:45:52.464805+00:00
+          - emphasis [ref=e920]: 8c297ffe-a2b0-4204-8e52-ec24b8e1118e
+    - navigation "Main navigation" [ref=e921]:
+      - generic [ref=e922]:
+        - img [ref=e923]
+        - generic [ref=e928]: 导航
+      - region "主工作区" [ref=e929]:
+        - button "主工作区" [ref=e930] [cursor=pointer]:
+          - generic [ref=e931]: 主工作区
+          - img [ref=e932]
+        - button "工作台" [ref=e935] [cursor=pointer]:
+          - img [ref=e936]
+          - generic [ref=e938]: 工作台
+        - button "项目 / 上下文" [ref=e940] [cursor=pointer]:
+          - img [ref=e941]
+          - generic [ref=e946]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e948] [cursor=pointer]:
+          - img [ref=e949]
+          - generic [ref=e952]: 运行 / 事件
+        - button "审批" [ref=e954] [cursor=pointer]:
+          - img [ref=e955]
+          - generic [ref=e958]: 审批
+        - button "金融实验室" [ref=e960] [cursor=pointer]:
+          - img [ref=e961]
+          - generic [ref=e965]: 金融实验室
+        - button "集成" [ref=e967] [cursor=pointer]:
+          - img [ref=e968]
+          - generic [ref=e974]: 集成
+        - button "自动化" [ref=e976] [cursor=pointer]:
+          - img [ref=e977]
+          - generic [ref=e981]: 自动化
+        - button "设置" [ref=e983] [cursor=pointer]:
+          - img [ref=e984]
+          - generic [ref=e987]: 设置
+      - region "高级金融" [ref=e988]:
+        - button "高级金融" [ref=e989] [cursor=pointer]:
+          - generic [ref=e990]: 高级金融
+          - img [ref=e991]
+      - region "高级运维" [ref=e993]:
+        - button "高级运维" [ref=e994] [cursor=pointer]:
+          - generic [ref=e995]: 高级运维
+          - img [ref=e996]
+      - region "旧入口 / 高级诊断" [ref=e998]:
+        - button "旧入口 / 高级诊断" [ref=e999] [cursor=pointer]:
+          - generic [ref=e1000]: 旧入口 / 高级诊断
+          - img [ref=e1001]
+    - button "扩展 内部" [ref=e1005] [cursor=pointer]:
+      - img [ref=e1006]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e1009]:
+        - img [ref=e1010]
+        - generic [ref=e1012]: 内部
+    - generic [ref=e1013]:
+      - generic "AIASK_ONLINE / 在线" [ref=e1014]:
+        - img [ref=e1015]
+        - generic [ref=e1018]: 在线
+      - generic [ref=e1019]: 202 个可用工具
+      - generic [ref=e1020]: 完整工具已启用
+  - main [ref=e145]:
+    - generic [ref=e1021]:
+      - generic [ref=e1022]:
+        - generic [ref=e1023]:
+          - text: 模型配置
+          - heading "LLM 提供方、模型获取与测试" [level=1] [ref=e1024]
+        - generic [ref=e1025]:
+          - generic "ready / AI_SMOKE_FAILED" [ref=e1375]:
+            - img [ref=e1027]
+            - generic [ref=e1030]: AI_SMOKE_FAILED
+          - button "刷新" [ref=e1031] [cursor=pointer]:
+            - img [ref=e1032]
+            - text: 刷新
+      - generic [ref=e1038]:
+        - generic [ref=e1039]:
+          - generic [ref=e1040]:
+            - text: openai
+            - heading "gpt-5.4" [level=2] [ref=e1041]
+            - paragraph [ref=e1042]: 在应用端选择提供方、填写模型和密钥，Agent 会写入项目 .env 并刷新运行时模型客户端。保存后可立即获取模型列表，并用一次最小请求验证密钥、Base URL、模型名和网络连通性。
+          - img [ref=e1043]
+        - generic [ref=e1055]:
+          - generic [ref=e1056]:
+            - generic [ref=e1057]: 当前提供方
+            - strong [ref=e1058]: openai
+          - generic [ref=e1059]:
+            - generic [ref=e1060]: API 密钥
+            - strong [ref=e1061]: 已配置
+          - generic [ref=e1062]:
+            - generic [ref=e1063]: Base URL
+            - strong [ref=e1064]: 已配置
+          - generic [ref=e1065]:
+            - generic [ref=e1066]: 配置来源
+            - strong [ref=e1067]: project_root
+          - generic [ref=e1068]:
+            - generic [ref=e1069]: 提供方池
+            - strong [ref=e1070]: "2"
+        - generic [ref=e1071]:
+          - article [ref=e1072]:
+            - generic [ref=e1073]:
+              - generic [ref=e1074]:
+                - text: 简易配置
+                - heading "选择提供方预设" [level=3] [ref=e1075]
+              - generic "gated / 需要控制令牌" [ref=e1076]:
+                - img [ref=e1077]
+                - generic [ref=e1079]: 需要控制令牌
+            - generic [ref=e1080]:
+              - generic [ref=e1081]:
+                - generic [ref=e1082]: 自定义
+                - generic [ref=e1083]:
+                  - button "OpenAI gpt-4.1-mini" [ref=e1084] [cursor=pointer]:
+                    - generic [ref=e1085]: OpenAI
+                    - generic [ref=e1086]: gpt-4.1-mini
+                    - img [ref=e1087]
+                  - button "DeepSeek deepseek-chat" [ref=e1093] [cursor=pointer]:
+                    - generic [ref=e1094]: DeepSeek
+                    - generic [ref=e1095]: deepseek-chat
+                    - img [ref=e1096]
+                  - button "通义千问 / DashScope 北京 qwen-plus" [ref=e1102] [cursor=pointer]:
+                    - generic [ref=e1103]: 通义千问 / DashScope 北京
+                    - generic [ref=e1104]: qwen-plus
+                    - img [ref=e1105]
+                  - button "Qwen / DashScope 美国弗吉尼亚 qwen-plus" [ref=e1111] [cursor=pointer]:
+                    - generic [ref=e1112]: Qwen / DashScope 美国弗吉尼亚
+                    - generic [ref=e1113]: qwen-plus
+                    - img [ref=e1114]
+                  - button "Anthropic Claude claude-sonnet-4-5" [ref=e1120] [cursor=pointer]:
+                    - generic [ref=e1121]: Anthropic Claude
+                    - generic [ref=e1122]: claude-sonnet-4-5
+                    - img [ref=e1123]
+                  - button "自定义 OpenAI 兼容 openai_compatible" [ref=e1129] [cursor=pointer]:
+                    - generic [ref=e1130]: 自定义 OpenAI 兼容
+                    - generic [ref=e1131]: openai_compatible
+                    - img [ref=e1132]
+              - generic [ref=e1135]:
+                - generic [ref=e1136]: 开发 / Mock
+                - button "本地 Mock mock-local" [ref=e1138] [cursor=pointer]:
+                  - generic [ref=e1139]: 本地 Mock
+                  - generic [ref=e1140]: mock-local
+                  - img [ref=e1141]
+            - generic [ref=e1147]:
+              - generic [ref=e1148]:
+                - generic [ref=e1149]: Provider
+                - combobox "Provider" [ref=e1150]:
+                  - option "OpenAI 兼容" [selected]
+                  - option "Anthropic"
+                  - option "Mock"
+              - generic [ref=e1151]:
+                - generic [ref=e1152]: 模型
+                - textbox "模型" [ref=e1153]:
+                  - /placeholder: gpt-4.1-mini
+                  - text: gpt-5.4
+              - generic [ref=e1154]:
+                - generic [ref=e1155]: Base URL
+                - textbox "Base URL" [ref=e1156]:
+                  - /placeholder: https://api.openai.com/v1
+                  - text: https://muyuan.do/v1
+              - generic [ref=e1157]:
+                - generic [ref=e1158]: API Key
+                - textbox "API Key" [ref=e1159]:
+                  - /placeholder: 已配置，留空则沿用现有密钥
+              - generic [ref=e1160]:
+                - checkbox "替换现有 API Key；勾选且留空会清空密钥" [ref=e1161]
+                - generic [ref=e1162]: 替换现有 API Key；勾选且留空会清空密钥
+            - button "保存配置" [disabled] [ref=e1164]:
+              - img [ref=e1165]
+              - text: 保存配置
+            - generic [ref=e1169]:
+              - article [ref=e1170]:
+                - strong [ref=e1171]: OpenAI 兼容
+                - generic [ref=e1172]: Fill in provider Base URL, API key, and model name from the vendor console.
+                - generic "ready / 就绪" [ref=e1173]:
+                  - img [ref=e1174]
+                  - generic [ref=e1177]: 就绪
+              - article [ref=e1178]:
+                - strong [ref=e1179]: 控制令牌缺失
+                - generic [ref=e1180]: 保存配置会修改 Agent 管理的 .env，因此需要在设置中填写控制令牌。
+                - generic "gated / 受限" [ref=e1181]:
+                  - img [ref=e1182]
+                  - generic [ref=e1184]: 受限
+          - article [ref=e1185]:
+            - generic [ref=e1186]:
+              - generic [ref=e1187]:
+                - text: 获取与测试
+                - heading "模型列表 / 冒烟测试" [level=3] [ref=e1188]
+              - generic "ready / 就绪" [ref=e1189]:
+                - img [ref=e1190]
+                - generic [ref=e1193]: 就绪
+            - generic [ref=e1194]:
+              - button "获取模型" [ref=e1195] [cursor=pointer]:
+                - img [ref=e1196]
+                - text: 获取模型
+              - button "测试模型" [ref=e1199] [cursor=pointer]:
+                - img [ref=e1200]
+                - text: 测试模型
+            - generic [ref=e1203]:
+              - generic [ref=e1204]: 可用模型
+              - combobox "可用模型" [ref=e1205]:
+                - option "gpt-5.4" [selected]
+            - generic [ref=e1206]:
+              - generic [ref=e1207]: 测试提示词
+              - textbox "测试提示词" [ref=e1208]: Reply with AIASK_MODEL_OK.
+            - generic [ref=e1209]:
+              - article [ref=e1210]:
+                - strong [ref=e1211]: AI_SMOKE_FAILED
+                - generic [ref=e1212]: "PermissionDeniedError: Your request was blocked."
+                - generic "failed / 失败" [ref=e1376]:
+                  - img [ref=e1377]
+                  - generic [ref=e1216]: 失败
+              - article [ref=e1217]:
+                - strong [ref=e1218]: 列表降级
+                - generic [ref=e1219]: "PermissionDeniedError: Your request was blocked."
+                - generic "partial / 部分就绪" [ref=e1220]:
+                  - img [ref=e1221]
+                  - generic [ref=e1223]: 部分就绪
+        - generic [ref=e1224]:
+          - article [ref=e1225]:
+            - generic [ref=e1226]:
+              - generic [ref=e1227]:
+                - text: 提供方池
+                - heading "已配置提供方" [level=3] [ref=e1228]
+              - generic "implemented / 已实现" [ref=e1229]:
+                - img [ref=e1230]
+                - generic [ref=e1233]: 已实现
+            - generic [ref=e1234]:
+              - article [ref=e1235]:
+                - strong [ref=e1236]: mock
+                - generic [ref=e1237]: mock
+                - generic "implemented / 已配置" [ref=e1238]:
+                  - img [ref=e1239]
+                  - generic [ref=e1242]: 已配置
+              - article [ref=e1243]:
+                - strong [ref=e1244]: openai
+                - generic [ref=e1245]: openai_compatible
+                - generic "implemented / 已配置" [ref=e1246]:
+                  - img [ref=e1247]
+                  - generic [ref=e1250]: 已配置
+          - article [ref=e1251]:
+            - generic [ref=e1252]:
+              - generic [ref=e1253]:
+                - text: 模型列表
+                - heading "提供方响应" [level=3] [ref=e1254]
+              - generic "ready / 1 个模型" [ref=e1255]:
+                - img [ref=e1256]
+                - generic [ref=e1259]: 1 个模型
+            - article [ref=e1261]:
+              - strong [ref=e1262]: gpt-5.4
+              - generic [ref=e1263]: openai
+              - generic "partial / 当前配置" [ref=e1264]:
+                - img [ref=e1265]
+                - generic [ref=e1267]: 当前配置
+        - group [ref=e1268]:
+          - generic "原始模型配置" [ref=e1269] [cursor=pointer]
+  - complementary "环境上下文" [ref=e1270]:
+    - generic [ref=e1271]:
+      - generic [ref=e1272]:
+        - generic [ref=e1273]:
+          - generic [ref=e1274]: 进度
+          - strong [ref=e1275]: 当前运行环境
+        - img [ref=e1276]
+      - generic [ref=e1278]:
+        - img [ref=e1279]
+        - generic [ref=e1282]: Agent
+        - generic "ready / 在线，可以使用" [ref=e1283]:
+          - img [ref=e1284]
+          - generic [ref=e1287]: 在线，可以使用
+      - paragraph [ref=e1288]: Agent 已响应，当前页面可以读取会话、工具和运行状态。
+      - generic [ref=e1289]:
+        - img [ref=e1290]
+        - generic [ref=e1295]: Agent 端点
+        - code [ref=e1296]: http://127.0.0.1:8767
+    - generic [ref=e1297]:
+      - generic [ref=e1298]:
+        - generic [ref=e1299]:
+          - generic [ref=e1300]: 环境信息
+          - strong [ref=e1301]: 权限与能力
+        - img [ref=e1302]
+      - generic [ref=e1305]:
+        - generic [ref=e1306]:
+          - img [ref=e1307]
+          - strong [ref=e1311]: 控制令牌未就绪
+          - generic "gated / 受限" [ref=e1312]:
+            - img [ref=e1313]
+            - generic [ref=e1315]: 受限
+        - paragraph [ref=e1316]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - button "打开设置" [ref=e1318] [cursor=pointer]
+      - generic [ref=e1319]:
+        - generic [ref=e1320]:
+          - img [ref=e1321]
+          - generic [ref=e1324]: 控制令牌
+          - generic "gated / 仅可查看/研究" [ref=e1325]:
+            - img [ref=e1326]
+            - generic [ref=e1328]: 仅可查看/研究
+        - generic [ref=e1329]:
+          - img [ref=e1330]
+          - generic [ref=e1342]: 完整模式
+          - generic "ready / 已开启" [ref=e1343]:
+            - img [ref=e1344]
+            - generic [ref=e1347]: 已开启
+        - generic [ref=e1348]:
+          - img [ref=e1349]
+          - generic [ref=e1351]: 工具集
+          - strong [ref=e1352]: 完整工具集
+        - paragraph [ref=e1353]: 可查看通用工具；写入、外部平台和高风险动作仍需控制令牌与审批。
+        - generic [ref=e1354]:
+          - img [ref=e1355]
+          - generic [ref=e1359]: 工具数量
+          - strong [ref=e1360]: "202"
+    - generic [ref=e1361]:
+      - generic [ref=e1362]:
+        - generic [ref=e1363]:
+          - generic [ref=e1364]: 当前任务
+          - strong [ref=e1365]: 等待任务线程
+        - img [ref=e1366]
+      - generic [ref=e1370]:
+        - strong [ref=e1371]: 暂无选中线程
+        - generic [ref=e1372]: 开始任务后，这里会汇总当前回复、模型、审批和事件状态。
+        - button "返回工作台" [ref=e1373] [cursor=pointer]

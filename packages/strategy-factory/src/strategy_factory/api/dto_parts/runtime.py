@@ -76,6 +76,7 @@ class FactoryStatusDTO:
     engine_version: str = "strategy_factory.v2"
     latest_parity_result: dict[str, Any] = field(default_factory=dict)
     capability_health: dict[str, Any] = field(default_factory=dict)
+    strict_incubation_blocker_summary: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FactoryStatusDTO":
@@ -413,6 +414,11 @@ class FactoryStatusDTO:
                 for key, value in dict(d.get("capability_health") or {}).items()
                 if str(key or "").strip()
             },
+            strict_incubation_blocker_summary=dict(
+                d.get("strict_incubation_blocker_summary")
+                or dict(d.get("quality_baseline") or {}).get("strict_incubation_blocker_summary")
+                or {}
+            ),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -505,6 +511,9 @@ class FactoryStatusDTO:
                 for key, value in dict(self.capability_health).items()
                 if str(key).strip()
             },
+            "strict_incubation_blocker_summary": dict(
+                self.strict_incubation_blocker_summary
+            ),
         }
         if self.last_family_preference_source_mode:
             result["last_family_preference_source_mode"] = self.last_family_preference_source_mode

@@ -45,14 +45,24 @@ interface IncubationReport {
       avg_forward_sharpe?: number;
       strategy_count?: number;
     };
-    by_family?: Record<string, Record<string, number>>;
-    by_stage?: Record<string, Record<string, number>>;
+    by_family?: Record<string, Record<string, unknown>>;
+    by_stage?: Record<string, Record<string, unknown>>;
+    by_regime?: Record<string, Record<string, unknown>>;
     trend?: {
       available?: boolean;
       improvement?: number;
       direction?: "improving" | "declining" | "stable";
     };
   };
+  promotion_blocker_summary?: {
+    status?: string;
+    blocked_strategy_count?: number;
+    top_blockers?: Array<Record<string, unknown>>;
+    [key: string]: unknown;
+  };
+  promotion_blockers?: Array<Record<string, unknown>>;
+  lifecycle_evidence?: Array<Record<string, unknown>>;
+  strategy_reviews?: Array<Record<string, unknown>>;
   feedback_actions?: {
     families_to_boost?: string[];
     families_to_cooldown?: string[];
@@ -73,8 +83,45 @@ interface StageEvent {
   payload?: Record<string, unknown>;
 }
 
+interface PromotionBlocker {
+  id: string;
+  reason: string;
+  label: string;
+  count?: number;
+  strategyId?: string;
+  nextAction?: string;
+  severity?: string;
+}
+
+interface LifecycleEvidenceRow {
+  id: string;
+  strategyId: string;
+  strategyName: string;
+  family: string;
+  regime: string;
+  stage: string;
+  lifecycleState: string;
+  evidence: Record<string, unknown>;
+  blockers: string[];
+  nextAction: string;
+  createdAt?: string;
+}
+
 function recordFromUnknown(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function arrayFromUnknown(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+function firstString(...values: unknown[]): string {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (typeof value === "number" && Number.isFinite(value)) return String(value);
+    if (typeof value === "boolean") return String(value);
+  }
+  return "";
 }
 
 function asNumber(value: unknown, fallback = 0): number {
@@ -82,8 +129,24 @@ function asNumber(value: unknown, fallback = 0): number {
   return Number.isFinite(numberValue) ? numberValue : fallback;
 }
 
+function optionalNumber(value: unknown): number | null {
+  const numberValue = Number(value);
+  return Number.isFinite(numberValue) ? numberValue : null;
+}
+
 function percent(value: unknown): string {
   return `${Math.round(asNumber(value) * 100)}%`;
+}
+
+function formatMetric(value: unknown, digits = 3): string {
+  const numberValue = optionalNumber(value);
+  return numberValue === null ? "-" : numberValue.toFixed(digits);
+}
+
+function compactList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((item) => compact(item)).filter(Boolean);
+  if (typeof value === "string" && value.trim()) return [value];
+  return [];
 }
 
 function formatTime(value?: string | null): string {
@@ -118,6 +181,173 @@ function latestReportFromEvents(events: StageEvent[]): IncubationReport | null {
   return payload.hit_rate_dashboard || payload.summary ? (payload as IncubationReport) : null;
 }
 
+function blockerRowsFromReportAndEvents(report: IncubationReport | null, events: StageEvent[]): PromotionBlocker[] {
+  const rows: PromotionBlocker[] = [];
+  const pushBlocker = (source: Record<string, unknown>, index: number, prefix: string) => {
+    const reason = firstString(source.reason_code, source.reason, source.code, source.blocker, source.id);
+    if (!reason) return;
+    rows.push({
+      id: `${prefix}:${reason}:${index}`,
+      reason,
+      label: firstString(source.label, source.message, source.description, reason),
+      count: optionalNumber(source.count) ?? undefined,
+      strategyId: firstString(source.strategy_id, source.strategyId),
+      nextAction: firstString(source.next_action, source.nextAction, source.action),
+      severity: firstString(source.severity, source.status)
+    });
+  };
+
+  arrayFromUnknown(report?.promotion_blocker_summary?.top_blockers).forEach((item, index) =>
+    pushBlocker(recordFromUnknown(item), index, "summary")
+  );
+  arrayFromUnknown(report?.promotion_blockers).forEach((item, index) => pushBlocker(recordFromUnknown(item), index, "report"));
+
+  events.forEach((event) => {
+    const payload = recordFromUnknown(event.payload);
+    const evidence = recordFromUnknown(payload.evidence || payload.lifecycle_evidence);
+    const sourceLists = [
+      payload.promotion_blockers,
+      payload.blockers,
+      payload.block_reasons,
+      evidence.promotion_blockers,
+      evidence.blockers,
+      evidence.block_reasons
+    ];
+    sourceLists.flatMap(compactList).forEach((reason, index) => {
+      rows.push({
+        id: `event:${event.id}:${reason}:${index}`,
+        reason,
+        label: reason,
+        strategyId: event.strategy_id || firstString(payload.strategy_id, evidence.strategy_id),
+        nextAction: firstString(payload.next_action, evidence.next_action),
+        severity: event.severity || "warn"
+      });
+    });
+  });
+
+  const merged = new Map<string, PromotionBlocker>();
+  rows.forEach((row) => {
+    const key = `${row.reason}:${row.strategyId || ""}`;
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, row);
+      return;
+    }
+    merged.set(key, {
+      ...current,
+      count: current.count ?? row.count,
+      label: current.label || row.label,
+      nextAction: current.nextAction || row.nextAction,
+      severity: current.severity || row.severity
+    });
+  });
+  return Array.from(merged.values());
+}
+
+function lifecycleEvidenceRows(report: IncubationReport | null, events: StageEvent[]): LifecycleEvidenceRow[] {
+  const rows: LifecycleEvidenceRow[] = [];
+  const pushEvidence = (
+    source: Record<string, unknown>,
+    fallback: Partial<LifecycleEvidenceRow> & { id: string },
+    payload: Record<string, unknown> = {}
+  ) => {
+    const strategyId = firstString(source.strategy_id, payload.strategy_id, fallback.strategyId, source.id);
+    if (!strategyId && !fallback.strategyName) return;
+    const stage = firstString(source.current_stage, source.stage, source.to_stage, payload.to_stage, fallback.stage, source.lifecycle_state);
+    rows.push({
+      id: fallback.id,
+      strategyId: strategyId || fallback.id,
+      strategyName: firstString(source.strategy_name, payload.strategy_name, source.name, fallback.strategyName, strategyId),
+      family: firstString(source.family, payload.family, fallback.family, "-"),
+      regime: firstString(source.regime, payload.regime, fallback.regime, "-"),
+      stage: stage || "unknown",
+      lifecycleState: firstString(source.lifecycle_state, payload.lifecycle_state, fallback.lifecycleState, stage, "unknown"),
+      evidence: source,
+      blockers: [
+        ...compactList(source.promotion_blockers),
+        ...compactList(source.blockers),
+        ...compactList(source.block_reasons),
+        ...compactList(payload.promotion_blockers),
+        ...compactList(payload.blockers),
+        ...compactList(payload.block_reasons)
+      ].filter((item, index, items) => items.indexOf(item) === index),
+      nextAction: firstString(source.next_action, payload.next_action, fallback.nextAction),
+      createdAt: fallback.createdAt
+    });
+  };
+
+  arrayFromUnknown(report?.lifecycle_evidence).forEach((item, index) => {
+    pushEvidence(recordFromUnknown(item), { id: `report:${index}` });
+  });
+  arrayFromUnknown(report?.strategy_reviews).forEach((item, index) => {
+    pushEvidence(recordFromUnknown(item), { id: `review:${index}` });
+  });
+  events
+    .filter((event) => event.event_type.includes("incubation"))
+    .forEach((event) => {
+      const payload = recordFromUnknown(event.payload);
+      const evidence = recordFromUnknown(payload.evidence || payload.lifecycle_evidence || payload.review || payload);
+      pushEvidence(evidence, {
+        id: event.id,
+        strategyId: event.strategy_id,
+        strategyName: event.strategy_name,
+        stage: event.to_stage,
+        lifecycleState: event.to_stage,
+        createdAt: event.created_at
+      }, payload);
+    });
+
+  const merged = new Map<string, LifecycleEvidenceRow>();
+  rows.forEach((row) => {
+    const key = row.strategyId || row.id;
+    const current = merged.get(key);
+    if (!current) {
+      merged.set(key, row);
+      return;
+    }
+    merged.set(key, {
+      ...current,
+      ...row,
+      evidence: { ...current.evidence, ...row.evidence },
+      blockers: [...current.blockers, ...row.blockers].filter((item, index, items) => items.indexOf(item) === index),
+      nextAction: current.nextAction || row.nextAction
+    });
+  });
+  return Array.from(merged.values()).slice(0, 12);
+}
+
+function breakdownEntries(report: IncubationReport | null, key: "by_family" | "by_regime" | "by_stage") {
+  return Object.entries(report?.hit_rate_dashboard?.[key] || {}).sort(([, left], [, right]) => {
+    const leftDebt = asNumber(left.blocked_count) + asNumber(left.missing_forward_windows) - asNumber(left.avg_skill_lcb);
+    const rightDebt = asNumber(right.blocked_count) + asNumber(right.missing_forward_windows) - asNumber(right.avg_skill_lcb);
+    return rightDebt - leftDebt;
+  });
+}
+
+function breakdownTone(metrics: Record<string, unknown>): string {
+  if (asNumber(metrics.blocked_count) > 0 || asNumber(metrics.avg_skill_lcb) < 0) return "failed";
+  if (asNumber(metrics.missing_forward_windows) > 0 || asNumber(metrics.promotion_ready_count) === 0) return "partial";
+  return "implemented";
+}
+
+function evidenceSummary(row: LifecycleEvidenceRow): string {
+  const evidence = row.evidence;
+  const executionAudit = recordFromUnknown(evidence.execution_audit);
+  const parts = [
+    `observed ${compact(evidence.observed_days || "-")}d`,
+    `trades ${compact(evidence.trade_days || "-")}`,
+    `hit ${percent(evidence.hit_rate)}`,
+    `LCB ${formatMetric(evidence.skill_lcb)}`,
+    `sharpe ${formatMetric(evidence.forward_sharpe, 2)}`,
+    `windows ${compactList(evidence.forward_windows_completed).join("/") || "-"}`,
+    `audit ${firstString(executionAudit.status, evidence.execution_audit_status, "-")}`,
+    `risk ${firstString(evidence.risk_gate, evidence.risk_status, "-")}`,
+    `governance ${firstString(evidence.governance_status, "-")}`
+  ];
+  if (row.blockers.length) parts.push(`blockers ${row.blockers.join(", ")}`);
+  return parts.join(" | ");
+}
+
 function stageLabel(stage: string): string {
   const labels: Record<string, string> = {
     warmup: "预热",
@@ -134,7 +364,7 @@ function stageLabel(stage: string): string {
 
 function stageTone(stage: string): string {
   if (["promoted", "graduation_ready"].includes(stage)) return "implemented";
-  if (["failed", "retired"].includes(stage)) return "failed";
+  if (["failed", "retired", "blocked"].includes(stage)) return "failed";
   if (["candidate", "observe", "warmup", "paused"].includes(stage)) return "partial";
   return "not_loaded";
 }
@@ -192,6 +422,123 @@ function FamilyHealth({ report }: { report: IncubationReport | null }) {
           );
         })}
         {!families.length && <p className="muted">尚未生成族群级命中率报告。</p>}
+      </div>
+    </section>
+  );
+}
+
+function HitRateBreakdown({
+  report,
+  dimension,
+  title,
+  subtitle
+}: {
+  report: IncubationReport | null;
+  dimension: "by_family" | "by_regime" | "by_stage";
+  title: string;
+  subtitle: string;
+}) {
+  const entries = breakdownEntries(report, dimension);
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>{subtitle}</span>
+          <h3>{title}</h3>
+        </div>
+        <Activity size={18} />
+      </div>
+      <div className="mini-list">
+        {entries.slice(0, 8).map(([name, metrics]) => {
+          const tone = breakdownTone(metrics);
+          const status = tone === "implemented" ? "ok" : tone === "failed" ? "bad" : "warn";
+          return (
+            <article className={`capability-row ${status}`} key={`${dimension}:${name}`}>
+              <div>
+                <span>
+                  hit {percent(metrics.hit_rate)} | n={compact(metrics.total_n || metrics.n || metrics.total_signals)} | strategies{" "}
+                  {compact(metrics.strategy_count)}
+                </span>
+                <strong>{name}</strong>
+              </div>
+              <StatusBadge status={tone} label={`LCB ${formatMetric(metrics.avg_skill_lcb || metrics.skill_lcb)}`} />
+              <small>
+                sharpe {formatMetric(metrics.avg_forward_sharpe || metrics.forward_sharpe, 2)} | ready{" "}
+                {compact(metrics.promotion_ready_count || 0)} | blocked {compact(metrics.blocked_count || 0)} | missing windows{" "}
+                {compact(metrics.missing_forward_windows || 0)}
+              </small>
+            </article>
+          );
+        })}
+        {!entries.length && <p className="muted">No {title.toLowerCase()} data available.</p>}
+      </div>
+    </section>
+  );
+}
+
+function PromotionBlockers({ report, events }: { report: IncubationReport | null; events: StageEvent[] }) {
+  const blockers = blockerRowsFromReportAndEvents(report, events);
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>Promotion blockers</span>
+          <h3>What prevents graduation</h3>
+        </div>
+        <AlertTriangle size={18} />
+      </div>
+      <div className="mini-list">
+        {blockers.slice(0, 10).map((blocker) => (
+          <article className="capability-row warn" key={blocker.id}>
+            <div>
+              <span>
+                {blocker.strategyId || "all strategies"} {blocker.count !== undefined ? `| count ${blocker.count}` : ""}
+              </span>
+              <strong>{blocker.label}</strong>
+            </div>
+            <StatusBadge status={blocker.severity === "failed" ? "failed" : "partial"} label={blocker.reason} />
+            <small>{blocker.nextAction || "Review the linked lifecycle event before promotion."}</small>
+          </article>
+        ))}
+        {!blockers.length && <p className="muted">No promotion blockers reported.</p>}
+      </div>
+    </section>
+  );
+}
+
+function LifecycleEvidenceReview({ report, events }: { report: IncubationReport | null; events: StageEvent[] }) {
+  const rows = lifecycleEvidenceRows(report, events);
+  return (
+    <section className="capability-section">
+      <div className="section-header">
+        <div>
+          <span>Lifecycle evidence</span>
+          <h3>Why each strategy is in its current state</h3>
+        </div>
+        <ShieldCheck size={18} />
+      </div>
+      <div className="mini-list">
+        {rows.map((row) => {
+          const tone = row.blockers.length ? "partial" : stageTone(row.stage);
+          return (
+            <article className={`capability-row ${tone === "implemented" ? "ok" : tone === "failed" ? "bad" : "warn"}`} key={row.id}>
+              <div>
+                <span>
+                  {row.family} | {row.regime} | {row.createdAt ? formatTime(row.createdAt) : "latest evidence"}
+                </span>
+                <strong>
+                  {row.strategyName || row.strategyId} {"->"} {row.lifecycleState || row.stage}
+                </strong>
+              </div>
+              <StatusBadge status={tone} label={row.stage} />
+              <small>
+                {evidenceSummary(row)}
+                {row.nextAction ? ` | next ${row.nextAction}` : ""}
+              </small>
+            </article>
+          );
+        })}
+        {!rows.length && <p className="muted">No lifecycle evidence events available.</p>}
       </div>
     </section>
   );
@@ -589,9 +936,16 @@ export function IncubationFactoryPanel({ endpoint, apiToken, controlToken = "" }
       </section>
 
       <div className="capability-grid two">
-        <FamilyHealth report={report} />
+        <HitRateBreakdown report={report} dimension="by_family" title="Family hit-rate breakdown" subtitle="Actionable hit-rate review" />
+        <HitRateBreakdown report={report} dimension="by_regime" title="Regime hit-rate breakdown" subtitle="Actionable hit-rate review" />
+      </div>
+
+      <div className="capability-grid two">
+        <PromotionBlockers report={report} events={events} />
         <FeedbackActions report={report} />
       </div>
+
+      <LifecycleEvidenceReview report={report} events={events} />
 
       <StageTimeline events={events} />
 

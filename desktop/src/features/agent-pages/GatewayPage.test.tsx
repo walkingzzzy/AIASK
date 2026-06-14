@@ -30,6 +30,15 @@ describe("GatewayPage", () => {
     expect(screen.getByText("失败消息 (1)")).toBeInTheDocument();
   });
 
+  it("keeps management data gated without a control token", async () => {
+    render(<GatewayPage {...props} controlToken="" />);
+
+    await waitFor(() => expect(screen.getByText("缺少控制令牌")).toBeInTheDocument());
+    expect(screen.getByText(/Gateway 管理详情需要控制令牌/)).toBeInTheDocument();
+    expect(screen.getByText("暂无 Gateway 消息。")).toBeInTheDocument();
+    expect(screen.queryByText("msg_gateway_failed")).not.toBeInTheDocument();
+  });
+
   it("retries failed messages and creates send intents only", async () => {
     render(<GatewayPage {...props} />);
 

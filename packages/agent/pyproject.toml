@@ -36,6 +36,7 @@ full-hermes-native = [
 ]
 
 [project.scripts]
+aiask = "aiask_agent.cli:main"
 aiask-agent = "aiask_agent.server:main"
 
 [build-system]

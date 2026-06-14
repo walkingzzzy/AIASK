@@ -9,7 +9,7 @@ from typing import Any, Protocol
 from uuid import uuid4
 
 from .env_config import load_project_env
-from .model_providers import ModelProviderRegistry, ProviderSpec, ProviderUsageStore
+from .model_providers import ModelProviderRegistry, ProviderSpec, ProviderUsageStore, prompt_cache_policy
 
 
 @dataclass
@@ -208,12 +208,13 @@ class AnthropicMessagesClient:
                 return AnthropicMessagesClient._content_text(value.get("content"))
         return str(value)
 
-    def _adapt_messages(self, messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
+    @staticmethod
+    def _adapt_messages(messages: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], str | None]:
         adapted: list[dict[str, Any]] = []
         system_parts: list[str] = []
         for message in messages or []:
             role = str(message.get("role") or "user").strip().lower()
-            content = self._content_text(message.get("content"))
+            content = AnthropicMessagesClient._content_text(message.get("content"))
             if role == "system":
                 if content:
                     system_parts.append(content)
@@ -286,6 +287,48 @@ class AnthropicMessagesClient:
                 )
         return "\n".join(text_parts), tool_calls
 
+    @staticmethod
+    def _anthropic_cache_block(text: str) -> dict[str, Any]:
+        return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+
+    @classmethod
+    def _apply_prompt_cache_policy(
+        cls,
+        messages: list[dict[str, Any]],
+        system: str | None,
+    ) -> tuple[list[dict[str, Any]], str | list[dict[str, Any]] | None, dict[str, Any]]:
+        policy_env = dict(os.environ)
+        policy_env["AIASK_AGENT_MODEL_PROVIDER"] = "anthropic"
+        policy = prompt_cache_policy(policy_env)
+        if not policy.get("enabled"):
+            return messages, system, {"policy": policy, "applied": False, "system": False, "message_count": 0}
+        cacheable_recent = max(0, int(policy.get("recent_non_system_messages") or 0))
+        next_messages = [dict(item) for item in messages]
+        applied_count = 0
+        if cacheable_recent:
+            candidate_indexes = [
+                index
+                for index, item in enumerate(next_messages)
+                if str(item.get("role") or "").strip().lower() in {"user", "assistant"}
+                and isinstance(item.get("content"), str)
+                and str(item.get("content") or "")
+            ]
+            for index in candidate_indexes[-cacheable_recent:]:
+                content = str(next_messages[index].get("content") or "")
+                next_messages[index]["content"] = [cls._anthropic_cache_block(content)]
+                applied_count += 1
+        next_system: str | list[dict[str, Any]] | None = system
+        system_applied = False
+        if system and policy.get("system_prompt"):
+            next_system = [cls._anthropic_cache_block(system)]
+            system_applied = True
+        return next_messages, next_system, {
+            "policy": policy,
+            "applied": bool(system_applied or applied_count),
+            "system": system_applied,
+            "message_count": applied_count,
+        }
+
     async def complete(
         self,
         *,
@@ -294,6 +337,7 @@ class AnthropicMessagesClient:
         model: str,
     ) -> ModelResponse:
         adapted_messages, system = self._adapt_messages(messages)
+        adapted_messages, system, prompt_cache = self._apply_prompt_cache_policy(adapted_messages, system)
         payload: dict[str, Any] = {
             "model": model,
             "messages": adapted_messages,
@@ -318,6 +362,7 @@ class AnthropicMessagesClient:
         body = response.json()
         content, tool_calls = self._extract_response(body if isinstance(body, dict) else {})
         usage = dict(body.get("usage") or {}) if isinstance(body, dict) else {}
+        usage.setdefault("prompt_cache", {key: value for key, value in prompt_cache.items() if key != "policy"})
         return ModelResponse(content=content, tool_calls=tool_calls, usage=usage, raw=body)
 
 

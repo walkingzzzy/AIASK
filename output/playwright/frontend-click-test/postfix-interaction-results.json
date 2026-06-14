@@ -1,0 +1,324 @@
+[
+  {
+    "ok": false,
+    "name": "集成页：点击 MCP / 连接器入口",
+    "error": "Error: MCP / 连接器 count=2",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "name": "集成页：点击 Gateway 入口",
+    "error": "Error: Gateway count=2",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": true,
+    "name": "设置页：切换所有设置分类",
+    "state": {
+      "viewId": "postfix-settings-tabs-after-fix",
+      "label": "设置页：切换所有设置分类",
+      "url": "http://127.0.0.1:1420/",
+      "documentTitle": "AIASK Desktop",
+      "headings": [
+        {
+          "tag": "H1",
+          "text": "设置中心"
+        },
+        {
+          "tag": "H3",
+          "text": "关于 AIASK Desktop"
+        }
+      ],
+      "buttons": [
+        {
+          "text": "返回工作台",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "常规",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "连接",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "令牌与权限",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "技能管理",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "自动化管理",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "应用集成",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "Webhook",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "插件与技能包",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "模型配置",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "MCP 管理入口",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "工作流入口",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "股票数据源",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "数据路径",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "学习 / RL",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "安全扫描",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "高级诊断入口",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "关于",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "刷新",
+          "disabled": false,
+          "aria": null
+        }
+      ],
+      "inputs": [],
+      "alerts": [],
+      "textSample": "返回工作台 设置 可操作设置、管理入口与只读状态 基础设置 常规 连接 令牌与权限 高级管理 技能管理 自动化管理 应用集成 Webhook 插件与技能包 状态与入口 模型配置 MCP 管理入口 工作流入口 股票数据源 数据路径 学习 / RL 安全扫描 高级诊断入口 关于 设置 设置中心 只保留真实可操作设置；模型、MCP、工作流、数据和诊断以只读状态或打开页面入口呈现。 刷新 关于 AIASK Desktop 桌面端只作为 Agent HTTP API 客户端，不绕过 UI、不直接调用 Python 包或 MCP manager。 只读状态 健康状态与设置 SETTINGS_STATUS_LOADED { \"health\": { \"status\": \"ok\", \"service\": \"aiask-agent\", \"runtime\": { \"model\": \"gpt-5.4\", \"max_iterations\": 8, \"model_timeout_seconds\": 120, \"tool_timeout_seconds\": 120, \"server\": \"fastapi_asgi\" }, \"tools\": { \"count\": 202, \"names\": [ \"agent_acp_manage\", \"agent_action_intent_create\", \"agent_action_intent_get\", \"agent_analyze_stock\", \"agent_backtest_suite\", \"agent_browser_back\", \"agent_browser_cdp\", \"agent_browser_click\", \"agent_browser_console\", \"agent_browser_extract\", \"agent_browser_get_images\", \"agent_browser_navigate\", \"agent_browser_press\", \"agent_browser_scroll\", \"agent_browser_snapshot\", \"agent_browser_type\", \"agent_browser_vision\", \"agent_clarify\", \"agent_code_graph_query\", \"agent_computer_use\", \"agent_cronjob\", \"agent_data_validation\", \"agent_delegate_task\", \"agent_discord_channel_send\", \"agent_discord_server\", \"agent_execute_python\", \"agent_factor_validation\", \"agent_factory_event_lineage\", \"agent_factory_event_list\", \"agent_factory_event_outbox_status\", \"agent_factory_event_preview_tasks\", \"agent_factory_runs\", \"agent_factory_status\", \"agent_factory_theme_exposure_sta",
+      "textLength": 91830,
+      "badPatterns": [
+        "null"
+      ],
+      "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/38-settings-tabs-after-fix.png"
+    }
+  },
+  {
+    "ok": true,
+    "name": "设置页：返回工作台",
+    "state": {
+      "viewId": "postfix-settings-return-after-fix",
+      "label": "设置页：返回工作台",
+      "url": "http://127.0.0.1:1420/",
+      "documentTitle": "AIASK Desktop",
+      "headings": [
+        {
+          "tag": "H1",
+          "text": "AIASK 工作台"
+        },
+        {
+          "tag": "H3",
+          "text": "线程优先工作台"
+        },
+        {
+          "tag": "H3",
+          "text": "现在可以复核什么"
+        },
+        {
+          "tag": "H3",
+          "text": "任务产物"
+        },
+        {
+          "tag": "H3",
+          "text": "审查队列"
+        }
+      ],
+      "buttons": [
+        {
+          "text": "准备度",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "Gateway受限",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "同步",
+          "disabled": false,
+          "aria": "同步 AIASK 状态"
+        },
+        {
+          "text": "已完成会话已完成 · 2026-06-09 18:39b1acf60a-b...bf3a78",
+          "disabled": false,
+          "aria": "打开会话：已完成会话 已完成 · 2026-06-09 18:39"
+        },
+        {
+          "text": "有错误需查看会话有错误需查看 · 2026-05-29 09:287691a0b7-d...595674",
+          "disabled": false,
+          "aria": "打开会话：有错误需查看会话 有错误需查看 · 2026-05-29 09:28"
+        },
+        {
+          "text": "有错误需查看会话有错误需查看 · 2026-05-27 13:09b193cf51-d...66095a",
+          "disabled": false,
+          "aria": "打开会话：有错误需查看会话 有错误需查看 · 2026-05-27 13:09"
+        },
+        {
+          "text": "已完成会话已完成 · 2026-05-27 13:03264aca64-5...ba78c5",
+          "disabled": false,
+          "aria": "打开会话：已完成会话 已完成 · 2026-05-27 13:03"
+        },
+        {
+          "text": "运行已完成工具 0 次 · 审批 0 项 · 错误 0 个run_0f2b77...9f87f2",
+          "disabled": false,
+          "aria": "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个"
+        },
+        {
+          "text": "运行失败工具 3 次 · 审批 0 项 · 错误 4 个run_7daff4...7dbe6e",
+          "disabled": false,
+          "aria": "查看运行：运行失败 工具 3 次 · 审批 0 项 · 错误 4 个"
+        },
+        {
+          "text": "运行已完成工具 3 次 · 审批 0 项 · 错误 1 个run_26c3fb...28e8e5",
+          "disabled": false,
+          "aria": "查看运行：运行已完成 工具 3 次 · 审批 0 项 · 错误 1 个"
+        },
+        {
+          "text": "运行已完成工具 0 次 · 审批 0 项 · 错误 0 个run_d0750b...d62801",
+          "disabled": false,
+          "aria": "查看运行：运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个"
+        },
+        {
+          "text": "打开准备度",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "打开 MCP",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "打开本地用户",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "打开金融经理台",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "打开数据",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "打开金融实验室",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "项目 / 上下文",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "审批",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "金融实验室",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "集成",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "插件 / 技能受限",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "扩展内部",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "金融安全",
+          "disabled": false,
+          "aria": null
+        },
+        {
+          "text": "Hermes full",
+          "disabled": true,
+          "aria": null
+        },
+        {
+          "text": "运行",
+          "disabled": true,
+          "aria": "运行线程任务"
+        }
+      ],
+      "inputs": [
+        {
+          "tag": "INPUT",
+          "type": null,
+          "placeholder": "新会话",
+          "label": "会话 ID",
+          "value": ""
+        },
+        {
+          "tag": "TEXTAREA",
+          "type": null,
+          "placeholder": "让 AIASK 研究、检查工具、生成报告，或继续当前线程...",
+          "label": null,
+          "value": ""
+        }
+      ],
+      "alerts": [],
+      "textSample": "在线，可以开始任务 AIASK 工作台 Codex UI Live Profile 20260522_155200 / codex_ui_live_20260522_155200 · 真实后端 · http://127.0.0.1:8767 真实后端 在线，可以开始任务 新线程 金融安全模式 3 个产物 准备度 Gateway 受限 同步 任务中枢 线程优先工作台 金融安全模式 连接状态 在线，可以开始任务 Agent 已响应，工作台可以同步会话、运行和工具状态。 当前任务 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 待处理事项 7 项 4 个待确认意图 · 3 个审批 可用范围 金融安全模式 默认只做研究、查询和受控审批。 API 令牌未填写；控制令牌未填写。 最近会话 已完成会话 已完成 · 2026-06-09 18:39 b1acf60a-b...bf3a78 有错误需查看会话 有错误需查看 · 2026-05-29 09:28 7691a0b7-d...595674 有错误需查看会话 有错误需查看 · 2026-05-27 13:09 b193cf51-d...66095a 已完成会话 已完成 · 2026-05-27 13:03 264aca64-5...ba78c5 最近运行 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 run_0f2b77...9f87f2 运行失败 工具 3 次 · 审批 0 项 · 错误 4 个 run_7daff4...7dbe6e 运行已完成 工具 3 次 · 审批 0 项 · 错误 1 个 run_26c3fb...28e8e5 运行已完成 工具 0 次 · 审批 0 项 · 错误 0 个 run_d0750b...d62801 操作队列 4 个待确认意图 · 3 个审批 意图 4 审批 3 Gateway 0 MCP 0 金融 Agent 安全链路 现在可以复核什么 只读导航 1. 模式 / 模型 就绪 金融安全模式；当前模型 gpt-5.4。默认只做研究、查询和受控审批。 打开准备度 2. MCP / 连接器 就绪 复核服务器、资源、提示词和 OAuth 状态。 打开 MCP 3. 记忆 / 搜索 就绪 会话搜索和金融记忆搜索已在工具目录。 打开本地用户 4. 金融经理台 就绪 组合风险、只读查询和安全 workflow 可复核。 打开金融经理台 5. 数据 / 量化门禁 就绪 量化数据门禁工具可用于只读预检。 打开数据 6. 工厂接力 就绪 策略、因子和孵化入口可从金融实验室接力。 打开金融实验室 这里的入口只做只读导航；状态型、外部平台和交易风险动作仍需要 ActionIntent、控制令牌和后端护栏。 项目 / 上下文 审批 金融实验室 集成 插件 / 技能 受限 扩展 内部 开始一个任务 在下方输入指令后，AIASK 会在这里展示回复、工具调用、审批和运行事件。 3 个产物 任务产物 运行 run_0f2b776e75214be99065b2b7509f87f2 已完成 工具 0 / 审批 0 / 错误 0 run runs-events run_0f2b776e75214be99065b2b7509f87f2 runs/run_0f2b776e75214be9",
+      "textLength": 1886,
+      "badPatterns": [],
+      "screenshot": "C:/Users/walking/Desktop/aiask/output/playwright/frontend-click-test/screenshots/38-settings-return-after-fix.png"
+    }
+  }
+]

@@ -347,12 +347,11 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
   },
   {
     id: "models",
-    label: "模型",
+    label: "模型配置",
     icon: BrainCircuit,
-    description: "旧模型状态页面。",
-    group: "legacy",
-    legacy: true,
-    diagnosticOnly: true,
+    description: "配置 LLM 提供方、获取模型列表并执行冒烟测试。",
+    group: "ops",
+    route: "/models",
   },
 ];
 
@@ -382,7 +381,6 @@ export const VIEW_GROUPS: ViewGroup[] = [
       "factor-factory",
       "incubation",
       "data",
-      "automation",
       "workflows",
       "factory-events",
     ]),
@@ -391,7 +389,7 @@ export const VIEW_GROUPS: ViewGroup[] = [
     id: "advanced-ops",
     label: "高级运维",
     defaultCollapsed: true,
-    items: pick(["plugins-skills", "mcp-connectors", "gateway", "readiness-health", "extensions-pilot", "settings"]),
+    items: pick(["models", "plugins-skills", "mcp-connectors", "gateway", "readiness-health", "extensions-pilot"]),
   },
   {
     id: "legacy",
@@ -409,7 +407,6 @@ export const VIEW_GROUPS: ViewGroup[] = [
       "event-console",
       "skills",
       "user",
-      "models",
     ]),
   },
 ];

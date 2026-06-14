@@ -61,6 +61,17 @@ describe("VIEW_REGISTRY", () => {
     ]);
   });
 
+  it("keeps sidebar navigation targets unique across groups", () => {
+    const seen = new Map<MainView, string>();
+
+    for (const group of VIEW_GROUPS) {
+      for (const item of group.items) {
+        expect(seen.get(item.id), `${item.id} appears in both ${seen.get(item.id)} and ${group.id}`).toBeUndefined();
+        seen.set(item.id, group.id);
+      }
+    }
+  });
+
   it("keeps advanced and legacy groups collapsed by default", () => {
     expect(VIEW_GROUPS.find((group) => group.id === "advanced-finance")?.defaultCollapsed).toBe(true);
     expect(VIEW_GROUPS.find((group) => group.id === "advanced-ops")?.defaultCollapsed).toBe(true);

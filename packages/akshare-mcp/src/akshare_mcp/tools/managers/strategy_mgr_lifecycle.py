@@ -11,6 +11,7 @@ from ...services.strategy_lifecycle_shared import build_closure_review
 from ...utils import fail, ok
 from .strategy_mgr_helpers import (
     build_factory_recent_run_diagnostics,
+    build_strict_incubation_blocker_summary,
     build_factory_capability_health,
     build_factory_quality_baseline,
     build_incubation_overview,
@@ -872,10 +873,18 @@ async def handle_factory_status(db, params: dict) -> dict:
         recent_run_items,
         limit=recent_run_limit,
     )
+    status["strict_incubation_blocker_summary"] = build_strict_incubation_blocker_summary(
+        recent_run_items,
+        status.get("recent_run_diagnostics") or {},
+        limit=recent_run_limit,
+    )
     if isinstance(status.get("quality_baseline"), dict):
         status["quality_baseline"] = {
             **dict(status.get("quality_baseline") or {}),
             "recent_run_diagnostics": dict(status.get("recent_run_diagnostics") or {}),
+            "strict_incubation_blocker_summary": dict(
+                status.get("strict_incubation_blocker_summary") or {}
+            ),
         }
     status["high_confidence_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_HIGH_CONFIDENCE_ENABLED"))
     status["evidence_contract_enabled"] = bool(factory_constants.get("STRATEGY_FACTORY_EVIDENCE_CONTRACT_ENABLED"))

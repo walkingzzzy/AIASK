@@ -1,0 +1,202 @@
+[
+  {
+    "ok": false,
+    "viewId": "financial-manager",
+    "label": "金融经理台",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "market-temperature",
+    "label": "市场温度",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "quant",
+    "label": "量化研究",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "strategy-factory",
+    "label": "策略工厂",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "factor-factory",
+    "label": "因子工厂",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "incubation",
+    "label": "孵化工厂",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "data",
+    "label": "数据",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "workflows",
+    "label": "工作流",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "factory-events",
+    "label": "工厂事件",
+    "group": "高级金融",
+    "error": "Error: group 高级金融 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "models",
+    "label": "模型配置",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "plugins-skills",
+    "label": "插件 / 技能",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "mcp-connectors",
+    "label": "MCP / 连接器",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "gateway",
+    "label": "Gateway",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "readiness-health",
+    "label": "准备度 / 健康",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "extensions-pilot",
+    "label": "扩展注册表",
+    "group": "高级运维",
+    "error": "Error: group 高级运维 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "overview",
+    "label": "总览",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "agent",
+    "label": "智能体",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "capabilities",
+    "label": "能力中心",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "coverage",
+    "label": "覆盖矩阵",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "tools",
+    "label": "工具",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "mcp",
+    "label": "MCP",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "diagnostics",
+    "label": "诊断",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "event-console",
+    "label": "事件控制台",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "skills",
+    "label": "技能",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  },
+  {
+    "ok": false,
+    "viewId": "user",
+    "label": "本地用户",
+    "group": "旧入口 / 高级诊断",
+    "error": "Error: group 旧入口 / 高级诊断 count=0",
+    "url": "http://127.0.0.1:1420/"
+  }
+]

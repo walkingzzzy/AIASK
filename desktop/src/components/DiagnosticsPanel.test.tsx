@@ -24,7 +24,7 @@ describe("DiagnosticsPanel", () => {
     hermesStatus: {
       object: "aiask.hermes_status",
       implementation: "aiask_native",
-      baseline: "Hermes v0.15.1 full runtime capability reference",
+      baseline: "Hermes v0.16.0 full runtime capability reference",
       embedded_vendor_runtime: false,
       full_mode_enabled: true,
       full_mode_active: true,

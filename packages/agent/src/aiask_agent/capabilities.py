@@ -2,13 +2,16 @@ from __future__ import annotations
 
 from typing import Any
 
-HERMES_BASELINE_VERSION = "0.15.1"
-HERMES_RELEASE_TAG = "7402706c5"
+HERMES_BASELINE_VERSION = "0.16.0"
+HERMES_RELEASE_TAG = "v2026.6.5"
 HERMES_BASELINE = f"Hermes v{HERMES_BASELINE_VERSION} full runtime capability reference"
 HERMES_CORE_PARITY_TRACK = "core_runtime"
 HERMES_V014_DELTA_TRACK = "v0.14_delta"
 HERMES_V014_DELTA_BASELINE = "Hermes v0.14.0 full runtime capability reference"
 HERMES_V014_DELTA_RELEASE_TAG = "v2026.5.16"
+HERMES_V016_DELTA_TRACK = "v0.16_delta"
+HERMES_V016_DELTA_BASELINE = "Hermes v0.16.0 Surface Release capability reference"
+HERMES_V016_DELTA_RELEASE_TAG = "v2026.6.5"
 
 HERMES_TOOL_EQUIVALENTS: tuple[dict[str, Any], ...] = (
     {"hermes_tool": "browser_cdp", "aiask_tools": ["agent_browser_cdp"], "area": "browser", "live_required": False},
@@ -70,6 +73,7 @@ HERMES_TOOL_EQUIVALENTS: tuple[dict[str, Any], ...] = (
     {"hermes_tool": "terminal", "aiask_tools": ["agent_terminal"], "area": "terminal", "live_required": False},
     {"hermes_tool": "todo", "aiask_tools": ["agent_todo"], "area": "planning", "live_required": False},
     {"hermes_tool": "text_to_speech", "aiask_tools": ["agent_text_to_speech"], "area": "multimodal", "live_env": ["OPENAI_API_KEY"]},
+    {"hermes_tool": "transcribe_audio", "aiask_tools": ["agent_transcribe_audio"], "area": "multimodal", "live_env": ["OPENAI_API_KEY"]},
     {"hermes_tool": "vision_analyze", "aiask_tools": ["agent_vision_analyze"], "area": "multimodal", "live_env": ["OPENAI_API_KEY"]},
     {
         "hermes_tool": "video_generate",
@@ -314,6 +318,174 @@ HERMES_NATIVE_FEATURE_EQUIVALENTS: tuple[dict[str, Any], ...] = (
         "area": "desktop",
         "aiask_tools": ["agent_gateway_status", "agent_tui_status", "agent_terminal_backends"],
         "description": "Feature-level readiness visible to desktop Full Mode without treating missing live credentials as failure.",
+    },
+    {
+        "feature": "desktop_capability_center",
+        "area": "desktop",
+        "aiask_tools": ["agent_tool_catalog", "agent_gateway_status", "agent_model_manage"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "description": "AIASK Desktop exposes a capability/readiness center backed by Agent HTTP. It is Tauri/React rather than Hermes Electron.",
+    },
+    {
+        "feature": "desktop_native_self_update",
+        "area": "desktop",
+        "aiask_tools": ["agent_tool_catalog"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK has a native desktop workbench and capability status surfaces, but no Hermes-style in-app installer/self-update lifecycle is implemented in Agent capability code.",
+    },
+    {
+        "feature": "web_admin_control_surfaces",
+        "area": "desktop",
+        "aiask_tools": ["agent_mcp_manage", "agent_plugin_manage", "agent_gateway_status", "agent_memory_manage", "agent_model_manage"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK covers the same admin domains through Desktop pages and Agent HTTP, but does not ship Hermes' separate web dashboard/OIDC surface.",
+    },
+    {
+        "feature": "openai_compatible_http_api",
+        "area": "api",
+        "aiask_tools": ["agent_model_manage"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "description": "Agent exposes OpenAI-compatible responses/chat routes plus model-provider inspection through the AIASK provider registry.",
+    },
+    {
+        "feature": "remote_gateway_connection_profiles",
+        "area": "delivery",
+        "aiask_tools": ["agent_gateway_status", "agent_gateway_directory", "agent_gateway_pairing"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK has gateway adapters, pairing, directory, and delivery state; Hermes-style secure remote desktop connection profiles with OAuth/username-password WebSocket are not implemented.",
+    },
+    {
+        "feature": "gateway_platform_breadth_v016",
+        "area": "delivery",
+        "aiask_tools": ["agent_gateway_platforms", "agent_gateway_send_message"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK covers major Hermes messaging channels plus China-focused adapters; Google Chat, ntfy, Yuanbao, and exact Hermes naming parity remain gaps.",
+    },
+    {
+        "feature": "model_picker_profiles_and_fallback",
+        "area": "models",
+        "aiask_tools": ["agent_model_manage"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK tracks provider inventory, fallback order, credential pools, OpenAI-compatible endpoints, Desktop provider presets, model-list fallback, and fuzzy provider/model filtering in the model workspace.",
+    },
+    {
+        "feature": "prompt_caching_controls",
+        "area": "models",
+        "aiask_tools": ["agent_model_manage"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK exposes prompt-cache policy/status through AI config, readiness/provider status, and agent_model_manage; Anthropic Messages requests apply cache_control markers to the system prompt and recent non-system messages when enabled.",
+    },
+    {
+        "feature": "tool_gateway_portal_setup",
+        "area": "tools",
+        "aiask_tools": ["agent_model_manage", "agent_web_search", "agent_image_generate", "agent_text_to_speech", "agent_browser_navigate"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK exposes provider-gated web, browser, image, and TTS tools; it intentionally uses explicit provider credentials rather than a Nous Portal quick-setup gateway.",
+    },
+    {
+        "feature": "browser_backend_matrix",
+        "area": "browser",
+        "aiask_tools": ["agent_browser_navigate", "agent_browser_snapshot", "agent_browser_cdp", "agent_browser_vision"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK has local browser/CDP and vision-oriented browser tools; Browserbase, Browser Use, Firecrawl, Camofox, and cloud-browser breadth are not all native adapters.",
+    },
+    {
+        "feature": "session_archive_search_and_links",
+        "area": "session",
+        "aiask_tools": ["agent_session_search", "agent_session_handoff"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK supports session search, handoff records, control-token gated archive/unarchive APIs, default archived-session filtering, include-archived search/list flags, and Desktop archive/restore controls. Cross-profile links and full Hermes desktop session-management parity remain partial.",
+    },
+    {
+        "feature": "undo_last_turns",
+        "area": "session",
+        "aiask_tools": ["agent_tui_status"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK implements Hermes-style '/undo [N]' for session context through a control-token gated soft-delete API and TUI command. External side effects, run events, approvals, and tool audit evidence are intentionally not rolled back.",
+    },
+    {
+        "feature": "checkpoint_and_rollback",
+        "area": "file",
+        "aiask_tools": ["agent_file_write", "agent_file_patch", "agent_file_checkpoint", "agent_file_rollback", "agent_file_mutation_verify"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK creates pre-change checkpoints for workspace file writes/patches and exposes checkpoint/rollback tools for local file restoration. External side effects and non-file state are intentionally out of scope.",
+    },
+    {
+        "feature": "context_reference_files_and_urls",
+        "area": "context",
+        "aiask_tools": ["agent_file_read", "agent_file_search", "agent_web_extract"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK injects Hermes-style context references into model turns: project roots auto-load SOUL.md, .hermes.md/HERMES.md, AGENTS.md, CLAUDE.md, and .cursorrules, while user prompts can include @file:/@path: workspace files and @url: public HTTP(S) references. URL targets keep SSRF/private-network guardrails and all resolved references are persisted as sources/artifacts.",
+    },
+    {
+        "feature": "cron_jobs_with_skills_and_scripts",
+        "area": "automation",
+        "aiask_tools": ["agent_cronjob", "agent_job_create", "agent_job_run"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "description": "AIASK supports cron/job creation, pause/resume/remove/trigger, and skill-aware scheduled prompts/scripts through the native scheduler.",
+    },
+    {
+        "feature": "batch_trajectory_generation",
+        "area": "evals",
+        "aiask_tools": ["agent_job_create", "agent_job_run", "agent_cronjob"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK jobs can run scheduled/background work, but Hermes' batch trajectory generation/compression workflow for evals/training is not a first-class runtime feature.",
+    },
+    {
+        "feature": "external_memory_provider_catalog_breadth",
+        "area": "memory",
+        "aiask_tools": ["agent_memory_manage", "agent_memory", "agent_session_search"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK has durable SQLite memory plus an explicit Hermes external-provider catalog for Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, and Supermemory. The catalog exposes required env names, configured/live-unverified state, and audit warnings without leaking secrets; third-party provider sync remains opt-in/live-unverified when credentials exist.",
+    },
+    {
+        "feature": "dashboard_auth_oidc_username_password",
+        "area": "security",
+        "aiask_tools": ["agent_security_scan", "agent_gateway_status"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "partial",
+        "description": "AIASK uses control-token/API guardrails and redaction scans; Hermes-style web dashboard OIDC plus username/password authentication is not a native Agent surface.",
+    },
+    {
+        "feature": "media_provider_catalog_breadth",
+        "area": "multimodal",
+        "aiask_tools": ["agent_media_provider_catalog", "agent_image_generate", "agent_text_to_speech", "agent_transcribe_audio", "agent_video_generate"],
+        "introduced_in": "0.16.0",
+        "parity_track": HERMES_V016_DELTA_TRACK,
+        "status": "implemented",
+        "description": "AIASK exposes a read-only media provider catalog covering vision, image generation, video generation, TTS, STT, local/dependency-backed voice providers, required env names, configured states, and live-unverified semantics alongside the gated media tools.",
     },
     {
         "feature": "openai_compatible_local_proxy",
@@ -575,6 +747,45 @@ def gateway_platform_parity(*, adapters: set[str] | list[str] | tuple[str, ...],
     return items
 
 
+def _track_summary(
+    items: list[dict[str, Any]],
+    *,
+    track: str,
+    baseline: str,
+    release_tag: str,
+) -> dict[str, Any]:
+    track_items = [item for item in items if item.get("parity_track") == track]
+    missing = [item for item in track_items if item.get("code_status") == "missing"]
+    partial = [
+        item
+        for item in track_items
+        if item.get("status") in {"partial", "live_unverified"} and item.get("code_status") != "missing"
+    ]
+    excluded = [
+        item
+        for item in track_items
+        if item.get("status") == "excluded_by_design" and item.get("code_status") != "missing"
+    ]
+    implemented = [
+        item
+        for item in track_items
+        if item.get("status") == "implemented" and item.get("code_status") == "present"
+    ]
+    return {
+        "baseline": baseline,
+        "release_tag": release_tag,
+        "total": len(track_items),
+        "implemented_count": len(implemented),
+        "partial_count": len(partial),
+        "missing_count": len(missing),
+        "excluded_by_design_count": len(excluded),
+        "implemented": implemented,
+        "partial": partial,
+        "missing": missing,
+        "excluded_by_design": excluded,
+    }
+
+
 def parity_summary(
     registered_names: set[str] | list[str] | tuple[str, ...],
     *,
@@ -591,33 +802,32 @@ def parity_summary(
     missing_tools = [item for item in tool_mapping if item["code_status"] == "missing"]
     missing_platforms = [item for item in platform_mapping if item["code_status"] == "missing"]
     missing_features = [item for item in feature_mapping if item["code_status"] == "missing"]
-    core_missing_tools = [item for item in missing_tools if item.get("parity_track") != HERMES_V014_DELTA_TRACK]
-    core_missing_platforms = [item for item in missing_platforms if item.get("parity_track") != HERMES_V014_DELTA_TRACK]
-    core_missing_features = [item for item in missing_features if item.get("parity_track") != HERMES_V014_DELTA_TRACK]
-    delta_items = [
-        item
-        for item in (*tool_mapping, *platform_mapping, *feature_mapping)
-        if item.get("parity_track") == HERMES_V014_DELTA_TRACK
-    ]
-    delta_missing = [item for item in delta_items if item.get("code_status") == "missing"]
-    delta_partial = [
-        item
-        for item in delta_items
-        if item.get("status") in {"partial", "live_unverified"} and item.get("code_status") != "missing"
-    ]
-    delta_excluded = [
-        item
-        for item in delta_items
-        if item.get("status") == "excluded_by_design" and item.get("code_status") != "missing"
-    ]
-    delta_implemented = [
-        item
-        for item in delta_items
-        if item.get("status") == "implemented" and item.get("code_status") == "present"
-    ]
+    core_missing_tools = [item for item in missing_tools if item.get("parity_track") == HERMES_CORE_PARITY_TRACK]
+    core_missing_platforms = [item for item in missing_platforms if item.get("parity_track") == HERMES_CORE_PARITY_TRACK]
+    core_missing_features = [item for item in missing_features if item.get("parity_track") == HERMES_CORE_PARITY_TRACK]
+    tracked_items = [*tool_mapping, *platform_mapping, *feature_mapping]
+    v014_delta = _track_summary(
+        tracked_items,
+        track=HERMES_V014_DELTA_TRACK,
+        baseline=HERMES_V014_DELTA_BASELINE,
+        release_tag=HERMES_V014_DELTA_RELEASE_TAG,
+    )
+    v016_delta = _track_summary(
+        tracked_items,
+        track=HERMES_V016_DELTA_TRACK,
+        baseline=HERMES_V016_DELTA_BASELINE,
+        release_tag=HERMES_V016_DELTA_RELEASE_TAG,
+    )
     excluded_features = [item for item in feature_mapping if item.get("status") == "excluded_by_design"]
     live_unverified = [item for item in (*tool_mapping, *platform_mapping, *feature_mapping) if item["status"] == "live_unverified"]
-    strict_complete = not missing_tools and not missing_platforms and not missing_features and not live_unverified and not delta_partial
+    strict_complete = (
+        not missing_tools
+        and not missing_platforms
+        and not missing_features
+        and not live_unverified
+        and not v014_delta["partial"]
+        and not v016_delta["partial"]
+    )
     core_code_status = "present" if not core_missing_tools and not core_missing_platforms and not core_missing_features else "missing"
     code_status = "present" if not missing_tools and not missing_platforms and not missing_features else "missing"
     mock_status = "passed" if code_status == "present" else "blocked"
@@ -657,19 +867,8 @@ def parity_summary(
         "live_status": live_status,
         "strict_status": "complete" if strict_complete else "in_progress",
         "status": "complete" if len(complete) == len(required) and strict_complete else "in_progress",
-        "v014_delta": {
-            "baseline": HERMES_V014_DELTA_BASELINE,
-            "release_tag": HERMES_V014_DELTA_RELEASE_TAG,
-            "total": len(delta_items),
-            "implemented_count": len(delta_implemented),
-            "partial_count": len(delta_partial),
-            "missing_count": len(delta_missing),
-            "excluded_by_design_count": len(delta_excluded),
-            "implemented": delta_implemented,
-            "partial": delta_partial,
-            "missing": delta_missing,
-            "excluded_by_design": delta_excluded,
-        },
+        "v014_delta": v014_delta,
+        "v016_delta": v016_delta,
         "excluded_by_design_count": len(excluded_features),
         "excluded_by_design_features": excluded_features,
         "matrix": matrix,

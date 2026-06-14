@@ -24,6 +24,13 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     return TestClient(create_app(runtime=_runtime(tmp_path)))
 
 
+def _client_with_store(tmp_path, monkeypatch) -> tuple[TestClient, AgentSessionStore]:
+    monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIASK_AGENT_CONTROL_TOKEN", "secret")
+    runtime = _runtime(tmp_path)
+    return TestClient(create_app(runtime=runtime)), runtime.session_store
+
+
 def test_financial_manager_catalog_and_status_redact_secrets(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-financial-manager-secret")
     client = _client(tmp_path, monkeypatch)
@@ -65,6 +72,42 @@ def test_financial_manager_read_only_query_dispatches_agent_tool(tmp_path, monke
     assert payload["tool"] == "agent_portfolio_risk"
     assert payload["success"] is True
     assert payload["meta"]["side_effect"]["level"] == "read_only"
+
+
+def test_financial_manager_query_and_intent_are_audited(tmp_path, monkeypatch) -> None:
+    client, store = _client_with_store(tmp_path, monkeypatch)
+    session_id = store.create_session(session_id="sess_financial_audit", user_id="local")
+
+    query = client.post(
+        "/v1/desktop/financial-manager/query",
+        json={
+            "user_id": "local",
+            "session_id": session_id,
+            "capability_id": "portfolio",
+            "action_id": "risk",
+            "params": {"codes": ["600519", "000001"], "weights": [0.6, 0.4]},
+        },
+    )
+    intent = client.post(
+        "/v1/desktop/financial-manager/intent",
+        headers={"Authorization": "Bearer secret"},
+        json={
+            "user_id": "local",
+            "session_id": session_id,
+            "capability_id": "portfolio",
+            "action_id": "create",
+            "params": {"name": "Audited book"},
+            "rationale": "audit test",
+        },
+    )
+
+    assert query.status_code == 200
+    assert intent.status_code == 200
+    invocations = store.list_tool_invocations(session_id=session_id)
+    assert [item["tool_name"] for item in invocations] == ["agent_action_intent_create", "agent_portfolio_risk"]
+    assert invocations[0]["action_intent_id"] == intent.json()["data"]["intent"]["intent_id"]
+    assert invocations[0]["source_chain"] == ["aiask_agent.server", "desktop.financial_manager.intent"]
+    assert invocations[1]["source_chain"] == ["aiask_agent.server", "desktop.financial_manager"]
 
 
 def test_financial_manager_missing_mcp_tool_returns_availability_reason(tmp_path, monkeypatch) -> None:

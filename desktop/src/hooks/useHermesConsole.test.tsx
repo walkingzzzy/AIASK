@@ -6,13 +6,15 @@ import { useHermesConsole } from "./useHermesConsole";
 const hermesStatus = {
   object: "aiask.hermes_status",
   implementation: "aiask_native",
-  baseline: "Hermes v0.15.1 full runtime capability reference",
+  baseline: "Hermes v0.16.0 full runtime capability reference",
   embedded_vendor_runtime: false,
   full_mode_enabled: true,
   full_mode_active: false,
   parity: {
     object: "aiask.capability_parity",
-    baseline: "Hermes v0.15.1 full runtime capability reference",
+    baseline: "Hermes v0.16.0 full runtime capability reference",
+    baseline_version: "0.16.0",
+    baseline_release_tag: "v2026.6.5",
     scope: "hermes_full_runtime",
     embedded_vendor_runtime: false,
     required_count: 1,

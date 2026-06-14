@@ -5,6 +5,13 @@ import { compact, JsonPanel, StatusBadge } from "./shared";
 function eventName(value: unknown, fallback = "event"): string {
   if (!value || typeof value !== "object") return fallback;
   const record = value as Record<string, unknown>;
+  const data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : {};
+  const eventType = String(record.event_type || record.event || record.type || "");
+  if (eventType === "artifact.created") return `产物已生成: ${data.title || data.artifact_id || "artifact"}`;
+  if (eventType === "source.linked") return `来源已关联: ${data.title || data.provider || data.source_id || "source"}`;
+  if (eventType === "news.source_linked") return `新闻来源: ${data.title || data.provider || "news"}`;
+  if (eventType === "market.quote_snapshot") return `实时行情快照: ${data.title || data.artifact_id || "quote"}`;
+  if (eventType === "terminal.output_artifact") return `终端输出产物: ${data.title || data.artifact_id || "terminal"}`;
   return String(record.title || record.event || record.type || fallback);
 }
 
@@ -25,6 +32,17 @@ function eventBody(value: unknown): string | undefined {
   if (!value || typeof value !== "object") return undefined;
   const record = value as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" ? (record.data as Record<string, unknown>) : {};
+  const eventType = String(record.event_type || record.event || record.type || "");
+  if (eventType === "artifact.created") {
+    return [data.kind, data.path, data.status].filter(Boolean).join(" / ") || undefined;
+  }
+  if (eventType === "source.linked" || eventType === "news.source_linked") {
+    return [data.provider, data.url, data.published_at || data.data_timestamp].filter(Boolean).join(" / ") || undefined;
+  }
+  if (eventType === "market.quote_snapshot") {
+    const preview = data.preview && typeof data.preview === "object" ? (data.preview as Record<string, unknown>) : {};
+    return [preview.code || preview.symbol, preview.price || preview.last || preview.close, preview.data_timestamp].filter(Boolean).join(" / ") || undefined;
+  }
   const content = record.content || data.content || record.message || data.message;
   return typeof content === "string" && content.trim() ? content : undefined;
 }
@@ -38,6 +56,13 @@ function isApprovalEvent(value: unknown): boolean {
 }
 
 function eventKind(value: unknown): TimelineEvent["kind"] {
+  const eventType =
+    value && typeof value === "object"
+      ? String((value as Record<string, unknown>).event_type || (value as Record<string, unknown>).event || (value as Record<string, unknown>).type || "")
+      : "";
+  if (["artifact.created", "source.linked", "news.source_linked", "market.quote_snapshot", "terminal.output_artifact"].includes(eventType)) {
+    return "tool";
+  }
   if (value && typeof value === "object" && typeof (value as Record<string, unknown>).kind === "string") {
     const normalized = String((value as Record<string, unknown>).kind);
     if (["tool", "approval", "gateway", "mcp", "error", "system", "event"].includes(normalized)) {

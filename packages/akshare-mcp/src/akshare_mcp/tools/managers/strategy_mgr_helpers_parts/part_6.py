@@ -476,6 +476,246 @@ def build_factory_recent_run_diagnostics(
     }
 
 
+_FORMAL_BLOCKER_LABELS = {
+    "diagnostic_only_not_allowed_for_incubation": "Diagnostic-only runtime cannot enter formal incubation.",
+    "default_profile_not_allowed_for_single_name_runtime": "Default runtime profile is not allowed for single-name formal runtime.",
+    "execution_readiness_tier:missing_executable_contract": "Executable contract readiness is missing.",
+    "execution_readiness_tier:observe_diagnostic_only": "Runtime is observe/diagnostic only, not formal-ready.",
+    "missing_executable_contract": "Executable contract readiness is missing.",
+    "proxy_runtime_not_allowed_for_formal_incubation": "Proxy runtime evidence cannot enter formal incubation.",
+    "runtime_family_semantic_mismatch": "Runtime family semantics do not match the strategy contract.",
+    "semantic_runtime_mismatch": "Runtime semantics do not match the strategy contract.",
+    "strict_incubation_pass_required_for_formal_track": "Strict incubation pass is required for formal admission.",
+    "trade_prediction_contract_not_ready": "Trade-prediction contract is not ready.",
+}
+
+_FORMAL_BLOCKER_ACTIONS = {
+    "diagnostic_only_not_allowed_for_incubation": "Route only non-diagnostic runtime evidence to formal incubation; keep diagnostic samples in observe.",
+    "default_profile_not_allowed_for_single_name_runtime": "Attach a single-name runtime profile before requesting formal admission.",
+    "execution_readiness_tier:missing_executable_contract": "Persist the executable DSL/runtime contract and replay admission.",
+    "execution_readiness_tier:observe_diagnostic_only": "Upgrade the runtime contract from observe-diagnostic to formal_runtime_ready.",
+    "missing_executable_contract": "Persist the executable DSL/runtime contract and replay admission.",
+    "proxy_runtime_not_allowed_for_formal_incubation": "Replace proxy runtime evidence with strategy-family matching runtime evidence.",
+    "runtime_family_semantic_mismatch": "Repair the semantic runtime family before replaying formal admission.",
+    "semantic_runtime_mismatch": "Repair the semantic runtime contract before replaying formal admission.",
+    "strict_incubation_pass_required_for_formal_track": "Improve strict gate evidence before consuming formal incubation slots.",
+    "trade_prediction_contract_not_ready": "Complete trade-prediction contract readiness before formal admission.",
+}
+
+_FORMAL_BLOCKER_CANONICAL = {
+    "diagnostic_only_runtime": "diagnostic_only_not_allowed_for_incubation",
+    "execution_readiness_tier:missing": "execution_readiness_tier:missing_executable_contract",
+    "missing_executable_contract": "execution_readiness_tier:missing_executable_contract",
+    "semantic_runtime_mismatch": "runtime_family_semantic_mismatch",
+}
+
+
+def _canonical_formal_blocker(value: Any) -> str:
+    code = str(value or "").strip()
+    if not code:
+        return ""
+    normalized = code.lower().replace(" ", "_")
+    if normalized.startswith("execution_readiness_tier:"):
+        tier = normalized.split(":", 1)[1].strip() or "unknown"
+        if tier == "missing":
+            tier = "missing_executable_contract"
+        return f"execution_readiness_tier:{tier}"
+    return _FORMAL_BLOCKER_CANONICAL.get(normalized, normalized)
+
+
+def _formal_blocker_values_from(value: Any) -> list[str]:
+    if value in (None, "", [], {}):
+        return []
+    if isinstance(value, dict):
+        raw_items: list[Any] = []
+        for key in ("reason_code", "reason", "code", "name"):
+            if value.get(key) not in (None, "", [], {}):
+                raw_items.append(value.get(key))
+        return [_canonical_formal_blocker(item) for item in raw_items if _canonical_formal_blocker(item)]
+    raw_values = value if isinstance(value, (list, tuple, set)) else [value]
+    result: list[str] = []
+    for raw in raw_values:
+        if isinstance(raw, dict):
+            result.extend(_formal_blocker_values_from(raw))
+            continue
+        code = _canonical_formal_blocker(raw)
+        if code:
+            result.append(code)
+    return result
+
+
+def _top_formal_blockers(counts: dict[str, int], *, limit: int = 5) -> list[dict[str, Any]]:
+    items = []
+    for reason_code, count in dict(counts or {}).items():
+        code = _canonical_formal_blocker(reason_code)
+        if not code or int(count or 0) <= 0:
+            continue
+        items.append(
+            {
+                "reason_code": code,
+                "count": int(count or 0),
+                "label": _FORMAL_BLOCKER_LABELS.get(code, code.replace("_", " ")),
+                "next_action": _FORMAL_BLOCKER_ACTIONS.get(
+                    code,
+                    "Inspect the latest strategy quality report and replay admission after the contract gap is repaired.",
+                ),
+            }
+        )
+    items.sort(key=lambda item: (-int(item.get("count") or 0), str(item.get("reason_code") or "")))
+    return items[: max(1, int(limit or 5))]
+
+
+def build_strict_incubation_blocker_summary(
+    run_rows: list[dict[str, Any]] | None,
+    recent_run_diagnostics: dict[str, Any] | None = None,
+    *,
+    limit: int = 5,
+) -> dict[str, Any]:
+    rows = [dict(item or {}) for item in list(run_rows or []) if isinstance(item, dict)]
+    requested_limit = max(1, int(limit or 5))
+    items = rows[:requested_limit]
+    diagnostics = dict(recent_run_diagnostics or {})
+    blocker_counts: dict[str, int] = {}
+    sample_blocked: list[dict[str, Any]] = []
+    analyzed_strategy_count = 0
+    strict_not_ready_count = 0
+    raw_b_or_above_count = 0
+    strict_ready_given_raw_b_count = 0
+    submitted_count = 0
+    formal_requested_count = 0
+    observe_lane_count = 0
+    diagnostic_lane_count = 0
+
+    def add_blocker(code: Any, *, count: int = 1) -> None:
+        normalized = _canonical_formal_blocker(code)
+        if not normalized:
+            return
+        blocker_counts[normalized] = blocker_counts.get(normalized, 0) + max(1, int(count or 1))
+
+    for row in items:
+        summary = dict(row.get("summary") or {})
+        submission_artifact = dict(row.get("submission_artifact") or {})
+        strategy_briefs = [
+            dict(item or {})
+            for item in list(submission_artifact.get("strategy_briefs") or [])
+            if isinstance(item, dict)
+        ]
+        analyzed_strategy_count += len(strategy_briefs)
+        submitted_count += int(summary.get("submitted") or row.get("submitted") or submission_artifact.get("submitted_count") or 0)
+        for reason in _formal_blocker_values_from(summary.get("formal_track_blockers")):
+            add_blocker(reason)
+        for reason in _formal_blocker_values_from(summary.get("admission_block_reasons")):
+            add_blocker(reason)
+        for item in _formal_blocker_values_from(submission_artifact.get("gate_3_failure_reason_topn")):
+            add_blocker(item)
+        for brief in strategy_briefs:
+            strict_ready = brief.get("strict_incubation_ready") is True
+            raw_b_or_above = bool(brief.get("raw_b_or_above")) or str(
+                brief.get("raw_validation_grade") or brief.get("validation_grade") or ""
+            ).strip().upper() in {"A", "B"}
+            if raw_b_or_above:
+                raw_b_or_above_count += 1
+                if strict_ready:
+                    strict_ready_given_raw_b_count += 1
+            if not strict_ready:
+                strict_not_ready_count += 1
+            lane = str(brief.get("submission_lane") or "").strip().lower()
+            if lane == "observe_incubation":
+                observe_lane_count += 1
+            if lane == "diagnostic_observation":
+                diagnostic_lane_count += 1
+            if brief.get("formal_track_requested") is True:
+                formal_requested_count += 1
+            reasons = []
+            for key in (
+                "formal_track_blockers",
+                "admission_block_reasons",
+                "hard_fail_reasons",
+                "submission_action_gaps",
+                "trade_prediction_contract_reject_reasons",
+            ):
+                reasons.extend(_formal_blocker_values_from(brief.get(key)))
+            tier = str(brief.get("execution_readiness_tier") or "").strip()
+            if tier and tier != "formal_runtime_ready":
+                reasons.append(_canonical_formal_blocker(f"execution_readiness_tier:{tier}"))
+            if brief.get("diagnostic_only") is True:
+                reasons.append("diagnostic_only_not_allowed_for_incubation")
+            if str(brief.get("runtime_bootstrap_reason") or "").strip() == "default_profile":
+                reasons.append("default_profile_not_allowed_for_single_name_runtime")
+            unique_reasons = list(dict.fromkeys([reason for reason in reasons if reason]))
+            for reason in unique_reasons:
+                add_blocker(reason)
+            if unique_reasons and len(sample_blocked) < 5:
+                sample_blocked.append(
+                    {
+                        "strategy_id": brief.get("strategy_id"),
+                        "family": brief.get("candidate_family") or brief.get("strategy_type"),
+                        "grade": brief.get("raw_validation_grade") or brief.get("validation_grade"),
+                        "submission_lane": brief.get("submission_lane"),
+                        "strict_incubation_ready": strict_ready,
+                        "blockers": unique_reasons[:6],
+                    }
+                )
+
+    quality_progress = dict(diagnostics.get("quality_progress") or {})
+    recent_runs = [dict(item or {}) for item in list(diagnostics.get("recent_runs") or []) if isinstance(item, dict)]
+    if not raw_b_or_above_count:
+        raw_b_or_above_rate = float(quality_progress.get("recent_raw_b_or_above_rate_mean") or 0.0)
+    else:
+        raw_b_or_above_rate = _rate(raw_b_or_above_count, analyzed_strategy_count)
+    strict_ready_given_raw_b_rate = (
+        _rate(strict_ready_given_raw_b_count, raw_b_or_above_count)
+        if raw_b_or_above_count
+        else float(quality_progress.get("recent_strict_ready_given_raw_b_rate_mean") or 0.0)
+    )
+    if not submitted_count:
+        submitted_count = sum(int(item.get("submitted") or 0) for item in recent_runs)
+    for item in list(diagnostics.get("blocker_reason_topn") or []):
+        payload = dict(item or {})
+        add_blocker(payload.get("reason_code"), count=int(payload.get("count") or 1))
+
+    top_blockers = _top_formal_blockers(blocker_counts)
+    status = "ready"
+    if not items and not recent_runs:
+        status = "no_recent_runs"
+    elif top_blockers or strict_ready_given_raw_b_rate == 0.0:
+        status = "blocked"
+    headline = (
+        "No recent Strategy Factory runs were available for formal-admission analysis."
+        if status == "no_recent_runs"
+        else "Recent runs still fail formal admission because strict incubation readiness is zero."
+        if strict_ready_given_raw_b_rate == 0.0 and (raw_b_or_above_count or submitted_count)
+        else "Recent runs expose recurring formal-admission blockers."
+        if top_blockers
+        else "No recurring strict-incubation blocker was detected in recent runs."
+    )
+    next_action = (
+        top_blockers[0]["next_action"]
+        if top_blockers
+        else "Run another factory cycle with full contract persistence enabled and inspect the latest quality report."
+    )
+    return {
+        "contract_version": "strategy_factory.strict_incubation_blockers.v1",
+        "status": status,
+        "headline": headline,
+        "window_size": requested_limit,
+        "analyzed_run_count": len(items) or int(diagnostics.get("analyzed_run_count") or 0),
+        "analyzed_strategy_count": analyzed_strategy_count,
+        "submitted_count": submitted_count,
+        "strict_not_ready_count": strict_not_ready_count,
+        "raw_b_or_above_count": raw_b_or_above_count,
+        "raw_b_or_above_rate": raw_b_or_above_rate,
+        "strict_ready_given_raw_b_count": strict_ready_given_raw_b_count,
+        "strict_ready_given_raw_b_rate": strict_ready_given_raw_b_rate,
+        "formal_requested_count": formal_requested_count,
+        "observe_lane_count": observe_lane_count,
+        "diagnostic_lane_count": diagnostic_lane_count,
+        "top_blockers": top_blockers,
+        "sample_blocked_strategies": sample_blocked,
+        "next_action": next_action,
+    }
+
+
 async def refresh_factory_run_detail_quality_contract(db, row: Optional[dict]) -> dict:
     detail = normalize_factory_run_detail_contract(row)
     if not detail or not db:

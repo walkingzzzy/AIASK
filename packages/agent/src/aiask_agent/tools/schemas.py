@@ -25,6 +25,27 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         },
         required=["code"],
     ),
+    "agent_stock_live_quote": schema(
+        {
+            "code": {"type": "string", "description": "Stock code, symbol, or ticker."},
+            "stock_code": {"type": "string", "description": "Alias for code."},
+            "symbol": {"type": "string", "description": "Alias for code."},
+            "ticker": {"type": "string", "description": "Alias for code."},
+            "include_source_chain": {"type": "boolean", "default": True},
+        },
+        required=["code"],
+    ),
+    "agent_stock_news_digest": schema(
+        {
+            "code": {"type": "string", "description": "Stock code, symbol, or ticker. Omit for market news."},
+            "stock_code": {"type": "string", "description": "Alias for code."},
+            "symbol": {"type": "string", "description": "Alias for code."},
+            "ticker": {"type": "string", "description": "Alias for code."},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 20},
+            "prefer_db": {"type": "boolean", "default": True},
+            "include_links": {"type": "boolean", "default": True},
+        },
+    ),
     "agent_governance_check": schema(
         {
             "target_type": {"type": "string", "enum": ["factor", "model", "strategy", "system"]},
@@ -308,6 +329,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "path": {"type": "string"},
             "content": {"type": "string"},
             "create_parent_dirs": {"type": "boolean", "default": False},
+            "checkpoint": {"type": "boolean", "default": True},
+            "checkpoint_reason": {"type": "string"},
         },
         required=["path", "content"],
     ),
@@ -333,6 +356,8 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "old": {"type": "string"},
             "new": {"type": "string"},
             "count": {"type": "integer", "minimum": 1},
+            "checkpoint": {"type": "boolean", "default": True},
+            "checkpoint_reason": {"type": "string"},
         },
         required=["path", "old", "new"],
     ),
@@ -344,6 +369,20 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "include_diagnostics": {"type": "boolean", "default": True},
         },
         required=["path"],
+    ),
+    "agent_file_checkpoint": schema(
+        {
+            "path": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        required=["path"],
+    ),
+    "agent_file_rollback": schema(
+        {
+            "checkpoint_id": {"type": "string"},
+            "path": {"type": "string"},
+            "reason": {"type": "string"},
+        },
     ),
     "agent_code_graph_query": schema(
         {
@@ -456,6 +495,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
         {
             "query": {"type": "string"},
             "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+            "provider": {"type": "string"},
+            "source_id": {"type": "string"},
+            "search_depth": {"type": "string", "enum": ["basic", "advanced"]},
+            "include_answer": {"type": "boolean"},
+            "search_type": {"type": "string"},
         },
         required=["query"],
     ),
@@ -487,6 +531,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "model": {"type": "string"},
         }
     ),
+    "agent_media_provider_catalog": schema({}),
     "agent_image_generate": schema(
         {
             "prompt": {"type": "string"},
@@ -688,7 +733,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "agent_model_manage": schema(
         {
-            "action": {"type": "string", "enum": ["status", "providers", "credential_pool", "select", "record_attempt", "classify_error"], "default": "status"},
+            "action": {"type": "string", "enum": ["status", "providers", "credential_pool", "select", "record_attempt", "classify_error", "prompt_cache"], "default": "status"},
             "provider": {"type": "string"},
             "credential_id": {"type": "string"},
             "success": {"type": "boolean"},
@@ -697,7 +742,7 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
     ),
     "agent_memory_manage": schema(
         {
-            "action": {"type": "string", "enum": ["status", "save", "search", "audit"], "default": "status"},
+            "action": {"type": "string", "enum": ["status", "catalog", "save", "search", "audit"], "default": "status"},
             "content": {"type": "string"},
             "query": {"type": "string"},
             "user_id": {"type": "string"},

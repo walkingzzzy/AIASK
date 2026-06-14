@@ -28,6 +28,7 @@ type SafeRunPathStep = {
 const STATUS_TEXT: Record<string, string> = {
   blocked: "阻塞",
   completed: "已完成",
+  control_token_required: "需要控制令牌",
   degraded: "降级",
   discovered: "已发现",
   gated: "受限",
@@ -40,12 +41,30 @@ const STATUS_TEXT: Record<string, string> = {
   partial: "部分就绪",
   ready: "就绪",
   registered: "已注册",
+  auth_missing: "授权缺失",
+  live_pending: "等待真实验证",
+  live_unverified: "Live 未验证",
   warning: "警告",
 };
 
 function statusText(status?: unknown): string {
   const value = String(status || "not_loaded");
   return STATUS_TEXT[value.toLowerCase()] || value;
+}
+
+function toolsetText(value?: unknown): string {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "general_full") return "完整工具集";
+  if (normalized === "finance_safe") return "金融安全工具集";
+  return value ? String(value) : "金融安全工具集";
+}
+
+function providerText(value?: unknown): string {
+  const normalized = String(value || "").toLowerCase();
+  if (normalized === "sqlite") return "本地数据库";
+  if (normalized === "not_loaded") return "未加载";
+  if (!value) return "未加载";
+  return String(value);
 }
 
 function messageText(message: string): string {
@@ -94,7 +113,7 @@ function actionDetail(action: FinancialNextAction): string {
   const fallback = action.detail || "";
   const details: Record<string, string> = {
     configure_mcp_auth: "MCP 已注册但缺少授权变量；请在 Agent 进程中配置后刷新发现。",
-    configure_model_provider: "设置 OpenAI 兼容模型提供方，并通过 /v1/ai/smoke 验证。",
+    configure_model_provider: "设置 OpenAI 兼容模型提供方，并在模型配置页点击测试验证。",
     configure_writable_database: "设置 AIASK_SQLITE_PATH 或 AKSHARE_MCP_SQLITE_PATH 到可写 SQLite 文件。",
     enable_full_mode_when_needed: "默认 finance_safe 模式较窄；只有高级工具需要时再开启完整模式。",
     inspect_strategy_factory: "打开策略工厂面板检查状态、运行记录、快照和数据库/runtime 错误。",
@@ -104,6 +123,21 @@ function actionDetail(action: FinancialNextAction): string {
     verify_semantic_search: "运行只读记忆/会话搜索 smoke，再依赖 Agent 回忆和运行历史搜索。",
   };
   return details[action.action_id] || fallback;
+}
+
+function actionContextLabel(action: FinancialNextAction): string {
+  const contexts: Record<string, string> = {
+    configure_mcp_auth: "MCP 授权",
+    configure_model_provider: "模型连通性",
+    configure_writable_database: "本地数据库",
+    enable_full_mode_when_needed: "完整模式",
+    inspect_strategy_factory: "策略工厂",
+    register_or_discover_mcp: "MCP 服务发现",
+    run_live_financial_workflow: "只读金融验证",
+    set_control_token: "控制令牌",
+    verify_semantic_search: "记忆与搜索",
+  };
+  return contexts[action.action_id] || action.gate || action.title || "建议处理";
 }
 
 function gateByName(
@@ -117,6 +151,9 @@ function envelopeStatus(value: unknown): string {
   if (!value || typeof value !== "object") return "not_loaded";
   const record = value as Record<string, unknown>;
   const data = record.data && typeof record.data === "object" ? record.data as Record<string, unknown> : {};
+  const errorCode = String(record.error_code || "");
+  const error = String(record.error || "");
+  if (errorCode.includes("CONTROL_TOKEN") || error.toLowerCase().includes("control token")) return "gated";
   if (record.success === false) return String(record.error_code || data.status || "failed");
   return String(data.status || record.status || (record.success === true ? "ready" : "not_loaded"));
 }
@@ -182,6 +219,7 @@ export function ReadinessHealthPage({
     "not_loaded"
   );
   const memorySearchStatus = semanticGate?.status || readinessStatus(memoryPayload);
+  const toolset = health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe";
   const nextActions = financial?.next_actions || [];
   const liveSmoke = financial?.live_smoke;
   const mcpReady = !payload?.mcp?.gated && (mcpStatus === "discovered" || mcpStatus === "registered" || mcpStatus === "ready");
@@ -189,15 +227,17 @@ export function ReadinessHealthPage({
   const requiredReady = financial?.required_gates?.filter((gate) => gate.status === "ready").length || 0;
   const requiredTotal = financial?.required_gates?.length || 0;
   const marketSmokeCovered = liveSmoke?.checks?.some((check) => check.name === "market_temperature_forward_validation");
+  const providerOperational = ["ready", "ok", "implemented", "configured"].includes(providerStatus);
+  const gatewayOperational = ["ready", "ok", "healthy"].includes(gatewayStatus);
 
   const safeRunPath: SafeRunPathStep[] = [
     {
       id: "mode_model",
       label: "1. 模式与模型",
       detail: "确认 Agent 端点、模型提供方、工具集和控制令牌状态，再进入金融流程。",
-      status: providerStatus === "ready" || providerStatus === "ok" ? modeTokenStatus : providerStatus,
+      status: providerOperational ? modeTokenStatus : providerStatus,
       target_page: "settings",
-      evidence: `${health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe"} / 控制 ${statusText(modeTokenStatus)}`
+      evidence: `${toolsetText(toolset)} / 控制 ${statusText(modeTokenStatus)}`
     },
     {
       id: "mcp_connectors",
@@ -213,7 +253,7 @@ export function ReadinessHealthPage({
       detail: "确认会话搜索和金融记忆搜索能取回历史上下文。",
       status: memorySearchStatus,
       target_page: "user",
-      evidence: `${memoryProvider} / 向量 ${statusText(vectorGate?.status || "not_loaded")}`
+      evidence: `${providerText(memoryProvider)} / 向量 ${statusText(vectorGate?.status || "not_loaded")}`
     },
     {
       id: "financial_agent",
@@ -229,7 +269,7 @@ export function ReadinessHealthPage({
       detail: "用数据新鲜度、市场温度和量化研究阶段证明流程已就绪，或明确说明被哪里阻塞。",
       status: payload?.quant?.data_status?.status || payload?.quant?.status || "not_loaded",
       target_page: "data",
-      evidence: marketSmokeCovered ? "联调 smoke 覆盖市场温度与 quant_research" : "市场温度 smoke 待确认"
+      evidence: marketSmokeCovered ? "已覆盖市场温度和量化研究检查" : "市场温度检查待确认"
     },
     {
       id: "factory_relay",
@@ -244,10 +284,10 @@ export function ReadinessHealthPage({
   const diagnosticResults = useMemo((): DiagnosticResult[] => {
     const results: DiagnosticResult[] = [];
 
-    if (providerStatus !== "ready" && providerStatus !== "ok") {
+    if (!providerOperational) {
       results.push({
         category: "AI 提供方",
-        status: "error",
+        status: providerStatus === "not_loaded" ? "warning" : "error",
         title: "AI 提供方连接异常",
         message: `当前状态：${statusText(providerStatus)}。无法可靠调用 AI 模型。`,
         fix_suggestions: ["检查 API 端点配置", "验证 API 令牌是否有效", "确认后端服务正在运行", "查看后端日志了解详细错误"],
@@ -277,13 +317,17 @@ export function ReadinessHealthPage({
       });
     }
 
-    if (gatewayStatus !== "ready" && gatewayStatus !== "ok") {
+    if (!gatewayOperational) {
       results.push({
         category: "Gateway",
-        status: "error",
-        title: "Gateway 连接异常",
-        message: `当前状态：${statusText(gatewayStatus)}。跨平台消息投递可能受影响。`,
-        fix_suggestions: ["检查 Gateway 服务状态", "验证网络连接", "查看 Gateway 错误日志"],
+        status: controlToken.trim() ? "error" : "warning",
+        title: controlToken.trim() ? "Gateway 连接异常" : "Gateway 管理详情未解锁",
+        message: controlToken.trim()
+          ? `当前状态：${statusText(gatewayStatus)}。跨平台消息投递可能受影响。`
+          : "缺少控制令牌，因此尚未读取 Gateway 守护进程、平台和消息详情。",
+        fix_suggestions: controlToken.trim()
+          ? ["检查 Gateway 服务状态", "验证网络连接", "查看 Gateway 错误日志"]
+          : ["前往设置页面", "填写控制令牌", "刷新 Gateway 或健康页"],
         related_page: "gateway"
       });
     }
@@ -306,13 +350,13 @@ export function ReadinessHealthPage({
         status: "warning",
         title: "记忆与会话搜索探针失败",
         message: `${semanticGate.name}: ${semanticGate.detail}`,
-        fix_suggestions: ["运行 scripts/ops/live_readiness_smoke.py --self-test", "检查 agent_memory_search 与 /v1/search", "确认 Agent 状态数据库可写"],
+        fix_suggestions: ["运行准备度页的技术联调清单", "检查记忆搜索和会话搜索是否能返回结果", "确认 Agent 状态数据库可写"],
         related_page: "readiness-health"
       });
     }
 
     return results;
-  }, [payload, controlToken, providerStatus, gatewayStatus, financial, semanticGate]);
+  }, [payload, controlToken, providerStatus, providerOperational, gatewayStatus, gatewayOperational, financial, semanticGate]);
 
   function handleNavigate(page?: string) {
     if (!page) return;
@@ -406,7 +450,7 @@ export function ReadinessHealthPage({
                 {nextActions.map((action: FinancialNextAction) => (
                   <article className="capability-row" key={action.action_id}>
                     <div>
-                      <span>{action.endpoint || action.gate || action.action_id}</span>
+                      <span>{actionContextLabel(action)}</span>
                       <strong>{actionTitle(action)}</strong>
                     </div>
                     <StatusBadge status={priorityStatus(action.priority)} label={priorityLabel(action.priority)} />
@@ -436,44 +480,55 @@ export function ReadinessHealthPage({
               </div>
             </section>
 
-            <section className="capability-section">
+            <section className="capability-section readiness-smoke-summary">
               <div className="section-header">
                 <div>
-                  <span>联调 smoke</span>
-                  <h3>真实联调检查清单</h3>
+                  <span>真实联调</span>
+                  <h3>检查清单状态</h3>
                 </div>
                 <StatusBadge status={liveSmoke?.status || "not_loaded"} label={statusText(liveSmoke?.status || "not_loaded")} />
               </div>
               <div className="kv-grid">
-                <span>脚本</span>
-                <strong>{liveSmoke?.script || "scripts/ops/live_readiness_smoke.py"}</strong>
-                <span>工作目录</span>
-                <strong>{liveSmoke?.working_directory || "packages/agent"}</strong>
-                <span>Self-test</span>
-                <strong>{liveSmoke?.self_test_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --self-test --pretty"}</strong>
-                <span>Live 命令</span>
-                <strong>{liveSmoke?.live_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty"}</strong>
                 <span>检查数</span>
                 <strong>{liveSmoke?.checks?.length || 0}</strong>
                 <span>状态</span>
                 <strong>{statusText(liveSmoke?.status || "not_loaded")}</strong>
               </div>
-              <p className="muted">{liveSmoke?.environment_note || "请从 packages/agent 目录运行，确保加载 Agent runtime 依赖。"}</p>
-              <div className="mini-list">
-                {(liveSmoke?.checks || []).slice(0, 16).map((check, index) => (
-                  <article key={`${check.name || "check"}-${index}`}>
-                    <strong>{check.name || `check-${index + 1}`}</strong>
-                    <p>{check.method || "GET"} {check.path || "-"}</p>
-                    {!!check.observes?.length && <small>观测字段：{check.observes.join(", ")}</small>}
-                  </article>
-                ))}
-                {!liveSmoke?.checks?.length && (
-                  <article>
-                    <strong>等待后端 readiness payload</strong>
-                    <p>刷新后会显示真实联调脚本需要验证的端点。</p>
-                  </article>
-                )}
-              </div>
+              <p className="muted">日常使用只需要看状态和检查数；脚本命令与接口清单放在下面的技术详情中，排障时再展开。</p>
+              <details className="readiness-technical-details">
+                <summary>
+                  <span>
+                    <strong>技术联调清单</strong>
+                    <small>脚本、命令和接口端点。</small>
+                  </span>
+                </summary>
+                <div className="kv-grid">
+                  <span>脚本</span>
+                  <strong>{liveSmoke?.script || "scripts/ops/live_readiness_smoke.py"}</strong>
+                  <span>工作目录</span>
+                  <strong>{liveSmoke?.working_directory || "packages/agent"}</strong>
+                  <span>Self-test</span>
+                  <strong>{liveSmoke?.self_test_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --self-test --pretty"}</strong>
+                  <span>Live 命令</span>
+                  <strong>{liveSmoke?.live_command || "uv run python ..\\..\\scripts\\ops\\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty"}</strong>
+                </div>
+                <p className="muted">{liveSmoke?.environment_note || "请从 packages/agent 目录运行，确保加载 Agent runtime 依赖。"}</p>
+                <div className="mini-list">
+                  {(liveSmoke?.checks || []).slice(0, 16).map((check, index) => (
+                    <article key={`${check.name || "check"}-${index}`}>
+                      <strong>{check.name || `check-${index + 1}`}</strong>
+                      <p>{check.method || "GET"} {check.path || "-"}</p>
+                      {!!check.observes?.length && <small>观测字段：{check.observes.join(", ")}</small>}
+                    </article>
+                  ))}
+                  {!liveSmoke?.checks?.length && (
+                    <article>
+                      <strong>等待后端 readiness payload</strong>
+                      <p>刷新后会显示真实联调脚本需要验证的端点。</p>
+                    </article>
+                  )}
+                </div>
+              </details>
             </section>
           </div>
 
@@ -496,17 +551,17 @@ export function ReadinessHealthPage({
                 <span>Agent</span>
                 <strong>{statusText(health?.status || "not_loaded")}</strong>
                 <span>工具集</span>
-                <strong>{health?.tools?.toolset || hermesStatus?.evaluated_toolset || "finance_safe"}</strong>
+                <strong>{toolsetText(toolset)}</strong>
                 <span>完整模式</span>
                 <strong>{health?.hermes?.full_mode_active ? "已激活" : health?.hermes?.full_mode_enabled ? "已开启" : "关闭"}</strong>
                 <span>控制令牌</span>
-                <strong>{health?.control?.token_configured ? "已配置" : "缺失"}</strong>
+                <strong>{controlToken.trim() ? "已填写" : "未填写"}</strong>
                 <span>MCP 缺少授权</span>
                 <strong>{payload?.mcp?.missing_auth_env_vars?.join(", ") || "-"}</strong>
                 <span>金融门控</span>
                 <strong>{requiredTotal}</strong>
                 <span>记忆提供方</span>
-                <strong>{memoryProvider}</strong>
+                <strong>{providerText(memoryProvider)}</strong>
                 <span>语义搜索</span>
                 <strong>{statusText(semanticGate?.status || "not_loaded")}</strong>
                 <span>向量提供方</span>
@@ -550,17 +605,17 @@ export function ReadinessHealthPage({
             </section>
           </div>
 
-          <section className="capability-section">
-            <div className="section-header">
-              <div>
-                <span>深度诊断</span>
-                <h3>完整模式控制台</h3>
-              </div>
-              <button className="small-button" disabled={busy} onClick={onRefreshHermes} type="button">
-                <RefreshCw size={14} />
-                刷新完整控制台
-              </button>
-            </div>
+          <details className="capability-section readiness-technical-details">
+            <summary>
+              <span>
+                <strong>高级诊断：完整模式控制台</strong>
+                <small>包含英文能力清单和底层状态，排障时展开。</small>
+              </span>
+            </summary>
+            <button className="small-button" disabled={busy} onClick={onRefreshHermes} type="button">
+              <RefreshCw size={14} />
+              刷新完整控制台
+            </button>
             <DiagnosticsPanel
               apiToken={apiToken}
               busy={busy}
@@ -573,7 +628,7 @@ export function ReadinessHealthPage({
               onRefresh={onRefreshHermes}
               parity={health?.hermes?.parity}
             />
-          </section>
+          </details>
 
           <details className="raw-details">
             <summary>原始准备度载荷</summary>

@@ -438,7 +438,25 @@ export type MainView =
   | "user"
   ;
 
-export type TaskArtifactKind = "report" | "strategy" | "factor" | "data" | "screenshot" | "json" | "run" | "approval" | "note";
+export type TaskArtifactKind =
+  | "report"
+  | "strategy"
+  | "factor"
+  | "data"
+  | "screenshot"
+  | "json"
+  | "run"
+  | "approval"
+  | "note"
+  | "file"
+  | "code"
+  | "script"
+  | "terminal_output"
+  | "quote_snapshot"
+  | "news_digest"
+  | "chart"
+  | "table"
+  | "patch";
 
 export interface TaskArtifact {
   id: string;
@@ -451,9 +469,58 @@ export interface TaskArtifact {
   createdAt?: string;
   path?: string;
   targetPath?: string;
+  href?: string;
   severity?: "info" | "warning" | "critical";
   thumbnailPath?: string;
   value?: unknown;
+}
+
+export interface AgentArtifactRecord {
+  artifact_id: string;
+  user_id?: string;
+  session_id?: string;
+  run_id?: string;
+  trace_id?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  kind: TaskArtifactKind | string;
+  title: string;
+  path?: string;
+  uri?: string;
+  mime_type?: string;
+  size_bytes?: number;
+  sha256?: string;
+  preview_text?: string;
+  preview_json?: unknown;
+  source_id?: string;
+  status?: string;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface AgentSourceRecord {
+  source_id: string;
+  user_id?: string;
+  session_id?: string;
+  run_id?: string;
+  trace_id?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  provider?: string;
+  source_type: string;
+  title?: string;
+  url?: string;
+  published_at?: string;
+  fetched_at?: string;
+  data_timestamp?: string;
+  excerpt?: string;
+  source_tier?: string;
+  credibility_score?: number;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  [key: string]: unknown;
 }
 
 export interface TaskReviewComment {
@@ -495,6 +562,23 @@ export interface TaskThread {
 
 export type TimelineEventKind = "user" | "assistant" | "tool" | "approval" | "gateway" | "mcp" | "error" | "system" | "event";
 
+export interface SessionHandoffState {
+  status?: string;
+  handoff_id?: string | null;
+  target?: string | null;
+  source_run_id?: string | null;
+  source_tool_call_id?: string | null;
+  context_snapshot_id?: string | null;
+  active_run_id?: string | null;
+  active_trace_id?: string | null;
+  summary?: string | null;
+  reason?: string | null;
+  updated_at?: string;
+  activated_at?: string;
+  metadata?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
 export interface RecentSessionSummary {
   session_id: string;
   title: string;
@@ -509,7 +593,102 @@ export interface RecentSessionSummary {
   has_errors?: boolean;
   has_pending_approval?: boolean;
   status?: string;
+  archived?: boolean;
+  archived_at?: string | null;
+  archived_reason?: string | null;
+  handoff_state?: SessionHandoffState | null;
+  handoff_status?: string | null;
+  handoff_target?: string | null;
+  handoff_id?: string | null;
+  handoff_context_snapshot_id?: string | null;
+  active_agent?: string | null;
+  active_context_snapshot_id?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+export interface HandoffRecord {
+  handoff_id: string;
+  session_id?: string;
+  user_id?: string;
+  target?: string | null;
+  status?: string;
+  runtime_status?: string;
+  reason?: string | null;
+  summary?: string | null;
+  metadata?: Record<string, unknown>;
+  created_at?: string;
+  updated_at?: string;
+  session_title?: string | null;
+  handoff_state?: SessionHandoffState | null;
+  active_agent?: string | null;
+  active_context_snapshot_id?: string | null;
+  resume_context_snapshot_id?: string | null;
+  resume_ready?: boolean;
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
+}
+
+export interface HandoffQueuePayload {
+  object: "aiask.handoff_queue" | string;
+  implementation?: string;
+  data: HandoffRecord[];
+  count?: number;
+  summary?: Record<string, number>;
+  filters?: Record<string, unknown>;
+  secrets_redacted?: boolean;
+}
+
+export interface SessionResumeContextPayload {
+  object: "aiask.session_resume_context" | string;
+  implementation?: string;
+  session_id: string;
+  session?: RecentSessionSummary;
+  handoff?: HandoffRecord | null;
+  handoff_state?: SessionHandoffState | null;
+  context_snapshot?: Record<string, unknown> | null;
+  resume_context?: {
+    session_id?: string;
+    handoff_id?: string | null;
+    target?: string | null;
+    status?: string | null;
+    context_snapshot_id?: string | null;
+    context_summary_id?: string | null;
+    risk_flags?: string[];
+    source_message_ids?: string[];
+    source_ids?: string[];
+    artifact_ids?: string[];
+    summary?: string | null;
+    reason?: string | null;
+    resume_prompt?: string;
+    [key: string]: unknown;
+  };
+  secrets_redacted?: boolean;
+}
+
+export interface SessionUndoPayload {
+  object: "aiask.session_undo";
+  implementation?: string;
+  session_id: string;
+  turns_requested: number;
+  turns_undone: number;
+  message_ids: Array<number | string>;
+  message_count: number;
+  deleted_at?: string;
+  deleted_reason?: string;
+  deleted_by?: string;
+  soft_deleted?: boolean;
+  side_effects_rolled_back: boolean;
+  external_side_effects: string;
+}
+
+export interface SessionArchivePayload {
+  object: "aiask.session_archive";
+  implementation?: string;
+  session_id: string;
+  archived: boolean;
+  archived_at?: string | null;
+  archived_reason?: string | null;
+  session?: RecentSessionSummary & { metadata?: Record<string, unknown> };
 }
 
 export interface DesktopRunSummary {
@@ -561,6 +740,41 @@ export interface NormalizedRunEvent {
   [key: string]: unknown;
 }
 
+export interface RunTraceEvalCheck {
+  id: string;
+  label?: string;
+  status: "pass" | "warn" | "fail" | string;
+  detail?: string;
+  evidence?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+export interface RunTraceEvalPayload {
+  object: "aiask.run_trace_eval" | string;
+  implementation?: string;
+  run_id: string;
+  session_id?: string | null;
+  status: "healthy" | "degraded" | "failed" | string;
+  score?: number;
+  checks: RunTraceEvalCheck[];
+  summary: {
+    event_count?: number;
+    tool_invocation_count?: number;
+    failed_tool_invocation_count?: number;
+    context_snapshot_count?: number;
+    source_count?: number;
+    artifact_count?: number;
+    handoff_event_count?: number;
+    guardrail_event_count?: number;
+    error_event_count?: number;
+    [key: string]: unknown;
+  };
+  latest_context_snapshot?: Record<string, unknown> | null;
+  risk_flags?: string[];
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
+}
+
 export interface TimelineEvent {
   id: string;
   kind: TimelineEventKind;
@@ -586,6 +800,8 @@ export interface HermesStatus {
   object: string;
   implementation: string;
   baseline: string;
+  baseline_version?: string;
+  baseline_release_tag?: string;
   embedded_vendor_runtime: boolean;
   full_mode_enabled: boolean;
   full_mode_active: boolean;
@@ -620,10 +836,27 @@ export interface CapabilityMatrixItem {
   status: "implemented" | "partial" | "blocked" | "skipped_missing_credentials" | "planned" | "excluded" | "live_unverified" | "unconfigured" | "failed" | string;
 }
 
+export interface CapabilityDeltaSummary {
+  baseline?: string;
+  release_tag?: string;
+  total?: number;
+  implemented_count?: number;
+  partial_count?: number;
+  missing_count?: number;
+  excluded_by_design_count?: number;
+  implemented?: CapabilityMatrixItem[];
+  partial?: CapabilityMatrixItem[];
+  missing?: CapabilityMatrixItem[];
+  excluded_by_design?: CapabilityMatrixItem[];
+}
+
 export interface CapabilityParity {
   object: string;
   baseline: string;
+  baseline_version?: string;
+  baseline_release_tag?: string;
   scope: string;
+  legacy_scope?: string;
   embedded_vendor_runtime: boolean;
   required_count: number;
   covered_count: number;
@@ -638,17 +871,15 @@ export interface CapabilityParity {
   core_missing_hermes_tools?: CapabilityMatrixItem[];
   core_missing_gateway_platforms?: CapabilityMatrixItem[];
   core_missing_features?: CapabilityMatrixItem[];
-  v014_delta?: {
-    baseline?: string;
-    release_tag?: string;
-    total?: number;
-    implemented_count?: number;
-    partial_count?: number;
-    missing_count?: number;
-    implemented?: CapabilityMatrixItem[];
-    partial?: CapabilityMatrixItem[];
-    missing?: CapabilityMatrixItem[];
-  };
+  v014_delta?: CapabilityDeltaSummary;
+  v016_delta?: CapabilityDeltaSummary;
+  strict_hermes_tool_count?: number;
+  strict_gateway_platform_count?: number;
+  missing_hermes_tools?: CapabilityMatrixItem[];
+  missing_gateway_platforms?: CapabilityMatrixItem[];
+  live_unverified_count?: number;
+  excluded_by_design_count?: number;
+  excluded_by_design_features?: CapabilityMatrixItem[];
   implemented_features_count?: number;
   feature_count?: number;
   code_status?: string;
@@ -714,6 +945,7 @@ export interface AiStatus {
   mock: boolean;
   configured: boolean;
   runtime_client?: string;
+  prompt_cache?: PromptCachePolicy;
   config_source?: {
     loaded?: boolean;
     path?: string | null;
@@ -721,6 +953,23 @@ export interface AiStatus {
     secrets_redacted?: boolean;
   };
   secrets_redacted: boolean;
+}
+
+export interface PromptCachePolicy {
+  object?: string;
+  enabled?: boolean;
+  requested_enabled?: boolean;
+  supported?: boolean;
+  provider?: string;
+  provider_type?: string;
+  strategy?: string;
+  system_prompt?: boolean;
+  recent_non_system_messages?: number;
+  cache_control?: Record<string, unknown> | null;
+  env?: Record<string, string>;
+  notes?: string[];
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
 }
 
 export interface AiSmokeResult {
@@ -737,6 +986,77 @@ export interface AiSmokeResult {
   error_code?: string;
   error?: string;
   secrets_redacted?: boolean;
+}
+
+export interface AiProviderPreset {
+  id: string;
+  label: string;
+  provider: string;
+  provider_type?: string;
+  base_url?: string;
+  default_model?: string;
+  api_key_url?: string;
+  docs_url?: string;
+  model_list_supported?: boolean;
+  notes?: string[];
+  category?: string;
+  api_key_optional?: boolean;
+}
+
+export interface AiConfigPayload {
+  object: string;
+  status: string;
+  current: {
+    provider: string;
+    model: string;
+    base_url?: string | null;
+    api_key_configured: boolean;
+    base_url_configured: boolean;
+    mock: boolean;
+    configured: boolean;
+    prompt_cache?: PromptCachePolicy;
+    secrets_redacted: boolean;
+  };
+  editable: {
+    provider_env: string;
+    model_env: string;
+    base_url_env: string;
+    api_key_env: string;
+    env_file: string;
+    env_source: string;
+  };
+  presets: AiProviderPreset[];
+  actions?: Record<string, unknown>;
+  docs?: Record<string, string>;
+  config_source?: AiStatus["config_source"];
+  secrets_redacted: boolean;
+}
+
+export interface AiConfigSavePayload {
+  preset?: string;
+  provider: string;
+  model: string;
+  base_url?: string;
+  api_key?: string;
+  replace_api_key?: boolean;
+  prompt_cache_enabled?: boolean;
+  prompt_cache_recent_messages?: number;
+}
+
+export interface AiConfigSaveResult {
+  object: string;
+  saved: boolean;
+  provider: string;
+  model: string;
+  base_url_configured: boolean;
+  api_key_configured: boolean;
+  mock: boolean;
+  configured: boolean;
+  prompt_cache?: PromptCachePolicy;
+  updated_keys: string[];
+  env_file?: string;
+  config_source?: AiStatus["config_source"];
+  secrets_redacted: boolean;
 }
 
 export interface McpServerView {
@@ -831,6 +1151,168 @@ export interface LocalProfile {
   [key: string]: unknown;
 }
 
+export interface UserActivityEvent {
+  id?: number | string;
+  user_id?: string;
+  session_id?: string | null;
+  run_id?: string | null;
+  trace_id?: string | null;
+  page_key?: string | null;
+  route?: string | null;
+  event_type: string;
+  target_type?: string | null;
+  target_id?: string | null;
+  target_label?: string | null;
+  target_testid?: string | null;
+  payload?: Record<string, unknown>;
+  source?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface ToolInvocationAudit {
+  id?: number | string;
+  invocation_id?: string;
+  user_id?: string | null;
+  session_id?: string | null;
+  run_id?: string | null;
+  trace_id?: string | null;
+  tool_name: string;
+  capability?: string | null;
+  category?: string | null;
+  side_effect?: string | null;
+  status: string;
+  input_summary?: Record<string, unknown>;
+  output_summary?: Record<string, unknown>;
+  error_code?: string | null;
+  error_summary?: string | null;
+  duration_ms?: number | null;
+  approval_id?: string | null;
+  action_intent_id?: string | null;
+  source_chain?: string[];
+  secrets_redacted?: boolean;
+  created_at?: string;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface FeedbackEvent {
+  id?: number | string;
+  feedback_id?: string;
+  user_id?: string | null;
+  session_id?: string | null;
+  run_id?: string | null;
+  target_type: string;
+  target_id?: string | null;
+  feedback_type: string;
+  rating?: number | null;
+  comment?: string | null;
+  allow_learning?: boolean;
+  payload?: Record<string, unknown>;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface UserDataPolicy {
+  user_id: string;
+  event_ttl_days: number;
+  audit_ttl_days: number;
+  run_event_ttl_days: number;
+  tool_payload_ttl_days: number;
+  conversation_retention: string;
+  allow_product_analytics: boolean;
+  allow_learning: boolean;
+  updated_at?: string;
+  [key: string]: unknown;
+}
+
+export interface UserActivityPayload {
+  object: string;
+  user_id: string;
+  sessions: RecentSessionSummary[];
+  runs: RunRecord[];
+  events: UserActivityEvent[];
+  tool_invocations: ToolInvocationAudit[];
+  feedback: FeedbackEvent[];
+  policy: UserDataPolicy;
+  secrets_redacted?: boolean;
+}
+
+export interface UserAnalyticsSummary {
+  object: string;
+  scope: string;
+  user_id?: string | null;
+  totals: {
+    events: number;
+    tool_invocations: number;
+    feedback: number;
+  };
+  events_by_type: Array<Record<string, unknown>>;
+  pages: Array<Record<string, unknown>>;
+  tools: Array<Record<string, unknown>>;
+  feedback: Array<Record<string, unknown>>;
+  secrets_redacted?: boolean;
+}
+
+export interface UserDataExport {
+  object: string;
+  user_id: string;
+  exported_at: string;
+  profile_policy: UserDataPolicy;
+  sessions: RecentSessionSummary[];
+  messages: Array<Record<string, unknown>>;
+  runs: RunRecord[];
+  run_events: NormalizedRunEvent[];
+  activity_events: UserActivityEvent[];
+  tool_invocations: ToolInvocationAudit[];
+  feedback: FeedbackEvent[];
+  sources?: Array<Record<string, unknown>>;
+  artifacts?: Array<Record<string, unknown>>;
+  analytics: UserAnalyticsSummary;
+  secrets_redacted?: boolean;
+}
+
+export interface UserDataDeleteResult {
+  object: string;
+  user_id: string;
+  dry_run: boolean;
+  hard_delete: boolean;
+  anonymized_user_id?: string | null;
+  counts: Record<string, number>;
+  deleted_at?: string;
+  external_side_effects?: string;
+  secrets_redacted?: boolean;
+}
+
+export interface RetentionSweepResult {
+  object: string;
+  dry_run: boolean;
+  user_id?: string | null;
+  counts: Record<string, number>;
+  tables: string[];
+  market_data_affected: boolean;
+  secrets_redacted?: boolean;
+}
+
+export interface UserLearningDataset {
+  object: string;
+  user_id: string;
+  allowed: boolean;
+  items: Array<Record<string, unknown>>;
+  count?: number;
+  reason?: string;
+  secrets_redacted?: boolean;
+}
+
+export interface WorkflowRecommendationPayload {
+  object: string;
+  user_id: string;
+  data_source: string;
+  data: Array<Record<string, unknown>>;
+  count: number;
+  secrets_redacted?: boolean;
+}
+
 export interface DesktopSettingsStatus {
   object: string;
   agent: Record<string, unknown>;
@@ -840,8 +1322,90 @@ export interface DesktopSettingsStatus {
   };
   memory?: unknown;
   databases: Record<string, unknown>;
+  stock_data_sources?: StockDataSourcesStatus;
   profile: LocalProfile;
   secrets_redacted: boolean;
+}
+
+export interface StockDataSourcePreset {
+  provider: string;
+  label: string;
+  markets: string[];
+  categories: string[];
+  auth_type: string;
+  default_base_url?: string | null;
+  default_host?: string | null;
+  default_port?: number | null;
+  required_fields?: string[];
+  optional_fields?: string[];
+  env_keys?: string[];
+  documentation_url?: string | null;
+  note?: string | null;
+}
+
+export interface StockDataSourceConfig {
+  id?: string;
+  provider: string;
+  name?: string;
+  enabled?: boolean;
+  priority?: number;
+  base_url?: string | null;
+  api_key?: string;
+  token?: string;
+  host?: string | null;
+  port?: number | string | null;
+  username?: string;
+  password?: string;
+  client_path?: string | null;
+  account_id?: string | null;
+  session_id?: string | null;
+  symbol?: string | null;
+  interval?: string | null;
+  dataset?: string | null;
+  timeout_seconds?: number | string | null;
+  rate_limit_per_minute?: number | string | null;
+  markets?: string[];
+  notes?: string | null;
+  extra?: Record<string, unknown>;
+  configured?: boolean;
+  status?: string;
+  label?: string;
+  auth_type?: string;
+  required_fields?: string[];
+  optional_fields?: string[];
+  api_key_configured?: boolean;
+  source?: string;
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
+}
+
+export interface StockDataSourcesStatus {
+  object: string;
+  status: string;
+  configured_count: number;
+  ready_count: number;
+  presets: StockDataSourcePreset[];
+  sources: StockDataSourceConfig[];
+  config_path?: string;
+  config_source?: Record<string, unknown>;
+  secrets_redacted?: boolean;
+}
+
+export interface StockDataSourceTestResult {
+  object: string;
+  provider: string;
+  mode: string;
+  success: boolean;
+  status: string;
+  configured?: boolean;
+  latency_ms?: number;
+  sample_count?: number;
+  http_status?: number;
+  error_code?: string;
+  error?: string | null;
+  source?: StockDataSourceConfig;
+  secrets_redacted?: boolean;
+  [key: string]: unknown;
 }
 
 export interface AuthState {
@@ -1235,6 +1799,194 @@ export interface FinancialManagerIntentResult {
   error_code?: string;
   meta?: Record<string, unknown>;
   secrets_redacted?: boolean;
+}
+
+export interface BrokerConnectorReadiness {
+  provider: string;
+  label?: string;
+  status: string;
+  configured: boolean;
+  ready: boolean;
+  read_only: boolean;
+  live_trading_enabled: boolean;
+  required_env?: string[];
+  missing_env?: string[];
+  optional_env?: string[];
+  required_tools?: string[];
+  missing_tools?: string[];
+  environment_checks?: string[];
+  authorization_notes?: string[];
+  test_entry?: {
+    method?: string;
+    path?: string;
+    consent_required?: boolean;
+    [key: string]: unknown;
+  };
+  [key: string]: unknown;
+}
+
+export interface BrokerReadinessPayload {
+  object: string;
+  status: string;
+  connectors: BrokerConnectorReadiness[];
+  mcp?: Record<string, unknown>;
+  latest_analytics?: BrokerAnalyticsRecord | null;
+  live_trading_enabled: boolean;
+  read_only: boolean;
+  secrets_redacted?: boolean;
+}
+
+export interface BrokerAccountSnapshot {
+  snapshot_id?: string;
+  broker_profile_id?: string;
+  user_id?: string;
+  provider?: string;
+  account_ref_hash?: string;
+  currency?: string;
+  total_asset?: number | null;
+  cash_available?: number | null;
+  market_value?: number | null;
+  frozen_cash?: number | null;
+  buying_power?: number | null;
+  observed_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface BrokerPositionSnapshot {
+  snapshot_id?: string;
+  broker_profile_id?: string;
+  user_id?: string;
+  provider?: string;
+  symbol?: string;
+  exchange?: string | null;
+  name?: string | null;
+  quantity?: number | null;
+  available_quantity?: number | null;
+  cost_basis?: number | null;
+  last_price?: number | null;
+  market_value?: number | null;
+  unrealized_pnl?: number | null;
+  unrealized_pnl_pct?: number | null;
+  position_pct?: number | null;
+  observed_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface BrokerOrderSnapshot {
+  snapshot_id?: string;
+  broker_profile_id?: string;
+  user_id?: string;
+  provider?: string;
+  order_ref_hash?: string;
+  symbol?: string;
+  side?: string | null;
+  order_type?: string | null;
+  price?: number | null;
+  quantity?: number | null;
+  filled_quantity?: number | null;
+  status?: string | null;
+  submitted_at?: string | null;
+  updated_at?: string | null;
+  observed_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface BrokerDealSnapshot {
+  snapshot_id?: string;
+  broker_profile_id?: string;
+  user_id?: string;
+  provider?: string;
+  deal_ref_hash?: string;
+  order_ref_hash?: string;
+  symbol?: string;
+  side?: string | null;
+  price?: number | null;
+  quantity?: number | null;
+  amount?: number | null;
+  fee?: number | null;
+  occurred_at?: string | null;
+  observed_at?: string | null;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface BrokerProfile {
+  broker_profile_id: string;
+  user_id?: string;
+  provider?: string;
+  display_name?: string;
+  account_ref_hash?: string;
+  market?: string;
+  read_only_enabled?: boolean;
+  write_enabled?: boolean;
+  consent_status?: string;
+  last_sync_at?: string | null;
+  status?: string;
+  error_code?: string | null;
+  [key: string]: unknown;
+}
+
+export interface BrokerAnalyticsRecord {
+  analytics_id?: string;
+  broker_profile_id?: string;
+  user_id?: string;
+  provider?: string;
+  period_start?: string | null;
+  period_end?: string | null;
+  metrics?: Record<string, unknown>;
+  signals?: Record<string, unknown>;
+  risk_flags?: Array<Record<string, unknown>>;
+  source_snapshot_ids?: Record<string, unknown>;
+  model_version?: string;
+  created_at?: string;
+  [key: string]: unknown;
+}
+
+export interface BrokerSnapshotData {
+  profiles?: BrokerProfile[];
+  accounts?: BrokerAccountSnapshot[];
+  positions?: BrokerPositionSnapshot[];
+  orders?: BrokerOrderSnapshot[];
+  deals?: BrokerDealSnapshot[];
+  analytics?: BrokerAnalyticsRecord | null;
+}
+
+export interface BrokerSnapshotPayload {
+  object: string;
+  success: boolean;
+  data?: BrokerSnapshotData | null;
+  error?: string | null;
+  error_code?: string;
+  read_only: boolean;
+  live_trading_enabled: boolean;
+  secrets_redacted?: boolean;
+  source_chain?: string[];
+  generated_at?: number;
+}
+
+export interface BrokerSyncPayload extends BrokerSnapshotPayload {
+  data?: {
+    sync_id?: string;
+    profile?: BrokerProfile;
+    counts?: Record<string, number>;
+    errors?: Array<Record<string, unknown>>;
+    analytics?: BrokerAnalyticsRecord;
+  } | null;
+}
+
+export interface BrokerAnalyticsPayload {
+  object: string;
+  success: boolean;
+  data?: { analytics?: BrokerAnalyticsRecord | null } | null;
+  error?: string | null;
+  error_code?: string;
+  read_only: boolean;
+  live_trading_enabled: boolean;
+  secrets_redacted?: boolean;
+  source_chain?: string[];
 }
 
 export interface CapabilityWorkbenchPayload {

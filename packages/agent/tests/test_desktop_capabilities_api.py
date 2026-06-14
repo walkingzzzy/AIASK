@@ -38,6 +38,7 @@ def test_desktop_capabilities_returns_public_subset_without_control_token(tmp_pa
     monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AIASK_AGENT_ENABLE_HERMES_FULL", "1")
     monkeypatch.setenv("AIASK_AGENT_CONTROL_TOKEN", "secret")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret-value")
     monkeypatch.delenv("MCP_PORT", raising=False)
     runtime = _runtime(tmp_path)
     client = TestClient(create_app(runtime=runtime))
@@ -51,9 +52,21 @@ def test_desktop_capabilities_returns_public_subset_without_control_token(tmp_pa
     assert payload["summary"]["control"]["full_mode_enabled"] is True
     assert payload["summary"]["control"]["control_token_configured"] is True
     assert payload["summary"]["control"]["control_authorized"] is False
-    assert payload["hermes"]["parity"]["baseline"] == "Hermes v0.15.1 full runtime capability reference"
+    assert payload["hermes"]["parity"]["baseline"] == "Hermes v0.16.0 full runtime capability reference"
+    assert payload["hermes"]["parity"]["baseline_version"] == "0.16.0"
+    assert payload["hermes"]["parity"]["baseline_release_tag"] == "v2026.6.5"
     assert payload["hermes"]["parity"]["core_missing_hermes_tools"] == []
     assert payload["hermes"]["parity"]["v014_delta"]["missing_count"] == 0
+    assert payload["hermes"]["parity"]["v016_delta"]["missing_count"] == 0
+    assert payload["hermes"]["readiness"]["baseline_version"] == "0.16.0"
+    assert "OPENAI_API_KEY" in payload["hermes"]["readiness"]["live_evidence"]["required_env_names"]
+    serialized = json.dumps(payload)
+    assert "OPENAI_API_KEY" in serialized
+    assert "sk-test-secret-value" not in serialized
+    detailed_health = client.get("/health/detailed").json()
+    health_serialized = json.dumps(detailed_health)
+    assert "OPENAI_API_KEY" in health_serialized
+    assert "sk-test-secret-value" not in health_serialized
     assert payload["mcp"]["gated"] is True
     assert payload["mcp"]["registration_status"] == "not_registered"
     assert payload["mcp"]["discovery_status"] == "not_registered"

@@ -83,6 +83,7 @@ const STATUS_LABELS: Record<string, string> = {
   connector_tested: "连接器测试完成",
   connectors_loaded: "连接器已加载",
   connectors_not_loaded: "连接器尚未加载",
+  control_token_required: "需要控制令牌",
   data_status_loaded: "数据状态已加载",
   degraded: "降级",
   delivered: "已送达",
@@ -134,6 +135,8 @@ const STATUS_LABELS: Record<string, string> = {
   mock: "Mock",
   mock_fixture: "Mock 数据",
   model_status_loaded: "模型状态已加载",
+  models_loaded: "模型列表已加载",
+  no_intent: "尚未创建意图",
   not_loaded: "未加载",
   not_ready: "未就绪",
   not_required: "无需处理",
@@ -161,6 +164,10 @@ const STATUS_LABELS: Record<string, string> = {
   skipped_missing_credentials: "缺少凭据",
   stale: "陈旧",
   strategy_factory_intent_created: "策略工厂意图已创建",
+  stock_data_source_saved: "数据源已保存",
+  stock_data_source_test_failed: "数据源测试失败",
+  stock_data_source_test_passed: "数据源测试通过",
+  stock_data_sources_loaded: "数据源已加载",
   success: "成功",
   sync_intent_created: "同步审批意图已创建",
   sync_plan_ready: "同步计划已生成",
@@ -169,7 +176,12 @@ const STATUS_LABELS: Record<string, string> = {
   unconfigured: "未配置",
   unknown: "未知",
   user_data_searched: "用户数据已搜索",
-  warning: "警告"
+  warning: "警告",
+  web_search_failed: "搜索调用失败",
+  web_search_passed: "搜索调用成功",
+  ai_smoke_failed: "模型测试失败",
+  auth_missing: "授权缺失",
+  excluded_by_design: "按设计排除"
 };
 
 export function statusLabel(status?: string, fallback?: string): string {
@@ -204,13 +216,18 @@ export function statusTone(status?: string): StatusTone {
       "recorded",
       "registered",
       "resolved",
+      "stock_data_source_saved",
+      "stock_data_source_test_passed",
+      "stock_data_sources_loaded",
       "success",
+      "web_search_passed",
       "aiask_online"
     ].includes(normalized)
   ) return "ok";
   if (
     [
       "approval_required",
+      "auth_missing",
       "aiask_degraded",
       "degraded",
       "dry_run_ready",
@@ -232,7 +249,7 @@ export function statusTone(status?: string): StatusTone {
       "warning"
     ].includes(normalized)
   ) return "warn";
-  if (["disabled", "gated", "idle", "info", "not_loaded", "not_required", "read_only", "unknown"].includes(normalized)) return "neutral";
+  if (["control_token_required", "disabled", "gated", "idle", "info", "not_loaded", "not_required", "read_only", "unknown"].includes(normalized)) return "neutral";
   if (
     [
       "aiask_forbidden",
@@ -241,11 +258,14 @@ export function statusTone(status?: string): StatusTone {
       "blocked",
       "error",
       "failed",
+      "ai_smoke_failed",
       "missing",
       "missing_credentials",
       "missing_dependency",
       "missing_mcp_tool",
       "not_ready",
+      "stock_data_source_test_failed",
+      "web_search_failed",
       "unavailable"
     ].includes(normalized)
   ) return "bad";

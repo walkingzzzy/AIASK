@@ -1,0 +1,347 @@
+- generic [ref=e3]:
+  - complementary [ref=e4]:
+    - generic [ref=e5]:
+      - img [ref=e7]
+      - generic [ref=e9]:
+        - strong [ref=e10]: AIASK
+        - generic [ref=e11]: Agent 工作台
+      - img [ref=e12]
+    - button "新建线程" [ref=e14] [cursor=pointer]:
+      - img [ref=e15]
+      - text: 新建线程
+    - generic [ref=e16]:
+      - generic [ref=e17]:
+        - generic [ref=e18]: 项目 / 上下文
+        - strong [ref=e19]: 本地 AIASK
+        - generic [ref=e20]: 等待连接 Agent · 桌面客户端
+      - generic "AIASK_DISCONNECTED / 未连接" [ref=e21]:
+        - img [ref=e22]
+        - generic [ref=e24]: 未连接
+    - button "会话 受限" [ref=e27] [cursor=pointer]:
+      - img [ref=e28]
+      - text: 会话
+      - generic "gated / 受限" [ref=e30]:
+        - img [ref=e31]
+        - generic [ref=e33]: 受限
+    - generic [ref=e34]:
+      - generic [ref=e35]:
+        - generic [ref=e36]: 任务线程
+        - generic [ref=e37]: "0"
+      - button "搜索与历史" [ref=e38] [cursor=pointer]:
+        - img [ref=e39]
+        - text: 搜索与历史
+      - generic [ref=e43]:
+        - strong [ref=e44]: 暂无线程
+        - generic [ref=e45]: 新建线程后，这里会收集提示词、运行、工具调用、审批和产物。
+    - navigation "Main navigation" [ref=e46]:
+      - generic [ref=e47]:
+        - img [ref=e48]
+        - generic [ref=e53]: 导航
+      - region "主工作区" [ref=e54]:
+        - button "主工作区" [ref=e55] [cursor=pointer]:
+          - generic [ref=e56]: 主工作区
+          - img [ref=e57]
+        - button "工作台" [ref=e60] [cursor=pointer]:
+          - img [ref=e61]
+          - generic [ref=e63]: 工作台
+        - button "项目 / 上下文" [ref=e65] [cursor=pointer]:
+          - img [ref=e66]
+          - generic [ref=e71]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e73] [cursor=pointer]:
+          - img [ref=e74]
+          - generic [ref=e77]: 运行 / 事件
+        - button "审批" [ref=e79] [cursor=pointer]:
+          - img [ref=e80]
+          - generic [ref=e83]: 审批
+        - button "金融实验室" [ref=e85] [cursor=pointer]:
+          - img [ref=e86]
+          - generic [ref=e90]: 金融实验室
+        - button "集成" [ref=e92] [cursor=pointer]:
+          - img [ref=e93]
+          - generic [ref=e99]: 集成
+        - button "自动化" [ref=e101] [cursor=pointer]:
+          - img [ref=e102]
+          - generic [ref=e106]: 自动化
+        - button "设置" [ref=e108] [cursor=pointer]:
+          - img [ref=e109]
+          - generic [ref=e112]: 设置
+      - region "高级金融" [ref=e113]:
+        - button "高级金融" [ref=e114] [cursor=pointer]:
+          - generic [ref=e115]: 高级金融
+          - img [ref=e116]
+      - region "高级运维" [ref=e118]:
+        - button "高级运维" [ref=e119] [cursor=pointer]:
+          - generic [ref=e120]: 高级运维
+          - img [ref=e121]
+      - region "旧入口 / 高级诊断" [ref=e123]:
+        - button "旧入口 / 高级诊断" [ref=e124] [cursor=pointer]:
+          - generic [ref=e125]: 旧入口 / 高级诊断
+          - img [ref=e126]
+    - button "扩展 内部" [ref=e130] [cursor=pointer]:
+      - img [ref=e131]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e134]:
+        - img [ref=e135]
+        - generic [ref=e137]: 内部
+    - generic [ref=e138]:
+      - generic "AIASK_DISCONNECTED / 未连接" [ref=e139]:
+        - img [ref=e140]
+        - generic [ref=e142]: 未连接
+      - generic [ref=e143]: 0 个可用工具
+      - generic [ref=e144]: 仅金融安全模式
+  - main [ref=e145]:
+    - generic [ref=e146]:
+      - generic [ref=e147]:
+        - generic [ref=e148]: 尚未连接
+        - heading "AIASK 工作台" [level=1] [ref=e149]
+        - paragraph [ref=e150]: 本地操作者 / local · 真实后端 · http://127.0.0.1:8767
+        - generic "任务上下文" [ref=e151]:
+          - generic "live / 真实后端" [ref=e152]:
+            - img [ref=e153]
+            - generic [ref=e156]: 真实后端
+          - generic "gated / 尚未连接" [ref=e157]:
+            - img [ref=e158]
+            - generic [ref=e160]: 尚未连接
+          - generic [ref=e161]:
+            - img [ref=e162]
+            - text: 新线程
+          - generic [ref=e166]:
+            - img [ref=e167]
+            - text: 金融安全模式
+          - generic [ref=e169]:
+            - img [ref=e170]
+            - text: 1 个产物
+        - button "准备度" [ref=e177] [cursor=pointer]:
+          - img [ref=e178]
+          - text: 准备度
+      - generic [ref=e182]:
+        - button "Gateway 受限" [ref=e184] [cursor=pointer]:
+          - img [ref=e185]
+          - text: Gateway
+          - generic "gated / 受限" [ref=e191]:
+            - img [ref=e192]
+            - generic [ref=e194]: 受限
+        - button "连接 AIASK" [disabled] [ref=e195]:
+          - img [ref=e196]
+          - text: 连接
+    - generic [ref=e202]:
+      - generic [ref=e203]:
+        - generic [ref=e204]:
+          - generic [ref=e205]:
+            - text: 任务中枢
+            - heading "线程优先工作台" [level=3] [ref=e206]
+          - generic "partial / 金融安全模式" [ref=e207]:
+            - img [ref=e208]
+            - generic [ref=e210]: 金融安全模式
+        - generic [ref=e211]:
+          - generic [ref=e212]:
+            - generic [ref=e213]: 连接状态
+            - strong [ref=e214]: 尚未连接
+            - generic [ref=e215]: 点击同步或检查 Agent 端点后再开始任务。
+          - generic [ref=e216]:
+            - generic [ref=e217]: 当前任务
+            - strong [ref=e218]: 等待新任务
+            - generic [ref=e219]: 输入需求后，AIASK 会在这里显示进度和结果。
+          - generic [ref=e220]:
+            - generic [ref=e221]: 待处理事项
+            - strong [ref=e222]: 0 项
+            - generic [ref=e223]: 暂无待处理事项
+          - generic [ref=e224]:
+            - generic [ref=e225]: 可用范围
+            - strong [ref=e226]: 金融安全模式
+            - generic [ref=e227]: 默认只做研究、查询和受控审批。 API 令牌未填写；控制令牌未填写。
+        - generic [ref=e228]:
+          - article [ref=e229]:
+            - strong [ref=e230]: 最近会话
+            - paragraph [ref=e232]: 暂无最近会话。
+          - article [ref=e233]:
+            - strong [ref=e234]: 最近运行
+            - paragraph [ref=e236]: 暂无最近运行。
+          - article [ref=e237]:
+            - strong [ref=e238]: 操作队列
+            - paragraph [ref=e239]: 暂无待处理事项
+            - generic [ref=e240]:
+              - generic [ref=e241]: 意图
+              - strong [ref=e242]: "0"
+              - generic [ref=e243]: 审批
+              - strong [ref=e244]: "0"
+              - generic [ref=e245]: Gateway
+              - strong [ref=e246]: "0"
+              - generic [ref=e247]: MCP
+              - strong [ref=e248]: "0"
+        - region "金融 Agent 安全链路" [ref=e249]:
+          - generic [ref=e250]:
+            - generic [ref=e251]:
+              - text: 金融 Agent 安全链路
+              - heading "现在可以复核什么" [level=3] [ref=e252]
+            - generic "read_only / 只读导航" [ref=e253]:
+              - img [ref=e254]
+              - generic [ref=e256]: 只读导航
+          - generic [ref=e257]:
+            - article [ref=e258]:
+              - generic [ref=e259]:
+                - strong [ref=e260]: 1. 模式 / 模型
+                - generic "partial / 部分就绪" [ref=e261]:
+                  - img [ref=e262]
+                  - generic [ref=e264]: 部分就绪
+              - paragraph [ref=e265]: 金融安全模式；当前模型 待加载。默认只做研究、查询和受控审批。
+              - button "打开准备度" [ref=e266] [cursor=pointer]:
+                - img [ref=e267]
+                - text: 打开准备度
+            - article [ref=e272]:
+              - generic [ref=e273]:
+                - strong [ref=e274]: 2. MCP / 连接器
+                - generic "partial / 部分就绪" [ref=e275]:
+                  - img [ref=e276]
+                  - generic [ref=e278]: 部分就绪
+              - paragraph [ref=e279]: 复核服务器、资源、提示词和 OAuth 状态。
+              - button "打开 MCP" [ref=e280] [cursor=pointer]:
+                - img [ref=e281]
+                - text: 打开 MCP
+            - article [ref=e286]:
+              - generic [ref=e287]:
+                - strong [ref=e288]: 3. 记忆 / 搜索
+                - generic "partial / 部分就绪" [ref=e289]:
+                  - img [ref=e290]
+                  - generic [ref=e292]: 部分就绪
+              - paragraph [ref=e293]: 等待工具目录刷新或后端暴露记忆搜索。
+              - button "打开本地用户" [ref=e294] [cursor=pointer]:
+                - img [ref=e295]
+                - text: 打开本地用户
+            - article [ref=e300]:
+              - generic [ref=e301]:
+                - strong [ref=e302]: 4. 金融经理台
+                - generic "partial / 部分就绪" [ref=e303]:
+                  - img [ref=e304]
+                  - generic [ref=e306]: 部分就绪
+              - paragraph [ref=e307]: 等待金融只读工具进入 Agent 工具目录。
+              - button "打开金融经理台" [ref=e308] [cursor=pointer]:
+                - img [ref=e309]
+                - text: 打开金融经理台
+            - article [ref=e314]:
+              - generic [ref=e315]:
+                - strong [ref=e316]: 5. 数据 / 量化门禁
+                - generic "partial / 部分就绪" [ref=e317]:
+                  - img [ref=e318]
+                  - generic [ref=e320]: 部分就绪
+              - paragraph [ref=e321]: 先检查数据同步、SQLite 和工具目录。
+              - button "打开数据" [ref=e322] [cursor=pointer]:
+                - img [ref=e323]
+                - text: 打开数据
+            - article [ref=e328]:
+              - generic [ref=e329]:
+                - strong [ref=e330]: 6. 工厂接力
+                - generic "partial / 部分就绪" [ref=e331]:
+                  - img [ref=e332]
+                  - generic [ref=e334]: 部分就绪
+              - paragraph [ref=e335]: 等待工厂状态工具或运行快照加载。
+              - button "打开金融实验室" [ref=e336] [cursor=pointer]:
+                - img [ref=e337]
+                - text: 打开金融实验室
+          - paragraph [ref=e342]: 这里的入口只做只读导航；状态型、外部平台和交易风险动作仍需要 ActionIntent、控制令牌和后端护栏。
+        - generic [ref=e343]:
+          - button "项目 / 上下文" [ref=e344] [cursor=pointer]:
+            - img [ref=e345]
+            - text: 项目 / 上下文
+          - button "审批" [ref=e349] [cursor=pointer]:
+            - img [ref=e350]
+            - text: 审批
+          - button "金融实验室" [ref=e353] [cursor=pointer]:
+            - img [ref=e354]
+            - text: 金融实验室
+          - button "集成" [ref=e356] [cursor=pointer]:
+            - img [ref=e357]
+            - text: 集成
+          - button "插件 / 技能 受限" [ref=e361] [cursor=pointer]:
+            - img [ref=e362]
+            - text: 插件 / 技能
+            - generic "gated / 受限" [ref=e364]:
+              - img [ref=e365]
+              - generic [ref=e367]: 受限
+          - button "扩展 内部" [ref=e369] [cursor=pointer]:
+            - img [ref=e370]
+            - text: 扩展
+            - generic "internal / 内部" [ref=e373]:
+              - img [ref=e374]
+              - generic [ref=e376]: 内部
+      - generic [ref=e377]:
+        - generic [ref=e378]:
+          - img [ref=e379]
+          - strong [ref=e382]: 开始一个任务
+          - generic [ref=e383]: 在下方输入指令后，AIASK 会在这里展示回复、工具调用、审批和运行事件。
+        - generic [ref=e384]:
+          - generic [ref=e385]:
+            - generic [ref=e386]:
+              - generic [ref=e387]: 1 个产物
+              - heading "任务产物" [level=3] [ref=e388]
+            - img [ref=e389]
+          - article [ref=e394]:
+            - img [ref=e396]
+            - generic [ref=e399]:
+              - generic [ref=e400]:
+                - strong [ref=e401]: 暂无产物
+                - generic "idle / 空闲" [ref=e402]:
+                  - img [ref=e403]
+                  - generic [ref=e405]: 空闲
+              - paragraph [ref=e406]: 运行任务或选择线程后，这里会收集回复、工具证据、审批、截图和报告。
+              - generic [ref=e407]:
+                - generic [ref=e408]: note
+                - generic [ref=e409]: workbench
+        - generic [ref=e410]:
+          - generic [ref=e411]:
+            - generic [ref=e412]:
+              - generic [ref=e413]: 0 条评论
+              - heading "审查队列" [level=3] [ref=e414]
+            - img [ref=e415]
+          - generic [ref=e417]:
+            - img [ref=e419]
+            - strong [ref=e423]: 暂无审查评论
+            - generic [ref=e424]: 需要处理的产物、审批、截图和运行结果会出现在这里。
+    - generic [ref=e425]:
+      - generic [ref=e426]:
+        - group "Agent 模式" [ref=e427]:
+          - button "金融安全" [pressed] [ref=e428] [cursor=pointer]:
+            - img [ref=e429]
+            - text: 金融安全
+          - button "Hermes full" [disabled] [ref=e432]:
+            - img [ref=e433]
+            - text: Hermes full
+        - generic [ref=e436]:
+          - generic [ref=e437]: 会话
+          - textbox "会话 ID" [ref=e438]:
+            - /placeholder: 新会话
+        - button "任务运行中" [disabled] [ref=e439]:
+          - img [ref=e440]
+          - text: 运行中
+        - generic [ref=e442]: 0 个工具可用
+      - generic [ref=e443]:
+        - textbox "让 AIASK 研究、检查工具、生成报告，或继续当前线程..." [ref=e444]
+        - button "运行线程任务" [disabled] [ref=e445]:
+          - img [ref=e446]
+          - text: 运行
+  - complementary [ref=e449]:
+    - generic [ref=e450]:
+      - button "摘要" [pressed] [ref=e451] [cursor=pointer]:
+        - img [ref=e452]
+      - button "产物" [ref=e454] [cursor=pointer]:
+        - img [ref=e455]
+      - button "审查" [ref=e460] [cursor=pointer]:
+        - img [ref=e461]
+      - button "诊断" [ref=e463] [cursor=pointer]:
+        - img [ref=e464]
+      - button "工具" [ref=e466] [cursor=pointer]:
+        - img [ref=e467]
+      - button "技能" [ref=e469] [cursor=pointer]:
+        - img [ref=e470]
+      - button "审批" [ref=e474] [cursor=pointer]:
+        - img [ref=e475]
+      - button "设置" [ref=e478] [cursor=pointer]:
+        - img [ref=e479]
+    - generic [ref=e482]:
+      - generic [ref=e484]:
+        - text: 当前任务
+        - heading "复核摘要" [level=2] [ref=e485]
+      - generic [ref=e486]:
+        - img [ref=e488]
+        - strong [ref=e492]: 暂无选中线程
+        - generic [ref=e493]: 开始任务或选择线程后，这里会展示回复、模型用量、审批和事件。

@@ -39,6 +39,7 @@ def test_strict_code_parity_integration_entrypoint(tmp_path) -> None:
     assert payload["core_missing_gateway_platforms"] == []
     assert payload["core_code_status"] == "present"
     assert payload["v014_delta"]["missing_count"] == 0
+    assert payload["v016_delta"]["missing_count"] == 0
     assert payload["mock_status"] == "passed"
 
 

@@ -31,6 +31,54 @@ def _split_env_list(value: str) -> list[str]:
     return [item.strip() for item in items if item.strip()]
 
 
+def _truthy(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if not text:
+            return default
+        return text in {"1", "true", "yes", "on", "enabled"}
+    return bool(value)
+
+
+def prompt_cache_policy(env: dict[str, str] | None = None) -> dict[str, Any]:
+    source = dict(os.environ if env is None else env)
+    raw_provider = str(source.get("AIASK_AGENT_MODEL_PROVIDER") or "").strip().lower()
+    active_provider = raw_provider or ("openai" if str(source.get("OPENAI_API_KEY") or "").strip() else "mock")
+    provider_type = "anthropic_messages" if active_provider in {"anthropic", "anthropic_messages"} else "openai_compatible" if active_provider not in {"mock", ""} else "mock"
+    enabled = _truthy(source.get("AIASK_AGENT_PROMPT_CACHE_ENABLED"), default=provider_type == "anthropic_messages")
+    recent_messages = 3
+    try:
+        recent_messages = max(0, min(int(source.get("AIASK_AGENT_PROMPT_CACHE_RECENT_MESSAGES") or 3), 20))
+    except (TypeError, ValueError):
+        recent_messages = 3
+    strategy = str(source.get("AIASK_AGENT_PROMPT_CACHE_STRATEGY") or "system_and_recent").strip().lower() or "system_and_recent"
+    supported = provider_type == "anthropic_messages"
+    return {
+        "object": "aiask.prompt_cache_policy",
+        "enabled": bool(enabled and supported),
+        "requested_enabled": bool(enabled),
+        "supported": supported,
+        "provider": active_provider,
+        "provider_type": provider_type,
+        "strategy": strategy,
+        "system_prompt": bool(enabled and supported and strategy in {"system", "system_and_recent"}),
+        "recent_non_system_messages": recent_messages if enabled and supported and strategy in {"recent", "system_and_recent"} else 0,
+        "cache_control": {"type": "ephemeral"} if enabled and supported else None,
+        "env": {
+            "enabled": "AIASK_AGENT_PROMPT_CACHE_ENABLED",
+            "strategy": "AIASK_AGENT_PROMPT_CACHE_STRATEGY",
+            "recent_messages": "AIASK_AGENT_PROMPT_CACHE_RECENT_MESSAGES",
+        },
+        "secrets_redacted": True,
+        "notes": [
+            "AIASK applies Anthropic Messages API cache_control markers to the system prompt and the most recent non-system messages when supported.",
+            "OpenAI-compatible providers are reported as unsupported unless they expose compatible prompt-cache semantics.",
+        ],
+    }
+
+
 def _classify_error(error: BaseException | str | None) -> str:
     text = str(error or "").lower()
     if not text:
@@ -238,6 +286,7 @@ class ModelProviderRegistry:
                 "auth_and_rate_limit_errors_trigger_fallback": True,
                 "restore_policy": "next run reconsiders all configured providers",
             },
+            "prompt_cache": prompt_cache_policy(self.env),
             "status": "implemented" if configured_count else "blocked",
             "live_status": "live_unverified" if live_unverified else "not_required",
             "config_issues": list(self.config_issues),

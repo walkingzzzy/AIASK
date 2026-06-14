@@ -19,7 +19,7 @@ import { useMemo, useState } from "react";
 import { formatApiError } from "../api";
 import { DiagnosticsPanel } from "./DiagnosticsPanel";
 import { GeneralApprovalsPanel, IntentsPanel, ToolCatalog } from "./InspectorPanels";
-import { ArtifactsPanel, ReviewPanel, buildTaskArtifacts, buildTaskReviewComments } from "./TaskPanels";
+import { ArtifactsPanel, ReviewPanel, SourcesPanel, buildTaskArtifacts, buildTaskReviewComments } from "./TaskPanels";
 import { ConfirmActionButton, EmptyState, RawEvidencePanel, compact } from "./shared";
 import { AiaskApi } from "../services/aiaskApi";
 import { SettingsWorkspace } from "../features/settings/SettingsWorkspace";
@@ -291,6 +291,7 @@ export function InspectorPanel({
   onEndpointChange,
   onFetchIntent,
   onLoadRunEvents,
+  onOpenView,
   onProfileChange,
   onRefreshHealth,
   onRefreshHermes,
@@ -305,6 +306,8 @@ export function InspectorPanel({
   selectedResponse,
   selectedResponseRecord,
   selectedRunId,
+  selectedRunArtifacts,
+  selectedRunSources,
   selectedThread,
   timelineEvents,
   tools,
@@ -332,6 +335,7 @@ export function InspectorPanel({
   onEndpointChange: (value: string) => void;
   onFetchIntent: (id?: string) => void;
   onLoadRunEvents: (runId: string) => void;
+  onOpenView: (view: import("../types").MainView) => void;
   onProfileChange: (profile: LocalProfile) => void;
   onRefreshHealth: () => void;
   onRefreshHermes: (options?: { keepInspector?: boolean }) => void;
@@ -346,12 +350,22 @@ export function InspectorPanel({
   selectedResponse: AgentResponse | null;
   selectedResponseRecord: (AgentResponse & { model?: string; usage?: { total_tokens?: number } }) | null;
   selectedRunId: string;
+  selectedRunArtifacts?: import("../types").AgentArtifactRecord[];
+  selectedRunSources?: import("../types").AgentSourceRecord[];
   selectedThread: TaskThread | null;
   timelineEvents: import("../types").TimelineEvent[];
   tools: ToolCatalogItem[];
   userId: string;
 }) {
-  const artifacts = buildTaskArtifacts({ selectedThread, selectedResponse, recentRuns, timelineEvents });
+  const artifacts = buildTaskArtifacts({
+    selectedThread,
+    selectedResponse,
+    recentRuns,
+    timelineEvents,
+    durableArtifacts: selectedRunArtifacts,
+    durableSources: selectedRunSources,
+    endpoint
+  });
   const comments = buildTaskReviewComments(artifacts);
 
   return (
@@ -394,7 +408,8 @@ export function InspectorPanel({
 
       {inspectorTab === "artifacts" && (
         <div className="inspector-scroll">
-          <ArtifactsPanel artifacts={artifacts} />
+          <SourcesPanel sources={selectedRunSources} endpoint={endpoint} apiToken={controlToken.trim() || apiToken} />
+          <ArtifactsPanel artifacts={artifacts} apiToken={controlToken.trim() || apiToken} />
         </div>
       )}
 
@@ -473,6 +488,7 @@ export function InspectorPanel({
           onApiTokenChange={onApiTokenChange}
           onControlTokenChange={onControlTokenChange}
           onEndpointChange={onEndpointChange}
+          onOpenView={onOpenView}
           onProfileChange={onProfileChange}
           onRefresh={onRefreshHealth}
           profileName={profileName}

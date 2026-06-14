@@ -1,0 +1,296 @@
+- generic [ref=e3]:
+  - complementary [ref=e1938]:
+    - generic [ref=e1939]:
+      - img [ref=e1941]
+      - generic [ref=e1943]:
+        - strong [ref=e1944]: AIASK
+        - generic [ref=e1945]: Agent 工作台
+      - img [ref=e1946]
+    - button "新建线程" [ref=e1948] [cursor=pointer]:
+      - img [ref=e1949]
+      - text: 新建线程
+    - generic [ref=e1950]:
+      - generic [ref=e1951]:
+        - generic [ref=e1952]: 项目 / 上下文
+        - strong [ref=e1953]: aiask-agent
+        - generic [ref=e1954]: Agent 已连接 · 桌面客户端
+      - generic "ready / 在线" [ref=e1955]:
+        - img [ref=e1956]
+        - generic [ref=e1959]: 在线
+    - button "会话 受限" [ref=e1962] [cursor=pointer]:
+      - img [ref=e1963]
+      - text: 会话
+      - generic "gated / 受限" [ref=e1965]:
+        - img [ref=e1966]
+        - generic [ref=e1968]: 受限
+    - generic [ref=e1969]:
+      - generic [ref=e1970]:
+        - generic [ref=e1971]: 任务线程
+        - generic [ref=e1972]: "7"
+      - button "搜索与历史" [ref=e1973] [cursor=pointer]:
+        - img [ref=e1974]
+        - text: 搜索与历史
+      - generic [ref=e1977]:
+        - button "b1acf60a-b97a-4869-9e7e-637df6bf3a78 已完成 · 最近更新 2026-06-09T10:39:39.929095+00:00 b1acf60a-b97a-4869-9e7e-637df6bf3a78" [ref=e1978] [cursor=pointer]:
+          - strong [ref=e1979]: b1acf60a-b97a-4869-9e7e-637df6bf3a78
+          - generic [ref=e1980]: 已完成 · 最近更新 2026-06-09T10:39:39.929095+00:00
+          - emphasis [ref=e1981]: b1acf60a-b97a-4869-9e7e-637df6bf3a78
+        - button "7691a0b7-d071-4406-9b83-5f5f19595674 错误 · 最近更新 2026-05-29T01:28:43.977806+00:00 7691a0b7-d071-4406-9b83-5f5f19595674" [ref=e1982] [cursor=pointer]:
+          - strong [ref=e1983]: 7691a0b7-d071-4406-9b83-5f5f19595674
+          - generic [ref=e1984]: 错误 · 最近更新 2026-05-29T01:28:43.977806+00:00
+          - emphasis [ref=e1985]: 7691a0b7-d071-4406-9b83-5f5f19595674
+        - button "b193cf51-db27-40ba-bb30-d7425966095a 错误 · 最近更新 2026-05-27T05:09:42.404506+00:00 b193cf51-db27-40ba-bb30-d7425966095a" [ref=e1986] [cursor=pointer]:
+          - strong [ref=e1987]: b193cf51-db27-40ba-bb30-d7425966095a
+          - generic [ref=e1988]: 错误 · 最近更新 2026-05-27T05:09:42.404506+00:00
+          - emphasis [ref=e1989]: b193cf51-db27-40ba-bb30-d7425966095a
+        - button "264aca64-5f27-4504-b3d1-e48cc9ba78c5 已完成 · 最近更新 2026-05-27T05:03:38.029820+00:00 264aca64-5f27-4504-b3d1-e48cc9ba78c5" [ref=e1990] [cursor=pointer]:
+          - strong [ref=e1991]: 264aca64-5f27-4504-b3d1-e48cc9ba78c5
+          - generic [ref=e1992]: 已完成 · 最近更新 2026-05-27T05:03:38.029820+00:00
+          - emphasis [ref=e1993]: 264aca64-5f27-4504-b3d1-e48cc9ba78c5
+        - button "1ebe800f-cd3b-49a1-aa4d-8379db176fc7 错误 · 最近更新 2026-05-22T08:02:16.043812+00:00 1ebe800f-cd3b-49a1-aa4d-8379db176fc7" [ref=e1994] [cursor=pointer]:
+          - strong [ref=e1995]: 1ebe800f-cd3b-49a1-aa4d-8379db176fc7
+          - generic [ref=e1996]: 错误 · 最近更新 2026-05-22T08:02:16.043812+00:00
+          - emphasis [ref=e1997]: 1ebe800f-cd3b-49a1-aa4d-8379db176fc7
+        - button "5dda21bf-7055-42bc-908e-257b03555981 已完成 · 最近更新 2026-05-22T07:47:31.918801+00:00 5dda21bf-7055-42bc-908e-257b03555981" [ref=e1998] [cursor=pointer]:
+          - strong [ref=e1999]: 5dda21bf-7055-42bc-908e-257b03555981
+          - generic [ref=e2000]: 已完成 · 最近更新 2026-05-22T07:47:31.918801+00:00
+          - emphasis [ref=e2001]: 5dda21bf-7055-42bc-908e-257b03555981
+        - button "8c297ffe-a2b0-4204-8e52-ec24b8e1118e 已完成 · 最近更新 2026-05-21T02:45:52.464805+00:00 8c297ffe-a2b0-4204-8e52-ec24b8e1118e" [ref=e2002] [cursor=pointer]:
+          - strong [ref=e2003]: 8c297ffe-a2b0-4204-8e52-ec24b8e1118e
+          - generic [ref=e2004]: 已完成 · 最近更新 2026-05-21T02:45:52.464805+00:00
+          - emphasis [ref=e2005]: 8c297ffe-a2b0-4204-8e52-ec24b8e1118e
+    - navigation "Main navigation" [ref=e2006]:
+      - generic [ref=e2007]:
+        - img [ref=e2008]
+        - generic [ref=e2013]: 导航
+      - region "主工作区" [ref=e2014]:
+        - button "主工作区" [ref=e2015] [cursor=pointer]:
+          - generic [ref=e2016]: 主工作区
+          - img [ref=e2017]
+        - button "工作台" [ref=e2020] [cursor=pointer]:
+          - img [ref=e2021]
+          - generic [ref=e2023]: 工作台
+        - button "项目 / 上下文" [ref=e2025] [cursor=pointer]:
+          - img [ref=e2026]
+          - generic [ref=e2031]: 项目 / 上下文
+        - button "运行 / 事件" [ref=e2033] [cursor=pointer]:
+          - img [ref=e2034]
+          - generic [ref=e2037]: 运行 / 事件
+        - button "审批" [ref=e2039] [cursor=pointer]:
+          - img [ref=e2040]
+          - generic [ref=e2043]: 审批
+        - button "金融实验室" [ref=e2045] [cursor=pointer]:
+          - img [ref=e2046]
+          - generic [ref=e2050]: 金融实验室
+        - button "集成" [ref=e2052] [cursor=pointer]:
+          - img [ref=e2053]
+          - generic [ref=e2059]: 集成
+        - button "自动化" [ref=e2061] [cursor=pointer]:
+          - img [ref=e2062]
+          - generic [ref=e2066]: 自动化
+        - button "设置" [ref=e2068] [cursor=pointer]:
+          - img [ref=e2069]
+          - generic [ref=e2072]: 设置
+      - region "高级金融" [ref=e2073]:
+        - button "高级金融" [ref=e2074] [cursor=pointer]:
+          - generic [ref=e2075]: 高级金融
+          - img [ref=e2076]
+      - region "高级运维" [ref=e2078]:
+        - button "高级运维" [ref=e2079] [cursor=pointer]:
+          - generic [ref=e2080]: 高级运维
+          - img [ref=e2081]
+      - region "旧入口 / 高级诊断" [ref=e2083]:
+        - button "旧入口 / 高级诊断" [ref=e2084] [cursor=pointer]:
+          - generic [ref=e2085]: 旧入口 / 高级诊断
+          - img [ref=e2086]
+    - button "扩展 内部" [ref=e2090] [cursor=pointer]:
+      - img [ref=e2091]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e2094]:
+        - img [ref=e2095]
+        - generic [ref=e2097]: 内部
+    - generic [ref=e2098]:
+      - generic "AIASK_ONLINE / 在线" [ref=e2099]:
+        - img [ref=e2100]
+        - generic [ref=e2103]: 在线
+      - generic [ref=e2104]: 202 个可用工具
+      - generic [ref=e2105]: 完整工具已启用
+  - main [ref=e145]:
+    - generic [ref=e2931]:
+      - generic [ref=e2932]:
+        - generic [ref=e2933]:
+          - text: 运维与连接
+          - heading "Gateway" [level=1] [ref=e2934]
+        - generic [ref=e2935]:
+          - generic "control token required / 缺少控制令牌" [ref=e2936]:
+            - img [ref=e2937]
+            - generic [ref=e2939]: 缺少控制令牌
+          - generic "CONTROL_TOKEN_REQUIRED" [ref=e2940]:
+            - img [ref=e2941]
+            - generic [ref=e2943]: CONTROL_TOKEN_REQUIRED
+          - button "刷新" [ref=e2944] [cursor=pointer]:
+            - img [ref=e2945]
+            - text: 刷新
+      - generic [ref=e2951]:
+        - generic [ref=e2952]:
+          - generic [ref=e2953]:
+            - text: 平台 Gateway
+            - heading "平台健康、守护进程、目录、消息与重试" [level=2] [ref=e2954]
+            - paragraph [ref=e2955]: 消息发送只创建 ActionIntent，投递仍等待审批确认。
+          - img [ref=e2956]
+        - generic [ref=e2962]: Gateway 管理详情需要控制令牌。请在设置中填写控制令牌后再刷新；发送预览不会绕过 ActionIntent 审批链路。
+        - generic [ref=e2963]:
+          - generic [ref=e2964]:
+            - generic [ref=e2965]: Gateway 状态
+            - strong [ref=e2966]: 未加载
+          - generic [ref=e2967]:
+            - generic [ref=e2968]: 守护进程
+            - strong [ref=e2969]: 未加载
+          - generic [ref=e2970]:
+            - generic [ref=e2971]: 平台
+            - strong [ref=e2972]: "0"
+          - generic [ref=e2973]:
+            - generic [ref=e2974]: 消息
+            - strong [ref=e2975]: "0"
+          - generic [ref=e2976]:
+            - generic [ref=e2977]: 待重试
+            - strong [ref=e2978]: "0"
+          - generic [ref=e2979]:
+            - generic [ref=e2980]: 目录
+            - strong [ref=e2981]: "0"
+        - generic [ref=e2982]:
+          - generic [ref=e2983]:
+            - generic [ref=e2984]:
+              - generic [ref=e2985]:
+                - text: 已停用
+                - heading "守护进程状态" [level=3] [ref=e2986]
+              - generic "disabled / 已停止" [ref=e2987]:
+                - img [ref=e2988]
+                - generic [ref=e2990]: 已停止
+            - generic [ref=e2991]:
+              - generic [ref=e2992]: 已启用
+              - strong [ref=e2993]: unknown
+              - generic [ref=e2994]: 运行中
+              - strong [ref=e2995]: unknown
+              - generic [ref=e2996]: 监听器
+              - strong [ref=e2997]: "0"
+              - generic [ref=e2998]: 状态
+              - strong [ref=e2999]: not_loaded
+          - generic [ref=e3000]:
+            - generic [ref=e3002]:
+              - generic [ref=e3003]: 0 个平台
+              - heading "平台健康" [level=3] [ref=e3004]
+            - paragraph [ref=e3006]: 暂无平台状态。
+          - generic [ref=e3007]:
+            - generic [ref=e3008]:
+              - generic [ref=e3009]:
+                - text: 仅创建审批
+                - heading "消息发送预览" [level=3] [ref=e3010]
+              - generic "approval_required / 需要审批" [ref=e3011]:
+                - img [ref=e3012]
+                - generic [ref=e3014]: 需要审批
+            - generic [ref=e3015]:
+              - generic [ref=e3016]: 平台
+              - textbox "平台" [ref=e3017]: local
+            - generic [ref=e3018]:
+              - generic [ref=e3019]: 目标
+              - textbox "目标" [ref=e3020]:
+                - /placeholder: channel/user/room
+            - generic [ref=e3021]:
+              - generic [ref=e3022]: 消息
+              - textbox "消息" [ref=e3023]: AIASK gateway delivery preview
+            - button "创建发送审批" [disabled] [ref=e3024]:
+              - img [ref=e3025]
+              - text: 创建发送审批
+          - generic [ref=e3028]:
+            - generic [ref=e3029]:
+              - generic [ref=e3030]:
+                - generic [ref=e3031]: 0 个目录项
+                - heading "目录刷新" [level=3] [ref=e3032]
+              - button "刷新目录" [disabled] [ref=e3033]:
+                - img [ref=e3034]
+                - text: 刷新目录
+            - paragraph [ref=e3041]: 暂无目录项。
+        - generic [ref=e3042]:
+          - generic [ref=e3043]:
+            - generic [ref=e3044]:
+              - generic [ref=e3045]: 0 条消息
+              - heading "消息列表" [level=3] [ref=e3046]
+            - img [ref=e3047]
+          - generic [ref=e3049]:
+            - generic [ref=e3050]:
+              - generic [ref=e3051]: 消息
+              - generic [ref=e3052]: 平台
+              - generic [ref=e3053]: 状态
+              - generic [ref=e3054]: 错误 / 目标
+            - generic [ref=e3055]: 暂无 Gateway 消息。
+        - group [ref=e3056]:
+          - generic "Gateway 原始载荷" [ref=e3057] [cursor=pointer]
+        - generic [ref=e3058]:
+          - img [ref=e3059]
+          - generic [ref=e3062]: "失败消息重试会调用 `/v1/gateway/messages/:id/retry`；发送预览只创建 `gateway.send_message` ActionIntent。"
+  - complementary "环境上下文" [ref=e2328]:
+    - generic [ref=e2329]:
+      - generic [ref=e2330]:
+        - generic [ref=e2331]:
+          - generic [ref=e2332]: 进度
+          - strong [ref=e2333]: 当前运行环境
+        - img [ref=e2334]
+      - generic [ref=e2336]:
+        - img [ref=e2337]
+        - generic [ref=e2340]: Agent
+        - generic "ready / 在线，可以使用" [ref=e2341]:
+          - img [ref=e2342]
+          - generic [ref=e2345]: 在线，可以使用
+      - paragraph [ref=e2346]: Agent 已响应，当前页面可以读取会话、工具和运行状态。
+      - generic [ref=e2347]:
+        - img [ref=e2348]
+        - generic [ref=e2353]: Agent 端点
+        - code [ref=e2354]: http://127.0.0.1:8767
+    - generic [ref=e2355]:
+      - generic [ref=e2356]:
+        - generic [ref=e2357]:
+          - generic [ref=e2358]: 环境信息
+          - strong [ref=e2359]: 权限与能力
+        - img [ref=e2360]
+      - generic [ref=e2363]:
+        - generic [ref=e2364]:
+          - img [ref=e2365]
+          - strong [ref=e2369]: 控制令牌未就绪
+          - generic "gated / 受限" [ref=e2370]:
+            - img [ref=e2371]
+            - generic [ref=e2373]: 受限
+        - paragraph [ref=e2374]: 缺少控制令牌。请在启动 Agent 时设置 AIASK_AGENT_CONTROL_TOKEN 或 AIASK_LOCAL_CONTROL_TOKEN，并在设置中填写同一个值。
+        - button "打开设置" [ref=e2376] [cursor=pointer]
+      - generic [ref=e2377]:
+        - generic [ref=e2378]:
+          - img [ref=e2379]
+          - generic [ref=e2382]: 控制令牌
+          - generic "gated / 仅可查看/研究" [ref=e2383]:
+            - img [ref=e2384]
+            - generic [ref=e2386]: 仅可查看/研究
+        - generic [ref=e2387]:
+          - img [ref=e2388]
+          - generic [ref=e2400]: 完整模式
+          - generic "ready / 已开启" [ref=e2401]:
+            - img [ref=e2402]
+            - generic [ref=e2405]: 已开启
+        - generic [ref=e2406]:
+          - img [ref=e2407]
+          - generic [ref=e2409]: 工具集
+          - strong [ref=e2410]: 完整工具集
+        - paragraph [ref=e2411]: 可查看通用工具；写入、外部平台和高风险动作仍需控制令牌与审批。
+        - generic [ref=e2412]:
+          - img [ref=e2413]
+          - generic [ref=e2417]: 工具数量
+          - strong [ref=e2418]: "202"
+    - generic [ref=e2419]:
+      - generic [ref=e2420]:
+        - generic [ref=e2421]:
+          - generic [ref=e2422]: 当前任务
+          - strong [ref=e2423]: 等待任务线程
+        - img [ref=e2424]
+      - generic [ref=e2428]:
+        - strong [ref=e2429]: 暂无选中线程
+        - generic [ref=e2430]: 开始任务后，这里会汇总当前回复、模型、审批和事件状态。
+        - button "返回工作台" [ref=e2431] [cursor=pointer]

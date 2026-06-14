@@ -97,7 +97,8 @@ export function useAppConnectionSettings() {
     () => new AiaskApi({ endpoint: normalizedEndpoint, apiToken, controlToken }),
     [apiToken, controlToken, normalizedEndpoint]
   );
-  const agentReachable = mockMode || !!health || autoConnectEnabled;
+  const defaultEndpointActive = !mockMode && normalizedEndpoint === DEFAULT_ENDPOINT;
+  const agentReachable = mockMode || !!health || autoConnectEnabled || defaultEndpointActive;
 
   const refreshHealth = useCallback(async (): Promise<HealthRefreshResult> => {
     setConnectionBusy(true);
@@ -159,6 +160,7 @@ export function useAppConnectionSettings() {
     api,
     apiToken,
     autoConnectEnabled,
+    defaultEndpointActive,
     connectionBusy,
     controlToken,
     defaultEndpoint: mockMode ? "mock://aiask" : DEFAULT_ENDPOINT,

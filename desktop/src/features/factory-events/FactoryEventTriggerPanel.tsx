@@ -414,15 +414,20 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         client.stockRadarCandidates({ tier: radarTierFilter, limit: 100 }),
         client.stockRadarDigest({ limit: 20, channels: ["wecom", "telegram"] })
       ]);
-      setRadarStatus(statusEnvelope.data || {});
-      setRadarCandidates(radarCandidatesFromData(candidatesEnvelope.data));
-      setRadarDigest(digestEnvelope.data || {});
+      const nextMessage =
+        statusEnvelope.error || candidatesEnvelope.error || digestEnvelope.error || "RADAR_DEGRADED";
+      setRadarStatus(statusEnvelope.success ? statusEnvelope.data || {} : { status: "failed", degraded_flags: [nextMessage] });
+      setRadarCandidates(candidatesEnvelope.success ? radarCandidatesFromData(candidatesEnvelope.data) : []);
+      setRadarDigest(digestEnvelope.success ? digestEnvelope.data || {} : {});
       setRadarMessage(
         statusEnvelope.success && candidatesEnvelope.success && digestEnvelope.success
           ? "RADAR_LOADED"
-          : statusEnvelope.error || candidatesEnvelope.error || digestEnvelope.error || "RADAR_DEGRADED"
+          : nextMessage
       );
     } catch (error) {
+      setRadarStatus(null);
+      setRadarCandidates([]);
+      setRadarDigest(null);
       setRadarMessage(formatApiError(error));
     } finally {
       setRadarLoading(false);
@@ -817,8 +822,14 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const handleRadarSchedulePreview = useCallback(() => {
     createAndConfirmMaintenanceIntent("股票雷达调度预览", () =>
       client.stockRadarScheduleUpdateIntent({
-        schedule: "manual",
-        enabled: false
+        interval_seconds: 86400,
+        enabled: true,
+        days: 3,
+        limit: 80,
+        allow_network: false,
+        allow_llm: false,
+        ingest_market_text: true,
+        parse_pdf: true
       })
     ).then(() => loadRadar());
   }, [client, createAndConfirmMaintenanceIntent, loadRadar]);

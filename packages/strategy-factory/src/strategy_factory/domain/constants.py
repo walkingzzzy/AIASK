@@ -421,6 +421,13 @@ STOCK_FIRST_ROUTER_TELEMETRY_ENABLED: bool = _env_bool(
     "STRATEGY_FACTORY_ROUTER_TELEMETRY_ENABLED",
     True,
 )
+# 个股方向闸：legacy 选族路径下，按个股 trend/reversal 方向剔除方向矛盾的 family
+# （下跌/弱势剔除 momentum 等趋势族，上涨剔除纯反转族），避免动量策略被配到下跌标的。
+# 默认 ON：这是修复方向错配的缺省行为；置 0 可紧急回到旧的无方向过滤逻辑。
+STOCK_DIRECTION_GATE_ENABLED: bool = _env_bool(
+    "STRATEGY_FACTORY_DIRECTION_GATE_ENABLED",
+    True,
+)
 STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT: int = _env_int(
     (
         "STRATEGY_FACTORY_BULK_UNIVERSE_LIMIT",
