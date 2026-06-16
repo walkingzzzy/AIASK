@@ -316,7 +316,7 @@ describe("VIEW_REGISTRY", () => {
     expect(ids).toContain("factory-events");
     const entry = VIEW_REGISTRY.find((item) => item.id === "factory-events");
     expect(entry?.label).toBe("工厂事件");
-    expect(entry?.route).toBe("/factory-events");
+    expect(entry?.route).toBe("/finance/events");
   });
 });
 

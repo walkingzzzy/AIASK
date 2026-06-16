@@ -31,6 +31,10 @@ desktop/manual-results/
 desktop/src-tauri/target/
 desktop/.pytest_cache/
 
+# Playwright CLI / comparison run artifacts
+.playwright-cli/
+output/playwright/
+
 packages/akshare-mcp/cache/dead_letters/
 
 # Local workspace/editor state

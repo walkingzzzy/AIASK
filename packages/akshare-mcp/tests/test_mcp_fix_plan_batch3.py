@@ -14,6 +14,16 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src" / "akshare_mcp"
 
 
+def _strategy_mgr_crud_source() -> str:
+    """Read strategy_mgr_crud source, tolerating either a single module file or a package dir."""
+    managers = _SRC / "tools" / "managers"
+    single = managers / "strategy_mgr_crud.py"
+    if single.exists():
+        return single.read_text(encoding="utf-8")
+    pkg = managers / "strategy_mgr_crud"
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(pkg.glob("*.py")))
+
+
 # ── FIX-19: RSI warmup 不足不伪造信号 ────────────────────────────────
 
 def test_fix19_rsi_insufficient_data_returns_unknown():
@@ -328,7 +338,7 @@ def test_fix32_should_i_sell_buy_price_sanity():
 # ── FIX-33: publish promotion_gate 强制 (F-N42-1) ────────────────────
 
 def test_fix33_publish_enforces_promotion_gate():
-    src = (_SRC / "tools" / "managers" / "strategy_mgr_crud.py").read_text(encoding="utf-8")
+    src = _strategy_mgr_crud_source()
     # handle_publish 必须评估孵化总览并在 gate 失败时拒绝
     pub_idx = src.find("async def handle_publish")
     assert pub_idx != -1
@@ -342,7 +352,7 @@ def test_fix33_publish_enforces_promotion_gate():
 # ── FIX-34: create strategy_type 白名单 (F-N42-5) ────────────────────
 
 def test_fix34_create_validates_strategy_type():
-    src = (_SRC / "tools" / "managers" / "strategy_mgr_crud.py").read_text(encoding="utf-8")
+    src = _strategy_mgr_crud_source()
     assert "_KNOWN_STRATEGY_TYPES" in src
     assert "strategy_type_warning" in src
 

@@ -1,14 +1,164 @@
-import { formatApiError, normalizeEndpoint, parseSseEvents, requestJson } from "../api";
-import { isMockEndpoint } from "../mockApi";
+import { requestJson } from "../api";
+import {
+  aiConfig as requestAiConfig,
+  aiConfigSave as requestAiConfigSave,
+  aiModels as requestAiModels,
+  aiSmoke as requestAiSmoke,
+  aiStatus as requestAiStatus,
+  response as requestResponse,
+  responseDelete as requestResponseDelete,
+  responseGet as requestResponseGet
+} from "./api/ai";
+import { AiaskApiCore, controlOrApiToken } from "./api/core";
+import type { AiaskClientOptions } from "./api/core";
+import { fullConsoleSnapshot as requestFullConsoleSnapshot } from "./api/fullConsole";
+import {
+  approvalDecide as requestApprovalDecide,
+  approvalsList as requestApprovalsList,
+  confirmIntent as requestConfirmIntent,
+  createActionIntent as requestCreateActionIntent,
+  denyIntent as requestDenyIntent,
+  getIntent as requestGetIntent,
+  intentsList as requestIntentsList,
+  readOnlyTool as requestReadOnlyTool
+} from "./api/intents";
+import {
+  connectorDetail as requestConnectorDetail,
+  connectorsList as requestConnectorsList,
+  connectorsSummary as requestConnectorsSummary,
+  connectorTest as requestConnectorTest,
+  gatewayDaemonStatus as requestGatewayDaemonStatus,
+  gatewayDirectory as requestGatewayDirectory,
+  gatewayDirectoryRefresh as requestGatewayDirectoryRefresh,
+  gatewayMessageRetry as requestGatewayMessageRetry,
+  gatewayMessages as requestGatewayMessages,
+  gatewayPlatformHealth as requestGatewayPlatformHealth,
+  gatewayPlatforms as requestGatewayPlatforms,
+  gatewayPlatformStart as requestGatewayPlatformStart,
+  gatewayPlatformStop as requestGatewayPlatformStop,
+  gatewayStatus as requestGatewayStatus,
+  mcpDiscover as requestMcpDiscover,
+  mcpOauthStart as requestMcpOauthStart,
+  mcpPromptGet as requestMcpPromptGet,
+  mcpRegisterLocal as requestMcpRegisterLocal,
+  mcpResourceRead as requestMcpResourceRead,
+  webhookCreate as requestWebhookCreate,
+  webhookDelete as requestWebhookDelete,
+  webhooksList as requestWebhooksList
+} from "./api/integrations";
+import {
+  dataStatus as requestDataStatus,
+  dataSyncPlan as requestDataSyncPlan,
+  localProfileGet as requestLocalProfileGet,
+  localProfileSave as requestLocalProfileSave,
+  memoryStatus as requestMemoryStatus,
+  modelProviderStatus as requestModelProviderStatus,
+  recordEvents as requestRecordEvents,
+  recordFeedback as requestRecordFeedback,
+  retentionSweep as requestRetentionSweep,
+  settingsStatus as requestSettingsStatus,
+  stockDataSourceSave as requestStockDataSourceSave,
+  stockDataSources as requestStockDataSources,
+  stockDataSourceTest as requestStockDataSourceTest,
+  userActivity as requestUserActivity,
+  userAnalyticsSummary as requestUserAnalyticsSummary,
+  userDataDelete as requestUserDataDelete,
+  userDataExport as requestUserDataExport,
+  userDataPolicyGet as requestUserDataPolicyGet,
+  userDataPolicySave as requestUserDataPolicySave,
+  userLearningDataset as requestUserLearningDataset,
+  userRecommendations as requestUserRecommendations
+} from "./api/desktopState";
+import {
+  brokerAccounts as requestBrokerAccounts,
+  brokerAnalyticsLatest as requestBrokerAnalyticsLatest,
+  brokerAnalyticsRun as requestBrokerAnalyticsRun,
+  brokerOrders as requestBrokerOrders,
+  brokerPositions as requestBrokerPositions,
+  brokerReadiness as requestBrokerReadiness,
+  brokerSync as requestBrokerSync,
+  factorFactoryMaintenanceIntent as requestFactorFactoryMaintenanceIntent,
+  factorFactoryRunIntent as requestFactorFactoryRunIntent,
+  factorFactoryStatus as requestFactorFactoryStatus,
+  factoryEventApproveIntent as requestFactoryEventApproveIntent,
+  factoryEventBootstrapIntent as requestFactoryEventBootstrapIntent,
+  factoryEventCreateIntent as requestFactoryEventCreateIntent,
+  factoryEventOutboxDrainIntent as requestFactoryEventOutboxDrainIntent,
+  factoryEventRecordOutcomeIntent as requestFactoryEventRecordOutcomeIntent,
+  factoryEventUpdateIntent as requestFactoryEventUpdateIntent,
+  factoryThemeExposureRefreshIntent as requestFactoryThemeExposureRefreshIntent,
+  factoryThemeRegressionRunIntent as requestFactoryThemeRegressionRunIntent,
+  financialManagerCatalog as requestFinancialManagerCatalog,
+  financialManagerIntent as requestFinancialManagerIntent,
+  financialManagerQuery as requestFinancialManagerQuery,
+  financialManagerStatus as requestFinancialManagerStatus,
+  quantPresets as requestQuantPresets,
+  quantResearchGet as requestQuantResearchGet,
+  quantResearchReport as requestQuantResearchReport,
+  quantResearchRun as requestQuantResearchRun,
+  stockRadarCandidates as requestStockRadarCandidates,
+  stockRadarDigest as requestStockRadarDigest,
+  stockRadarPushDigestIntent as requestStockRadarPushDigestIntent,
+  stockRadarRunIntent as requestStockRadarRunIntent,
+  stockRadarScheduleUpdateIntent as requestStockRadarScheduleUpdateIntent,
+  stockRadarStatus as requestStockRadarStatus,
+  tradePredictionMatrix as requestTradePredictionMatrix,
+  tradePredictionOutcomes as requestTradePredictionOutcomes,
+  tradePredictionStatus as requestTradePredictionStatus
+} from "./api/finance";
+import {
+  jobCreate as requestJobCreate,
+  jobDelete as requestJobDelete,
+  jobRun as requestJobRun,
+  jobRuns as requestJobRuns,
+  jobsList as requestJobsList,
+  jobUpdate as requestJobUpdate,
+  learningApply as requestLearningApply,
+  learningReview as requestLearningReview,
+  learningStatus as requestLearningStatus,
+  pluginCommandTest as requestPluginCommandTest,
+  pluginCommands as requestPluginCommands,
+  pluginToggle as requestPluginToggle,
+  pluginToolTest as requestPluginToolTest,
+  pluginUpsert as requestPluginUpsert,
+  rlConfig as requestRlConfig,
+  rlConfigUpdate as requestRlConfigUpdate,
+  rlEnvironments as requestRlEnvironments,
+  rlRunGet as requestRlRunGet,
+  rlRunLogs as requestRlRunLogs,
+  rlRunResults as requestRlRunResults,
+  rlRuns as requestRlRuns,
+  rlRunStart as requestRlRunStart,
+  rlRunStop as requestRlRunStop,
+  skillDelete as requestSkillDelete,
+  skillInstall as requestSkillInstall,
+  skillsList as requestSkillsList,
+  skillUpdate as requestSkillUpdate
+} from "./api/ops";
+import {
+  handoffsList as requestHandoffsList,
+  runArtifacts as requestRunArtifacts,
+  runCancel as requestRunCancel,
+  runEvents as requestRunEvents,
+  runGet as requestRunGet,
+  runsList as requestRunsList,
+  runSources as requestRunSources,
+  runSteer as requestRunSteer,
+  runStop as requestRunStop,
+  runTraceEval as requestRunTraceEval,
+  sessionArchive as requestSessionArchive,
+  sessionArtifacts as requestSessionArtifacts,
+  sessionMessages as requestSessionMessages,
+  sessionResumeContext as requestSessionResumeContext,
+  search as requestSearch,
+  sessionsList as requestSessionsList,
+  sessionSources as requestSessionSources,
+  sessionUndo as requestSessionUndo,
+  workbenchSummary as requestWorkbenchSummary
+} from "./api/workbench";
 import type {
-  AgentResponse,
   AgentArtifactRecord,
   AgentSourceRecord,
-  AiConfigPayload,
-  AiConfigSavePayload,
-  AiConfigSaveResult,
-  AiSmokeResult,
-  AiStatus,
   ApprovalItem,
   BrokerAnalyticsPayload,
   BrokerReadinessPayload,
@@ -28,7 +178,6 @@ import type {
   FinancialManagerIntentResult,
   FinancialManagerQueryResult,
   FinancialManagerStatus,
-  FullModeConsoleData,
   GatewayDaemonStatus,
   GatewayMessage,
   GatewayPlatform,
@@ -51,7 +200,6 @@ import type {
   QuantResearchReport,
   QuantResearchRun,
   RecentSessionSummary,
-  ResponseRecord,
   RlRun,
   RunRecord,
   RunTraceEvalPayload,
@@ -79,36 +227,9 @@ import type {
   WebhookSubscription
 } from "../types";
 
-export interface AiaskClientOptions {
-  endpoint: string;
-  apiToken?: string;
-  controlToken?: string;
-}
+export type { AiaskClientOptions } from "./api/core";
 
-function controlOrApiToken(options: AiaskClientOptions): string {
-  return options.controlToken?.trim() || options.apiToken?.trim() || "";
-}
-
-function compactForSearch(value: unknown): string {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "string") return value;
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-export class AiaskApi {
-  endpoint: string;
-  apiToken: string;
-  controlToken: string;
-
-  constructor(options: AiaskClientOptions) {
-    this.endpoint = normalizeEndpoint(options.endpoint);
-    this.apiToken = options.apiToken || "";
-    this.controlToken = options.controlToken || "";
-  }
+export class AiaskApi extends AiaskApiCore {
 
   health(): Promise<HealthDetailed> {
     return requestJson<HealthDetailed>(this.endpoint, "/health/detailed", { token: this.apiToken });
@@ -134,320 +255,88 @@ export class AiaskApi {
     return requestJson<unknown>(this.endpoint, "/v1/hermes/readiness", { token: this.apiToken });
   }
 
-  private async controlData<T>(path: string, fallback: T): Promise<T> {
-    try {
-      return await requestJson<T>(this.endpoint, path, { token: this.controlToken });
-    } catch (error) {
-      // Distinguish three failure modes so the UI can show a useful message:
-      //   401/403 -> control token missing or invalid
-      //   503     -> server has not configured AIASK_AGENT_CONTROL_TOKEN
-      //   other   -> network or server-side error
-      // formatApiError already maps to AIASK_UNAUTHORIZED / AIASK_FORBIDDEN /
-      // AIASK_HTTP_503 / etc., so we just attach a `reason` field that
-      // panels can read instead of guessing from the error string.
-      const reason = (() => {
-        if (typeof (error as { status?: number })?.status === "number") {
-          const status = (error as { status: number }).status;
-          if (status === 401) return "control_token_invalid";
-          if (status === 403) return "control_token_forbidden";
-          if (status === 503) return "control_token_unconfigured";
-          return `http_${status}`;
-        }
-        return "network";
-      })();
-      if (fallback && typeof fallback === "object" && !Array.isArray(fallback)) {
-        return {
-          ...(fallback as Record<string, unknown>),
-          status: "degraded",
-          error: formatApiError(error),
-          reason
-        } as T;
-      }
-      return fallback;
-    }
-  }
-
   async fullConsoleSnapshot(): Promise<HermesConsoleSnapshot> {
-    const [hermesStatus, parity, readiness] = await Promise.all([
-      this.hermesStatus(),
-      this.capabilityParity(),
-      this.hermesReadiness()
-    ]);
-    const fullConsole: FullModeConsoleData = {
-      parity,
-      readiness,
-      providers: hermesStatus.providers,
-      memory: hermesStatus.memory,
-      acp: hermesStatus.acp,
-      security: hermesStatus.security,
-      skillPacks: hermesStatus.skill_packs
-    };
-
-    if (!this.controlToken.trim()) {
-      return {
-        hermesStatus,
-        hermesTools: [],
-        fullConsole,
-        message: "CONTROL_TOKEN_REQUIRED"
-      };
-    }
-
-    const [
-      catalog,
-      processes,
-      browserSessions,
-      skills,
-      plugins,
-      mcpServers,
-      mcpTools,
-      mcpResources,
-      mcpPrompts,
-      mcpOauth,
-      webhooks,
-      approvals,
-      jobs,
-      gatewayStatus,
-      gatewayPlatforms,
-      gatewayMessages,
-      gatewayDirectory,
-      terminalBackends,
-      terminalSessions,
-      learningStatus,
-      learningReview,
-      rlEnvironments,
-      rlRuns
-    ] = await Promise.all([
-      this.controlData<{ data: ToolCatalogItem[] }>("/v1/hermes/tools", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/processes", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/browser/sessions", { data: [] }),
-      this.controlData<{ data: unknown }>("/v1/skills", { data: {} }),
-      this.controlData<{ data: unknown[] }>("/v1/plugins", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/mcp/servers?all=true", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/mcp/tools?all=true", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/mcp/resources?all=true", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/mcp/prompts?all=true", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/mcp/oauth_status?all=true", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/webhooks", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/approvals", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/jobs", { data: [] }),
-      this.controlData<unknown>("/v1/gateway/status", {}),
-      this.controlData<{ data: unknown[] }>("/v1/gateway/platforms", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/gateway/messages", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/gateway/directory", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/terminal/backends", { data: [] }),
-      this.controlData<{ data: unknown[] }>("/v1/terminal/sessions", { data: [] }),
-      this.controlData<unknown>("/v1/learning/status", {}),
-      this.controlData<{ data: unknown[] }>("/v1/learning/review", { data: [] }),
-      this.controlData<{ data: unknown }>("/v1/rl/environments", { data: {} }),
-      this.controlData<{ data: unknown[] }>("/v1/rl/runs", { data: [] })
-    ]);
-
-    Object.assign(fullConsole, {
-      processes: processes.data || [],
-      browserSessions: browserSessions.data || [],
-      skills: skills.data,
-      plugins: plugins.data || [],
-      mcpServers: mcpServers.data || [],
-      mcpTools: mcpTools.data || [],
-      mcpResources: mcpResources.data || [],
-      mcpPrompts: mcpPrompts.data || [],
-      mcpOauth: mcpOauth.data || [],
-      webhooks: webhooks.data || [],
-      approvals: approvals.data || [],
-      jobs: jobs.data || [],
-      gatewayStatus,
-      gatewayPlatforms: gatewayPlatforms.data || [],
-      gatewayMessages: gatewayMessages.data || [],
-      gatewayDirectory: gatewayDirectory.data || [],
-      terminalBackends: terminalBackends.data || [],
-      terminalSessions: terminalSessions.data || [],
-      learningStatus,
-      learningReview: learningReview.data || [],
-      rlEnvironments: rlEnvironments.data,
-      rlRuns: rlRuns.data || [],
-      homeAssistant: (hermesStatus.parity?.matrix || []).filter((item) => item.reference === "homeassistant"),
-      moa: (catalog.data || []).filter((tool) => tool.name === "agent_moa"),
-      dynamicMcpTools: (mcpTools.data || []).filter((tool) => compactForSearch(tool).includes("agent_mcp_")),
-      dynamicPluginTools: (plugins.data || []).filter((plugin) => compactForSearch(plugin).includes("tools")),
-      pluginHooks: (readiness as { plugins?: unknown }).plugins,
-      tuiController: (readiness as { tui?: unknown }).tui || hermesStatus.tui || {},
-      rlReadiness: (readiness as { rl?: unknown }).rl,
-      providers: hermesStatus.providers || (readiness as { providers?: unknown }).providers,
-      memory: hermesStatus.memory || (readiness as { memory?: unknown }).memory,
-      acp: hermesStatus.acp || (readiness as { acp?: unknown }).acp,
-      security: hermesStatus.security || (readiness as { security?: unknown }).security,
-      skillPacks: hermesStatus.skill_packs || (readiness as { skill_packs?: unknown }).skill_packs
-    });
-
-    return {
-      hermesStatus,
-      hermesTools: catalog.data || [],
-      fullConsole,
-      message: "FULL_CONSOLE_SYNCED"
-    };
+    return requestFullConsoleSnapshot(this);
   }
 
-  aiStatus(): Promise<AiStatus> {
-    return requestJson<AiStatus>(this.endpoint, "/v1/ai/status", { token: this.apiToken });
+  aiStatus() {
+    return requestAiStatus(this);
   }
 
-  aiSmoke(prompt?: string, model?: string): Promise<AiSmokeResult> {
-    return requestJson<AiSmokeResult>(this.endpoint, "/v1/ai/smoke", {
-      method: "POST",
-      token: this.apiToken,
-      body: { prompt, model }
-    });
+  aiSmoke(prompt?: string, model?: string) {
+    return requestAiSmoke(this, prompt, model);
   }
 
-  aiModels(): Promise<{ data: Array<Record<string, unknown>>; configured: boolean; unsupported?: boolean; error?: string }> {
-    return requestJson(this.endpoint, "/v1/ai/models", { token: this.apiToken });
+  aiModels() {
+    return requestAiModels(this);
   }
 
-  aiConfig(): Promise<AiConfigPayload> {
-    return requestJson<AiConfigPayload>(this.endpoint, "/v1/ai/config", { token: this.apiToken });
+  aiConfig() {
+    return requestAiConfig(this);
   }
 
-  aiConfigSave(body: AiConfigSavePayload): Promise<AiConfigSaveResult> {
-    return requestJson<AiConfigSaveResult>(this.endpoint, "/v1/ai/config", {
-      method: "PATCH",
-      token: this.controlToken,
-      body
-    });
+  aiConfigSave(body: Parameters<typeof requestAiConfigSave>[1]) {
+    return requestAiConfigSave(this, body);
   }
 
-  response(body: Record<string, unknown>, token?: string): Promise<AgentResponse> {
-    return requestJson<AgentResponse>(this.endpoint, "/v1/responses", { method: "POST", token: token || this.apiToken, body });
+  response(body: Record<string, unknown>, token?: string) {
+    return requestResponse(this, body, token);
   }
 
-  responseGet(responseId: string): Promise<ResponseRecord> {
-    return requestJson<ResponseRecord>(this.endpoint, `/v1/responses/${encodeURIComponent(responseId)}`, { token: this.apiToken });
+  responseGet(responseId: string) {
+    return requestResponseGet(this, responseId);
   }
 
-  responseDelete(responseId: string): Promise<{ id: string; object: string; deleted: boolean }> {
-    return requestJson<{ id: string; object: string; deleted: boolean }>(
-      this.endpoint,
-      `/v1/responses/${encodeURIComponent(responseId)}`,
-      { method: "DELETE", token: this.apiToken }
-    );
+  responseDelete(responseId: string) {
+    return requestResponseDelete(this, responseId);
   }
 
   runGet(runId: string): Promise<RunRecord> {
-    return requestJson<RunRecord>(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}`, { token: controlOrApiToken(this) });
+    return requestRunGet(this, runId);
   }
 
   runTraceEval(runId: string): Promise<RunTraceEvalPayload> {
-    return requestJson<RunTraceEvalPayload>(
-      this.endpoint,
-      `/v1/runs/${encodeURIComponent(runId)}/trace-eval`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestRunTraceEval(this, runId);
   }
 
   runArtifacts(runId: string, filters: { kind?: string; limit?: number } = {}): Promise<{ object: string; run_id: string; data: AgentArtifactRecord[] }> {
-    const params = new URLSearchParams();
-    if (filters.kind) params.set("kind", filters.kind);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<{ object: string; run_id: string; data: AgentArtifactRecord[] }>(
-      this.endpoint,
-      `/v1/runs/${encodeURIComponent(runId)}/artifacts${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestRunArtifacts(this, runId, filters);
   }
 
   runSources(runId: string, filters: { source_type?: string; limit?: number } = {}): Promise<{ object: string; run_id: string; data: AgentSourceRecord[] }> {
-    const params = new URLSearchParams();
-    if (filters.source_type) params.set("source_type", filters.source_type);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<{ object: string; run_id: string; data: AgentSourceRecord[] }>(
-      this.endpoint,
-      `/v1/runs/${encodeURIComponent(runId)}/sources${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestRunSources(this, runId, filters);
   }
 
   sessionArtifacts(sessionId: string, filters: { kind?: string; limit?: number } = {}): Promise<{ object: string; session_id: string; data: AgentArtifactRecord[] }> {
-    const params = new URLSearchParams();
-    if (filters.kind) params.set("kind", filters.kind);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<{ object: string; session_id: string; data: AgentArtifactRecord[] }>(
-      this.endpoint,
-      `/v1/sessions/${encodeURIComponent(sessionId)}/artifacts${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestSessionArtifacts(this, sessionId, filters);
   }
 
   sessionSources(sessionId: string, filters: { source_type?: string; limit?: number } = {}): Promise<{ object: string; session_id: string; data: AgentSourceRecord[] }> {
-    const params = new URLSearchParams();
-    if (filters.source_type) params.set("source_type", filters.source_type);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<{ object: string; session_id: string; data: AgentSourceRecord[] }>(
-      this.endpoint,
-      `/v1/sessions/${encodeURIComponent(sessionId)}/sources${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestSessionSources(this, sessionId, filters);
   }
 
   runCancel(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/cancel`, {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body: {}
-    });
+    return requestRunCancel(this, runId);
   }
 
   runStop(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/stop`, {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body: {}
-    });
+    return requestRunStop(this, runId);
   }
 
   runSteer(runId: string, instruction: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/runs/${encodeURIComponent(runId)}/steer`, {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body: { instruction }
-    });
+    return requestRunSteer(this, runId, instruction);
   }
 
   workbenchSummary(): Promise<DesktopWorkbenchSummary> {
-    return requestJson<DesktopWorkbenchSummary>(this.endpoint, "/v1/desktop/workbench/summary", {
-      token: this.apiToken
-    });
+    return requestWorkbenchSummary(this);
   }
 
   runsList(filters: { session_id?: string; status?: string; limit?: number } = {}): Promise<{ object: string; data: DesktopRunSummary[] }> {
-    const params = new URLSearchParams();
-    if (filters.session_id) params.set("session_id", filters.session_id);
-    if (filters.status) params.set("status", filters.status);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<{ object: string; data: DesktopRunSummary[] }>(
-      this.endpoint,
-      `/v1/desktop/runs${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestRunsList(this, filters);
   }
 
   async runEvents(runId: string, token?: string): Promise<NormalizedRunEvent[]> {
-    if (isMockEndpoint(this.endpoint)) {
-      const payload = await requestJson<{ data?: NormalizedRunEvent[] }>(
-        this.endpoint,
-        `/v1/runs/${encodeURIComponent(runId)}/events`,
-        { token: token || this.apiToken }
-      );
-      return payload.data || [];
-    }
-    const response = await fetch(`${this.endpoint}/v1/runs/${encodeURIComponent(runId)}/events`, {
-      headers: token?.trim() ? { Authorization: `Bearer ${token.trim()}` } : {}
-    });
-    if (!response.ok) throw new Error(`AIASK_HTTP_${response.status}`);
-    return parseSseEvents<NormalizedRunEvent>(await response.text());
+    return requestRunEvents(this, runId, token);
   }
 
   callTool<T = unknown>(tool: string, body: Record<string, unknown>, token?: string): Promise<ToolEnvelope & { data: T }> {
@@ -459,7 +348,7 @@ export class AiaskApi {
   }
 
   readOnlyTool<T = unknown>(tool: string, body: Record<string, unknown>): Promise<ToolEnvelope & { data: T }> {
-    return this.callTool<T>(tool, body, this.apiToken);
+    return requestReadOnlyTool<T>(this, tool, body);
   }
 
   marketTemperatureSnapshot(body: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: MarketTemperatureSnapshot }> {
@@ -529,57 +418,27 @@ export class AiaskApi {
   }
 
   stockRadarStatus(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value === undefined || value === null || value === "") continue;
-      params.set(key, String(value));
-    }
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
-      this.endpoint,
-      `/v1/desktop/stock-radar/status${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestStockRadarStatus(this, filters);
   }
 
   stockRadarCandidates(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value === undefined || value === null || value === "") continue;
-      params.set(key, String(value));
-    }
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
-      this.endpoint,
-      `/v1/desktop/stock-radar/candidates${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestStockRadarCandidates(this, filters);
   }
 
   stockRadarDigest(filters: Record<string, unknown> = {}): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value === undefined || value === null || value === "") continue;
-      params.set(key, Array.isArray(value) ? value.join(",") : String(value));
-    }
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
-      this.endpoint,
-      `/v1/desktop/stock-radar/digest${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestStockRadarDigest(this, filters);
   }
 
   stockRadarRunIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("stock_radar.run_once", params, rationale || "Run AIASK stock radar once from Desktop.");
+    return requestStockRadarRunIntent(this, params, rationale);
   }
 
   stockRadarPushDigestIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("stock_radar.push_digest", params, rationale || "Create a stock radar digest delivery intent from Desktop.");
+    return requestStockRadarPushDigestIntent(this, params, rationale);
   }
 
   stockRadarScheduleUpdateIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("stock_radar.schedule_update", params, rationale || "Update stock radar schedule from Desktop.");
+    return requestStockRadarScheduleUpdateIntent(this, params, rationale);
   }
 
   // Write actions go through the ActionIntent chain enforced by PR-F:
@@ -588,88 +447,47 @@ export class AiaskApi {
   // the read-only MCP tool surface for previews and on the intent
   // surface for writes.
   factoryEventCreateIntent(payload: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("strategy_manager.factory_event_create", payload, rationale);
+    return requestFactoryEventCreateIntent(this, payload, rationale);
   }
 
   factoryEventApproveIntent(eventId: string, approverId: string, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_event_approve",
-      { event_id: eventId, approver_id: approverId },
-      rationale
-    );
+    return requestFactoryEventApproveIntent(this, eventId, approverId, rationale);
   }
 
   factoryEventUpdateIntent(eventId: string, updates: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_event_update",
-      { event_id: eventId, ...updates },
-      rationale
-    );
+    return requestFactoryEventUpdateIntent(this, eventId, updates, rationale);
   }
 
   factoryEventRecordOutcomeIntent(eventId: string, outcome: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_event_record_outcome",
-      { event_id: eventId, ...outcome },
-      rationale
-    );
+    return requestFactoryEventRecordOutcomeIntent(this, eventId, outcome, rationale);
   }
 
   factoryEventBootstrapIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_event_bootstrap",
-      params,
-      rationale || "Bootstrap the default theme graph and refresh the exposure matrix from Desktop."
-    );
+    return requestFactoryEventBootstrapIntent(this, params, rationale);
   }
 
   factoryThemeExposureRefreshIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_theme_exposure_refresh",
-      params,
-      rationale || "Refresh the TDX-only theme exposure matrix from Desktop."
-    );
+    return requestFactoryThemeExposureRefreshIntent(this, params, rationale);
   }
 
   factoryEventOutboxDrainIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_event_outbox_drain",
-      params,
-      rationale || "Drain event-driven task outbox from Desktop."
-    );
+    return requestFactoryEventOutboxDrainIntent(this, params, rationale);
   }
 
   factoryThemeRegressionRunIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent(
-      "strategy_manager.factory_theme_regression_run",
-      params,
-      rationale || "Run theme-response regression from Desktop."
-    );
+    return requestFactoryThemeRegressionRunIntent(this, params, rationale);
   }
 
   confirmIntent(intentId: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
-      this.endpoint,
-      `/intents/${encodeURIComponent(intentId)}/confirm`,
-      { method: "POST", token: this.controlToken, body: {} }
-    );
+    return requestConfirmIntent(this, intentId);
   }
 
   denyIntent(intentId: string, reason?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(
-      this.endpoint,
-      `/intents/${encodeURIComponent(intentId)}/deny`,
-      { method: "POST", token: this.controlToken, body: { reason: reason || "" } }
-    );
+    return requestDenyIntent(this, intentId, reason);
   }
 
   intentsList(status?: string, limit = 100): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
-    const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    params.set("limit", String(limit));
-    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, `/intents?${params.toString()}`, {
-      token: controlOrApiToken(this)
-    });
+    return requestIntentsList(this, status, limit);
   }
 
   incubationFactoryStatus(): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -677,16 +495,7 @@ export class AiaskApi {
   }
 
   tradePredictionStatus(filters: { strategy_id?: string; stock_code?: string; limit?: number } = {}): Promise<ToolEnvelope & { data: TradePredictionStatus }> {
-    const params = new URLSearchParams();
-    if (filters.strategy_id) params.set("strategy_id", filters.strategy_id);
-    if (filters.stock_code) params.set("stock_code", filters.stock_code);
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: TradePredictionStatus }>(
-      this.endpoint,
-      `/v1/desktop/trade-predictions/status${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestTradePredictionStatus(this, filters);
   }
 
   tradePredictionOutcomes(
@@ -702,17 +511,7 @@ export class AiaskApi {
       limit?: number;
     } = {}
   ): Promise<ToolEnvelope & { data: TradePredictionOutcomes }> {
-    const params = new URLSearchParams();
-    for (const [key, value] of Object.entries(filters)) {
-      if (value === undefined || value === null || value === "") continue;
-      params.set(key, String(value));
-    }
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: TradePredictionOutcomes }>(
-      this.endpoint,
-      `/v1/desktop/trade-predictions/outcomes${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestTradePredictionOutcomes(this, filters);
   }
 
   tradePredictionMatrix(
@@ -724,37 +523,15 @@ export class AiaskApi {
       limit?: number;
     } = {}
   ): Promise<ToolEnvelope & { data: TradePredictionMatrix }> {
-    const params = new URLSearchParams();
-    if (filters.strategy_id) params.set("strategy_id", filters.strategy_id);
-    if (filters.stock_code) params.set("stock_code", filters.stock_code);
-    if (filters.score_version) params.set("score_version", filters.score_version);
-    if (filters.dimensions?.length) params.set("dimensions", filters.dimensions.join(","));
-    if (filters.limit) params.set("limit", String(filters.limit));
-    const query = params.toString();
-    return requestJson<ToolEnvelope & { data: TradePredictionMatrix }>(
-      this.endpoint,
-      `/v1/desktop/trade-predictions/matrix${query ? `?${query}` : ""}`,
-      { token: this.apiToken }
-    );
+    return requestTradePredictionMatrix(this, filters);
   }
 
   createActionIntent(action: string, params: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(this.endpoint, "/intents", {
-      method: "POST",
-      token: this.controlToken,
-      body: {
-        action,
-        params,
-        rationale,
-        ttl_seconds: 86400
-      }
-    });
+    return requestCreateActionIntent(this, action, params, rationale);
   }
 
   getIntent(intentId: string): Promise<ToolEnvelope> {
-    return requestJson<ToolEnvelope>(this.endpoint, `/intents/${encodeURIComponent(intentId)}`, {
-      token: this.apiToken
-    });
+    return requestGetIntent(this, intentId);
   }
 
   factoryIntentCreate(action: string, params: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -762,15 +539,15 @@ export class AiaskApi {
   }
 
   settingsStatus(): Promise<DesktopSettingsStatus> {
-    return requestJson<DesktopSettingsStatus>(this.endpoint, "/v1/desktop/settings/status", { token: controlOrApiToken(this) });
+    return requestSettingsStatus(this);
   }
 
   modelProviderStatus(): Promise<unknown> {
-    return this.settingsStatus().then((payload) => payload.llm.providers);
+    return requestModelProviderStatus(this);
   }
 
   memoryStatus(): Promise<unknown> {
-    return this.settingsStatus().then((payload) => payload.memory);
+    return requestMemoryStatus(this);
   }
 
   memorySearch(body: Record<string, unknown>): Promise<ToolEnvelope & { data: unknown }> {
@@ -778,13 +555,7 @@ export class AiaskApi {
   }
 
   dataStatus(body: { codes?: string[]; max_stale_days?: number } = {}): Promise<DesktopDataStatus> {
-    const params = new URLSearchParams();
-    if (body.codes?.length) params.set("codes", body.codes.join(","));
-    if (body.max_stale_days) params.set("max_stale_days", String(body.max_stale_days));
-    const query = params.toString();
-    return requestJson<DesktopDataStatus>(this.endpoint, `/v1/desktop/data/status${query ? `?${query}` : ""}`, {
-      token: this.apiToken
-    });
+    return requestDataStatus(this, body);
   }
 
   dataGate(body: Record<string, unknown>): Promise<ToolEnvelope & { data: unknown }> {
@@ -792,185 +563,91 @@ export class AiaskApi {
   }
 
   dataSyncPlan(body: Record<string, unknown>): Promise<DesktopDataSyncPlan> {
-    return requestJson<DesktopDataSyncPlan>(this.endpoint, "/v1/desktop/data/sync-plan", {
-      method: "POST",
-      token: this.apiToken,
-      body
-    });
+    return requestDataSyncPlan(this, body);
   }
 
   stockDataSources(): Promise<StockDataSourcesStatus> {
-    return requestJson<StockDataSourcesStatus>(this.endpoint, "/v1/desktop/stock-data-sources", {
-      token: controlOrApiToken(this)
-    });
+    return requestStockDataSources(this);
   }
 
   stockDataSourceSave(body: StockDataSourceConfig): Promise<{ object: string; source: StockDataSourceConfig; secrets_redacted?: boolean }> {
-    return requestJson<{ object: string; source: StockDataSourceConfig; secrets_redacted?: boolean }>(
-      this.endpoint,
-      "/v1/desktop/stock-data-sources",
-      {
-        method: "POST",
-        token: this.controlToken,
-        body
-      }
-    );
+    return requestStockDataSourceSave(this, body);
   }
 
   stockDataSourceTest(body: Record<string, unknown>): Promise<StockDataSourceTestResult> {
-    return requestJson<StockDataSourceTestResult>(this.endpoint, "/v1/desktop/stock-data-sources/test", {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestStockDataSourceTest(this, body);
   }
 
   localProfileGet(): Promise<LocalProfile> {
-    return requestJson<LocalProfile>(this.endpoint, "/v1/desktop/users/local-profile", { token: this.apiToken });
+    return requestLocalProfileGet(this);
   }
 
   localProfileSave(body: Pick<LocalProfile, "user_id" | "profile_name">): Promise<LocalProfile> {
-    return requestJson<LocalProfile>(this.endpoint, "/v1/desktop/users/local-profile", {
-      method: "PATCH",
-      token: this.apiToken,
-      body
-    });
+    return requestLocalProfileSave(this, body);
   }
 
   recordEvents(events: UserActivityEvent | UserActivityEvent[]): Promise<{ object: string; data: UserActivityEvent[]; count: number; secrets_redacted?: boolean }> {
-    const list = Array.isArray(events) ? events : [events];
-    return requestJson<{ object: string; data: UserActivityEvent[]; count: number; secrets_redacted?: boolean }>(
-      this.endpoint,
-      "/v1/desktop/events",
-      {
-        method: "POST",
-        token: this.apiToken,
-        body: { events: list }
-      }
-    );
+    return requestRecordEvents(this, events);
   }
 
   recordFeedback(body: FeedbackEvent): Promise<{ object: string; data: FeedbackEvent; secrets_redacted?: boolean }> {
-    return requestJson<{ object: string; data: FeedbackEvent; secrets_redacted?: boolean }>(
-      this.endpoint,
-      "/v1/desktop/feedback",
-      {
-        method: "POST",
-        token: this.apiToken,
-        body
-      }
-    );
+    return requestRecordFeedback(this, body);
   }
 
   userActivity(userId: string, limit = 20): Promise<UserActivityPayload> {
-    return requestJson<UserActivityPayload>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/activity?limit=${encodeURIComponent(String(limit))}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestUserActivity(this, userId, limit);
   }
 
   userAnalyticsSummary(userId?: string, limit = 20): Promise<UserAnalyticsSummary> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    params.set("limit", String(limit));
-    return requestJson<UserAnalyticsSummary>(this.endpoint, `/v1/desktop/analytics/summary?${params.toString()}`, {
-      token: controlOrApiToken(this)
-    });
+    return requestUserAnalyticsSummary(this, userId, limit);
   }
 
   userDataExport(userId: string, limit = 500): Promise<UserDataExport> {
-    return requestJson<UserDataExport>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/export?limit=${encodeURIComponent(String(limit))}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestUserDataExport(this, userId, limit);
   }
 
   userDataDelete(userId: string, body: { dry_run?: boolean; hard_delete?: boolean; include_conversations?: boolean; include_audit?: boolean; reason?: string } = {}): Promise<UserDataDeleteResult> {
-    return requestJson<UserDataDeleteResult>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/delete`,
-      {
-        method: "POST",
-        token: this.apiToken,
-        body
-      }
-    );
+    return requestUserDataDelete(this, userId, body);
   }
 
   retentionSweep(body: { user_id?: string; dry_run?: boolean } = { dry_run: true }): Promise<RetentionSweepResult> {
-    return requestJson<RetentionSweepResult>(
-      this.endpoint,
-      "/v1/desktop/retention/sweep",
-      {
-        method: "POST",
-        token: this.controlToken,
-        body
-      }
-    );
+    return requestRetentionSweep(this, body);
   }
 
   userLearningDataset(userId: string, limit = 100): Promise<UserLearningDataset> {
-    return requestJson<UserLearningDataset>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/learning-dataset?limit=${encodeURIComponent(String(limit))}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestUserLearningDataset(this, userId, limit);
   }
 
   userRecommendations(userId: string, limit = 5): Promise<WorkflowRecommendationPayload> {
-    return requestJson<WorkflowRecommendationPayload>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/recommendations?limit=${encodeURIComponent(String(limit))}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestUserRecommendations(this, userId, limit);
   }
 
   userDataPolicyGet(userId: string): Promise<{ object: string; data: UserDataPolicy }> {
-    return requestJson<{ object: string; data: UserDataPolicy }>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/data-policy`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestUserDataPolicyGet(this, userId);
   }
 
   userDataPolicySave(userId: string, patch: Partial<UserDataPolicy>): Promise<{ object: string; data: UserDataPolicy }> {
-    return requestJson<{ object: string; data: UserDataPolicy }>(
-      this.endpoint,
-      `/v1/desktop/users/${encodeURIComponent(userId)}/data-policy`,
-      {
-        method: "PATCH",
-        token: this.apiToken,
-        body: patch
-      }
-    );
+    return requestUserDataPolicySave(this, userId, patch);
   }
 
   factorFactoryStatus(limit = 50): Promise<FactorFactoryStatus> {
-    return requestJson<FactorFactoryStatus>(this.endpoint, `/v1/desktop/factor-factory/status?limit=${encodeURIComponent(String(limit))}`, {
-      token: this.apiToken
-    });
+    return requestFactorFactoryStatus(this, limit);
   }
 
   factorFactoryRunIntent(params: Record<string, unknown>, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("factor_factory.run_once", params, rationale || "Run Factor Mining Factory once from Desktop.");
+    return requestFactorFactoryRunIntent(this, params, rationale);
   }
 
   factorFactoryMaintenanceIntent(params: Record<string, unknown> = {}, rationale?: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return this.createActionIntent("factor_factory.maintenance", params, rationale || "Run Factor Mining Factory maintenance from Desktop.");
+    return requestFactorFactoryMaintenanceIntent(this, params, rationale);
   }
 
   jobsList(): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
-    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, "/v1/jobs", { token: this.apiToken });
+    return requestJobsList(this);
   }
 
   jobCreate(body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return requestJson<Record<string, unknown>>(this.endpoint, "/v1/jobs", {
-      method: "POST",
-      token: this.apiToken,
-      body
-    });
+    return requestJobCreate(this, body);
   }
 
   jobsCreate(body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -978,11 +655,7 @@ export class AiaskApi {
   }
 
   jobUpdate(jobId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return requestJson<Record<string, unknown>>(this.endpoint, `/v1/jobs/${encodeURIComponent(jobId)}`, {
-      method: "PATCH",
-      token: this.apiToken,
-      body
-    });
+    return requestJobUpdate(this, jobId, body);
   }
 
   jobsUpdate(jobId: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -990,10 +663,7 @@ export class AiaskApi {
   }
 
   jobDelete(jobId: string): Promise<Record<string, unknown>> {
-    return requestJson<Record<string, unknown>>(this.endpoint, `/v1/jobs/${encodeURIComponent(jobId)}`, {
-      method: "DELETE",
-      token: this.apiToken
-    });
+    return requestJobDelete(this, jobId);
   }
 
   jobsDelete(jobId: string): Promise<Record<string, unknown>> {
@@ -1001,11 +671,7 @@ export class AiaskApi {
   }
 
   jobRun(jobId: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
-    return requestJson<ToolEnvelope & { data: Record<string, unknown> }>(this.endpoint, `/v1/jobs/${encodeURIComponent(jobId)}/run`, {
-      method: "POST",
-      token: this.apiToken,
-      body: {}
-    });
+    return requestJobRun(this, jobId);
   }
 
   jobsRun(jobId: string): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -1013,222 +679,127 @@ export class AiaskApi {
   }
 
   jobRuns(jobId: string, limit = 100): Promise<{ object: string; job_id: string; data: JobRunRecord[] }> {
-    return requestJson<{ object: string; job_id: string; data: JobRunRecord[] }>(
-      this.endpoint,
-      `/v1/jobs/${encodeURIComponent(jobId)}/runs?limit=${encodeURIComponent(String(limit))}`,
-      { token: this.apiToken }
-    );
+    return requestJobRuns(this, jobId, limit);
   }
 
   sessionsList(userId?: string, limit = 100, includeArchived = false): Promise<{ object: string; data: RecentSessionSummary[] }> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    params.set("limit", String(limit));
-    if (includeArchived) params.set("include_archived", "true");
-    return requestJson<{ object: string; data: RecentSessionSummary[] }>(this.endpoint, `/v1/hermes/sessions?${params.toString()}`, {
-      token: controlOrApiToken(this)
-    });
+    return requestSessionsList(this, userId, limit, includeArchived);
   }
 
   handoffsList(filters: { userId?: string; sessionId?: string; status?: string; limit?: number; includeCompleted?: boolean } = {}): Promise<HandoffQueuePayload> {
-    const params = new URLSearchParams();
-    if (filters.userId) params.set("user_id", filters.userId);
-    if (filters.sessionId) params.set("session_id", filters.sessionId);
-    if (filters.status) params.set("status", filters.status);
-    params.set("limit", String(filters.limit || 100));
-    if (filters.includeCompleted) params.set("include_completed", "true");
-    return requestJson<HandoffQueuePayload>(this.endpoint, `/v1/hermes/handoffs?${params.toString()}`, {
-      token: controlOrApiToken(this)
-    });
+    return requestHandoffsList(this, filters);
   }
 
   sessionResumeContext(sessionId: string): Promise<SessionResumeContextPayload> {
-    return requestJson<SessionResumeContextPayload>(
-      this.endpoint,
-      `/v1/hermes/sessions/${encodeURIComponent(sessionId)}/resume-context`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestSessionResumeContext(this, sessionId);
   }
 
   sessionMessages(sessionId: string, limit = 200): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
-    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(
-      this.endpoint,
-      `/v1/sessions/${encodeURIComponent(sessionId)}/messages?limit=${encodeURIComponent(String(limit))}`,
-      { token: this.apiToken }
-    );
+    return requestSessionMessages(this, sessionId, limit);
   }
 
   sessionUndo(sessionId: string, turns = 1, reason = "desktop session undo"): Promise<SessionUndoPayload> {
-    return requestJson<SessionUndoPayload>(
-      this.endpoint,
-      `/v1/sessions/${encodeURIComponent(sessionId)}/undo`,
-      { method: "POST", token: this.controlToken, body: { turns, reason } }
-    );
+    return requestSessionUndo(this, sessionId, turns, reason);
   }
 
   sessionArchive(sessionId: string, archived = true, reason = "desktop session archive"): Promise<SessionArchivePayload> {
-    return requestJson<SessionArchivePayload>(
-      this.endpoint,
-      `/v1/sessions/${encodeURIComponent(sessionId)}/archive`,
-      { method: "POST", token: this.controlToken, body: { archived, reason } }
-    );
+    return requestSessionArchive(this, sessionId, archived, reason);
   }
 
   search(query: string, body: { session_id?: string; user_id?: string; limit?: number; include_archived?: boolean } = {}): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
-    const params = new URLSearchParams();
-    params.set("query", query);
-    if (body.session_id) params.set("session_id", body.session_id);
-    if (body.user_id) params.set("user_id", body.user_id);
-    if (body.limit) params.set("limit", String(body.limit));
-    if (body.include_archived) params.set("include_archived", "true");
-    return requestJson<{ object: string; data: Array<Record<string, unknown>> }>(this.endpoint, `/v1/search?${params.toString()}`, {
-      token: this.apiToken
-    });
+    return requestSearch(this, query, body);
   }
 
   skillInstall(body: Record<string, unknown>): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/skills", { method: "POST", token: this.controlToken, body });
+    return requestSkillInstall(this, body);
   }
 
   async skillsList(): Promise<CapabilityWorkbenchPayload["skills"]> {
-    const payload = await requestJson<{ data: CapabilityWorkbenchPayload["skills"] }>(this.endpoint, "/v1/skills", {
-      token: controlOrApiToken(this)
-    });
-    return payload.data;
+    return requestSkillsList(this);
   }
 
   skillUpdate(name: string, body: Record<string, unknown>): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/skills/${encodeURIComponent(name)}`, {
-      method: "PATCH",
-      token: this.controlToken,
-      body
-    });
+    return requestSkillUpdate(this, name, body);
   }
 
   skillDelete(name: string): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/skills/${encodeURIComponent(name)}`, {
-      method: "DELETE",
-      token: this.controlToken
-    });
+    return requestSkillDelete(this, name);
   }
 
   pluginToggle(name: string, enabled: boolean): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}`, {
-      method: "PATCH",
-      token: this.controlToken,
-      body: { enabled }
-    });
+    return requestPluginToggle(this, name, enabled);
   }
 
   pluginUpsert(body: Record<string, unknown>): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/plugins", {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestPluginUpsert(this, body);
   }
 
   pluginToolTest(name: string, tool: string, body: Record<string, unknown> = {}): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/tools/${encodeURIComponent(tool)}/test`, {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestPluginToolTest(this, name, tool, body);
   }
 
   pluginCommands(name: string): Promise<{ object: string; data: PluginCommand[] }> {
-    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/commands`, { token: this.controlToken });
+    return requestPluginCommands(this, name);
   }
 
   pluginCommandTest(name: string, command: string, body: Record<string, unknown> = {}): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/plugins/${encodeURIComponent(name)}/commands/${encodeURIComponent(command)}/test`, {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestPluginCommandTest(this, name, command, body);
   }
 
   connectorsSummary(): Promise<{ data: unknown; status?: string; error?: string }> {
-    return requestJson<{ data: unknown; status?: string; error?: string }>(this.endpoint, "/v1/connectors/summary", {
-      token: controlOrApiToken(this)
-    });
+    return requestConnectorsSummary(this);
   }
 
   connectorsList(type?: string, category?: string): Promise<{ object: string; data: ConnectorDetail[] }> {
-    const params = new URLSearchParams();
-    if (type) params.set("type", type);
-    if (category) params.set("category", category);
-    const query = params.toString();
-    return requestJson<{ object: string; data: ConnectorDetail[] }>(this.endpoint, `/v1/connectors${query ? `?${query}` : ""}`, {
-      token: controlOrApiToken(this)
-    });
+    return requestConnectorsList(this, type, category);
   }
 
   connectorDetail(connectorType: string, name: string): Promise<{ object: string; data: ConnectorDetail }> {
-    return requestJson<{ object: string; data: ConnectorDetail }>(
-      this.endpoint,
-      `/v1/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(name)}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestConnectorDetail(this, connectorType, name);
   }
 
   connectorTest(connectorType: string, name: string): Promise<{ object: string; data: ConnectorDetail }> {
-    return requestJson<{ object: string; data: ConnectorDetail }>(
-      this.endpoint,
-      `/v1/connectors/${encodeURIComponent(connectorType)}/${encodeURIComponent(name)}/test`,
-      { method: "POST", token: controlOrApiToken(this), body: {} }
-    );
+    return requestConnectorTest(this, connectorType, name);
   }
 
   gatewayStatus(): Promise<{ object?: string; data?: unknown; [key: string]: unknown }> {
-    return requestJson(this.endpoint, "/v1/gateway/status", { token: controlOrApiToken(this) });
+    return requestGatewayStatus(this);
   }
 
   gatewayDaemonStatus(): Promise<GatewayDaemonStatus> {
-    return requestJson(this.endpoint, "/v1/gateway/daemon/status", { token: this.controlToken });
+    return requestGatewayDaemonStatus(this);
   }
 
   gatewayPlatforms(): Promise<{ object: string; data: GatewayPlatform[] }> {
-    return requestJson(this.endpoint, "/v1/gateway/platforms", { token: controlOrApiToken(this) });
+    return requestGatewayPlatforms(this);
   }
 
   gatewayMessages(platform?: string, limit = 100): Promise<{ object: string; data: GatewayMessage[] }> {
-    const params = new URLSearchParams();
-    if (platform) params.set("platform", platform);
-    params.set("limit", String(limit));
-    return requestJson(this.endpoint, `/v1/gateway/messages?${params.toString()}`, { token: controlOrApiToken(this) });
+    return requestGatewayMessages(this, platform, limit);
   }
 
   gatewayDirectory(platform?: string, kind?: string, limit = 200): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
-    const params = new URLSearchParams();
-    if (platform) params.set("platform", platform);
-    if (kind) params.set("kind", kind);
-    params.set("limit", String(limit));
-    return requestJson(this.endpoint, `/v1/gateway/directory?${params.toString()}`, { token: controlOrApiToken(this) });
+    return requestGatewayDirectory(this, platform, kind, limit);
   }
 
   gatewayDirectoryRefresh(): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/gateway/directory/refresh", { method: "POST", token: controlOrApiToken(this), body: {} });
+    return requestGatewayDirectoryRefresh(this);
   }
 
   gatewayMessageRetry(messageId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/gateway/messages/${encodeURIComponent(messageId)}/retry`, {
-      method: "POST",
-      token: this.controlToken,
-      body: {}
-    });
+    return requestGatewayMessageRetry(this, messageId);
   }
 
   gatewayPlatformStart(platform: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/start`, { method: "POST", token: controlOrApiToken(this), body: {} });
+    return requestGatewayPlatformStart(this, platform);
   }
 
   gatewayPlatformStop(platform: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/stop`, { method: "POST", token: controlOrApiToken(this), body: {} });
+    return requestGatewayPlatformStop(this, platform);
   }
 
   gatewayPlatformHealth(platform: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/gateway/platforms/${encodeURIComponent(platform)}/health`, { token: controlOrApiToken(this) });
+    return requestGatewayPlatformHealth(this, platform);
   }
 
   gatewaySendIntent(payload: Record<string, unknown>, direct = false): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -1236,15 +807,15 @@ export class AiaskApi {
   }
 
   webhooksList(): Promise<{ object: string; data: WebhookSubscription[] }> {
-    return requestJson(this.endpoint, "/v1/webhooks", { token: controlOrApiToken(this) });
+    return requestWebhooksList(this);
   }
 
   webhookCreate(body: Record<string, unknown>): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/webhooks", { method: "POST", token: this.controlToken, body });
+    return requestWebhookCreate(this, body);
   }
 
   webhookDelete(webhookId: string): Promise<unknown> {
-    return requestJson(this.endpoint, `/v1/webhooks/${encodeURIComponent(webhookId)}`, { method: "DELETE", token: this.controlToken });
+    return requestWebhookDelete(this, webhookId);
   }
 
   webhookTriggerIntent(webhookId: string, body: Record<string, unknown>): Promise<ToolEnvelope & { data: Record<string, unknown> }> {
@@ -1252,73 +823,59 @@ export class AiaskApi {
   }
 
   approvalsList(status?: string, limit = 100): Promise<{ object: string; data: ApprovalItem[] }> {
-    const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    params.set("limit", String(limit));
-    return requestJson(this.endpoint, `/v1/approvals?${params.toString()}`, { token: controlOrApiToken(this) });
+    return requestApprovalsList(this, status, limit);
   }
 
   approvalDecide(approvalId: string, decision: "approve" | "deny", reason = "desktop_decision"): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/approvals/${encodeURIComponent(approvalId)}/${decision}`, {
-      method: "POST",
-      token: this.controlToken,
-      body: { reason }
-    });
+    return requestApprovalDecide(this, approvalId, decision, reason);
   }
 
   learningStatus(): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/learning/status", { token: controlOrApiToken(this) });
+    return requestLearningStatus(this);
   }
 
   learningReview(status?: string, limit = 100): Promise<{ object: string; data: LearningProposal[] }> {
-    const params = new URLSearchParams();
-    if (status) params.set("status", status);
-    params.set("limit", String(limit));
-    return requestJson(this.endpoint, `/v1/learning/review?${params.toString()}`, { token: controlOrApiToken(this) });
+    return requestLearningReview(this, status, limit);
   }
 
   learningApply(proposalId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/learning/apply", {
-      method: "POST",
-      token: this.controlToken,
-      body: { proposal_id: proposalId }
-    });
+    return requestLearningApply(this, proposalId);
   }
 
   rlEnvironments(): Promise<{ object: string; data: unknown }> {
-    return requestJson(this.endpoint, "/v1/rl/environments", { token: controlOrApiToken(this) });
+    return requestRlEnvironments(this);
   }
 
   rlConfig(): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/rl/config", { token: controlOrApiToken(this) });
+    return requestRlConfig(this);
   }
 
   rlConfigUpdate(config: Record<string, unknown>): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/rl/config", { method: "PATCH", token: this.controlToken, body: { config } });
+    return requestRlConfigUpdate(this, config);
   }
 
   rlRuns(limit = 100): Promise<{ object: string; data: RlRun[] }> {
-    return requestJson(this.endpoint, `/v1/rl/runs?limit=${encodeURIComponent(String(limit))}`, { token: controlOrApiToken(this) });
+    return requestRlRuns(this, limit);
   }
 
   rlRunStart(environment?: string, config: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, "/v1/rl/runs", { method: "POST", token: this.controlToken, body: { environment, config } });
+    return requestRlRunStart(this, environment, config);
   }
 
   rlRunStop(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/stop`, { method: "POST", token: this.controlToken, body: {} });
+    return requestRlRunStop(this, runId);
   }
 
   rlRunGet(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}`, { token: controlOrApiToken(this) });
+    return requestRlRunGet(this, runId);
   }
 
   rlRunResults(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/results`, { token: controlOrApiToken(this) });
+    return requestRlRunResults(this, runId);
   }
 
   rlRunLogs(runId: string): Promise<Record<string, unknown>> {
-    return requestJson(this.endpoint, `/v1/rl/runs/${encodeURIComponent(runId)}/logs`, { token: controlOrApiToken(this) });
+    return requestRlRunLogs(this, runId);
   }
 
   terminalBackends(): Promise<{ object: string; data: Array<Record<string, unknown>> }> {
@@ -1338,43 +895,27 @@ export class AiaskApi {
   }
 
   quantPresets(): Promise<QuantPresetPayload> {
-    return requestJson<QuantPresetPayload>(this.endpoint, "/v1/desktop/quant/presets", { token: this.apiToken });
+    return requestQuantPresets(this);
   }
 
   quantResearchRun(body: Record<string, unknown>): Promise<ToolEnvelope & { data: { research?: QuantResearchRun } }> {
-    return requestJson<ToolEnvelope & { data: { research?: QuantResearchRun } }>(
-      this.endpoint,
-      "/v1/desktop/quant/research-runs",
-      {
-        method: "POST",
-        token: this.apiToken,
-        body
-      }
-    );
+    return requestQuantResearchRun(this, body);
   }
 
   quantResearchGet(researchId: string): Promise<{ object?: string; research?: QuantResearchRun; data?: { research?: QuantResearchRun } }> {
-    return requestJson<{ object?: string; research?: QuantResearchRun; data?: { research?: QuantResearchRun } }>(
-      this.endpoint,
-      `/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}`,
-      { token: this.apiToken }
-    );
+    return requestQuantResearchGet(this, researchId);
   }
 
   quantResearchReport(researchId: string): Promise<QuantResearchReport> {
-    return requestJson<QuantResearchReport>(
-      this.endpoint,
-      `/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}/report`,
-      { token: this.apiToken }
-    );
+    return requestQuantResearchReport(this, researchId);
   }
 
   financialManagerCatalog(): Promise<FinancialManagerCatalog> {
-    return requestJson<FinancialManagerCatalog>(this.endpoint, "/v1/desktop/financial-manager/catalog", { token: controlOrApiToken(this) });
+    return requestFinancialManagerCatalog(this);
   }
 
   financialManagerStatus(): Promise<FinancialManagerStatus> {
-    return requestJson<FinancialManagerStatus>(this.endpoint, "/v1/desktop/financial-manager/status", { token: controlOrApiToken(this) });
+    return requestFinancialManagerStatus(this);
   }
 
   financialManagerQuery(body: {
@@ -1382,11 +923,7 @@ export class AiaskApi {
     action_id: string;
     params?: Record<string, unknown>;
   }): Promise<FinancialManagerQueryResult> {
-    return requestJson<FinancialManagerQueryResult>(this.endpoint, "/v1/desktop/financial-manager/query", {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body
-    });
+    return requestFinancialManagerQuery(this, body);
   }
 
   financialManagerIntent(body: {
@@ -1396,17 +933,11 @@ export class AiaskApi {
     rationale?: string;
     user_id?: string;
   }): Promise<FinancialManagerIntentResult> {
-    return requestJson<FinancialManagerIntentResult>(this.endpoint, "/v1/desktop/financial-manager/intent", {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestFinancialManagerIntent(this, body);
   }
 
   brokerReadiness(): Promise<BrokerReadinessPayload> {
-    return requestJson<BrokerReadinessPayload>(this.endpoint, "/v1/desktop/broker-readiness", {
-      token: controlOrApiToken(this)
-    });
+    return requestBrokerReadiness(this);
   }
 
   brokerSync(body: {
@@ -1417,47 +948,19 @@ export class AiaskApi {
     run_id?: string;
     trace_id?: string;
   }): Promise<BrokerSyncPayload> {
-    return requestJson<BrokerSyncPayload>(this.endpoint, "/v1/desktop/broker/sync", {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body
-    });
+    return requestBrokerSync(this, body);
   }
 
   brokerAccounts(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    if (provider) params.set("provider", provider);
-    const query = params.toString();
-    return requestJson<BrokerSnapshotPayload>(
-      this.endpoint,
-      `/v1/desktop/broker/accounts${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestBrokerAccounts(this, userId, provider);
   }
 
   brokerPositions(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    if (provider) params.set("provider", provider);
-    const query = params.toString();
-    return requestJson<BrokerSnapshotPayload>(
-      this.endpoint,
-      `/v1/desktop/broker/positions${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestBrokerPositions(this, userId, provider);
   }
 
   brokerOrders(userId?: string, provider?: string): Promise<BrokerSnapshotPayload> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    if (provider) params.set("provider", provider);
-    const query = params.toString();
-    return requestJson<BrokerSnapshotPayload>(
-      this.endpoint,
-      `/v1/desktop/broker/orders${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestBrokerOrders(this, userId, provider);
   }
 
   brokerAnalyticsRun(body: {
@@ -1467,62 +970,30 @@ export class AiaskApi {
     period_start?: string;
     period_end?: string;
   } = {}): Promise<BrokerAnalyticsPayload> {
-    return requestJson<BrokerAnalyticsPayload>(this.endpoint, "/v1/desktop/broker/analytics/run", {
-      method: "POST",
-      token: controlOrApiToken(this),
-      body
-    });
+    return requestBrokerAnalyticsRun(this, body);
   }
 
   brokerAnalyticsLatest(userId?: string, provider?: string): Promise<BrokerAnalyticsPayload> {
-    const params = new URLSearchParams();
-    if (userId) params.set("user_id", userId);
-    if (provider) params.set("provider", provider);
-    const query = params.toString();
-    return requestJson<BrokerAnalyticsPayload>(
-      this.endpoint,
-      `/v1/desktop/broker/analytics/latest${query ? `?${query}` : ""}`,
-      { token: controlOrApiToken(this) }
-    );
+    return requestBrokerAnalyticsLatest(this, userId, provider);
   }
 
   mcpRegisterLocal(body: Record<string, unknown> = {}): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/mcp/register-local", {
-      method: "POST",
-      token: this.controlToken,
-      body
-    });
+    return requestMcpRegisterLocal(this, body);
   }
 
   mcpDiscover(server: string): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/mcp/discover", {
-      method: "POST",
-      token: this.controlToken,
-      body: { server }
-    });
+    return requestMcpDiscover(this, server);
   }
 
   mcpResourceRead(uri: string, server?: string): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/mcp/resources/read", {
-      method: "POST",
-      token: this.controlToken,
-      body: { uri, server }
-    });
+    return requestMcpResourceRead(this, uri, server);
   }
 
   mcpPromptGet(name: string, argumentsValue: Record<string, unknown> = {}, server?: string): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/mcp/prompts/get", {
-      method: "POST",
-      token: this.controlToken,
-      body: { name, arguments: argumentsValue, server }
-    });
+    return requestMcpPromptGet(this, name, argumentsValue, server);
   }
 
   mcpOauthStart(server: string): Promise<unknown> {
-    return requestJson(this.endpoint, "/v1/mcp/oauth/start", {
-      method: "POST",
-      token: this.controlToken,
-      body: { server }
-    });
+    return requestMcpOauthStart(this, server);
   }
 }

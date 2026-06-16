@@ -11,6 +11,7 @@ from akshare_mcp.services.strategy_recompile_backfill import (
     build_trend_strategy_recompile_backfill,
     build_factor_strategy_recompile_backfill,
     _recompiled_formal_ready,
+    _prioritize_recompile_rows,
 )
 
 
@@ -42,8 +43,9 @@ def _synth_trend_klines(n: int = 220, *, start: float = 10.0) -> list[dict]:
 
 
 class _FakeDB:
-    def __init__(self, strategies: list[dict]) -> None:
+    def __init__(self, strategies: list[dict], quality_reports: dict[str, dict] | None = None) -> None:
         self._strategies = {s["id"]: dict(s) for s in strategies}
+        self._quality_reports = dict(quality_reports or {})
         self.saved: list[dict] = []
         self.klines = _synth_trend_klines(220)
 
@@ -60,6 +62,11 @@ class _FakeDB:
 
     async def get_strategy_metrics(self, strategy_id):
         return [{"period": "backtest", "trade_count": 14, "max_drawdown": 0.09}]
+
+    async def get_strategy_quality_report(self, strategy_id, report_type="submission"):
+        _ = report_type
+        report = self._quality_reports.get(strategy_id)
+        return dict(report) if report else None
 
     async def get_klines(self, code, start_date=None, end_date=None, limit=None):
         rows = list(self.klines)
@@ -162,6 +169,68 @@ def test_recompile_produces_compiled_dsl_with_measured_profile() -> None:
     assert profile.get("measured_profile_complete") is True
 
 
+def test_recompile_refreshes_stale_execution_readiness_tier() -> None:
+    """重编译必须用重算判决覆盖提交期冻结的旧 tier/blocker。
+
+    回归用例:样本提交时 tier=missing_executable_contract(无 compiled_dsl),
+    重编译补齐 DSL + measured profile 后,若 _merge_params 保留旧 tier,
+    _recompiled_formal_ready 永远读到 missing_executable_contract 无法转正。
+    """
+    strategy = _momentum_strategy("mom-stale-tier")
+    # 模拟提交期落库的陈旧判决字段
+    strategy["params"]["execution_semantic_mode"] = "missing_executable_contract"
+    strategy["params"]["execution_readiness_tier"] = "missing_executable_contract"
+    strategy["params"]["diagnostic_only"] = True
+    strategy["params"]["dsl_compiled"] = False
+
+    summary_rows = _synth_trend_klines(220)
+    from akshare_mcp.services.instrument_profile_measurement import measure_instrument_profile
+
+    summary = measure_instrument_profile(summary_rows)
+    result = build_trend_strategy_recompile_backfill(
+        strategy,
+        backtest_metrics={"trade_count": 14},
+        measured_profile_summary=summary,
+    )
+    params = dict(result["updated_payload"]["params"])
+    # 旧的 missing_executable_contract 判决必须被重算结果覆盖(样本带齐语义契约 → formal_runtime_ready)
+    assert params["execution_readiness_tier"] != "missing_executable_contract"
+    assert params["execution_readiness_tier"] == "formal_runtime_ready"
+    assert params["dsl_compiled"] is True
+    assert "execution_readiness_tier" in result["applied_param_fields"]
+
+
+def test_recompile_does_not_fabricate_missing_semantic_contracts() -> None:
+    """诚实边界:缺语义契约的样本重编译后 tier 只能到 observe_diagnostic_only,
+    不得伪造 evidence/prediction/confidence 把它顶成 formal_runtime_ready。
+    """
+    strategy = _momentum_strategy("mom-no-contracts")
+    for field in ("evidence_chain", "prediction_contract", "confidence_contract"):
+        strategy["params"].pop(field, None)
+    strategy["params"]["execution_readiness_tier"] = "missing_executable_contract"
+
+    summary_rows = _synth_trend_klines(220)
+    from akshare_mcp.services.instrument_profile_measurement import measure_instrument_profile
+
+    summary = measure_instrument_profile(summary_rows)
+    result = build_trend_strategy_recompile_backfill(
+        strategy,
+        backtest_metrics={"trade_count": 14},
+        measured_profile_summary=summary,
+    )
+    params = dict(result["updated_payload"]["params"])
+    assert params["execution_readiness_tier"] == "observe_diagnostic_only"
+    assert params.get("diagnostic_only") is True
+    assert set(params.get("semantic_contract_missing_fields") or []) >= {
+        "evidence_chain",
+        "prediction_contract",
+        "confidence_contract",
+    }
+    assert not params.get("evidence_chain")
+    assert not params.get("prediction_contract")
+    assert not params.get("confidence_contract")
+
+
 @pytest.mark.asyncio
 async def test_backfill_promotes_ready_observe_to_formal() -> None:
     db = _FakeDB([_momentum_strategy("mom-promote", strict_ready=True)])
@@ -185,6 +254,147 @@ async def test_backfill_does_not_promote_without_strict_gate() -> None:
     assert report["promoted_to_formal"] == 0
     if db.saved:
         assert db.saved[-1]["status"] != "incubating"
+
+
+@pytest.mark.asyncio
+async def test_backfill_promotes_runtime_repairable_quality_pass_to_formal() -> None:
+    strategy = _momentum_strategy("mom-runtime-repair", strict_ready=False)
+    db = _FakeDB(
+        [strategy],
+        quality_reports={
+            "mom-runtime-repair": {
+                "passed": False,
+                "summary": {
+                    "review_passed": True,
+                    "validation_grade": "A",
+                    "admission_block_reasons": [
+                        "default_profile_not_allowed_for_single_name_runtime",
+                        "diagnostic_only_not_allowed_for_incubation",
+                        "execution_readiness_tier:missing_executable_contract",
+                    ],
+                },
+                "quality_gate": {
+                    "admission_block_reasons": [
+                        "default_profile_not_allowed_for_single_name_runtime",
+                    ],
+                },
+            }
+        },
+    )
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-runtime-repair"], measure_profile=True, promote_ready=True
+    )
+    assert report["recompiled"] == 1
+    assert report["promoted_to_formal"] == 1
+    saved = db.saved[-1]
+    assert saved["status"] == "incubating"
+    saved_params = dict(saved["params"])
+    assert saved_params["submission_lane"] == "formal_incubation"
+    assert saved_params["formal_track_auto_corrected"] is True
+
+
+@pytest.mark.asyncio
+async def test_backfill_does_not_promote_non_repairable_quality_blocker() -> None:
+    strategy = _momentum_strategy("mom-profit-factor-blocked", strict_ready=False)
+    db = _FakeDB(
+        [strategy],
+        quality_reports={
+            "mom-profit-factor-blocked": {
+                "summary": {
+                    "review_passed": True,
+                    "validation_grade": "A",
+                    "admission_block_reasons": [
+                        "default_profile_not_allowed_for_single_name_runtime",
+                        "profit_factor 1.332 < 1.800",
+                    ],
+                },
+            }
+        },
+    )
+
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-profit-factor-blocked"], measure_profile=True, promote_ready=True
+    )
+
+    assert report["recompiled"] == 1
+    assert report["promoted_to_formal"] == 0
+    if db.saved:
+        saved = db.saved[-1]
+        assert saved["status"] == "submitted"
+        assert dict(saved["params"]).get("submission_lane") != "formal_incubation"
+
+
+@pytest.mark.asyncio
+async def test_backfill_prioritizes_recent_repairable_observe_sample_with_small_limit() -> None:
+    old_compiled = _momentum_strategy("mom-old-compiled", strict_ready=True)
+    old_compiled["updated_at"] = "2026-06-01T00:00:00+00:00"
+    old_compiled["params"].update(
+        {
+            "submission_lane": "observe_incubation",
+            "execution_semantic_mode": "compiled_dsl",
+            "dsl_compiled": True,
+            "runtime_recompile_backfill": {"status": "recompiled"},
+            "instrument_profile": {
+                "measurement_source": "measured_runtime",
+                "measured_profile_complete": True,
+            },
+            "execution_readiness_tier": "formal_runtime_ready",
+            "semantic_runtime_match": True,
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+        }
+    )
+    recent_repairable = _momentum_strategy("mom-recent-repair", strict_ready=True)
+    recent_repairable["updated_at"] = "2026-06-15T15:30:00+00:00"
+    recent_repairable["params"].update(
+        {
+            "submission_lane": "observe_incubation",
+            "formal_track_blockers": [
+                "execution_readiness_tier:missing_executable_contract",
+                "default_profile_not_allowed_for_single_name_runtime",
+            ],
+            "execution_semantic_mode": "missing_executable_contract",
+            "execution_readiness_tier": "missing_executable_contract",
+        }
+    )
+    db = _FakeDB([old_compiled, recent_repairable])
+
+    report = await backfill_historical_trend_strategies(
+        db,
+        statuses=["submitted"],
+        limit=1,
+        batch_size=2,
+        measure_profile=True,
+        promote_ready=False,
+    )
+
+    assert report["scanned"] == 1
+    assert report["items"][0]["strategy_id"] == "mom-recent-repair"
+    assert db.saved[-1]["id"] == "mom-recent-repair"
+
+
+def test_prioritize_recompile_rows_demotes_already_compiled_backlog() -> None:
+    old_compiled = _momentum_strategy("mom-old-compiled", strict_ready=True)
+    old_compiled["params"].update(
+        {
+            "submission_lane": "observe_incubation",
+            "execution_semantic_mode": "compiled_dsl",
+            "dsl_compiled": True,
+            "runtime_recompile_backfill": {"status": "recompiled"},
+        }
+    )
+    recent_repairable = _momentum_strategy("mom-recent-repair", strict_ready=True)
+    recent_repairable["updated_at"] = "2026-06-15T15:30:00+00:00"
+    recent_repairable["params"].update(
+        {
+            "submission_lane": "observe_incubation",
+            "formal_track_blockers": ["missing_executable_contract"],
+        }
+    )
+
+    prioritized = _prioritize_recompile_rows([old_compiled, recent_repairable], limit=1)
+
+    assert [item["id"] for item in prioritized] == ["mom-recent-repair"]
 
 
 def _quality_factor_strategy(strategy_id: str = "qf-1", *, strict_ready: bool = True) -> dict:

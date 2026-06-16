@@ -1,4 +1,5 @@
 import { Cable, CircleGauge, PlugZap, Puzzle, ShieldCheck } from "lucide-react";
+import { PageShell } from "../../components/PageShell";
 import { StatusBadge } from "../../components/shared";
 import type { HealthDetailed, HermesStatus, MainView, ToolCatalogItem } from "../../types";
 
@@ -68,19 +69,19 @@ export function IntegrationsPage({
   const fullModeReady = Boolean(health?.hermes?.full_mode_active || hermesStatus?.full_mode_active);
 
   return (
-    <section className="capabilities-workspace optimization-page">
-      <header className="capabilities-header">
-        <div>
-          <span>集成与运维</span>
-          <h1>集成</h1>
-          <p>MCP、Gateway、插件、技能、连接器和准备度的统一入口；受控动作保持可见，并继续走安全门控。</p>
-        </div>
-        <div className="header-actions">
+    <PageShell
+      title="集成"
+      eyebrow="集成与运维"
+      description="MCP、Gateway、插件、技能、连接器和准备度的统一入口；受控动作保持可见，并继续走安全门控。"
+      contentPadding={false}
+      actions={
+        <>
           <StatusBadge status={controlReady ? "ready" : "gated"} label={controlReady ? "控制已就绪" : "控制受限"} />
           <StatusBadge status={fullModeReady ? "ready" : "gated"} label={fullModeReady ? "完整模式" : "安全模式"} />
           <StatusBadge status="ready" label={`${tools.length || health?.tools?.count || 0} 个工具`} />
-        </div>
-      </header>
+        </>
+      }
+    >
 
       <div className="capabilities-body">
         <div className="optimization-grid">
@@ -118,6 +119,6 @@ export function IntegrationsPage({
           </p>
         </section>
       </div>
-    </section>
+    </PageShell>
   );
 }

@@ -1,0 +1,115 @@
+- generic [ref=e3] [box=0,0,1440,900]:
+  - complementary [ref=e4] [box=0,0,280,900]:
+    - generic [ref=e5] [box=0,0,279,74]:
+      - img [ref=e7] [box=16,29,18,18]
+      - generic [ref=e9] [box=47,13,46,50]:
+        - strong [ref=e10] [box=47,13,46,18]: AIASK
+        - generic [ref=e11] [box=47,33,46,30]: Agent 工作台
+      - link "设置" [ref=e12] [cursor=pointer] [box=103,21,162,34]:
+        - /url: "#/settings"
+        - img [ref=e13] [box=113,30,16,16]
+        - generic [ref=e16] [box=139,31,26,16]: 设置
+    - button "新建线程" [ref=e17] [cursor=pointer] [box=16,88,247,36]:
+      - img [ref=e18] [box=102,98,16,16]
+      - text: 新建线程
+    - generic [ref=e19] [box=12,139,255,123]:
+      - generic [ref=e20] [box=25,152,229,50]:
+        - generic [ref=e21] [box=25,152,229,14]: 项目 / 上下文
+        - strong [ref=e22] [box=25,169,229,16]: 本地 AIASK
+        - generic [ref=e23] [box=25,188,229,14]: 需要查看连接状态 · 桌面客户端
+      - generic "AIASK_OFFLINE / 离线" [ref=e169] [box=25,210,40,39]:
+        - img [ref=e170] [box=34,215,13,13]
+        - generic [ref=e27] [box=34,231,22,13]: 离线
+    - button "会话 受限" [ref=e30] [cursor=pointer] [box=16,274,138,34]:
+      - img [ref=e31] [box=28,284,13,13]
+      - text: 会话
+      - generic "gated / 受限" [ref=e33] [box=83,279,59,23]:
+        - img [ref=e34] [box=92,284,13,13]
+        - generic [ref=e36] [box=111,284,22,13]: 受限
+    - generic [ref=e37] [box=0,318,279,170]:
+      - generic [ref=e38] [box=10,332,259,22]:
+        - generic [ref=e39] [box=16,332,44,14]: 任务线程
+        - generic [ref=e40] [box=257,333,6,11]: "0"
+      - link "搜索与历史" [ref=e41] [cursor=pointer] [box=14,354,251,32]:
+        - /url: "#/runs"
+        - img [ref=e42] [box=25,363,14,14]
+        - text: 搜索与历史
+      - generic [ref=e46] [box=10,394,259,79]:
+        - strong [ref=e47] [box=23,407,233,18]: 暂无线程
+        - generic [ref=e48] [box=23,430,233,30]: 新建线程后，这里会收集提示词、运行、工具调用、审批和产物。
+    - navigation "Main navigation" [ref=e49] [box=0,488,279,259]:
+      - generic [ref=e50] [box=8,488,263,35]:
+        - img [ref=e51] [box=14,502,13,13]
+        - generic [ref=e56] [box=243,501,22,14]: 导航
+      - region "核心功能" [ref=e57] [box=8,533,263,214]:
+        - button "核心功能" [ref=e58] [cursor=pointer] [box=8,533,263,34]:
+          - generic [ref=e59] [box=17,544,44,14]: 核心功能
+          - img [ref=e60] [box=249,544,13,13]
+        - link "工作台" [ref=e63] [cursor=pointer] [box=8,569,263,34]:
+          - /url: "#/"
+          - img [ref=e64] [box=18,578,16,16]
+          - generic [ref=e66] [box=44,578,39,16]: 工作台
+        - link "运行 / 事件" [ref=e68] [cursor=pointer] [box=8,605,263,34]:
+          - /url: "#/runs"
+          - img [ref=e69] [box=18,614,16,16]
+          - generic [ref=e72] [box=44,614,66,16]: 运行 / 事件
+        - link "集成" [ref=e74] [cursor=pointer] [box=8,641,263,34]:
+          - /url: "#/integrations"
+          - img [ref=e75] [box=18,650,16,16]
+          - generic [ref=e81] [box=44,650,26,16]: 集成
+        - link "金融实验室" [ref=e83] [cursor=pointer] [box=8,677,263,34]:
+          - /url: "#/finance"
+          - img [ref=e84] [box=18,686,16,16]
+          - generic [ref=e88] [box=44,686,65,16]: 金融实验室
+        - link "准备度 / 健康" [ref=e90] [cursor=pointer] [box=8,713,263,34]:
+          - /url: "#/readiness"
+          - img [ref=e91] [box=18,722,16,16]
+          - generic [ref=e93] [box=44,722,79,16]: 准备度 / 健康
+    - button "扩展 内部" [ref=e96] [cursor=pointer] [box=16,758,138,34]:
+      - img [ref=e97] [box=28,768,13,13]
+      - text: 扩展
+      - generic "internal / 内部" [ref=e100] [box=83,763,59,23]:
+        - img [ref=e101] [box=92,768,13,13]
+        - generic [ref=e103] [box=111,768,22,13]: 内部
+    - generic [ref=e104] [box=0,802,279,98]:
+      - generic "AIASK_OFFLINE / 离线" [ref=e174] [box=16,815,59,23]:
+        - img [ref=e175] [box=25,820,13,13]
+        - generic [ref=e108] [box=44,820,22,13]: 离线
+      - generic [ref=e109] [box=16,846,247,15]: 0 个可用工具
+      - generic [ref=e110] [box=16,869,247,15]: 仅金融安全模式
+  - main [ref=e111] [box=280,0,820,900]:
+    - region "AIASK 工作台" [ref=e113] [box=310,24,760,168]:
+      - heading "AIASK" [level=1] [ref=e114] [box=515,24,351,106]
+      - paragraph [ref=e115] [box=441,142,497,23]: 输入一个任务，让 AIASK 研究、检查工具、生成报告，或继续你的金融工作流。
+      - generic [ref=e116] [box=630,177,120,15]: 准备好了，直接开始。
+    - generic [ref=e118] [box=311,225,758,63]:
+      - textbox "让 AIASK 研究、检查工具、生成报告，或继续当前线程..." [ref=e119] [box=311,225,672,63]
+      - button "运行线程任务" [disabled] [ref=e120] [box=993,225,86,63]:
+        - img [ref=e121] [box=1011,249,16,16]
+        - text: 运行
+  - complementary [ref=e124] [box=1100,0,340,900]:
+    - generic [ref=e125] [box=1101,0,339,89]:
+      - button "摘要" [pressed] [ref=e126] [cursor=pointer] [box=1111,10,50,32]:
+        - img [ref=e127] [box=1128,19,15,15]
+      - button "产物" [ref=e129] [cursor=pointer] [box=1165,10,50,32]:
+        - img [ref=e130] [box=1182,19,15,15]
+      - button "审查" [ref=e135] [cursor=pointer] [box=1219,10,50,32]:
+        - img [ref=e136] [box=1236,19,15,15]
+      - button "诊断" [ref=e138] [cursor=pointer] [box=1272,10,50,32]:
+        - img [ref=e139] [box=1290,19,15,15]
+      - button "工具" [ref=e141] [cursor=pointer] [box=1326,10,50,32]:
+        - img [ref=e142] [box=1344,19,15,15]
+      - button "技能" [ref=e144] [cursor=pointer] [box=1380,10,50,32]:
+        - img [ref=e145] [box=1398,19,15,15]
+      - button "审批" [ref=e149] [cursor=pointer] [box=1111,46,50,32]:
+        - img [ref=e150] [box=1128,55,15,15]
+      - button "设置" [ref=e153] [cursor=pointer] [box=1165,46,50,32]:
+        - img [ref=e154] [box=1182,55,15,15]
+    - generic [ref=e157] [box=1101,89,339,811]:
+      - generic [ref=e159] [box=1117,105,84,50]:
+        - text: 当前任务
+        - heading "复核摘要" [level=2] [ref=e160] [box=1117,129,84,26]
+      - generic [ref=e161] [box=1117,169,307,142]:
+        - img [ref=e163] [box=1259,191,24,24]
+        - strong [ref=e167] [box=1223,231,96,20]: 暂无选中线程
+        - generic [ref=e168] [box=1132,260,277,36]: 开始任务或选择线程后，这里会展示回复、模型用量、审批和事件。

@@ -1,0 +1,353 @@
+﻿.workflow-hub .capabilities-header p {
+  max-width: 760px;
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+}
+
+.workflow-hub-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.workflow-hub-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-4);
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-soft);
+}
+
+.workflow-hub-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.workflow-icon {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--accent);
+  background: #fff;
+}
+
+.workflow-hub-card > span {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.workflow-hub-card h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0;
+}
+
+.workflow-hub-card p {
+  min-height: 54px;
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-base);
+  line-height: 1.55;
+}
+
+.financial-manager-grid {
+  display: grid;
+  grid-template-columns: 230px minmax(0, 1fr);
+  gap: var(--space-4);
+  align-items: start;
+}
+
+.financial-manager-side {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.financial-manager-side button,
+.financial-action-list button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--text-muted);
+  text-align: left;
+}
+
+.financial-manager-side button.active,
+.financial-action-list button.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.financial-manager-main {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.financial-workflow-panel {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.financial-workflow-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+
+.financial-workflow-step {
+  display: grid;
+  min-width: 0;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: #fff;
+}
+
+.financial-workflow-step.ready {
+  border-color: rgba(70, 196, 124, 0.36);
+}
+
+.financial-workflow-step.blocked,
+.financial-workflow-step.failed {
+  border-color: rgba(239, 100, 97, 0.32);
+}
+
+.financial-workflow-step.running {
+  border-color: rgba(74, 118, 214, 0.34);
+}
+
+.financial-workflow-step-head {
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: var(--space-2);
+}
+
+.financial-workflow-step-head > span:not(.status-badge) {
+  display: grid;
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: var(--bg-soft);
+  font-size: var(--fs-sm);
+  font-weight: 700;
+}
+
+.financial-workflow-step-head > div {
+  min-width: 0;
+}
+
+.financial-workflow-step-head strong,
+.financial-workflow-step-head small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.financial-workflow-step-head strong {
+  overflow: visible;
+  line-height: 1.35;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.financial-workflow-step-head small {
+  margin-top: 3px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.financial-workflow-step dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-2);
+  margin: 0;
+}
+
+.financial-workflow-step dl div {
+  min-width: 0;
+}
+
+.financial-workflow-step dt {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  font-weight: 650;
+}
+
+.financial-workflow-step dd {
+  margin: 3px 0 0;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.financial-action-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 10px;
+}
+
+.financial-action-list button {
+  justify-content: space-between;
+  min-height: 74px;
+}
+
+.financial-action-list strong,
+.financial-action-list span {
+  display: block;
+}
+
+.financial-action-list span {
+  margin-top: 4px;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.financial-action-runner {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  min-width: 0;
+  gap: 10px;
+  padding: var(--space-4);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: #fff;
+}
+
+.financial-action-runner textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  padding: 10px;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.stock-analysis-runner {
+  display: grid;
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) max-content;
+  gap: 10px 14px;
+  align-items: end;
+  padding: var(--space-3);
+  border: 1px solid rgba(74, 118, 214, 0.22);
+  border-radius: var(--radius-sm);
+  background: var(--accent-soft);
+}
+
+.stock-analysis-runner .field-row {
+  margin: 0;
+}
+
+.stock-analysis-toggle {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 9px;
+  min-height: 36px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+
+.stock-analysis-toggle input {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0;
+  accent-color: var(--accent);
+}
+
+.stock-analysis-route {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.stock-analysis-route code {
+  max-width: 100%;
+  padding: 4px 7px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.stock-analysis-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(136px, 1fr));
+  gap: var(--space-2);
+  align-items: stretch;
+  margin-bottom: 12px;
+}
+
+.stock-analysis-summary .metric-card strong {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.stock-analysis-tool {
+  display: flex;
+  grid-column: 1 / -1;
+  min-width: 0;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  overflow-wrap: anywhere;
+}
+
+.stock-analysis-tool span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  overflow-wrap: normal;
+  white-space: nowrap;
+}
+

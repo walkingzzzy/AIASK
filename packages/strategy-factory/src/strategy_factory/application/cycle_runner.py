@@ -125,7 +125,7 @@ _exec_block(
     globals(),
     'cycle_runner_parts',
     'class FactoryCycleRunner:\n',
-    ['normalizers.py'],
+    ['normalizers.py', 'run_loop.py'],
     future_annotations=True,
 )
 

@@ -1,7 +1,7 @@
 import { Activity, BarChart3, Database, FileText, FlaskConical, Play, RefreshCw, ShieldCheck } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { GatedState, MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
+import { GatedState, MetricCard, PriceDelta, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { QuantPresetPayload, QuantResearchReport, QuantResearchRun } from "../../types";
 
@@ -188,6 +188,16 @@ function firstMetric(record: Record<string, unknown>, keys: string[]): string {
   return "-";
 }
 
+function firstNumeric(record: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = record[key];
+    if (value === undefined || value === null || value === "") continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
 function ResearchConfidencePanel({ run }: { run: QuantResearchRun | null }) {
   const report = run?.report;
   const backtest = unknownRecord(report?.backtest);
@@ -210,7 +220,26 @@ function ResearchConfidencePanel({ run }: { run: QuantResearchRun | null }) {
         <ShieldCheck size={18} />
       </div>
       <div className="diagnostics-summary wide">
-        <MetricCard label="OOS" value={firstMetric(backtest, ["oos_return", "out_sample_return", "oos_sharpe"])} status={report ? "partial" : "not_loaded"} />
+        {(() => {
+          const oosReturn = firstNumeric(backtest, ["oos_return", "out_sample_return"]);
+          if (oosReturn !== null) {
+            return (
+              <div className={`metric-card ${report ? "" : "neutral"}`}>
+                <span>OOS</span>
+                <strong>
+                  <PriceDelta value={oosReturn} />
+                </strong>
+              </div>
+            );
+          }
+          return (
+            <MetricCard
+              label="OOS"
+              value={firstMetric(backtest, ["oos_return", "out_sample_return", "oos_sharpe"])}
+              status={report ? "partial" : "not_loaded"}
+            />
+          );
+        })()}
         <MetricCard label="Walk-forward" value={firstMetric(backtest, ["walk_forward_score", "walk_forward_sharpe", "avg_out_pf"])} status={report ? "partial" : "not_loaded"} />
         <MetricCard label="过拟合风险" value={overfitRisk} status={overfitRisk === "review" ? "failed" : overfitRisk === "monitor" ? "partial" : "not_loaded"} />
         <MetricCard label="工厂闸门" value={firstMetric(strategyFactory, ["status", "recommendation", "decision"])} status={strategyFactory.status ? String(strategyFactory.status) : "not_loaded"} />

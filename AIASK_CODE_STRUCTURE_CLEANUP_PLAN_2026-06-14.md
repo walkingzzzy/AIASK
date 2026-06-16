@@ -1993,17 +1993,429 @@ uv run pytest packages/agent/tests/test_extended_agent_capabilities.py::test_htt
 2. fallback HTTPServer 通过 `server.py` lazy binding 继续拿到同名 helper，因此本批没有改变 legacy path 或 route 行为。
 3. `server.py` 已降到 1787 行，下一批更适合继续拆 Hermes readiness/health payload helper 或 Financial Manager/broker payload helper。
 
+### 2026-06-14 第三十四批：Hermes readiness/status payload helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 启用模块 | `packages/agent/src/aiask_agent/hermes_payloads.py` |
+| `server.py` 装配方式 | 从 `hermes_payloads.py` 导入 `_redact_required_env`、`_parity_live_evidence`、`_hermes_readiness_payload_for_runtime`、`_hermes_status_payload_for_runtime`、`_financial_readiness_payload_for_runtime`，`create_app` 内保留同名 thin wrapper 并注入 runtime、full runtime builder、full-mode 状态和 AI status payload |
+| 已迁出职责 | required env/public health 脱敏、Hermes live evidence 汇总、Hermes full surface status、Hermes readiness/status payload、financial-system readiness payload wrapper |
+| 行为保持 | `/health/detailed` 的 Hermes parity/live evidence 脱敏、`/v1/hermes/status`、`/v1/hermes/readiness`、`/v1/financial-system/readiness` 的 response shape 和 full-mode/control-token 状态计算保持 |
+| fallback 保持 | fallback HTTPServer 继续通过 `server.py` lazy binding 拿到 `_redact_required_env`、`_parity_live_evidence` 兼容别名，legacy health/status path 未改 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 调用，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 1580 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 模块行数 | `hermes_payloads.py` 291 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/hermes_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_native_full_parity.py packages/agent/tests/test_hermes_native_live_adapters.py::test_hermes_readiness_endpoint_reports_native_surfaces -q
+# 13 passed in 78.67s
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 41.71s
+
+uv run pytest packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_live_readiness_smoke_script.py -q
+# 8 passed in 40.68s
+```
+
+当前 P1 模板补充结论：
+
+1. Hermes readiness/status payload 与 app assembly 可干净分离，`server.py` 只负责把 runtime/full-mode 闭包注入 payload helper。
+2. health/detailed 与 fallback HTTPServer 仍依赖 `_redact_required_env`、`_parity_live_evidence` 这两个兼容别名，因此保留别名比批量改调用点更稳。
+3. `server.py` 已降到 1580 行，下一批更适合拆 Financial Manager/broker payload helper，或继续收束顶部通用 MCP/plugin utility。
+
+### 2026-06-14 第三十五批：Financial Manager/broker payload helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/financial_payloads.py` |
+| `server.py` 装配方式 | 从 `financial_payloads.py` 导入 financial catalog/status/query/intent 和 broker readiness/accounts/sync/analytics payload builder，`server.py` 保留 `_financial_*`、`_broker_*` 同名兼容 wrapper 供 FastAPI route factory 与 fallback HTTPServer lazy binding 调用 |
+| 已迁出职责 | Financial Manager group/action catalog、MCP wrapped-tool availability detail、secret redaction、status/readiness 聚合、read-only query payload、ActionIntent intent payload、broker read-only context/sync/accounts/analytics payload |
+| 行为保持 | Financial Manager read-only query 仍走 audited tool call；stateful action 仍返回 intent-only/ActionIntent 路径；broker live order/cancel 仍 blocked，broker sync 仍要求 consent 且只读；response shape、`secrets_redacted`、`live_trading_enabled: False` 保持 |
+| fallback 保持 | fallback HTTPServer 继续通过 `server.py` lazy binding 调用 `_financial_catalog_payload`、`_financial_status_payload`、`_financial_query_payload`、`_financial_intent_payload`、`_broker_*` wrapper，legacy path 未改 |
+| direct-call 守门同步 | 本批未新增或迁移裸 `tool_registry.call_tool`；Financial Manager query/intent 仍通过 `audited_tool_calls.py::audited_runtime_tool_call`，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 1120 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `financial_payloads.py` 538 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/financial_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_broker_readonly_api.py packages/agent/tests/test_realtime_finance_facades.py -q
+# 13 passed in 63.79s
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py packages/agent/tests/test_desktop_capabilities_api.py -q
+# 17 passed in 107.55s
+
+uv run pytest packages/agent/tests/test_live_readiness_smoke_script.py -q
+# 2 passed in 0.05s
+```
+
+当前 P1 模板补充结论：
+
+1. Financial Manager 与 broker read-only payload 可独立在 Agent runtime 内成模块，Desktop route factory 继续只通过注入函数消费，不直接接触 manager/MCP 原始接口。
+2. 将 ActionIntent/read-only/live-trading-disabled 文案和 redaction 留在同一 payload 模块，有利于后续维护 Financial Manager 桌面合同。
+3. `server.py` 已降到 1120 行，下一批若继续 P1，更适合拆顶部 MCP/plugin utility 或进一步压缩 app assembly glue。
+
+### 2026-06-14 第三十六批：HTTP/MCP/plugin utility helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/server_http_utils.py`、`packages/agent/src/aiask_agent/mcp_payloads.py`、`packages/agent/src/aiask_agent/plugin_payloads.py` |
+| `server.py` 装配方式 | 从 `server_http_utils.py` 导入 `_json_dumps`、`_query_bool`、`_truthy`、`_read_json`、`_header_token`、`_cors_origins`；从 `mcp_payloads.py` 导入 `_classify_mcp_error`、`_mcp_action_error_payload`；从 `plugin_payloads.py` 导入 `_plugin_tools`、`_plugin_self_test_payload` |
+| 已迁出职责 | fallback/ASGI 共用 JSON bytes、query bool、truthy、request JSON、header token、CORS origin helper；MCP discovery/resource/prompt 错误分类和 payload；plugin manifest self-test 和 manifest tool list |
+| 行为保持 | fallback HTTPServer lazy binding 继续从 `server.py` 取得同名私有别名；CORS 默认 origin、MCP error_code/detail/auth readiness、plugin manifest self-test response shape 保持 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径；plugins/skills route 中既有 direct snapshot 分类未变，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 989 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `server_http_utils.py` 70 行；`mcp_payloads.py` 62 行；`plugin_payloads.py` 29 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/server_http_utils.py packages/agent/src/aiask_agent/mcp_payloads.py packages/agent/src/aiask_agent/plugin_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+$env:PYTHONPATH='packages/agent/src'; @'
+from aiask_agent import server
+for name in ('_json_dumps','_query_bool','_truthy','_read_json','_header_token','_cors_origins','_classify_mcp_error','_mcp_action_error_payload','_plugin_tools','_plugin_self_test_payload'):
+    assert callable(getattr(server, name)), name
+'@ | python -
+# passed
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 47.38s
+
+uv run pytest packages/agent/tests/test_mcp_client.py packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface -q
+# 10 passed in 51.90s
+```
+
+当前 P1 模板补充结论：
+
+1. `server.py` 已进入千行以内，剩余主要是 app assembly、runtime/full-runtime 闭包、SSE formatter 和各 route factory 的依赖注入。
+2. fallback HTTPServer 对 `server.py` 私有别名的 lazy binding 仍保留，因此 helper 迁移要继续用 alias，而不是一次性改 fallback 内部调用。
+3. P1 已具备阶段性切分条件；若继续瘦身，可优先处理 SSE formatter 或 gateway/connectors factory glue。
+
+### 2026-06-14 第三十七批：SSE formatter helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/streaming_payloads.py` |
+| `server.py` 装配方式 | 从 `streaming_payloads.py` 导入 `_sse_events_stream`、`_chat_completion_sse_stream`、`_response_sse_stream`，`create_app` 内保留 `sse_events`、`chat_completion_sse`、`response_sse` thin wrapper 供 route factory 注入 |
+| 已迁出职责 | run events SSE chunk、chat completions SSE chunk、responses SSE chunk 的 `id:`/`event:`/`data:` 字节序列格式化 |
+| 行为保持 | `/v1/runs/{run_id}/events`、`/v1/runs/{run_id}/events/stream`、`/v1/responses` stream、`/v1/chat/completions` stream 的 `text/event-stream` 输出结构保持；`[DONE]` 终止 chunk 保持 |
+| fallback 修正 | legacy fallback chat completion SSE 原先间接依赖 `server.py` 的 `time` import；本批在 `fallback_server.py` 显式 `import time`，避免 helper 外移后 lazy binding 缺失 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 949 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `streaming_payloads.py` 71 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/streaming_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 11 passed in 47.89s
+```
+
+当前 P1 模板补充结论：
+
+1. SSE formatter 已从 app assembly 中分离，`server.py` 继续只负责把 stream generator wrapper 注入 route factory。
+2. fallback HTTPServer 的标准库依赖应逐步显式化，减少对 `server.py` import namespace 的偶然依赖。
+3. `server.py` 已降到 949 行，下一批若继续 P1，更适合拆 gateway/connectors factory glue 或把 remaining app wrapper 归组。
+
+### 2026-06-14 第三十八批：Gateway/connectors/webhook route factory glue 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/gateway_route_factories.py` |
+| `server.py` 装配方式 | 在 `create_app` 内创建 `GatewayRouteFactories(runtime=runtime, app=app, daemon_getter=lambda: _daemon)`，并将 gateway runtime/store/config/router、connector manager、webhook store 和 gateway daemon status payload factory 注入 route factories |
+| 已迁出职责 | Gateway message/directory/runtime store factory、Gateway config/delivery router factory、Gateway platform adapter/normalize 注入、gateway daemon status payload、connector manager factory、webhook store factory |
+| 行为保持 | `/v1/gateway/*`、`/v1/connectors/*`、`/v1/webhooks/*` route path/method/response shape 保持；Gateway daemon 生命周期仍由 `server.py` lifespan 控制；fallback HTTPServer 未改 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 929 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `gateway_route_factories.py` 68 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/gateway_route_factories.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 64 passed in 49.97s
+
+uv run pytest packages/agent/tests/test_connector_health.py packages/agent/tests/test_desktop_capabilities_api.py -q
+# 9 passed in 40.33s
+```
+
+当前 P1 模板补充结论：
+
+1. Gateway/connectors/webhook route factory glue 可独立成 factory binder，`server.py` 继续只保留 lifespan 中 daemon start/stop 和 router include 顺序。
+2. 本批保留 `ADAPTERS`、Hermes baseline 等 legacy fallback lazy binding 兼容导入，避免同时改 fallback health/status 行为。
+3. `server.py` 已降到 929 行，下一批若继续 P1，可考虑整理剩余 app wrapper/route include 装配，或转入阶段性完整回归与提交切分。
+
+### 2026-06-14 第三十九批：FastAPI lifespan/gateway daemon lifecycle 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/app_lifecycle.py` |
+| `server.py` 装配方式 | 在 `create_app` 内创建 `AgentAppLifecycle(runtime=runtime, full_runtime_getter=lambda: full_runtime)`，并将 `lifecycle.lifespan` 注入 `FastAPI(...)`；`GatewayRouteFactories` 通过 `lifecycle.daemon` 读取当前 daemon |
+| 已迁出职责 | Gateway daemon env 开关、daemon start/stop、daemon start warning、shutdown 时 full runtime/runtime close |
+| 行为保持 | `AIASK_GATEWAY_DAEMON_ENABLED` 语义、daemon start 失败降级为 warning、shutdown 顺序、Gateway daemon status getter 均保持；fallback HTTPServer 未改 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 900 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `app_lifecycle.py` 52 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_lifecycle.py packages/agent/src/aiask_agent/gateway_route_factories.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 64 passed in 48.57s
+
+uv run pytest packages/agent/tests/test_connector_health.py packages/agent/tests/test_desktop_capabilities_api.py -q
+# 9 passed in 44.48s
+```
+
+当前 P1 模板补充结论：
+
+1. FastAPI lifespan 已从 app assembly 中分离，`server.py` 只负责创建 lifecycle 对象并交给 FastAPI。
+2. Gateway daemon 当前状态由 lifecycle 统一持有，gateway route factory 只通过 getter 读取，不再依赖 `server.py` 闭包变量。
+3. `server.py` 已降到 900 行，下一批若继续 P1，更适合整理剩余 app wrapper/route include 装配或进入阶段性完整回归与提交切分。
+
+### 2026-06-14 第四十批：Runtime/full-runtime factory 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/runtime_factories.py` |
+| `server.py` 装配方式 | 从 `runtime_factories.py` 导入 `build_runtime_and_executor` 作为 `_build_runtime_and_executor` 兼容别名，并用 `FullRuntimeManager(runtime)` 替代 `create_app` 内的 `full_runtime` nonlocal closure |
+| fallback 同步 | `fallback_server.py` 复用 `FullRuntimeManager` 构造 legacy native full runtime，保留 `_build_native_full_runtime()` 函数名供 handler 内部调用 |
+| 已迁出职责 | 默认 `AgentRuntime + IntentExecutor` 构造、Hermes/full native runtime 缓存、full runtime active/current/reset/close/aclose |
+| 行为保持 | `finance_safe` 默认 runtime、`general_full` policy、workspace roots、shared session store/model client、refresh MCP 后 full runtime reset、FastAPI 与 fallback full-mode response shape 保持 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需更新 |
+| `server.py` 行数 | 875 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| `fallback_server.py` 行数 | 1762 行 |
+| 新模块行数 | `runtime_factories.py` 60 行 |
+
+验证结果：
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/fallback_server.py packages/agent/src/aiask_agent/runtime_factories.py packages/agent/src/aiask_agent/app_lifecycle.py
+# passed
+
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 12 passed in 60.92s
+
+uv run pytest packages/agent/tests/test_tool_registry.py packages/agent/tests/test_desktop_capabilities_api.py -q
+# 17 passed in 39.33s
+```
+
+当前 P1 模板补充结论：
+
+1. runtime 构造与 full-runtime 缓存状态已经脱离 `server.py` app assembly，FastAPI/fallback 共用同一套构造逻辑。
+2. fallback HTTPServer 对 server lazy binding 的依赖进一步减少了重复实现，但仍保留 legacy 入口和 helper 名称，未改 HTTP path。
+3. `server.py` 已降到 875 行，下一批可继续整理 remaining app wrapper/include 装配，或进入拆组完整 Agent HTTP contract 回归与阶段性提交切分。
+
+### 2026-06-14 第四十一批：FastAPI route assembly 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/app_route_assembly.py` |
+| `server.py` 装配方式 | `create_app` 保留 runtime、authorizer 和 payload wrapper 构造，然后通过 `configure_agent_app(app, AgentRouteAssembly(...))` 注入完整路由装配依赖 |
+| 已迁出职责 | CORS middleware 配置、全部 FastAPI `include_router(...)` 顺序、route factory imports、full/native controls factory 绑定、MCP refresh/full-runtime reset 绑定、Gateway/connectors/webhook route include 绑定 |
+| 行为保持 | route path、method、response shape、CORS allow headers、Gateway daemon getter、MCP refresh 后 full-runtime reset、plugin/MCP/native/full-mode dependency injection 保持 |
+| fallback 兼容 | 未改 `fallback_server.py` HTTP path；`server.py` 仍保留 fallback lazy binding 当前使用的私有 helper/import aliases |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需新增变更 |
+| `server.py` 行数 | 642 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `app_route_assembly.py` 406 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 43.05s
+
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_ai_status_and_smoke.py packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs -q
+# timed out after 184s before pytest summary; split verification below passed
+
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_ai_status_and_smoke.py -q
+# 17 passed, 1 skipped in 79.69s
+
+uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_financial_manager_desktop_api.py -q
+# 17 passed in 121.75s
+
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs -q
+# 2 passed in 14.79s
+
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_connector_health.py -q
+# 56 passed in 3.78s
+```
+
+当前 P1 模板补充结论：
+
+1. FastAPI route include 顺序和 CORS middleware 已从 `server.py` app assembly 中分离，`server.py` 不再直接导入各 route factory。
+2. `server.py` 当前职责进一步收口到 runtime 构造、authorizer/wrapper 构造、fallback 兼容别名和 app handoff；所有 HTTP path 的实际路由仍由既有 route factory 承接。
+3. `server.py` 已降到 642 行；继续瘦身时应优先按 wrapper 职责成组迁移，或先做拆组完整 Agent HTTP contract 回归后作为阶段边界切分。
+
+### 2026-06-14 第四十二批：Unused `create_app` wrapper 清理
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 清理范围 | `packages/agent/src/aiask_agent/server.py` |
+| 已删除内容 | 不再被任何 route assembly 注入使用的 `_control_snapshot()`、`_desktop_settings_status_payload()`、`_desktop_data_status_payload()`、`_desktop_data_sync_plan_payload()` 局部 helper，以及未使用的 `api_authorized` 局部绑定 |
+| 行为保持 | 实际注入 route factory 的 `desktop_settings_status_payload()`、`desktop_data_status_payload()`、`desktop_data_sync_plan_payload()` 保留；fallback HTTPServer 的 `_api_authorized()` handler 方法未改 |
+| direct-call 守门同步 | 本批未迁移任何 `tool_registry.call_tool` 路径，`docs/architecture/tool-call-path-classification.json` 无需新增变更 |
+| `server.py` 行数 | 618 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 48.70s
+```
+
+当前 P1 模板补充结论：
+
+1. `create_app` 中的 pre-authorizer Desktop helper 遗留已经清掉，当前剩余 wrapper 均被 route assembly 或 fallback 兼容路径引用。
+2. fallback 中命中的 `_api_authorized()` 属于 legacy handler 自有方法，本批未触碰 fallback HTTP path。
+3. 继续拆分时不宜按单函数零碎移动，应按 AI/Hermes/run/search/tool-call wrapper 职责成组迁移，并继续保持 fallback alias 兼容检查。
+
+### 2026-06-14 第四十三批：App route callback factory 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/app_route_callbacks.py` |
+| `server.py` 装配方式 | `create_app` 只构造 runtime、`FullRuntimeManager`、`QuantResearchStore`、`AppRouteCallbackFactory`、lifespan 和 FastAPI app，再用 `callbacks.route_assembly(...)` 交给 `configure_agent_app(...)` |
+| 已迁出职责 | `RouteAuthorizer` 构造、tool/full-tool audited call wrapper、Desktop settings/data/capabilities wrapper、AI config/status wrapper、workbench/run/search/artifact/session wrapper、Hermes readiness/status/session wrapper、Financial Manager/broker wrapper、SSE wrapper、`AgentRouteAssembly` 依赖对象构造 |
+| 行为保持 | `source_chain=["aiask_agent.server", "full_tool_call"]` 保持；route path/method/response shape 保持；control token/full-mode/user-scope guardrail 仍由 `RouteAuthorizer` 提供；fallback HTTPServer 未改 |
+| fallback 兼容 | `server.py` 继续保留 fallback lazy binding 当前使用的私有 helper 和 import aliases，本批没有迁移 legacy HTTP path |
+| direct-call 守门同步 | 本批未新增裸 `tool_registry.call_tool` 路径；`test_tool_call_path_gate.py` 已通过，`docs/architecture/tool-call-path-classification.json` 无需新增变更 |
+| `server.py` 行数 | 281 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| 新模块行数 | `app_route_callbacks.py` 509 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_callbacks.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 46.59s
+
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_ai_status_and_smoke.py -q
+# 17 passed, 1 skipped in 90.33s
+
+uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_broker_readonly_api.py -q
+# 21 passed in 153.43s
+
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_tool_registry.py packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_connector_health.py -q
+# 68 passed in 22.78s
+```
+
+当前 P1 模板补充结论：
+
+1. `server.py` 已基本回到 app entrypoint/compatibility shim：runtime 默认构造、FastAPI app 创建、route assembly handoff、fallback `build_server` 和 CLI `main`。
+2. 仍保留若干 fallback lazy binding 兼容 import/helper，因此不宜仅按“unused import”做机械清理；下一步若要继续瘦身，应先显式化 fallback 依赖，再删除 `server.py` 兼容别名。
+3. P1 已适合进入阶段边界：补跑拆组 Agent HTTP contract、核对 endpoint/tool-call gates、再考虑 P2 Desktop 合同层拆分。
+
+### 2026-06-14 第四十四批：P1 边界回归与 Factor Factory 兼容注入
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 修复范围 | `packages/agent/src/aiask_agent/app_route_assembly.py`、`packages/agent/src/aiask_agent/app_route_callbacks.py`、`packages/agent/src/aiask_agent/server.py` |
+| 回归发现 | P1 边界回归中 `test_desktop_factor_factory_status_endpoint_uses_safe_facade` 发现 route assembly 直接引用底层 `factor_factory_status`，绕过了测试和兼容层 monkeypatch 的 `aiask_agent.server.factor_factory_status` |
+| 修复方式 | 将 `factor_factory_status` 加入 `AgentRouteAssembly` 显式依赖，由 `AppRouteCallbackFactory` 持有，并在 `server.create_app` 传入当前 `server.factor_factory_status` 兼容别名 |
+| 行为保持 | `/v1/desktop/factor-factory/status` 仍使用 safe facade；生产路径不变；测试/外部兼容 monkeypatch 继续可通过 `aiask_agent.server.factor_factory_status` 覆盖 |
+| direct-call 守门同步 | 本批未新增裸 `tool_registry.call_tool` 路径；`test_tool_call_path_gate.py` 已通过，`docs/architecture/tool-call-path-classification.json` 无需新增变更 |
+| `server.py` 行数 | 281 行 |
+| `server.py` FastAPI route decorators | 0 个 |
+| `app_route_callbacks.py` 行数 | 509 行 |
+| `app_route_assembly.py` 行数 | 406 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_callbacks.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+# passed
+
+uv run pytest packages/agent/tests/test_desktop_ops_api.py packages/agent/tests/test_evidence_artifacts_sources.py packages/agent/tests/test_intents.py -q
+# 24 passed in 113.93s
+
+uv run pytest packages/agent/tests/test_realtime_finance_facades.py packages/agent/tests/test_mcp_client.py -q
+# 5 passed in 0.32s
+
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# 10 passed in 44.61s
+```
+
+当前 P1 模板补充结论：
+
+1. P1 route/callback 拆分后，server-level compatibility aliases 不只是 fallback 使用，也可能被测试或外部启动脚本 monkeypatch；迁移 route assembly 依赖时要优先显式注入兼容别名。
+2. Agent HTTP contract 拆组回归已覆盖 Desktop ops、evidence artifacts、intents、MCP client、realtime finance、server/drift/tool-call gate。
+3. P1 进入阶段边界前仍建议保留当前拆组命令，而不是恢复单个超长 pytest 命令。
+
 ### 2026-06-14 本轮收尾快照
 
 当前代码直接统计：
 
 | 文件/范围 | 行数 | route decorators |
 | --- | ---: | ---: |
-| `packages/agent/src/aiask_agent/server.py` | 1787 | 0 |
+| `packages/agent/src/aiask_agent/server.py` | 281 | 0 |
+| `packages/agent/src/aiask_agent/app_route_callbacks.py` | 509 | 0 |
+| `packages/agent/src/aiask_agent/app_route_assembly.py` | 406 | 0 |
+| `packages/agent/src/aiask_agent/runtime_factories.py` | 60 | 0 |
+| `packages/agent/src/aiask_agent/app_lifecycle.py` | 52 | 0 |
+| `packages/agent/src/aiask_agent/gateway_route_factories.py` | 68 | 0 |
+| `packages/agent/src/aiask_agent/streaming_payloads.py` | 71 | 0 |
+| `packages/agent/src/aiask_agent/server_http_utils.py` | 70 | 0 |
+| `packages/agent/src/aiask_agent/mcp_payloads.py` | 62 | 0 |
+| `packages/agent/src/aiask_agent/plugin_payloads.py` | 29 | 0 |
+| `packages/agent/src/aiask_agent/financial_payloads.py` | 538 | 0 |
+| `packages/agent/src/aiask_agent/hermes_payloads.py` | 291 | 0 |
 | `packages/agent/src/aiask_agent/run_payloads.py` | 596 | 0 |
 | `packages/agent/src/aiask_agent/desktop_capabilities_payloads.py` | 250 | 0 |
 | `packages/agent/src/aiask_agent/server_cli.py` | 104 | 0 |
-| `packages/agent/src/aiask_agent/fallback_server.py` | 1784 | 0 |
+| `packages/agent/src/aiask_agent/fallback_server.py` | 1762 | 0 |
 | `packages/agent/src/aiask_agent/ai_payloads.py` | 674 | 0 |
 | `packages/agent/src/aiask_agent/route_auth.py` | 118 | 0 |
 | `packages/agent/src/aiask_agent/audited_tool_calls.py` | 99 | 0 |
@@ -2036,9 +2448,9 @@ uv run pytest packages/agent/tests/test_extended_agent_capabilities.py::test_htt
 
 本轮核心结果：
 
-1. `server.py` 从第三批记录时的 6378 行、136 个 FastAPI route decorators，收口到 1787 行、0 个 FastAPI route decorators。
-2. 新增/启用的 route factory 覆盖 Desktop data/user/finance/workbench/runs、AI config/status、responses/chat/search、run history/control、intents/approvals、jobs、tools、Hermes status/sessions、full/native controls、skills/plugins、MCP aggregation、learning/RL、gateway/connectors/webhooks，并新增 `route_auth.py` 承接 auth/control helper、`audited_tool_calls.py` 承接 tool-call 审计 helper、`desktop_payloads.py` 承接 Desktop data/settings/profile payload builder、`desktop_capabilities_payloads.py` 承接 Desktop capabilities 聚合 payload、`run_payloads.py` 承接 run/session/workbench/handoff/artifact payload helper、`request_context.py` 承接 request context helper、`response_payloads.py` 承接 responses/chat payload formatter、`ai_payloads.py` 承接 AI config/status/smoke/models payload builder、`fallback_server.py` 承接 legacy HTTPServer、`server_cli.py` 承接服务端启动 CLI。
-3. `docs/architecture/tool-call-path-classification.json` 已同步删除或更新迁移后 stale 的 FastAPI/direct tool-call 分类；fallback HTTPServer 的只读分类已指向 `fallback_server.py`，Desktop capabilities 的只读分类已指向 `desktop_capabilities_payloads.py`。
+1. `server.py` 从第三批记录时的 6378 行、136 个 FastAPI route decorators，收口到 281 行、0 个 FastAPI route decorators。
+2. 新增/启用的 route factory 覆盖 Desktop data/user/finance/workbench/runs、AI config/status、responses/chat/search、run history/control、intents/approvals、jobs、tools、Hermes status/sessions、full/native controls、skills/plugins、MCP aggregation、learning/RL、gateway/connectors/webhooks，并新增 `route_auth.py` 承接 auth/control helper、`runtime_factories.py` 承接 runtime/full-runtime factory、`app_route_assembly.py` 承接 FastAPI CORS 和 route include assembly、`app_route_callbacks.py` 承接 app route callback/wrapper factory、`audited_tool_calls.py` 承接 tool-call 审计 helper、`desktop_payloads.py` 承接 Desktop data/settings/profile payload builder、`desktop_capabilities_payloads.py` 承接 Desktop capabilities 聚合 payload、`run_payloads.py` 承接 run/session/workbench/handoff/artifact payload helper、`streaming_payloads.py` 承接 SSE formatter、`gateway_route_factories.py` 承接 Gateway/connectors/webhook route factory glue、`app_lifecycle.py` 承接 FastAPI lifespan/Gateway daemon lifecycle、`hermes_payloads.py` 承接 Hermes readiness/status/live evidence payload helper、`financial_payloads.py` 承接 Financial Manager/broker read-only payload helper、`server_http_utils.py` 承接 fallback/ASGI HTTP utility、`mcp_payloads.py` 承接 MCP error payload helper、`plugin_payloads.py` 承接 plugin manifest payload helper、`request_context.py` 承接 request context helper、`response_payloads.py` 承接 responses/chat payload formatter、`ai_payloads.py` 承接 AI config/status/smoke/models payload builder、`fallback_server.py` 承接 legacy HTTPServer、`server_cli.py` 承接服务端启动 CLI，并清理 `create_app` 未引用 wrapper 遗留、保留 `factor_factory_status` server-level monkeypatch 兼容。
+3. `docs/architecture/tool-call-path-classification.json` 已同步删除或更新迁移后 stale 的 FastAPI/direct tool-call 分类；fallback HTTPServer 的只读分类已指向 `fallback_server.py`，Desktop capabilities 的只读分类已指向 `desktop_capabilities_payloads.py`；第三十四至四十四批未新增裸 `tool_registry.call_tool` 路径，因此无需新增分类变更。
 4. 所有本轮迁移均保持 path、method、response shape 和既有 guardrail；fallback HTTPServer 已移出 `server.py`，但保留原 `build_server` 入口。
 
 本轮已跑过的主要验证集：
@@ -2057,10 +2469,2989 @@ uv run pytest packages/agent/tests/test_extended_agent_capabilities.py::test_htt
 python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/server_cli.py packages/agent/src/aiask_agent/fallback_server.py
 uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_quant_product.py -q
 uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_evidence_artifacts_sources.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/hermes_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_native_full_parity.py packages/agent/tests/test_hermes_native_live_adapters.py::test_hermes_readiness_endpoint_reports_native_surfaces -q
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_live_readiness_smoke_script.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/financial_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_broker_readonly_api.py packages/agent/tests/test_realtime_finance_facades.py -q
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py packages/agent/tests/test_desktop_capabilities_api.py -q
+uv run pytest packages/agent/tests/test_live_readiness_smoke_script.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/server_http_utils.py packages/agent/src/aiask_agent/mcp_payloads.py packages/agent/src/aiask_agent/plugin_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_mcp_client.py packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/streaming_payloads.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/gateway_route_factories.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_connector_health.py packages/agent/tests/test_desktop_capabilities_api.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_lifecycle.py packages/agent/src/aiask_agent/gateway_route_factories.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_connector_health.py packages/agent/tests/test_desktop_capabilities_api.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/fallback_server.py packages/agent/src/aiask_agent/runtime_factories.py packages/agent/src/aiask_agent/app_lifecycle.py
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_tool_registry.py packages/agent/tests/test_desktop_capabilities_api.py -q
+uv run pytest packages/agent/tests/test_tool_registry.py packages/agent/tests/test_desktop_ops_api.py packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_ai_status_and_smoke.py packages/agent/tests/test_server.py packages/agent/tests/test_evidence_artifacts_sources.py packages/agent/tests/test_intents.py packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_broker_readonly_api.py packages/agent/tests/test_realtime_finance_facades.py packages/agent/tests/test_mcp_client.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+# timed out after 304s before pytest summary; split verification below passed
+uv run pytest packages/agent/tests/test_tool_registry.py packages/agent/tests/test_desktop_ops_api.py packages/agent/tests/test_ai_status_and_smoke.py -q
+# 34 passed, 1 skipped in 137.34s
+uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_evidence_artifacts_sources.py packages/agent/tests/test_intents.py -q
+# 21 passed in 122.33s
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_ai_status_and_smoke.py -q
+uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_financial_manager_desktop_api.py -q
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs -q
+uv run pytest packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_connector_health.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+python -m py_compile packages/agent/src/aiask_agent/server.py packages/agent/src/aiask_agent/app_route_callbacks.py packages/agent/src/aiask_agent/app_route_assembly.py packages/agent/src/aiask_agent/fallback_server.py
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
+uv run pytest packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_ai_status_and_smoke.py -q
+uv run pytest packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_financial_manager_desktop_api.py packages/agent/tests/test_broker_readonly_api.py -q
+uv run pytest packages/agent/tests/test_native_full_parity.py::test_fastapi_native_full_management_surface packages/agent/tests/test_extended_agent_capabilities.py::test_http_sse_run_events_toolsets_and_jobs packages/agent/tests/test_tool_registry.py packages/agent/tests/test_gateway_daemon.py packages/agent/tests/test_gateway_daemon_phase2.py packages/agent/tests/test_gateway_daemon_phase4.py packages/agent/tests/test_connector_health.py -q
+uv run pytest packages/agent/tests/test_desktop_ops_api.py packages/agent/tests/test_evidence_artifacts_sources.py packages/agent/tests/test_intents.py -q
+uv run pytest packages/agent/tests/test_realtime_finance_facades.py packages/agent/tests/test_mcp_client.py -q
+uv run pytest packages/agent/tests/test_server.py packages/agent/tests/test_endpoint_drift_gate.py packages/agent/tests/test_tool_call_path_gate.py -q
 ```
 
 剩余建议：
 
-1. P1 的 FastAPI route decorator 迁移、auth/control helper 拆分、audited tool-call helper 拆分、Desktop payload builder 拆分、Desktop capabilities payload 拆分、run/session/workbench payload 拆分、request context helper 拆分、responses/chat payload formatter 拆分、AI config/status/smoke/models payload builder 拆分、fallback HTTPServer 分层和 server CLI/main 分层已经完成；下一步继续按小批次迁出 `server.py` 内剩余 Hermes readiness/health 或 Financial Manager/broker helper。
-2. P1 结束前可再跑一次完整 Agent HTTP contract 组合，并重新统计 `server.py` helper/fallback 体量。
+1. P1 的 FastAPI route decorator 迁移、route include assembly 拆分、app route callback factory 拆分、auth/control helper 拆分、runtime/full-runtime factory 拆分、audited tool-call helper 拆分、Desktop payload builder 拆分、Desktop capabilities payload 拆分、run/session/workbench payload 拆分、SSE formatter 拆分、Gateway/connectors/webhook route factory glue 拆分、FastAPI lifespan/Gateway daemon lifecycle 拆分、Hermes readiness/status payload 拆分、Financial Manager/broker payload 拆分、HTTP/MCP/plugin utility 拆分、request context helper 拆分、responses/chat payload formatter 拆分、AI config/status/smoke/models payload builder 拆分、fallback HTTPServer 分层、server CLI/main 分层、unused `create_app` wrapper 清理和 Factor Factory compatibility injection 已经完成；下一步可把 P1 作为阶段边界，进入 P2 Desktop 合同层拆分前先切分提交/PR。
+2. 本地大组合回归曾在 304s 和 184s 超时且未产出 pytest summary，已按文件拆分补跑通过；切分提交前建议沿用拆组命令，避免本地/CI 单命令超时。
 3. P2 进入 Desktop API/mock/types/CSS 拆分前，先把当前 Agent route 拆分作为独立 PR 或提交切分，降低后续冲突面。
+
+### 2026-06-14 第四十五批：Desktop `AiaskApi` core facade 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/core.ts` |
+| `AiaskApi` 装配方式 | `desktop/src/services/aiaskApi.ts` 继续导出 `AiaskApi` facade 和 `AiaskClientOptions` 类型；`AiaskApi` 继承 `AiaskApiCore`，业务方法签名和路径保持不变 |
+| 已迁出职责 | `AiaskClientOptions`、endpoint normalization 绑定、`apiToken/controlToken` 持有、`controlOrApiToken`、`compactForSearch` |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；mock/live 分流仍由 `requestJson` 与 `mockApi` 控制；所有 `AiaskApi` route path、method、token 选择保持 |
+| 测试同步 | `SessionsPage.test.tsx` 中继续会话按钮点击前等待按钮解除 busy/disabled，修复全量 Desktop unit suite 中的测试时序红灯；产品页面代码未改 |
+| `aiaskApi.ts` 行数 | 1503 行 |
+| 新模块行数 | `services/api/core.ts` 38 行 |
+| Agent page 测试行数 | `SessionsPage.test.tsx` 147 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npx vitest run src/features/agent-pages/SessionsPage.test.tsx --environment jsdom
+# 1 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Desktop API core 已有根层 `desktop/src/api.ts`，本批新增的是 `services/api/core.ts`，专门服务 `AiaskApi` facade 的构造和 token helpers；后续 domain client 可复用同一 core。
+2. `AiaskApi` facade 可以在不改调用方的前提下逐步拆 domain clients；下一批更适合抽 AI/responses 或 Gateway/MCP 这类边界清晰的方法组。
+3. `mockApi.ts` 仍是 P2 最大风险面；拆 mock route constants/handlers 前应保持 `npm run typecheck`、`npx vitest run src/services/aiaskApi.test.ts --environment jsdom`、`npm test` 这组验证。
+
+### 2026-06-14 第四十六批：Desktop AI/responses domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/ai.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 `aiStatus`、`aiSmoke`、`aiModels`、`aiConfig`、`aiConfigSave`、`response`、`responseGet`、`responseDelete` facade 方法；实现委托到 `services/api/ai.ts` |
+| 已迁出职责 | `/v1/ai/status`、`/v1/ai/smoke`、`/v1/ai/models`、`/v1/ai/config`、`/v1/responses`、`/v1/responses/{id}` 的 path/method/token/body 绑定和返回类型 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；AI config 保存仍使用 control token；responses create 可继续传入 override token；response get/delete 仍使用 API token |
+| `aiaskApi.ts` 行数 | 1494 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| 新模块行数 | `services/api/ai.ts` 68 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npx vitest run src/hooks/useAgentWorkbench.test.tsx src/features/models/ModelsWorkspace.test.tsx --environment jsdom
+# 2 passed; 10 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. `services/api/core.ts` + `services/api/ai.ts` 已证明 `AiaskApi` facade 可按 domain function 模式拆分，而不改变 UI/hook 调用方。
+2. 下一批更适合抽 Gateway/MCP/connectors 或 run/session 这类路径密集方法组；它们应继续用 `AiaskApi` 同名方法做 facade。
+3. `mockApi.ts` 仍未拆分，后续拆 mock handlers 前应先抽 path constants，避免 API client 与 mock dispatch 各自手写路径继续漂移。
+
+### 2026-06-14 第四十七批：Desktop Gateway/MCP/connectors domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/integrations.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 connectors、Gateway、webhooks、MCP 同名 facade 方法；纯 HTTP path/method/token/body 绑定委托到 `services/api/integrations.ts` |
+| 已迁出职责 | `/v1/connectors/*`、`/v1/gateway/status`、`/v1/gateway/daemon/status`、`/v1/gateway/platforms`、`/v1/gateway/messages`、`/v1/gateway/directory`、`/v1/webhooks`、`/v1/mcp/register-local`、`/v1/mcp/discover`、`/v1/mcp/resources/read`、`/v1/mcp/prompts/get`、`/v1/mcp/oauth/start` 的请求封装 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；Gateway/MCP/Connectors 页面调用方未改；`gatewaySendIntent` 与 `webhookTriggerIntent` 仍留在 `AiaskApi` facade，通过既有 `createActionIntent` 生成受控预览/审批 |
+| `aiaskApi.ts` 行数 | 1471 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| `services/api/ai.ts` 行数 | 68 行 |
+| 新模块行数 | `services/api/integrations.ts` 190 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npx vitest run src/features/agent-pages/GatewayPage.test.tsx src/features/agent-pages/McpConnectorsPage.test.tsx src/features/agent-pages/ReadinessHealthPage.test.tsx --environment jsdom
+# 3 passed; 9 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Gateway/MCP/connectors 这种跨 Agent Ops 页面共用的路径组，已可按 `services/api/*` domain client 拆分；`AiaskApi` 继续作为 Desktop 页面的稳定合同层。
+2. 涉及 ActionIntent 的 facade 方法不宜机械迁出到纯 HTTP 模块，除非后续抽出显式 intent helper；当前保留在 `AiaskApi` 内可避免重复 side-effect guardrail 逻辑。
+3. 下一批更适合继续拆 `run/session/workbench` 或 `plugins/skills/jobs/learning/RL` 方法组；`mockApi.ts` 仍应在 domain client 继续收敛后单独处理 route constants/handlers。
+
+### 2026-06-14 第四十八批：Desktop run/session/workbench domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/workbench.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 run、session、workbench 同名 facade 方法；实现委托到 `services/api/workbench.ts` |
+| 已迁出职责 | `/v1/desktop/workbench/summary`、`/v1/desktop/runs`、`/v1/runs/{id}`、`/v1/runs/{id}/events`、`/v1/runs/{id}/trace-eval`、`/v1/runs/{id}/artifacts`、`/v1/runs/{id}/sources`、`/v1/runs/{id}/cancel|stop|steer`、`/v1/hermes/sessions`、`/v1/hermes/sessions/{id}/resume-context`、`/v1/sessions/{id}/messages|undo|archive|artifacts|sources` 的请求封装 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；mock endpoint 下的 run events 仍走 `requestJson` 读取数组，live endpoint 下仍走 SSE fetch + `parseSseEvents`；session undo/archive 仍使用 control token |
+| `aiaskApi.ts` 行数 | 1396 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| `services/api/ai.ts` 行数 | 68 行 |
+| `services/api/integrations.ts` 行数 | 190 行 |
+| 新模块行数 | `services/api/workbench.ts` 218 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npx vitest run src/hooks/useAgentWorkbench.test.tsx src/features/agent-pages/SessionsPage.test.tsx src/features/agent-pages/RunsEventsPage.test.tsx --environment jsdom
+# 3 passed; 27 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. `runEvents` 的 mock/live 双路径已随 domain client 迁出，说明带局部协议差异的 route wrapper 也可以离开 `AiaskApi` facade，而不影响 hook/page 调用方。
+2. `AiaskApi` facade 行数已从 1503 行降到 1396 行；后续可优先继续拆 `plugins/skills/jobs/learning/RL` 或 `financial/quant/factory` 方法组。
+3. P2 的最大剩余风险仍在 `mockApi.ts`：在继续抽 route constants/handlers 前，应复用本轮已稳定的 domain module 边界，避免一次性大改 mock dispatch。
+
+### 2026-06-14 第四十九批：Desktop Ops domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/ops.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 jobs、skills、plugins、learning、RL 同名 facade 方法；实现委托到 `services/api/ops.ts` |
+| 已迁出职责 | `/v1/jobs`、`/v1/jobs/{id}`、`/v1/jobs/{id}/run`、`/v1/jobs/{id}/runs`、`/v1/skills`、`/v1/skills/{name}`、`/v1/plugins`、`/v1/plugins/{name}`、`/v1/plugins/{name}/tools/{tool}/test`、`/v1/plugins/{name}/commands`、`/v1/plugins/{name}/commands/{command}/test`、`/v1/learning/status|review|apply`、`/v1/rl/environments|config|runs`、`/v1/rl/runs/{id}/stop|results|logs` 的请求封装 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；jobs 仍使用 API token；skills/plugins/learning apply/RL mutation 仍使用 control token；`jobsCreate`、`jobsUpdate`、`jobsDelete`、`jobsRun` aliases 保持不变 |
+| `aiaskApi.ts` 行数 | 1373 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| `services/api/ai.ts` 行数 | 68 行 |
+| `services/api/integrations.ts` 行数 | 190 行 |
+| `services/api/workbench.ts` 行数 | 218 行 |
+| 新模块行数 | `services/api/ops.ts` 225 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/PluginsSkillsPage.test.tsx --environment jsdom
+# 2 passed; 10 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Desktop Ops 类 HTTP wrappers 已从 `AiaskApi` 中移出，下一步可继续拆 finance/quant/factory 这类大块业务 API，或先切入 `mockApi.ts` 的 route constants。
+2. `services/api/*` 目前已形成 core、ai、integrations、workbench、ops 五个模块；继续拆分时应保持“domain function + facade delegate”的同一模式，避免 UI 层跟着搬迁。
+3. Automation/Workflows/Learning RL 面板目前主要依赖 service route 测试和全量 unit suite 间接覆盖；后续改页面行为时应补专门组件测试。
+
+### 2026-06-14 第五十批：Desktop state/profile/data domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/desktopState.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 settings、data、stock data sources、local profile、user activity/feedback/data policy/recommendations 同名 facade 方法；实现委托到 `services/api/desktopState.ts` |
+| 已迁出职责 | `/v1/desktop/settings/status`、`/v1/desktop/data/status`、`/v1/desktop/data/sync-plan`、`/v1/desktop/stock-data-sources`、`/v1/desktop/stock-data-sources/test`、`/v1/desktop/users/local-profile`、`/v1/desktop/events`、`/v1/desktop/feedback`、`/v1/desktop/users/{id}/activity|export|delete|learning-dataset|recommendations|data-policy`、`/v1/desktop/analytics/summary`、`/v1/desktop/retention/sweep` 的请求封装 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；settings/profile/data/user 方法名未变；stock source save/test 和 retention sweep 仍使用 control token；`memorySearch`、`dataGate`、intent/tool facade helpers 暂留在 `AiaskApi` |
+| `aiaskApi.ts` 行数 | 1302 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| `services/api/ai.ts` 行数 | 68 行 |
+| `services/api/integrations.ts` 行数 | 190 行 |
+| `services/api/workbench.ts` 行数 | 218 行 |
+| `services/api/ops.ts` 行数 | 225 行 |
+| 新模块行数 | `services/api/desktopState.ts` 238 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/user/LocalUserWorkspace.test.tsx --environment jsdom
+# 2 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Desktop state/profile/data routes 已形成独立 domain client，Settings、Data Sync、Local User 等页面继续通过 `AiaskApi` facade 调用，无需 UI 迁移。
+2. `memorySearch` 与 `dataGate` 仍走 `readOnlyTool`，后续如果要迁出 tool facade wrappers，宜先抽统一 tool-call helper，而不是在 domain modules 中重复 `/v1/tools/{tool}` 细节。
+3. 下一步可拆 finance/quant/factory HTTP wrappers，或开始 `mockApi.ts` route constants/handlers 的低风险切分；两者都应继续保持小批次验证。
+
+### 2026-06-14 第五十一批：Desktop finance/quant/factory domain client 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/finance.ts` |
+| `AiaskApi` 装配方式 | `AiaskApi` 保留 stock radar、trade prediction、Factor Factory status、quant research、Financial Manager、broker 同名 facade 方法；直接 HTTP wrapper 委托到 `services/api/finance.ts` |
+| 已迁出职责 | `/v1/desktop/stock-radar/status|candidates|digest`、`/v1/desktop/trade-predictions/status|outcomes|matrix`、`/v1/desktop/factor-factory/status`、`/v1/desktop/quant/presets`、`/v1/desktop/quant/research-runs`、`/v1/desktop/quant/research-runs/{id}`、`/v1/desktop/quant/research-runs/{id}/report`、`/v1/desktop/financial-manager/catalog|status|query|intent`、`/v1/desktop/broker-readiness`、`/v1/desktop/broker/sync|accounts|positions|orders`、`/v1/desktop/broker/analytics/run|latest` 的请求封装 |
+| 行为保持 | Desktop 仍只通过 Agent HTTP API；Financial Manager intent 仍使用 control token；broker routes 仍经 Agent HTTP guardrails；stock radar/factory/other ActionIntent 方法仍留在 `AiaskApi` facade |
+| `aiaskApi.ts` 行数 | 1198 行 |
+| `services/api/core.ts` 行数 | 38 行 |
+| `services/api/ai.ts` 行数 | 68 行 |
+| `services/api/integrations.ts` 行数 | 190 行 |
+| `services/api/workbench.ts` 行数 | 218 行 |
+| `services/api/ops.ts` 行数 | 225 行 |
+| `services/api/desktopState.ts` 行数 | 238 行 |
+| 新模块行数 | `services/api/finance.ts` 295 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/quant/QuantResearchWorkspace.test.tsx src/features/financial-manager/FinancialManagerWorkspace.test.tsx src/features/factory-events/FactoryEventTriggerPanel.test.tsx src/features/incubation/IncubationFactoryPanel.test.tsx --environment jsdom
+# 5 passed; 29 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Finance/quant/factory 直接 HTTP wrappers 已进入独立 domain client，`AiaskApi` facade 首次降到 1200 行以内。
+2. 涉及 `readOnlyTool` 的市场温度、Factory Event、Incubation status，以及涉及 `createActionIntent` 的写入/调度方法仍留在 facade；后续应先抽通用 tool/intent helper，再决定是否继续迁出。
+3. `mockApi.ts` 仍是 P2 剩余最大文件；在 API facade domain 边界稳定后，可以开始拆 mock route constants/handler groups。
+
+### 2026-06-14 第五十二批：Desktop mock routing helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/routing.ts` |
+| `mockApi.ts` 装配方式 | `mockRequestJson` 继续作为 mock 入口；method normalization、body record coercion、path/query parsing、`ok()` promise helper 委托到 `mock/routing.ts` |
+| 已迁出职责 | `normalizeMockMethod`、`mockBodyRecord`、`parseMockPath`、`ok` |
+| 行为保持 | mock path 解析仍使用原有 `path.split("?")` 语义；body coercion 仍按原逻辑把 object body 作为 record；所有 mock route 分支和 fixture payload 未改 |
+| `aiaskApi.ts` 行数 | 1198 行 |
+| `mockApi.ts` 行数 | 4151 行 |
+| 新模块行数 | `mock/routing.ts` 16 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. `mockApi.ts` 已开始有独立 `mock/` 目录；后续可逐步迁出 fixture builders、route handler groups 和 path constants。
+2. 这批刻意只拆 routing primitives，避免在 4000+ 行 mock dispatch 中同时移动 payload/handler 逻辑；下一批可优先拆 Desktop state/profile mock handlers，与 `services/api/desktopState.ts` 边界对齐。
+3. Mock 拆分期间继续保持 `npm run typecheck`、`npx vitest run src/services/aiaskApi.test.ts --environment jsdom`、`npm test` 作为最低回归线。
+
+### 2026-06-14 第五十三批：Desktop mock data-source fixture helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/desktopData.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续持有 stock data source mock state 和 route dispatch；`dataStatus`、`stockDataSourcesStatus`、`saveMockStockDataSource`、`testMockStockDataSource` 改为薄 wrapper，具体 fixture/helper 逻辑委托到 `mock/desktopData.ts` |
+| 已迁出职责 | Desktop data status payload、stock data source configured 判定、secret redaction、draft merge、source list status、source save/test payload builder |
+| 行为保持 | `/v1/desktop/data/status`、`/v1/desktop/stock-data-sources`、`/v1/desktop/stock-data-sources/test` 的 route 分支和 mutable source state 仍在 `mockApi.ts`；保存数据源仍会回写原 `mockStockDataSources` 列表 |
+| `mockApi.ts` 行数 | 4032 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| 新模块行数 | `mock/desktopData.ts` 163 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/settings/StockDataSourcesPanel.test.tsx src/features/settings/SettingsWorkspace.test.tsx src/features/user/LocalUserWorkspace.test.tsx --environment jsdom
+# 4 passed; 18 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Mock 拆分已从 routing primitives 进入 fixture/helper 层；下一步可继续把 profile/activity/user-policy mock state 或 Desktop state route handlers 迁到 `mock/desktopState.ts`。
+2. 当前选择保留 mutable state 在 `mockApi.ts`，是为了避免一次性迁移所有用户活动、session、run、artifact 依赖；后续可以按状态簇逐步抽。
+3. `mockApi.ts` 已从 4159 行降到 4032 行，但仍是 P2 最大 Desktop 文件；继续拆 handler groups 时应保持每批都有 service + affected panel tests。
+
+### 2026-06-14 第五十四批：Desktop mock AI fixture helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/ai.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 `/v1/ai/*` route dispatch；AI mock config state、provider presets、status/config/smoke/models payload builders 委托到 `mock/ai.ts` |
+| 已迁出职责 | `mockModelConfig`、AI provider presets、`aiStatus` payload、`aiConfig` payload、AI config save mutation、AI smoke payload、AI models payload |
+| 行为保持 | `/v1/ai/status`、`/v1/ai/config`、`/v1/ai/smoke`、`/v1/ai/models` route path/method 分支未变；config save 仍更新 mock model state 并影响后续 status/models/smoke |
+| `mockApi.ts` 行数 | 3925 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| 新模块行数 | `mock/ai.ts` 141 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAgentWorkbench.test.tsx src/features/models/ModelsWorkspace.test.tsx src/features/settings/SettingsWorkspace.test.tsx --environment jsdom
+# 4 passed; 22 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Mock fixture helpers 已开始按 API domain 对齐：`mock/ai.ts` 对应 `services/api/ai.ts`，`mock/desktopData.ts` 对应 Desktop data/source routes。
+2. 下一步可继续抽 `mock/workbench.ts`（runs/sessions/events/artifacts）或 `mock/userState.ts`（profile/activity/feedback/policy），但应避免一次性搬动所有 mutable session/run state。
+3. `mockApi.ts` 已降到 4000 行以内；后续目标仍是把 dispatch 和 fixture/handler 分开，直到 `mockApi.ts` 只保 compatibility entrypoint。
+
+### 2026-06-14 第五十五批：Desktop mock responses helper 并入 AI mock module
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/ai.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 `/v1/responses` 和 `/v1/responses/{id}` route dispatch；response create/get/delete payload builders 委托到 `mock/ai.ts` |
+| 已迁出职责 | `mockResponseCreate`、`mockResponseGet`、`mockResponseDelete` |
+| 行为保持 | `/v1/responses` create 仍返回 `resp_mock`、`AIASK_OK` 和原 metadata；`/v1/responses/{id}` GET/DELETE route path 和返回对象未变 |
+| `mockApi.ts` 行数 | 3925 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAgentWorkbench.test.tsx src/features/models/ModelsWorkspace.test.tsx --environment jsdom
+# 3 passed; 18 tests passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. `mock/ai.ts` 现在覆盖 AI config/status/smoke/models 和 responses mock payload，边界已与 `services/api/ai.ts` 基本对齐。
+2. 下一批更适合抽 `mock/workbench.ts` 或 `mock/userState.ts`；若抽 workbench，应同步跑 `useAgentWorkbench`、Sessions、Runs/Events 相关测试。
+3. Mock 拆分仍保持 route dispatch 留在 `mockApi.ts`、payload/helper 先外迁的低风险节奏。
+
+### 2026-06-14 第五十六批：Desktop mock jobs helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/jobs.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 `/v1/jobs`、`/v1/jobs/{id}`、`/v1/jobs/{id}/run`、`/v1/jobs/{id}/runs` route dispatch；jobs mutable state 和 payload helpers 委托到 `mock/jobs.ts` |
+| 已迁出职责 | 初始 jobs 列表、jobs list/create/update/delete/run/runs payload、`agent_job_list` tool result 使用的 job list getter |
+| 行为保持 | `/v1/jobs` route path/method 分支未变；create/update/delete 仍修改同一 mock jobs state；`agent_job_run` envelope 仍在 `mockApi.ts` 用统一 `envelope` 包装 |
+| `mockApi.ts` 行数 | 3904 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| 新模块行数 | `mock/jobs.ts` 63 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts --environment jsdom
+# 1 passed; 8 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模板补充结论：
+
+1. Mock Ops 类 jobs state 已迁出，开始与 `services/api/ops.ts` 的 jobs 子域对齐。
+2. `mockApi.ts` 仍保留 learning/RL/skills/plugins/webhooks 等 Ops route payload，可后续继续按 `mock/ops.ts` 或更细文件迁出。
+3. 由于 Automation/Workflows 当前缺少专门组件测试，后续若改 jobs 页面行为应补测试；本批只移动 mock payload/state，使用 service route test + full unit suite 覆盖。
+### 2026-06-14 第五十七批：Desktop mock learning/RL/webhook helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/ops.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 `/v1/learning/*`、`/v1/rl/*`、`/v1/webhooks*` route dispatch；payload builders 委托到 `mock/ops.ts` |
+| 已迁出职责 | learning status/review/apply payload、RL environments/config/runs/detail/artifact payload、webhooks list/create/delete/trigger raw payload |
+| 行为保持 | path/method 分支未变；`/v1/webhooks/{id}/trigger` 仍在 `mockApi.ts` 用 `envelope("agent_webhook", ...)` 包装；approvals/intents 状态机未移动 |
+| `mockApi.ts` 行数 | 3906 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| 新模块行数 | `mock/ops.ts` 60 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/settings/SettingsWorkspace.test.tsx --environment jsdom
+# 2 passed; 12 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+
+npm run typecheck
+# passed after final import compaction
+```
+
+当前 P2 模块补充结论：
+1. `mock/ops.ts` 已开始覆盖非 jobs 的 Ops mock payload，先处理自包含的 learning/RL/webhook 子域。
+2. Stateful guardrail 相关的 approvals/intents 仍保留在 `mockApi.ts`，避免把 `intents` map 与 ActionIntent 行为拆散；后续应先抽通用 intent helper 再迁移。
+3. 下一批可继续迁出 skills/plugins/MCP/connectors 等自包含 Ops payload，或转向 workbench/session mock state；继续保持小批次 + typecheck + affected tests + full unit suite。
+### 2026-06-14 第五十八批：Desktop mock integrations helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/integrations.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 skills/plugins/MCP/connectors route dispatch；`capabilities()` 仍在入口层读取后传入 helper，payload builders 委托到 `mock/integrations.ts` |
+| 已迁出职责 | skills list/install/update/delete、plugins list/upsert/update/tool test/commands/command test、MCP aggregate/read/discover/OAuth mock payload、connectors summary/list/detail/test payload |
+| 行为保持 | path/method 分支未变；MCP discover 仍返回 `capabilities().mcp.tools`；connector detail/test object 区分保持；控制令牌语义仍由 `AiaskApi` 调用面和 mock route 分支保持 |
+| `mockApi.ts` 行数 | 3907 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| 新模块行数 | `mock/integrations.ts` 118 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/McpConnectorsPage.test.tsx src/features/agent-pages/PluginsSkillsPage.test.tsx --environment jsdom
+# 3 passed; 14 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Desktop mock 的 integration payload 已与 Agent HTTP 集成面分离；`mockApi.ts` 仍只做 route dispatch、capability snapshot 获取和状态机保留。
+2. 本批行数几乎持平，因为原先 payload 多数压在单行 return 中；收益主要是把 MCP/plugins/skills/connectors response shape 从主 dispatch 文件移出。
+3. 下一批更适合迁出 gateway/process/browser/terminal 等只读 Ops payload，或单独抽 profile/activity/session state；涉及 Gateway 时继续跑 `GatewayPage` 相关测试。
+### 2026-06-14 第五十九批：Desktop mock Gateway helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/gateway.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续负责 `/v1/gateway/*` path match、decode 和 profile 注入；Gateway status/daemon/platforms/messages/retry/directory payload builders 委托到 `mock/gateway.ts` |
+| 已迁出职责 | Gateway status、daemon status、platform list/start/stop/health payload、message list、message retry、directory list、directory refresh |
+| 行为保持 | `/v1/gateway/messages` 仍使用当前 mock profile 的 `user_id`；directory 仍使用 `profile_name`；platform stop 仍返回 `stopped`，start/health 仍返回 `ready`；send/direct-deliver 等 side-effect 路径未触碰 |
+| `mockApi.ts` 行数 | 3893 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| 新模块行数 | `mock/gateway.ts` 46 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/GatewayPage.test.tsx --environment jsdom
+# 2 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Gateway mock payload 已从主 dispatch 文件中分离，Desktop GatewayPage 仍完全通过 `AiaskApi`/Agent HTTP mock route 消费。
+2. Gateway 外部投递类 side-effect 未扩展；本批只搬现有 safe mock response shape，符合集成面 guardrail 边界。
+3. 下一批可迁出 process/browser/terminal native-readiness mock payload，或开始拆 profile/activity/user-policy state；若触碰 native tool 面需跑对应页面/API 测试。
+### 2026-06-14 第六十批：Desktop mock native-readiness helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/nativeTools.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续负责 `/v1/processes`、`/v1/browser/sessions`、`/v1/terminal/*` path match、backend decode 和 query limit 解析；native readiness payload 委托到 `mock/nativeTools.ts` |
+| 已迁出职责 | process list、browser session list、terminal backend list、terminal backend sessions、terminal sessions |
+| 行为保持 | terminal backend session 仍使用 decoded backend、`limit` slice 和当前 mock profile `user_id`；只读 readiness/probe payload 保持；未新增 terminal/process/browser 执行或写入入口 |
+| `mockApi.ts` 行数 | 3881 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| 新模块行数 | `mock/nativeTools.ts` 32 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/components/DiagnosticsPanel.test.tsx src/features/capabilities/CapabilitiesWorkspace.test.tsx --environment jsdom
+# 3 passed; 14 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Desktop mock 的 native-readiness payload 已从主 dispatch 文件分离，仍保持 general_full/control-token 由 API 调用面表达。
+2. `mockApi.ts` 中剩余较大的可迁移区域主要是 profile/activity/user-policy state、workbench/session/run/artifact state、以及 finance workspace payload。
+3. 下一批若继续 mock 拆分，建议优先选择 profile/activity/user-policy 这类自包含 state；若迁 workbench/session state，需要同步跑 `useAgentWorkbench`、Sessions/Runs 页面测试。
+### 2026-06-14 第六十一批：Desktop mock settings status helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/settings.ts` |
+| `mockApi.ts` 装配方式 | `settingsStatus()` 继续作为主入口内部 wrapper；AI status、stock data source status 和当前 profile 由 `mockApi.ts` 注入，settings payload builder 委托到 `mock/settings.ts` |
+| 已迁出职责 | Desktop settings status agent/LLM/memory/database/stock-data/profile 聚合 payload |
+| 行为保持 | `/v1/desktop/settings/status` response shape、secret redaction 标记、profile 引用、stock data source status 聚合均保持；未改变 SettingsWorkspace API 调用路径 |
+| `mockApi.ts` 行数 | 3847 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 163 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| 新模块行数 | `mock/settings.ts` 42 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/settings/SettingsWorkspace.test.tsx --environment jsdom
+# 2 passed; 12 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Settings status 这种只读聚合 payload 已适合迁出，`mockApi.ts` 继续保留状态来源和 route entrypoint。
+2. 后续若迁 profile/activity/user-policy，需要先拆出用户态 store/helper，并同步覆盖 `LocalUserWorkspace` 的 seed、policy、export/delete、learning dataset 流程。
+3. 若继续追求低风险，可先迁 `capabilities()` 的静态工具目录常量；但完整 capability payload 还依赖 Strategy/AI/financial helper，需要单独批次处理。
+### 2026-06-14 第六十二批：Desktop mock data sync plan helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/desktopData.ts` |
+| `mockApi.ts` 装配方式 | `/v1/desktop/data/sync-plan` route 继续由 `mockApi.ts` 分派；当前 `dataStatus()` 和 request body 注入 `mockDesktopDataSyncPlan(...)` |
+| 已迁出职责 | Desktop data sync plan payload、sync intent params 默认值、market-temperature cache 参数默认值、stateful confirmation side-effect metadata |
+| 行为保持 | `codes/task_type/period` 默认值、`market_temperature_snapshot_cache` 的 `limit/top_n/min_bars` 默认值、`Mock sync plan approval.` rationale 和 `secrets_redacted` 保持 |
+| `mockApi.ts` 行数 | 3830 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/settings/StockDataSourcesPanel.test.tsx --environment jsdom
+# 2 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Desktop data/source 相关 mock 已进一步集中到 `mock/desktopData.ts`，`mockApi.ts` 保留 route 和当前状态注入。
+2. Sync plan 仍标注 stateful confirmation metadata，Desktop 侧不会绕过 ActionIntent/guardrail 语义。
+3. 下一批可继续在同样节奏下拆用户态 store/helper，或先处理 health/tools/capability 的静态 payload 常量。
+### 2026-06-14 第六十三批：Desktop mock user state helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/userState.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续负责 local profile route、user activity/export/delete/analytics/learning route 聚合，以及 session/run/source/artifact 跨状态拼装；用户活动、工具调用、反馈、用户数据策略的 mutable state 和创建/更新 helper 委托到 `mock/userState.ts` |
+| 已迁出职责 | activity events store、tool invocation audit store、feedback store、user data policy store、redaction helper、mock timestamp helper、record events/feedback/tool invocation、delete-user audit state |
+| 行为保持 | `recordEvents`/`recordFeedback` payload shape、tool audit redaction、learning dataset allow_learning 逻辑、user policy PATCH 更新时间、delete dry-run/real-run 语义保持；未迁 session/run/artifact 状态 |
+| `mockApi.ts` 行数 | 3741 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| 新模块行数 | `mock/userState.ts` 129 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/user/LocalUserWorkspace.test.tsx --environment jsdom
+# 2 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. 用户态 mutable store 已离开 `mockApi.ts`，主 dispatch 文件只保留跨域聚合和 route wiring。
+2. `LocalUserWorkspace` 的 seed、policy save、export/delete preview、learning eligibility 都已通过 targeted test 覆盖。
+3. 后续若继续拆 mock，较高收益方向是 workbench/session/run/artifact state；这会触碰 `useAgentWorkbench`、SessionsPage、RunsEventsPage，应单独批次处理。
+### 2026-06-14 第六十四批：Desktop mock workbench evidence helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/workbench.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 session/run/handoff/message route dispatch 和 mutable session state；Agent sources/artifacts 静态 evidence、filter helper、artifact content/detail、source detail 委托到 `mock/workbench.ts` |
+| 已迁出职责 | mock Agent artifacts、mock Agent sources、run/session evidence filtering、artifact content payload、artifact/source detail fallback |
+| 行为保持 | `/v1/runs/{id}/artifacts`、`/v1/runs/{id}/sources`、`/v1/sessions/{id}/artifacts`、`/v1/sessions/{id}/sources`、`/v1/artifacts/{id}/content`、artifact/source detail shape 保持；run trace eval 继续使用同一 evidence counts；session/run mutable state 未迁移 |
+| `mockApi.ts` 行数 | 3566 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 129 行 |
+| 新模块行数 | `mock/workbench.ts` 199 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAgentWorkbench.test.tsx src/components/WorkbenchView.test.tsx src/features/agent-pages/SessionsPage.test.tsx src/features/agent-pages/RunsEventsPage.test.tsx --environment jsdom
+# 5 passed; 46 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Workbench evidence 数据已从 `mockApi.ts` 中分离，主文件不再直接持有 Agent artifact/source arrays。
+2. Session/run/handoff/message mutable state 仍保留在 `mockApi.ts`，这是下一批 workbench 拆分的主要边界。
+3. 若继续拆 workbench，应优先迁 `mockRunSummaries`、`mockSessionMessages`、`currentMockSessionSummaries` 和 handoff/resume helper，并持续跑 Workbench/Sessions/Runs targeted tests。
+### 2026-06-14 第六十五批：Desktop mock tool catalog helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/toolCatalog.ts` |
+| `mockApi.ts` 装配方式 | `mockApi.ts` 继续保留 `/v1/tools`、`/v1/hermes/tools`、`agent_tool_catalog` tool result、capabilities tool mapping 和 health payload assembly；finance/native tool catalog constants 委托到 `mock/toolCatalog.ts` |
+| 已迁出职责 | `financeTools`、`hermesTools`、`allMockTools()` |
+| 行为保持 | `agent_*` 工具名、capability、category、side_effect、schemas/examples 保持；`/v1/tools` 仍只返回 finance tools，`/v1/hermes/tools` 与 `agent_tool_catalog` 仍返回 finance+Hermes tools |
+| `mockApi.ts` 行数 | 3504 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 129 行 |
+| `mock/workbench.ts` 行数 | 199 行 |
+| 新模块行数 | `mock/toolCatalog.ts` 67 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/ToolsIntentsApprovalsPage.test.tsx src/features/agent-pages/ReadinessHealthPage.test.tsx src/features/capabilities/CapabilitiesWorkspace.test.tsx --environment jsdom
+# 4 passed; 22 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Static tool catalog constants 已从主 dispatch 文件移出，`mockApi.ts` 不再直接维护 finance/native tool arrays。
+2. Tool catalog 仍坚持 `agent_*` 命名和 side-effect 分类，未引入 Desktop 直连工具或 manager 调用。
+3. 下一批可继续收敛 health/Hermes/capabilities payload，或开始迁 session/run/handoff mutable workbench state。
+### 2026-06-14 第六十六批：Desktop mock financial readiness helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/capabilities.ts` |
+| `mockApi.ts` 装配方式 | `capabilities()` 继续作为 `/v1/desktop/capabilities` 聚合入口；`financial_system` 子 payload 委托到 `mockFinancialSystemReadiness()` |
+| 已迁出职责 | financial readiness required/optional gates、next_actions、live smoke checklist、readiness summary/disclaimer |
+| 行为保持 | `/v1/financial-system/readiness` 仍从 `capabilities().financial_system` 返回；live smoke checklist path/command、MCP auth env var 名称、read-only financial workflow next action、mock investment disclaimer 保持 |
+| `mockApi.ts` 行数 | 3423 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 129 行 |
+| `mock/workbench.ts` 行数 | 199 行 |
+| `mock/toolCatalog.ts` 行数 | 67 行 |
+| 新模块行数 | `mock/capabilities.ts` 85 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/ReadinessHealthPage.test.tsx src/features/capabilities/CapabilitiesWorkspace.test.tsx --environment jsdom
+# 3 passed; 14 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `capabilities()` 中的 financial readiness 大块已先迁出，避免一次性移动 Hermes/status/MCP/skills/plugins/AI 等全部聚合。
+2. Financial readiness 仍通过 Desktop -> Agent HTTP mock route 表达，不引入任何 broker/live trading 操作。
+3. 后续可继续在 `mock/capabilities.ts` 中收敛 Hermes status/parity/readiness 与 MCP/static sections，或转向 session/run/handoff mutable workbench state。
+### 2026-06-14 第六十七批：Desktop mock Hermes capability helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/capabilities.ts` |
+| `mockApi.ts` 装配方式 | `capabilities()` 继续作为 `/v1/desktop/capabilities` 聚合入口；Hermes status/parity/readiness/tool mapping 子树委托到 `mockHermesCapabilities(allTools)` |
+| 已迁出职责 | Hermes baseline constants、Hermes status、capability parity、v0.14/v0.16 delta、Hermes readiness/live evidence、tool/platform/feature mapping、Hermes providers/memory/acp/security/skill_packs 子状态 |
+| 行为保持 | `/v1/hermes/status`、`/v1/capabilities/parity`、`/v1/hermes/readiness` 仍从 `capabilities().hermes` 取对应 payload；tool mapping 仍基于 `allMockTools()` 和 `side_effect` 分类 |
+| `mockApi.ts` 行数 | 3292 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 129 行 |
+| `mock/workbench.ts` 行数 | 199 行 |
+| `mock/toolCatalog.ts` 行数 | 67 行 |
+| `mock/capabilities.ts` 行数 | 222 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/ReadinessHealthPage.test.tsx src/features/capabilities/CapabilitiesWorkspace.test.tsx --environment jsdom
+# 3 passed; 14 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Hermes capability 子树已从 `mockApi.ts` 中分离，主文件只保留 route dispatch 和顶层 capability composition。
+2. `mock/capabilities.ts` 已承接 readiness/capability 静态 payload，后续可继续迁 MCP/skills/plugins/providers/memory 等剩余静态 capability sections。
+3. `mockApi.ts` 已降到 3300 行以内；下一批可以继续收敛 capabilities 静态 sections，或拆 session/run/handoff mutable workbench state。
+### 2026-06-14 第六十八批：Desktop mock capability static sections 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/capabilities.ts` |
+| `mockApi.ts` 装配方式 | `capabilities()` 继续保留 Strategy/quant/financial 顶层组合；MCP 聚合 section 委托到 `mockMcpCapabilitySection()`，skills/plugins/providers/memory/acp/security/ai/raw_refs 委托到 `mockStaticCapabilitySections(aiStatus())` |
+| 已迁出职责 | MCP registration/discovery/tools/resources/prompts/OAuth static capability payload、skills/skill_packs/plugins/providers/memory/acp/security/AI/raw_refs static sections |
+| 行为保持 | MCP wrapped tool names、auth env var 名称、skills/plugins mock entries、memory provider readiness 和 `ai` section shape 保持；`ai` 入参使用正式 `AiStatus` 类型 |
+| `mockApi.ts` 行数 | 3248 行 |
+| `mock/routing.ts` 行数 | 16 行 |
+| `mock/desktopData.ts` 行数 | 185 行 |
+| `mock/ai.ts` 行数 | 175 行 |
+| `mock/jobs.ts` 行数 | 63 行 |
+| `mock/ops.ts` 行数 | 60 行 |
+| `mock/integrations.ts` 行数 | 118 行 |
+| `mock/gateway.ts` 行数 | 46 行 |
+| `mock/nativeTools.ts` 行数 | 32 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 129 行 |
+| `mock/workbench.ts` 行数 | 199 行 |
+| `mock/toolCatalog.ts` 行数 | 67 行 |
+| `mock/capabilities.ts` 行数 | 276 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# failed first: aiStatus parameter was typed as unknown
+
+npm run typecheck
+# passed after narrowing to AiStatus
+
+npx vitest run src/services/aiaskApi.test.ts src/features/agent-pages/McpConnectorsPage.test.tsx src/features/agent-pages/PluginsSkillsPage.test.tsx src/features/agent-pages/ReadinessHealthPage.test.tsx src/features/capabilities/CapabilitiesWorkspace.test.tsx --environment jsdom
+# 5 passed; 20 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `capabilities()` 已明显变薄，静态 readiness/capability sections 已集中到 `mock/capabilities.ts`。
+2. 本批 typecheck 捕获并修正了 `ai` section 的类型收窄问题，避免把 `CapabilityWorkbenchPayload.ai` 降成 `unknown`。
+3. `mockApi.ts` 剩余主要大块集中在 session/run/handoff mutable state、finance workspace payload 和 tool result domain payload；下一批可选其中一个边界继续。
+### 2026-06-14 第六十九批：Desktop mock run/event fixture 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/workbench.ts`、`desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | 静态 `mockRunEvents` / `mockRunSummaries` 已迁入 `mock/workbench.ts`；主 mock route dispatcher 通过 `mockRunEventsData()`、`mockRunSummariesData()` 读取 |
+| 已迁出职责 | run event fixture、run summary fixture、summary 中的 `event_count` / `last_event` 派生关系 |
+| 保留职责 | `mockSessionSummaries`、session messages、handoff/resume context、route dispatch 和 user export/delete 仍留在 `mockApi.ts`，作为后续 mutable workbench state 拆分边界 |
+| 行为保持 | `/v1/desktop/workbench/summary`、`/v1/desktop/runs`、`/v1/runs/run_mock/events`、run trace eval、user activity/export/delete 中的 run/event payload shape 保持；approval jump target 和 `agent_*` tool names 保持 |
+| `mockApi.ts` 行数 | 3091 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 175 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 282 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAgentWorkbench.test.tsx src/components/WorkbenchView.test.tsx src/features/agent-pages/SessionsPage.test.tsx src/features/agent-pages/RunsEventsPage.test.tsx --environment jsdom
+# 5 passed; 46 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Workbench 证据、run summary、run event 静态 fixture 已集中在 `mock/workbench.ts`，`mockApi.ts` 更接近纯 route/state 组合层。
+2. 本批只迁静态 fixture，没有移动 session/handoff 可变状态，降低了 reset/export/delete 路径的回归面。
+3. 下一批优先选择 session/handoff mutable state 或 finance workspace payload 继续拆分；两者都应保持 Desktop -> Agent HTTP mock 合同，不引入 Python/MCP/manager 直连。
+### 2026-06-14 第七十批：Desktop mock session/handoff state 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/workbench.ts`、`desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `resetMockApiState()` 保留为导出入口，但委托 `resetMockWorkbenchState(profile.user_id)`；session/search/handoff/resume/undo/archive/message routes 通过 workbench helper 读取或修改状态 |
+| 已迁出职责 | `mockSessionSummaries`、session messages、current session summary 派生、handoff queue、resume context、session undo、session archive、workbench summary |
+| 保留职责 | `mockApi.ts` 仍负责 HTTP mock route dispatch、profile mutation、user export/delete 聚合、run trace eval、finance/tool result domain payload |
+| 行为保持 | `/v1/desktop/workbench/summary`、`/v1/hermes/sessions`、`/v1/hermes/handoffs`、`/v1/hermes/sessions/{id}/resume-context`、`/v1/sessions/{id}/undo`、`/v1/sessions/{id}/archive`、`/v1/sessions/{id}/messages` payload shape 保持；undo/archive 仍只改变本地 mock state |
+| `mockApi.ts` 行数 | 2828 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 175 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAgentWorkbench.test.tsx src/components/WorkbenchView.test.tsx src/features/agent-pages/SessionsPage.test.tsx src/features/agent-pages/RunsEventsPage.test.tsx --environment jsdom
+# 5 passed; 46 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Desktop mock workbench/session/handoff 数据边界已经集中到 `mock/workbench.ts`，`mockApi.ts` 不再直接维护 session mutable arrays。
+2. `resetMockApiState()` 的外部测试入口未破坏，只把 reset 细节下沉到 workbench helper。
+3. 下一批可继续拆 finance workspace payload，或把 run trace eval 中的 workbench evidence 聚合迁入 `mock/workbench.ts`，但后者应避免重新耦合 user activity/tool invocation state。
+### 2026-06-14 第七十一批：Desktop mock Financial Manager payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/financialManager.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `/v1/desktop/financial-manager/catalog/status/query/intent` 只做 route dispatch；payload 由 `mockFinancialManagerCatalog()`、`mockFinancialManagerStatus()`、`mockFinancialManagerQuery()`、`mockFinancialManagerIntent()` 生成 |
+| 已迁出职责 | Financial Manager group/action catalog、readiness/status payload、read-only query mock results、blocked/stateful-intent guard payload、intent payload construction |
+| 保留职责 | `mockApi.ts` 仍维护 `intents` Map；Financial Manager intent helper 通过 callback 注册 intent，避免新模块持有全局 route state |
+| 行为保持 | read-only query 仍返回 `agent_analyze_stock` / `agent_portfolio_risk` / `agent_quant_data_gate` mock payload；stateful financial actions 仍要求 ActionIntent；blocked live broker action 仍返回 `FINANCIAL_ACTION_BLOCKED`；status 中 broker live trading remains false |
+| `mockApi.ts` 行数 | 2706 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 175 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/financial-manager/FinancialManagerWorkspace.test.tsx --environment jsdom
+# 2 passed; 9 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Financial Manager mock 合同已从主 route dispatcher 中拆出，且未扩大到 broker-readonly payload，边界更清楚。
+2. `intents` Map 仍由 `mockApi.ts` 统一拥有，避免 Financial Manager 模块和 generic ActionIntent routes 产生双状态。
+3. 下一批可继续拆 broker-readonly mock payload，或转向 quant/stock-radar/factory payload；broker-readonly 拆分时要继续保持 explicit consent、read-only、live_trading_enabled=false。
+### 2026-06-14 第七十二批：Desktop mock broker read-only payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/brokerReadonly.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `/v1/desktop/broker-readiness`、`/v1/desktop/broker/sync`、`/v1/desktop/broker/accounts|positions|orders`、`/v1/desktop/broker/analytics/*` 只做 route dispatch；payload 由 broker read-only helper 生成 |
+| 已迁出职责 | QMT/同花顺 mock broker profile、account/position/order/deal snapshot、analytics、readiness checklist、explicit consent failure、broker snapshot payload |
+| 行为保持 | broker sync 仍要求 `consent`；所有 broker mock payload 继续 `read_only: true`、`live_trading_enabled: false`、`secrets_redacted: true`；没有新增 live place/cancel route，也没有 broker token 缓存或绕过 |
+| `mockApi.ts` 行数 | 2333 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 175 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/financial-manager/FinancialManagerWorkspace.test.tsx --environment jsdom
+# 2 passed; 9 tests passed
+
+npx vitest run src/features/workspace/FinanceLabPage.test.tsx --environment jsdom
+# 1 passed; 1 test passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Broker read-only mock data now has an explicit module boundary and no longer bloats the main route dispatcher.
+2. The extraction preserved the finance MCP guardrail distinction: account/order snapshots are read-only evidence, not live trading readiness.
+3. 下一批可继续拆 quant/stock-radar/factory payload；若继续 broker/live 相关内容，必须保持 per-call broker-token/live-order guardrail 不被 mock UI 暗示为可用。
+### 2026-06-14 第七十三批：Desktop mock stock data-source state 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/mock/desktopData.ts`、`desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | stock data-source route wrapper 继续存在，但状态读写委托 `mockStockDataSourcesStatusData()`、`mockSaveStockDataSourceData()`、`mockTestStockDataSourceData()` |
+| 已迁出职责 | stock data-source presets、mutable mock stock data-source list、save 后更新 sources 的状态管理 |
+| 保留职责 | `mockApi.ts` 仍负责 `/v1/desktop/data/status` envelope 注入、sync-plan route dispatch、settings status 聚合 |
+| 行为保持 | presets、env var 名称、secret redaction、unsupported provider handling、test connectivity status、existing API routes 保持 |
+| `mockApi.ts` 行数 | 2163 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/data/DataSyncWorkspace.test.tsx src/features/settings/SettingsModeWorkspace.test.tsx --environment jsdom
+# 1 passed; 8 tests passed
+
+npx vitest run src/features/settings/StockDataSourcesPanel.test.tsx src/features/settings/SettingsWorkspace.test.tsx src/features/settings/SecurityPanel.test.tsx --environment jsdom
+# 3 passed; 8 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `mock/desktopData.ts` now owns the stock data-source mutable state it already knew how to validate/redact.
+2. Settings status continues to consume stock data-source status through the same `stockDataSourcesStatus()` wrapper, preserving aggregation behavior.
+3. 下一批可转向 market temperature / quant / stock radar payload；market temperature 是当前 `mockApi.ts` 中下一块较大的纯 payload 逻辑。
+### 2026-06-14 第七十四批：Desktop mock market temperature payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/marketTemperature.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `toolResult()` 继续按 `agent_market_temperature_*` tool name dispatch；具体 snapshot/cache/history/constituents/forward-validation payload 由 `mock/marketTemperature.ts` 生成 |
+| 已迁出职责 | market temperature snapshot、cache readiness/history、industry history、industry constituents、forward validation mock matrices |
+| 行为保持 | tool names、read-only envelope、`market_temperature.v1` contract version、source_chain、benchmark/quality/cache fields 保持 |
+| `mockApi.ts` 行数 | 1780 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/market-temperature/MarketTemperatureWorkspace.test.tsx --environment jsdom
+# 2 passed; 11 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Market temperature mock tool payloads now have a dedicated read-only domain module.
+2. `mockApi.ts` has crossed below 1800 lines while still owning route dispatch and generic envelope creation.
+3. 下一批可继续拆 Strategy Factory / stock radar / trade prediction payload，或 stop P2 cleanup after one more focused slice and reassess P3/P4 readiness.
+### 2026-06-14 第七十五批：Desktop mock stock radar payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/stockRadar.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `agent_stock_radar_status/candidates/digest` tool dispatch 和 `/v1/desktop/stock-radar/*` routes 继续保留；run/candidate/digest fixture 与 tier filtering 委托到 `stockRadarPayload()`、`stockRadarCandidatesPayload()` |
+| 已迁出职责 | stock radar latest run fixture、candidate fixture、digest preview、candidate tier filter |
+| 行为保持 | status/candidates/digest envelope tool names、candidate shape、dry_run/no_trade metadata 和 `/v1/desktop/stock-radar/candidates?tier=...` 行为保持 |
+| `mockApi.ts` 行数 | 1714 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+| `mock/stockRadar.ts` 行数 | 70 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/factory-events/FactoryEventTriggerPanel.test.tsx --environment jsdom
+# 2 passed; 25 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Stock Radar mock payload 已从主 dispatcher 中拆出，Factory Event panel 的 radar 调用路径保持。
+2. `mockApi.ts` 剩余大块集中在 Strategy Factory / factory events / trade prediction / incubation / quant research 等 finance fixture。
+3. P2 可继续按 finance fixture 小块拆分；若要进入 P3，应先记录当前 P2 状态并确认 `mockApi.ts` 是否接受继续保留 1700 行级别的 route glue。
+### 2026-06-14 第七十六批：Desktop mock trade prediction payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/tradePrediction.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `agent_trade_prediction_status/outcomes/matrix` tool dispatch 和 `/v1/desktop/trade-predictions/status|outcomes|matrix` routes 继续保留；status/outcomes/matrix payload 由 `tradePredictionStatus()`、`tradePredictionOutcomes()`、`tradePredictionMatrix()` 生成 |
+| 已迁出职责 | trade prediction outcome fixture、filter/limit 处理、status 汇总、score/data-quality counts、dimension matrix 聚合 |
+| 行为保持 | `agent_*` tool names、status/outcomes/matrix object shape、strategy/stock/status/date/dimensions/limit filtering、partial status counts、read-only mock 行为保持；没有新增 live trading 或 broker side effect |
+| `mockApi.ts` 行数 | 1491 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+| `mock/stockRadar.ts` 行数 | 70 行 |
+| `mock/tradePrediction.ts` 行数 | 228 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/factory-events/FactoryEventTriggerPanel.test.tsx src/features/financial-manager/FinancialManagerWorkspace.test.tsx --environment jsdom
+# 3 passed; 26 tests passed
+
+npx vitest run src/features/incubation/IncubationFactoryPanel.test.tsx --environment jsdom
+# 1 passed; 1 test passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Trade Prediction mock payload 已从主 dispatcher 中拆出，Strategy Factory / Factory Event 相关调用仍通过 Agent HTTP mock route 与 `agent_*` facade 暴露。
+2. `mockApi.ts` 已降到 1500 行以下，剩余职责更接近 route glue、generic envelope、Strategy Factory / incubation / quant research 等尚未拆分 fixture。
+3. 下一批优先拆 Strategy Factory 或 incubation payload；继续保持 mock 只表达 dry-run/read-only/quality evidence，不暗示 live broker 或实盘交易可用。
+### 2026-06-14 第七十七批：Desktop mock incubation payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/incubation.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `agent_incubation_factory_status` 与 `agent_strategy_domain_events` tool dispatch 继续保留；hit-rate report、domain events、status payload、event_type/limit filtering 由 `incubationFactoryStatusPayload()` 与 `strategyDomainEventsPayload()` 生成 |
+| 已迁出职责 | incubation hit-rate report fixture、promotion blocker summary、lifecycle evidence、incubation/domain event fixture、domain event filtering/limit |
+| 行为保持 | `agent_*` tool names、incubation status envelope、`incubation_factory.hit_rate_report_generated` / `incubation.stage_transitioned` event shapes、limit filtering、read-only mock behavior 保持；未新增 ActionIntent、broker 或 live trading side effect |
+| `mockApi.ts` 行数 | 1185 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+| `mock/stockRadar.ts` 行数 | 70 行 |
+| `mock/tradePrediction.ts` 行数 | 228 行 |
+| `mock/incubation.ts` 行数 | 307 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/incubation/IncubationFactoryPanel.test.tsx src/features/factory-events/FactoryEventTriggerPanel.test.tsx --environment jsdom
+# 3 passed; 26 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Incubation mock payload 已有独立领域模块，Finance Lab / Incubation panel / Event Console 继续通过 Agent HTTP mock 和 `agent_*` facade 读取。
+2. `mockApi.ts` 已接近 route glue 目标，剩余超千行主要来自 Strategy Factory 小 fixture、factory-event mock action 分支、quant research fixture 和通用 route dispatch。
+3. 下一批可拆 Strategy Factory status/runs/review snapshot 或 quant research payload；若要进入更大 handler 分组拆分，应先确认 route dispatch 文件的目标形态。
+### 2026-06-14 第七十八批：Desktop mock Strategy Factory / factory-event payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/strategyFactory.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `agent_factory_status/runs`、`agent_strategy_review_snapshot`、`agent_factory_event_*`、`agent_strategy_manager` compatibility mock 分支继续由 `toolResult()` dispatch；Strategy Factory status/runs/review snapshot 和 factory-event payload 由 `mock/strategyFactory.ts` 生成 |
+| 已迁出职责 | strict incubation blocker summary、factory run/review snapshot、factory event list、preview tasks、lineage、theme exposure、outbox status、`agent_strategy_manager` mock kwargs parsing |
+| 行为保持 | `agent_*` factory facade names、Strategy Factory readiness/status shape、strict blocker evidence、factory-event read payloads 保持；`agent_strategy_manager` 仅作为既有 mock compatibility 分支迁移，未新增 raw manager model-visible surface；未新增 live trading side effect |
+| `mockApi.ts` 行数 | 1006 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+| `mock/stockRadar.ts` 行数 | 70 行 |
+| `mock/tradePrediction.ts` 行数 | 228 行 |
+| `mock/incubation.ts` 行数 | 307 行 |
+| `mock/strategyFactory.ts` 行数 | 175 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/factory-events/FactoryEventTriggerPanel.test.tsx src/features/factory/StrategyFactoryPanel.test.tsx --environment jsdom
+# 3 passed; 27 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. Strategy Factory mock payload 已从主 dispatcher 移出，同时保留 Agent `agent_*` facade 和现有 compatibility mock 行为。
+2. `mockApi.ts` 只差少量 quant research fixture 即可退出超 1000 行清单。
+3. 下一批优先拆 quant research fixture，完成 P2 mock 文件瘦身里程碑。
+### 2026-06-14 第七十九批：Desktop mock quant research payload 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/mock/quantResearch.ts` |
+| 更新模块 | `desktop/src/mockApi.ts` |
+| `mockApi.ts` 装配方式 | `/v1/desktop/quant/presets`、`/v1/desktop/quant/research-runs`、`/v1/desktop/quant/research-runs/{id}/report` route dispatch 继续保留；presets、research artifact、report payload 由 `mockQuantPresets()` 与 `mockQuantResearchArtifact()` 生成 |
+| 已迁出职责 | quant presets fixture、data_status/database 注入后的 preset payload、research stages、quant research report fixture |
+| 行为保持 | quant research route paths、`agent_quant_research_run` envelope、stage names、report shape、`MOCK_NOT_INVESTMENT_ADVICE` disclaimer 保持；未新增交易或外部数据 side effect |
+| `mockApi.ts` 行数 | 999 行 |
+| `mock/routing.ts` 行数 | 13 行 |
+| `mock/desktopData.ts` 行数 | 354 行 |
+| `mock/ai.ts` 行数 | 166 行 |
+| `mock/jobs.ts` 行数 | 56 行 |
+| `mock/ops.ts` 行数 | 48 行 |
+| `mock/integrations.ts` 行数 | 95 行 |
+| `mock/gateway.ts` 行数 | 39 行 |
+| `mock/nativeTools.ts` 行数 | 28 行 |
+| `mock/settings.ts` 行数 | 42 行 |
+| `mock/userState.ts` 行数 | 117 行 |
+| `mock/workbench.ts` 行数 | 529 行 |
+| `mock/toolCatalog.ts` 行数 | 64 行 |
+| `mock/capabilities.ts` 行数 | 271 行 |
+| `mock/financialManager.ts` 行数 | 170 行 |
+| `mock/brokerReadonly.ts` 行数 | 388 行 |
+| `mock/marketTemperature.ts` 行数 | 384 行 |
+| `mock/stockRadar.ts` 行数 | 70 行 |
+| `mock/tradePrediction.ts` 行数 | 228 行 |
+| `mock/incubation.ts` 行数 | 307 行 |
+| `mock/strategyFactory.ts` 行数 | 188 行 |
+| `mock/quantResearch.ts` 行数 | 40 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/quant/QuantResearchWorkspace.test.tsx src/features/factory-events/FactoryEventTriggerPanel.test.tsx --environment jsdom
+# 3 passed; 27 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/mockApi.ts` 已从原始 4159 行降到 999 行，按方案口径退出超 1000 行文件清单。
+2. Desktop mock 现已形成 `mock/` 领域模块边界，主文件主要保留 mock entrypoint、auth/envelope、route dispatch、profile/intents 状态和少量跨域聚合。
+3. P2 mock 瘦身可作为阶段里程碑；后续若继续推进 Desktop，应转向 `types.ts`、`styles.css`、`FactoryEventTriggerPanel.tsx` 或 e2e suite 拆分。
+### 2026-06-14 第八十批：Desktop finance 类型合同拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/types/finance.ts` |
+| 更新模块 | `desktop/src/types.ts` |
+| `types.ts` 装配方式 | 顶部新增 `export * from "./types/finance"`，保留现有 `../../types` / `../types` 导入兼容 |
+| 已迁出职责 | Trade Prediction status/outcomes/matrix 类型、Market Temperature snapshot/cache/history/constituents/forward-validation 类型 |
+| 行为保持 | 纯类型迁移，无运行时代码变化；Desktop 仍只通过 Agent HTTP API；所有 market temperature / trade prediction API method signatures 与组件 import 路径保持 |
+| `types.ts` 行数 | 1807 行 |
+| `types/finance.ts` 行数 | 279 行 |
+| `mockApi.ts` 行数 | 999 行 |
+| `services/aiaskApi.ts` 行数 | 1198 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/market-temperature/MarketTemperatureWorkspace.test.tsx src/features/incubation/IncubationFactoryPanel.test.tsx --environment jsdom
+# 3 passed; 12 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/types.ts` 已开始按领域拆分，Finance 读模型里最独立的 market temperature / trade prediction 类型先迁出。
+2. 兼容导出口保持现有调用方不变，后续可以继续拆 `types/agent.ts`、`types/workbench.ts`、`types/settings.ts`、`types/broker.ts` 等模块。
+3. 当前 Desktop 仍在超 1000 行清单中的主要文件是 `styles.css`、`e2e/capabilities.spec.ts`、`types.ts`、`FactoryEventTriggerPanel.tsx`、`services/aiaskApi.ts`、`FinanceLabPage.tsx`；下一批宜继续从 `types.ts` 或 `services/aiaskApi.ts` 的低耦合块切入。
+### 2026-06-14 第八十一批：Desktop finance 类型合同第二批拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 更新模块 | `desktop/src/types/finance.ts`、`desktop/src/types.ts` |
+| `types.ts` 装配方式 | 继续通过 `export * from "./types/finance"` 保持兼容导出；根文件用 type-only import 引入 `QuantPresetPayload` / `QuantResearchRun` 供 `DesktopDataStatus` 与 `CapabilityWorkbenchPayload` 本地引用 |
+| 已迁出职责 | Factor Factory status、Quant preset/research run/report、Financial Manager catalog/action/query/intent result、Broker readiness/account/position/order/deal/profile/analytics/snapshot/sync 类型 |
+| 保留职责 | `FinancialReadinessGate`、`FinancialNextAction`、`FinancialSystemReadiness`、`FinancialManagerStatus` 暂留 `types.ts`，因为 readiness action 仍依赖 `MainView` 导航类型 |
+| 行为保持 | 纯类型迁移，无运行时代码变化；Desktop HTTP route、mock/live 分流、Broker read-only/live-trading guardrail 字段保持 |
+| `types.ts` 行数 | 1478 行 |
+| `types/finance.ts` 行数 | 610 行 |
+| `mockApi.ts` 行数 | 999 行 |
+| `services/aiaskApi.ts` 行数 | 1198 行 |
+| `features/workspace/FinanceLabPage.tsx` 行数 | 1102 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/quant/QuantResearchWorkspace.test.tsx src/features/financial-manager/FinancialManagerWorkspace.test.tsx src/features/workspace/FinanceLabPage.test.tsx --environment jsdom
+# 4 passed; 12 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/types.ts` 已从 2085 行降到 1478 行，finance 类型已基本集中到 `types/finance.ts`。
+2. 根类型文件仍承担导航、workbench、settings、capability 聚合等跨域合同，下一批可继续拆 `types/workbench.ts` 或 `types/settings.ts`。
+3. Desktop 当前超 1000 行文件剩余：`styles.css`、`FactoryEventTriggerPanel.tsx`、`types.ts`、`services/aiaskApi.ts`、`FinanceLabPage.tsx`；`mockApi.ts` 已不在 Desktop 超 1000 行列表内。
+### 2026-06-14 第八十二批：Desktop workbench 类型合同拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/types/workbench.ts` |
+| 更新模块 | `desktop/src/types.ts` |
+| `types.ts` 装配方式 | 顶部新增 `export * from "./types/workbench"`；根文件用 type-only import 引入 `RecentSessionSummary`、`RunRecord`、`NormalizedRunEvent` 供用户数据导出/活动 payload 本地引用 |
+| 已迁出职责 | Agent response/run record、task artifact/source/review/context/thread、session handoff、recent session、handoff queue、session resume/undo/archive、desktop run/workbench summary、normalized run event、run trace eval、timeline event、diagnostics summary 类型 |
+| 行为保持 | 纯类型迁移，无运行时代码变化；Workbench、Sessions、Runs/Events、TaskPanels、Timeline、mock/workbench 和 `services/api/workbench.ts` 继续从 `../types` 兼容导入 |
+| `types.ts` 行数 | 1082 行 |
+| `types/finance.ts` 行数 | 610 行 |
+| `types/workbench.ts` 行数 | 400 行 |
+| `mockApi.ts` 行数 | 999 行 |
+| `services/aiaskApi.ts` 行数 | 1198 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/components/WorkbenchView.test.tsx src/hooks/useAgentWorkbench.test.tsx src/features/agent-pages/SessionsPage.test.tsx src/features/agent-pages/RunsEventsPage.test.tsx src/services/aiaskApi.test.ts --environment jsdom
+# 5 passed; 46 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/types.ts` 已从 1478 行降到 1082 行，接近退出超 1000 行清单。
+2. Workbench/run/session 类型已与已有 `mock/workbench.ts`、`services/api/workbench.ts` 边界对齐。
+3. 下一批迁出 AI/provider 或 settings/user 类型中的一小块即可让 `types.ts` 低于 1000 行。
+### 2026-06-14 第八十三批：Desktop AI/provider 类型合同拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/types/ai.ts` |
+| 更新模块 | `desktop/src/types.ts` |
+| `types.ts` 装配方式 | 顶部新增 `export * from "./types/ai"`；根文件用 type-only import 引入 `AiStatus` 供 settings/capability 聚合类型本地引用 |
+| 已迁出职责 | `AiStatus`、prompt cache policy、AI smoke result、AI provider preset、AI config payload/save payload/save result |
+| 行为保持 | 纯类型迁移，无运行时代码变化；AI status/config/smoke/models API signatures、mock AI payload、capability AI section 兼容导出保持 |
+| `types.ts` 行数 | 960 行 |
+| `types/ai.ts` 行数 | 123 行 |
+| `types/finance.ts` 行数 | 610 行 |
+| `types/workbench.ts` 行数 | 400 行 |
+| `mockApi.ts` 行数 | 999 行 |
+| `services/aiaskApi.ts` 行数 | 1198 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/hooks/useAiSmoke.test.tsx --environment jsdom
+# 1 passed; 8 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/types.ts` 已从原始 2085 行降到 960 行，按方案口径退出超 1000 行文件清单。
+2. Desktop P2 已完成两个关键瘦身里程碑：`mockApi.ts` 999 行、`types.ts` 960 行，且都保留兼容入口。
+3. Desktop 当前超 1000 行文件剩余：`styles.css`、`FactoryEventTriggerPanel.tsx`、`services/aiaskApi.ts`、`FinanceLabPage.tsx`；下一批可转向 `services/aiaskApi.ts` facade 收口或组件/CSS 拆分。
+### 2026-06-14 第八十四批：Desktop API full console / intent helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/services/api/fullConsole.ts`、`desktop/src/services/api/intents.ts` |
+| 更新模块 | `desktop/src/services/aiaskApi.ts`、`desktop/src/services/api/finance.ts`、`desktop/src/services/api/workbench.ts` |
+| `aiaskApi.ts` 装配方式 | 继续导出 `AiaskApi` 兼容 facade；full console、read-only tool、ActionIntent、approval、handoff/search 和 finance intent action 由领域 helper 承接 |
+| 已迁出职责 | full console 聚合与 control-token 降级 fallback、`/intents` create/get/confirm/deny/list、`/v1/approvals` list/decide、stock radar / factory event / factor factory intent action name 与默认 rationale、handoffs/search 拼参 |
+| 行为保持 | `/v1/hermes/*`、`/v1/tools/{agent_*}`、`/intents`、`/v1/approvals`、stock/factory/factor intent action names、`ttl_seconds: 86400`、control token 降级 reason/error 字段、Desktop Agent HTTP-only 边界保持；未新增 Python/MCP/manager 直连或交易 side effect |
+| `services/aiaskApi.ts` 行数 | 999 行 |
+| `services/api/fullConsole.ts` 行数 | 156 行 |
+| `services/api/intents.ts` 行数 | 85 行 |
+| `services/api/finance.ts` 行数 | 348 行 |
+| `services/api/workbench.ts` 行数 | 250 行 |
+| `types.ts` 行数 | 960 行 |
+| `mockApi.ts` 行数 | 999 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/services/aiaskApi.test.ts src/features/factory-events/FactoryEventTriggerPanel.test.tsx src/features/factory/StrategyFactoryPanel.test.tsx --environment jsdom
+# 3 passed; 27 tests passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/services/aiaskApi.ts` 已从原始 1198 行降到 999 行，按方案口径退出超 1000 行文件清单。
+2. Desktop P2 已完成三个兼容入口瘦身里程碑：`mockApi.ts` 999 行、`types.ts` 960 行、`services/aiaskApi.ts` 999 行。
+3. Desktop 当前超 1000 行文件剩余：`styles.css` 5215 行、`FactoryEventTriggerPanel.tsx` 1553 行、`FinanceLabPage.tsx` 1102 行；下一批宜优先拆 `FactoryEventTriggerPanel.tsx` 或 `FinanceLabPage.tsx`，CSS 可独立作为样式分区批次处理。
+### 2026-06-14 第八十五批：Desktop FinanceLab 页面孵化 Worklist 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/features/workspace/FinanceLabIncubation.tsx`、`desktop/src/features/workspace/FinanceLabUtils.ts` |
+| 更新模块 | `desktop/src/features/workspace/FinanceLabPage.tsx` |
+| `FinanceLabPage.tsx` 装配方式 | 页面继续持有 API 调用、状态、broker 只读同步和主 DOM；孵化 hit-rate/lifecycle/worklist 证据提取与渲染由 `FinanceLabIncubation.tsx` 承接，unknown 解析与格式化工具由 `FinanceLabUtils.ts` 承接 |
+| 已迁出职责 | incubation report fallback、promotion blocker 合并、lifecycle evidence rows、weak family/regime cells、hit-rate worklist JSX、`recordFromUnknown` / `arrayFromUnknown` / money/percent/string helpers |
+| 行为保持 | FinanceLab 仍只通过 `AiaskApi` 走 Agent HTTP；broker read-only consent、sync 按钮、factory relay、incubation worklist 文案与测试断言保持；未新增 live trading、Python/MCP/manager 直连或状态副作用 |
+| `features/workspace/FinanceLabPage.tsx` 行数 | 795 行 |
+| `features/workspace/FinanceLabIncubation.tsx` 行数 | 284 行 |
+| `features/workspace/FinanceLabUtils.ts` 行数 | 33 行 |
+| `services/aiaskApi.ts` 行数 | 999 行 |
+| `types.ts` 行数 | 960 行 |
+| `mockApi.ts` 行数 | 999 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/features/workspace/FinanceLabPage.test.tsx --environment jsdom
+# 1 passed; 1 test passed
+
+npm test
+# 34 passed; 144 tests passed
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/features/workspace/FinanceLabPage.tsx` 已从 1102 行降到 795 行，按方案口径退出超 1000 行文件清单。
+2. Desktop P2 已完成四个兼容入口瘦身里程碑：`mockApi.ts`、`types.ts`、`services/aiaskApi.ts`、`FinanceLabPage.tsx` 均低于 1000 行。
+3. Desktop 当前超 1000 行文件剩余：`styles.css` 5215 行、`FactoryEventTriggerPanel.tsx` 1553 行；下一批宜拆 `FactoryEventTriggerPanel.tsx` 的表单/雷达/证据子组件，CSS 可作为最后的样式分区批次处理。
+### 2026-06-14 第八十六批：Desktop Factory Event 面板数据/子面板拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/features/factory-events/FactoryEventTriggerData.ts`、`desktop/src/features/factory-events/FactoryEventTriggerPanels.tsx` |
+| 更新模块 | `desktop/src/features/factory-events/FactoryEventTriggerPanel.tsx` |
+| `FactoryEventTriggerPanel.tsx` 装配方式 | 主面板继续持有 Agent HTTP client、load/intent callbacks、tab state 和事件创建/审批/暂停/结果记录逻辑；payload 解析、选项常量、雷达/维护/创建/血缘/日志展示块迁出 |
+| 已迁出职责 | factory event / preview / lineage / stock radar payload normalization、status/time/intent id helpers、maintenance status panel、stock radar tab、ActionLog panel、Create tab、Lineage tab |
+| 行为保持 | `agent_factory_event_list`、`agent_factory_event_preview_tasks`、`agent_factory_event_lineage`、`agent_factory_theme_exposure_status`、`agent_factory_event_outbox_status` 读路径保持；`strategy_manager.factory_event_*`、`strategy_manager.factory_theme_*`、`stock_radar.*` ActionIntent action names 和控制令牌禁用态保持；未新增 manager 直连或交易副作用 |
+| `features/factory-events/FactoryEventTriggerPanel.tsx` 行数 | 944 行 |
+| `features/factory-events/FactoryEventTriggerData.ts` 行数 | 280 行 |
+| `features/factory-events/FactoryEventTriggerPanels.tsx` 行数 | 572 行 |
+| `features/workspace/FinanceLabPage.tsx` 行数 | 795 行 |
+| `services/aiaskApi.ts` 行数 | 999 行 |
+| `types.ts` 行数 | 960 行 |
+| `mockApi.ts` 行数 | 999 行 |
+
+验证结果：
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npx vitest run src/features/factory-events/FactoryEventTriggerPanel.test.tsx --environment jsdom
+# 1 passed; 17 tests passed
+
+npm test
+# failed: src/views.test.ts has 2 current VIEW_GROUPS contract failures
+# primary group is undefined; advanced-finance defaultCollapsed is undefined
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/features/factory-events/FactoryEventTriggerPanel.tsx` 已从 1553 行降到 944 行，按方案口径退出超 1000 行文件清单。
+2. Desktop P2 已完成五个兼容入口瘦身里程碑：`mockApi.ts`、`types.ts`、`services/aiaskApi.ts`、`FinanceLabPage.tsx`、`FactoryEventTriggerPanel.tsx` 均低于 1000 行。
+3. Desktop 当前超 1000 行文件剩余：`styles.css` 5215 行；另有 `src/views.test.ts` 与当前 `VIEW_GROUPS`（仅 `core` group）合同不一致，需要单独恢复 view registry 分组或同步测试预期后才能恢复全量 `npm test` 绿色。
+### 2026-06-14 第八十七批：Desktop CSS 分区拆分与 ViewGroup 守门恢复
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/src/styles/globals-layout.css`、`desktop/src/styles/capabilities-quant.css`、`desktop/src/styles/workbench-dashboard.css`、`desktop/src/styles/workbench-surfaces.css`、`desktop/src/styles/finance-events.css`、`desktop/src/styles/tools-forms.css`、`desktop/src/styles/responsive-shell.css`、`desktop/src/styles/settings-context.css`、`desktop/src/styles/finance-operations.css`、`desktop/src/styles/data-models.css` |
+| 更新模块 | `desktop/src/styles.css`、`desktop/src/views.ts`、`desktop/e2e/capabilities.spec.ts` |
+| `styles.css` 装配方式 | 入口文件只保留 10 个 `@import`，顺序与原始 5215 行样式完全一致；拆分时做了逐行重组校验，确认分片按 import 顺序拼回后与原始 CSS 行内容一致 |
+| `views.ts` 装配方式 | `VIEW_GROUPS` 从单个 `core` 恢复为 `primary`、`advanced-finance`、`advanced-ops`、`legacy`；匹配 `AppSidebar` 的 primary/advanced 渲染逻辑、`views.test.ts` 守门和 e2e `VIEW_GROUP_IDS` 映射 |
+| e2e helper 修复 | `openSettings()` 先兼容旧主区设置按钮，找不到时通过 sidebar `data-view-id="settings"` 打开设置页，避免 mock e2e 依赖首页快捷卡 |
+| 行为保持 | 未改 class 名、selector 顺序、CSS declaration 或页面组件；Desktop 仍由 `main.tsx` import `./styles.css`；legacy group 继续 `diagnosticOnly` 且默认折叠 |
+| `styles.css` 行数 | 10 行 |
+| `styles/globals-layout.css` 行数 | 340 行 |
+| `styles/capabilities-quant.css` 行数 | 692 行 |
+| `styles/workbench-dashboard.css` 行数 | 471 行 |
+| `styles/workbench-surfaces.css` 行数 | 564 行 |
+| `styles/finance-events.css` 行数 | 519 行 |
+| `styles/tools-forms.css` 行数 | 745 行 |
+| `styles/responsive-shell.css` 行数 | 656 行 |
+| `styles/settings-context.css` 行数 | 456 行 |
+| `styles/finance-operations.css` 行数 | 353 行 |
+| `styles/data-models.css` 行数 | 419 行 |
+| `views.ts` 行数 | 432 行 |
+| `e2e/capabilities.spec.ts` 行数 | 4999 行 |
+
+验证结果：
+```bash
+cd desktop
+npx vitest run src/views.test.ts --environment jsdom
+# 1 passed; 6 tests passed
+
+npm run typecheck
+# passed
+
+npm test
+# 34 passed; 144 tests passed
+
+npm run build
+# passed; Vite emitted the existing workspaces chunk-size warning
+
+npm run test:e2e:mock
+# 11 passed; 3 optional live tests skipped
+
+# repo root
+rg --files desktop/src | <line-count filter >= 1000>
+# NO_DESKTOP_SRC_FILES_GE_1000
+```
+
+当前 P2 模块补充结论：
+1. `desktop/src/styles.css` 已从 5215 行降到 10 行 import facade，所有新增 CSS 分片均低于 800 行，满足方案中的 CSS 可维护验收口径。
+2. `desktop/src` 当前已无 TS/TSX/CSS/JS/JSX 文件超过 1000 行；Desktop P2 的 `mockApi.ts`、`types.ts`、`services/aiaskApi.ts`、`FinanceLabPage.tsx`、`FactoryEventTriggerPanel.tsx`、`styles.css` 大文件治理均已退出超 1000 行清单。
+3. `views.test.ts` 守门已恢复绿色，全量 Desktop Vitest、production build 和 mock e2e 均通过；下一步可将 Desktop P2 作为阶段边界，转向 `desktop/e2e/capabilities.spec.ts` 拆分，或回到计划中 packages/scripts 的剩余超 1000 行文件。
+
+### 2026-06-14 第八十八批：Desktop e2e capabilities 规格文件拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/e2e/support/capabilitiesNavigation.ts`、`desktop/e2e/support/capabilitiesMockServer.ts`、`desktop/e2e/support/capabilitiesInventory.ts`、`desktop/e2e/support/capabilitiesFullMatrix.ts` |
+| 更新模块 | `desktop/e2e/capabilities.spec.ts` |
+| `capabilities.spec.ts` 装配方式 | 主规格文件保留 Playwright hooks、测试标题、mock/live 场景断言和可选 live smoke；标签/导航 helper、mock API fixture server、库存/矩阵断言 helper、full frontend matrix 长流程分别迁出到 support 模块 |
+| 已迁出职责 | 中文/英文 label 映射、Settings/sidebar 导航 helper、control token 设置 helper、mock Agent HTTP route fixture、frontend inventory/layout/button coverage helper、full frontend matrix 报告与截图写入流程 |
+| 行为保持 | 测试名称、mock endpoint、control-token gates、optional live skip、full matrix 报告路径和 Desktop -> Agent HTTP mock 合同保持；未新增 Desktop 直连 Python/MCP/manager 或 live trading side effect |
+| `e2e/capabilities.spec.ts` 行数 | 798 行 |
+| `e2e/support/capabilitiesNavigation.ts` 行数 | 559 行 |
+| `e2e/support/capabilitiesInventory.ts` 行数 | 255 行 |
+| `e2e/support/capabilitiesFullMatrix.ts` 行数 | 584 行 |
+| `e2e/support/capabilitiesMockServer.ts` 行数 | 2864 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npm test
+# 34 passed; 144 tests passed
+
+npx playwright test -g "MCP panel gates controls"
+# 1 passed
+
+npx playwright test -g "Full frontend matrix"
+# 1 passed
+
+npm run test:e2e:mock
+# 11 passed; 3 optional live tests skipped
+
+# repo root
+git diff --check -- desktop/e2e/capabilities.spec.ts desktop/e2e/support/capabilitiesNavigation.ts desktop/e2e/support/capabilitiesMockServer.ts desktop/e2e/support/capabilitiesInventory.ts desktop/e2e/support/capabilitiesFullMatrix.ts AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors; Git only warned that capabilities.spec.ts CRLF will normalize to LF
+```
+
+当前 P2/e2e 补充结论：
+
+1. `desktop/e2e/capabilities.spec.ts` 已从 4999 行降到 798 行，主规格文件退出超 1000 行清单，失败定位也从“一个巨型文件”收敛为导航、mock server、inventory、full matrix 四类 support 边界。
+2. 本批刻意保持 `capabilitiesMockServer.ts` 为单一 mock route fixture server，以降低路线迁移风险；它仍有 2864 行，是下一批 e2e fixture 分域的首要目标，可按 capabilities/data-market/quant-trade/finance-broker route payload 分片继续瘦身。
+3. Desktop `src` 仍保持无 TS/TSX/CSS/JS/JSX 文件超过 1000 行；仓库级目标尚未完成，剩余重点仍包括 `packages/agent/src/aiask_agent/session_store.py`、`packages/agent/src/aiask_agent/native_capabilities.py`、`scripts/factories/run_strategy_factory_quality_session.py` 以及 AKShare manager/analytics 侧的大文件。
+
+### 2026-06-14 第八十九批：Desktop e2e mock server fixture 分域拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `desktop/e2e/support/capabilitiesMockConstants.ts`、`desktop/e2e/support/capabilitiesMockCorePayloads.ts`、`desktop/e2e/support/capabilitiesMockDataMarket.ts`、`desktop/e2e/support/capabilitiesMockTradePrediction.ts`、`desktop/e2e/support/capabilitiesMockDesktopFixtures.ts`、`desktop/e2e/support/capabilitiesMockDesktopRoutes.ts` |
+| 更新模块 | `desktop/e2e/support/capabilitiesMockServer.ts` |
+| `capabilitiesMockServer.ts` 装配方式 | 保留 Playwright `page.route(API_ORIGIN/**)` dispatcher、mutable webhook/stock-source state 和 route 顺序；capability/AI/settings payload、data/market/factory payload、trade prediction payload、desktop/finance/broker fixtures、desktop user/governance routes 分别迁出 |
+| 已迁出职责 | `API_ORIGIN` 共享常量、Hermes/capabilities/AI/settings payload、data status/stock source/market temperature/factory event/quant/factor/incubation/jobs payload、trade prediction status/outcome/matrix fixture、connectors/workbench/financial manager/broker/run event fixtures、Desktop feedback/analytics/retention/user policy/export/delete route handlers |
+| 行为保持 | 所有 mock route path、method 分支、response shape、control-token 判断、broker read-only/live-trading-disabled 字段、ActionIntent envelope 和 optional live skip 行为保持；未新增 Desktop 直连 Python/MCP/manager 或 live trading side effect |
+| `e2e/support/capabilitiesMockServer.ts` 行数 | 907 行 |
+| `e2e/support/capabilitiesMockDataMarket.ts` 行数 | 688 行 |
+| `e2e/support/capabilitiesMockCorePayloads.ts` 行数 | 445 行 |
+| `e2e/support/capabilitiesMockDesktopFixtures.ts` 行数 | 491 行 |
+| `e2e/support/capabilitiesMockDesktopRoutes.ts` 行数 | 231 行 |
+| `e2e/support/capabilitiesMockTradePrediction.ts` 行数 | 193 行 |
+| `e2e/support/capabilitiesMockConstants.ts` 行数 | 1 行 |
+
+验证结果：
+
+```bash
+cd desktop
+npm run typecheck
+# passed
+
+npm test
+# 34 passed; 144 tests passed
+
+npx playwright test -g "MCP panel gates controls"
+# 1 passed
+
+npx playwright test -g "Full frontend matrix"
+# 1 passed
+
+npm run test:e2e:mock
+# 11 passed; 3 optional live tests skipped
+
+# repo root
+git diff --check -- desktop/e2e/capabilities.spec.ts desktop/e2e/support AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors; Git only warned that capabilities.spec.ts CRLF will normalize to LF
+```
+
+当前 P2/e2e 补充结论：
+
+1. `desktop/e2e` 当前 TS support 与主规格文件均低于 1000 行：`capabilities.spec.ts` 798 行，最大 support 文件 `capabilitiesMockServer.ts` 907 行。
+2. e2e mock 已形成更清晰的 fixture 边界：route dispatcher、core/capability payload、data-market/factory payload、trade prediction payload、desktop/finance fixture、desktop governance routes 分离，后续新增 mock 能按领域落点扩展。
+3. 仓库级目标仍未完成；下一阶段可从剩余 packages/scripts 大文件继续推进，例如 `packages/agent/src/aiask_agent/session_store.py`、`packages/agent/src/aiask_agent/native_capabilities.py`、`scripts/factories/run_strategy_factory_quality_session.py` 或 AKShare manager/analytics 侧文件。
+
+### 2026-06-14 第九十批：Agent session store helper/schema 首轮拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_utils.py`、`packages/agent/src/aiask_agent/session_store_schema.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | 保留 `AgentSessionStore` facade 和 `_ensure_schema(conn)` 静态方法签名；纯 helper、审计脱敏、JSON/时间工具迁入 `session_store_utils.py`；SQLite schema 初始化、messages 迁移、FTS5 创建和 commit 迁入 `session_store_schema.py` |
+| 已迁出职责 | `now_iso`、`sanitize_for_audit`、`_dumps` / `_loads`、truthy/number/text 清洗、metadata archive 判定、secret key redaction、全量 session store schema DDL 与兼容迁移 |
+| 行为保持 | `from aiask_agent.session_store import now_iso`、`sanitize_for_audit`、`AgentSessionStore` 继续可用；session/run/event/search/broker/user-data 方法体未改；schema SQL、messages deleted 字段迁移、`aiask_search_fts` fallback 行为保持；未读取 secrets、未操作运行态 DB/log/cache/broker state |
+| `session_store.py` 行数 | 2721 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py
+# 6 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_broker_readonly_api.py
+# 4 passed
+
+uv run pytest -q packages/agent/tests/test_ai_status_and_smoke.py
+# 10 passed, 1 skipped
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. 本批先做最低风险首轮拆分：外部 facade、HTTP 合同、Desktop 期望的 recent sessions/runs/events/search payload 均不改，只把纯工具和 schema 初始化从巨型 store 中拆出。
+2. `session_store.py` 已从 3198 行降到 2721 行，仍未退出超 1000 行清单；下一轮宜继续按方案拆 `run/events`、`activity/tool audit`、`broker snapshots`、`evidence/artifacts`、`user data policy`、`handoff/search` 等 repository/mixin 边界。
+3. 仓库级目标仍未完成；剩余重点仍包括 `packages/agent/src/aiask_agent/session_store.py`、`packages/agent/src/aiask_agent/native_capabilities.py`、`scripts/factories/run_strategy_factory_quality_session.py` 以及 AKShare/Strategy/Quant 侧的大文件。
+
+### 2026-06-14 第九十一批：Agent session store row helper 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_rows.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore` 继续保留 `_session_row`、`_tool_invocation_row`、`_broker_*_row`、`_handoff_row`、`_subgoal_row`、`_session_is_archived`、`_session_user_id` 等 staticmethod 名称；实现迁入 `session_store_rows.py`，类尾部以 `staticmethod(...)` 绑定保持内部调用兼容 |
+| 已迁出职责 | SQLite row 到 dict 的 session/activity/tool/source/artifact/context/feedback/policy/broker/handoff/subgoal 转换，payload JSON 解析，broker/context `secrets_redacted` 标记，archived session 判定，session user id 查询 |
+| 行为保持 | `self._source_row(...)`、`self._broker_profile_row(...)`、`AgentSessionStore._session_is_archived(...)` 等调用路径不变；Desktop recent sessions/runs/events、broker read-only payload、AI status/smoke 间接依赖的 store 返回 shape 保持；未新增运行态 DB/log/cache/broker 操作 |
+| `session_store.py` 行数 | 2595 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py
+# 6 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_broker_readonly_api.py
+# 4 passed
+
+uv run pytest -q packages/agent/tests/test_ai_status_and_smoke.py
+# 10 passed, 1 skipped
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `session_store.py` 已从 3198 行降到 2595 行，纯 helper、schema、row conversion 三类低风险代码已迁出，后续可以开始拆真正的领域 repository/mixin。
+2. 下一轮优先级建议为 `search/indexing` 或 `handoff/subgoal`：这两块依赖面较窄，比 broker/user-data 大段逻辑更适合继续小步迁移。
+3. 仓库级目标仍未完成；`session_store.py` 本身仍超过 1000 行，且 `native_capabilities.py`、factory 脚本、AKShare/Strategy/Quant 侧仍有多处大文件待处理。
+
+### 2026-06-14 第九十二批：Agent session store search/indexing 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_search.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore.search()` 保留在 facade；`_fts_available`、`_index_search_row`、`_search_row`、`_search_like` 实现迁入 `session_store_search.py`，类尾部继续以同名 staticmethod 绑定 |
+| 已迁出职责 | FTS5 可用性探测、search FTS 索引行写入、search row payload JSON 解析、messages/sources/artifacts 的 LIKE fallback 搜索、archived session 过滤 |
+| 行为保持 | `/v1/search` 依赖的 `AgentSessionStore.search()` 签名和返回 shape 不变；FTS5 不可用时仍 fallback 到 LIKE；source/artifact search payload 仍使用 metadata JSON；未新增外部调用或运行态 DB/log/cache/broker 操作 |
+| `session_store.py` 行数 | 2474 行 |
+| `session_store_search.py` 行数 | 133 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py packages/agent/tests/test_evidence_artifacts_sources.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_broker_readonly_api.py
+# 4 passed
+
+uv run pytest -q packages/agent/tests/test_ai_status_and_smoke.py
+# 10 passed, 1 skipped
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_search.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `session_store.py` 已从 3198 行降到 2474 行，低风险外围拆分已覆盖 helper、schema、row conversion、search/indexing 四类。
+2. 下一批可继续拆 `handoff/subgoal`，或进入更大的 `broker snapshots` / `user data policy` repository 拆分；前者风险更低，后者减行更明显。
+3. 仓库级目标仍未完成；`session_store.py` 仍超过 1000 行，packages/scripts 侧还有多处计划内大文件待处理。
+
+### 2026-06-14 第九十三批：Agent session store handoff/subgoal mixin 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_handoff.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore` 继承 `SessionStoreHandoffMixin`；`request_handoff`、`get_handoff`、`update_handoff`、`list_handoffs`、`upsert_subgoal`、`get_subgoal`、`list_subgoals`、`clear_subgoals` 保持同名实例方法 |
+| 已迁出职责 | handoff record 创建/查询/状态更新/队列列表、session-scoped subgoal 创建更新/查询/清空、handoff/subgoal 相关 session auto-create 和 JSON criteria/metadata 持久化 |
+| 行为保持 | `agent_session_handoff`、`agent_subgoal`、Hermes handoff queue、resume context 依赖的 store 方法名和返回 shape 保持；`AgentSessionStore` facade 仍是唯一外部入口；未新增模型可见工具、manager 直连、交易副作用或运行态 DB/log/cache/broker 操作 |
+| `session_store.py` 行数 | 2307 行 |
+| `session_store_handoff.py` 行数 | 176 行 |
+| `session_store_search.py` 行数 | 133 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_handoff.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.session_store import AgentSessionStore; s=AgentSessionStore(); assert hasattr(s, 'request_handoff'); assert hasattr(s, 'upsert_subgoal'); assert hasattr(s, 'search')"
+# passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py packages/agent/tests/test_hermes_full_expanded_capabilities.py -k "handoff or subgoal"
+# 3 passed, 14 deselected
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py packages/agent/tests/test_evidence_artifacts_sources.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_handoff.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `session_store.py` 已从 3198 行降到 2307 行；外围 helper/schema/row/search 和较窄 handoff/subgoal 领域均已拆出。
+2. 下一步若继续治理 `session_store.py`，宜在 `broker snapshots` 或 `user data policy/export/delete/retention` 中二选一作为较大减行批次，并继续保持 `AgentSessionStore` facade。
+3. 仓库级目标仍未完成；本文件仍超过 1000 行，其他 packages/scripts 大文件仍需按方案继续拆分。
+
+### 2026-06-14 第九十四批：Agent session store broker repository mixin 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_broker.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore` 继承 `SessionStoreBrokerMixin` 和 `SessionStoreHandoffMixin`；broker profile/snapshot/analytics 方法继续通过 `AgentSessionStore` facade 暴露 |
+| 已迁出职责 | broker profile upsert/sync/list、account/position/order/deal snapshot 写入与列表、behavior analytics 写入与查询、broker filter/list helper |
+| 行为保持 | broker read-only API、Financial Manager Desktop API 仍通过 Agent store facade；broker `write_enabled=0`、read-only/live-trading-disabled 语义、snapshot payload 脱敏和 analytics JSON shape 保持；未新增 live trading、manager 直连、外部 broker 操作或运行态 DB/log/cache/broker state 操作 |
+| `session_store.py` 行数 | 1905 行 |
+| `session_store_broker.py` 行数 | 411 行 |
+| `session_store_handoff.py` 行数 | 176 行 |
+| `session_store_search.py` 行数 | 133 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_handoff.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.session_store import AgentSessionStore; s=AgentSessionStore(); assert hasattr(s, 'upsert_broker_profile'); assert hasattr(s, 'list_broker_account_snapshots'); assert hasattr(s, 'latest_broker_analytics')"
+# passed
+
+uv run pytest -q packages/agent/tests/test_broker_readonly_api.py
+# 4 passed
+
+uv run pytest -q packages/agent/tests/test_financial_manager_desktop_api.py
+# 6 passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py packages/agent/tests/test_evidence_artifacts_sources.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_handoff.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `session_store.py` 已从 3198 行降到 1905 行，首次低于 2000 行；broker 领域已经独立成 repository mixin。
+2. 若继续瘦身，下一块建议拆 `sources/artifacts/context snapshots` 或 `user data policy/export/delete/retention`，两者都能明显减少主 facade 体积。
+3. 仓库级目标仍未完成；`session_store.py` 距离低于 1000 行还需要继续拆分，其他 packages/scripts 大文件也仍在计划清单内。
+
+### 2026-06-14 第九十五批：Agent session store evidence/source/artifact mixin 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_evidence.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore` 继续作为 facade，继承 `SessionStoreBrokerMixin`、`SessionStoreEvidenceMixin`、`SessionStoreHandoffMixin`；source/artifact/context snapshot 方法名保持 |
+| 已迁出职责 | agent source 写入/查询/列表、artifact 写入/查询/列表、context snapshot 写入/查询/列表、source/artifact search index 写入、metadata/preview/context payload 脱敏 |
+| 行为保持 | evidence/artifact/source API 和 runtime context snapshot 依赖的 store 方法签名与返回 shape 保持；search index 写入仍通过 `_index_search_row`；未新增外部 provider 调用、manager 直连或运行态 DB/log/cache/broker 操作 |
+| `session_store.py` 行数 | 1566 行 |
+| `session_store_evidence.py` 行数 | 354 行 |
+| `session_store_broker.py` 行数 | 411 行 |
+| `session_store_handoff.py` 行数 | 176 行 |
+| `session_store_search.py` 行数 | 133 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_evidence.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_handoff.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.session_store import AgentSessionStore; s=AgentSessionStore(); assert hasattr(s, 'record_source'); assert hasattr(s, 'record_artifact'); assert hasattr(s, 'record_context_snapshot')"
+# passed
+
+uv run pytest -q packages/agent/tests/test_evidence_artifacts_sources.py
+# 5 passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py
+# 6 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_evidence.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_handoff.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `session_store.py` 已从 3198 行降到 1566 行，schema/helper/row/search/handoff/broker/evidence 七类职责已经迁出。
+2. 若目标是让 `session_store.py` 退出超 1000 行清单，下一批应优先拆 `user data policy/export/delete/retention/learning dataset`；该段体量最大，完成后主 facade 有望接近或低于 1000 行。
+3. 仓库级目标仍未完成；即使 `session_store.py` 后续退出清单，`native_capabilities.py`、factory 脚本和 AKShare/Strategy/Quant 侧大文件仍需继续处理。
+
+### 2026-06-14 第九十六批：Agent session store user-data/retention mixin 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/session_store_user_data.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/session_store.py` |
+| `session_store.py` 装配方式 | `AgentSessionStore` 继续作为兼容 facade，继承 broker/evidence/handoff/user-data mixins；`search()` 和 session/run/activity/tool audit 核心仍留在 facade 内 |
+| 已迁出职责 | feedback CRUD、user data policy get/update、user activity summary、analytics summary、user data export/delete、retention policy sweep、learning dataset、workflow recommendations、user data policy list helper |
+| 行为保持 | Desktop user activity/feedback/policy/export/delete/retention routes、learning dataset、workflow recommendations 返回 shape 保持；secret redaction、dry-run、market-data-unaffected 标记、hard-delete/anonymize 分支和 FTS cleanup 行为保持；未新增 secrets 读取、外部副作用、live trading 或 runtime DB/log/cache/broker 操作 |
+| `session_store.py` 行数 | 973 行 |
+| `session_store_user_data.py` 行数 | 609 行 |
+| `session_store_evidence.py` 行数 | 354 行 |
+| `session_store_broker.py` 行数 | 411 行 |
+| `session_store_handoff.py` 行数 | 176 行 |
+| `session_store_search.py` 行数 | 133 行 |
+| `session_store_rows.py` 行数 | 171 行 |
+| `session_store_utils.py` 行数 | 137 行 |
+| `session_store_schema.py` 行数 | 365 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_user_data.py packages/agent/src/aiask_agent/session_store_evidence.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_handoff.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.session_store import AgentSessionStore; s=AgentSessionStore(); assert hasattr(s, 'record_feedback'); assert hasattr(s, 'export_user_data'); assert hasattr(s, 'apply_retention_policies'); assert hasattr(s, 'search')"
+# passed
+
+uv run pytest -q packages/agent/tests/test_session_memory_todo.py
+# 6 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_workbench_contracts.py
+# 11 passed
+
+uv run pytest -q packages/agent/tests/test_evidence_artifacts_sources.py
+# 5 passed
+
+uv run pytest -q packages/agent/tests/test_broker_readonly_api.py packages/agent/tests/test_financial_manager_desktop_api.py
+# 10 passed
+
+git diff --check -- packages/agent/src/aiask_agent/session_store.py packages/agent/src/aiask_agent/session_store_user_data.py packages/agent/src/aiask_agent/session_store_evidence.py packages/agent/src/aiask_agent/session_store_broker.py packages/agent/src/aiask_agent/session_store_utils.py packages/agent/src/aiask_agent/session_store_schema.py packages/agent/src/aiask_agent/session_store_rows.py packages/agent/src/aiask_agent/session_store_search.py packages/agent/src/aiask_agent/session_store_handoff.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent session store 补充结论：
+
+1. `packages/agent/src/aiask_agent/session_store.py` 已从 3198 行降到 973 行，按方案口径退出超 1000 行清单；外部仍保留 `AgentSessionStore`、`now_iso`、`sanitize_for_audit` 兼容入口。
+2. session store 已形成 facade + schema/utils/rows/search/handoff/broker/evidence/user-data mixins 的分层，后续细拆可以围绕 activity/tool audit 或 session/run core 继续，但不再是当前超 1000 行压力点。
+3. 仓库级目标仍未完成；下一阶段可转向 `packages/agent/src/aiask_agent/native_capabilities.py`、`scripts/factories/run_strategy_factory_quality_session.py` 或 AKShare/Strategy/Quant 侧剩余大文件。
+
+### 2026-06-14 第九十七批：Agent native capabilities 顶层 helper/store/media 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/native_utils.py`、`packages/agent/src/aiask_agent/native_web_utils.py`、`packages/agent/src/aiask_agent/native_media.py`、`packages/agent/src/aiask_agent/native_skill_store.py`、`packages/agent/src/aiask_agent/native_message_outbox.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/native_capabilities.py` |
+| `native_capabilities.py` 装配方式 | 继续导出 `SkillStore`、`MessageOutbox`、`media_provider_catalog` 等兼容名字，并保留 `build_native_capability_handlers()` / `agent_*` handler 注册表；顶层 slug/limit、web fetch/extract/json helpers、media provider/generation helpers、skill store、message outbox 迁出 |
+| 已迁出职责 | public web URL 校验与 fetch、HTML text/link extraction、JSON HTTP helper、media provider catalog、image/TTS/STT helper、skill CRUD/archive/backup/audit/templates、message outbox persistence/send |
+| 行为保持 | `agent_*` 工具名、envelope/meta/side-effect 字段、general_full/control-token 入口、SkillStore 兼容导入、media provider catalog shape 和 private web target block 行为保持；未扩大文件/terminal/browser/web/media 权限面 |
+| `native_capabilities.py` 行数 | 1505 行 |
+| `native_media.py` 行数 | 276 行 |
+| `native_web_utils.py` 行数 | 156 行 |
+| `native_skill_store.py` 行数 | 254 行 |
+| `native_message_outbox.py` 行数 | 68 行 |
+| `native_utils.py` 行数 | 18 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/native_capabilities.py packages/agent/src/aiask_agent/native_media.py packages/agent/src/aiask_agent/native_web_utils.py packages/agent/src/aiask_agent/native_skill_store.py packages/agent/src/aiask_agent/native_message_outbox.py packages/agent/src/aiask_agent/native_utils.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.native_capabilities import SkillStore, MessageOutbox, media_provider_catalog, build_native_capability_handlers; print(SkillStore.__name__, MessageOutbox.__name__, media_provider_catalog()['object'])"
+# passed
+
+uv run pytest -q packages/agent/tests/test_native_full_parity.py
+# 5 passed
+
+uv run pytest -q packages/agent/tests/test_hermes_full_expanded_capabilities.py -k "media or image or audio or subgoal or handoff"
+# 1 passed, 5 deselected
+
+git diff --check -- packages/agent/src/aiask_agent/native_capabilities.py packages/agent/src/aiask_agent/native_media.py packages/agent/src/aiask_agent/native_web_utils.py packages/agent/src/aiask_agent/native_skill_store.py packages/agent/src/aiask_agent/native_message_outbox.py packages/agent/src/aiask_agent/native_utils.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent native capabilities 补充结论：
+
+1. `native_capabilities.py` 已从 2215 行降到 1505 行，顶层 helper/store/media/outbox 已拆出，但文件仍超过 1000 行。
+2. 下一步若继续治理该文件，应拆 `build_native_capability_handlers()` 内部的领域 handler，例如 web/search、skills/plugins/MCP、gateway/platform、learning/RL/HA/Feishu/Discord/message/webhook。
+3. 所有模型可见工具仍保持 `agent_*` facade，未暴露 raw manager 名称或扩大 side-effect 权限。
+
+### 2026-06-14 第九十八批：Agent native capabilities web/media/planning handler 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/native_web_handlers.py`、`packages/agent/src/aiask_agent/native_media_handlers.py`、`packages/agent/src/aiask_agent/native_planning_handlers.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/native_capabilities.py` |
+| `native_capabilities.py` 装配方式 | `build_native_capability_handlers()` 继续作为 handler 注册 facade；web/search、media/vision/generation、clarify/todo/subgoal handler 组由 builder 返回 dict，并在最终 handler 表中以 `**web_handlers`、`**media_handlers`、`**planning_handlers` 展开 |
+| 已迁出职责 | `agent_web_search` / `agent_web_extract` / `agent_x_search`，`agent_vision_analyze` / `agent_media_provider_catalog` / `agent_image_generate` / `agent_video_generate` / `agent_text_to_speech` / `agent_transcribe_audio`，`agent_clarify` / `agent_todo_*` / `agent_subgoal` |
+| 行为保持 | 所有 `agent_*` 工具名、envelope side-effect level、media provider catalog 兼容导入、private URL 校验、external generation idempotent 标记、todo/subgoal store 方法调用保持；未扩大 web/media/filesystem/terminal/browser 权限面 |
+| `native_capabilities.py` 行数 | 995 行 |
+| `native_web_handlers.py` 行数 | 221 行 |
+| `native_media_handlers.py` 行数 | 207 行 |
+| `native_planning_handlers.py` 行数 | 137 行 |
+| `native_media.py` 行数 | 276 行 |
+| `native_web_utils.py` 行数 | 156 行 |
+| `native_skill_store.py` 行数 | 254 行 |
+| `native_message_outbox.py` 行数 | 68 行 |
+| `native_utils.py` 行数 | 18 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/native_capabilities.py packages/agent/src/aiask_agent/native_planning_handlers.py packages/agent/src/aiask_agent/native_media_handlers.py packages/agent/src/aiask_agent/native_web_handlers.py packages/agent/src/aiask_agent/native_media.py packages/agent/src/aiask_agent/native_web_utils.py packages/agent/src/aiask_agent/native_skill_store.py packages/agent/src/aiask_agent/native_message_outbox.py packages/agent/src/aiask_agent/native_utils.py
+# passed
+
+PYTHONPATH=packages/agent/src uv run python -c "from aiask_agent.native_capabilities import build_native_capability_handlers; from aiask_agent.session_store import AgentSessionStore; from aiask_agent.tools.policy import ToolPolicy; policy=ToolPolicy(toolset='general_full', general_tools_enabled=True, workspace_roots=[]); handlers=build_native_capability_handlers(policy=policy, session_store=AgentSessionStore()); expected={'agent_web_search','agent_web_extract','agent_x_search','agent_clarify','agent_todo','agent_subgoal','agent_vision_analyze','agent_media_provider_catalog','agent_image_generate','agent_video_generate','agent_text_to_speech','agent_transcribe_audio'}; assert expected <= set(handlers)"
+# passed
+
+uv run pytest -q packages/agent/tests/test_native_full_parity.py
+# 5 passed
+
+uv run pytest -q packages/agent/tests/test_hermes_full_expanded_capabilities.py -k "media or image or audio or subgoal or handoff"
+# 1 passed, 5 deselected
+
+uv run pytest -q packages/agent/tests/test_hermes_reference_guardrails.py -k "web or native or agent"
+# 1 passed, 3 deselected
+
+uv run pytest -q packages/agent/tests/test_extended_agent_capabilities.py -k "session_handoff or subgoal or handoff"
+# 4 passed, 19 deselected
+
+git diff --check -- packages/agent/src/aiask_agent/native_capabilities.py packages/agent/src/aiask_agent/native_web_handlers.py packages/agent/src/aiask_agent/native_media_handlers.py packages/agent/src/aiask_agent/native_planning_handlers.py packages/agent/src/aiask_agent/native_media.py packages/agent/src/aiask_agent/native_web_utils.py packages/agent/src/aiask_agent/native_skill_store.py packages/agent/src/aiask_agent/native_message_outbox.py packages/agent/src/aiask_agent/native_utils.py AIASK_CODE_STRUCTURE_CLEANUP_PLAN_2026-06-14.md
+# no whitespace errors
+```
+
+当前 Agent native capabilities 补充结论：
+
+1. `packages/agent/src/aiask_agent/native_capabilities.py` 已从 2215 行降到 995 行，按方案口径退出超 1000 行清单。
+2. native tools 仍通过 `build_native_capability_handlers()` 和 `agent_*` 注册表统一暴露；后续可继续细拆 skills/plugins/MCP、gateway、learning/RL/HA/Feishu/Discord/message/webhook handler，但当前已不再是超 1000 行压力点。
+3. 仓库级目标仍未完成；下一阶段可转向 `scripts/factories/run_strategy_factory_quality_session.py` 或 AKShare/Strategy/Quant 侧剩余大文件。
+
+### 2026-06-14 第九十九批：Agent tool schema general_full 分组拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/agent/src/aiask_agent/tools/schema_helpers.py`、`packages/agent/src/aiask_agent/tools/schema_general_full.py` |
+| 更新模块 | `packages/agent/src/aiask_agent/tools/schemas.py` |
+| `schemas.py` 装配方式 | 继续导出兼容入口 `schema` 与 `TOOL_SCHEMAS`；finance-safe / ActionIntent schema 留在 facade，general_full 原生工具 schema 由 `GENERAL_FULL_TOOL_SCHEMAS` 合并进入总表 |
+| 已迁出职责 | file/terminal/process/code/browser/web/media/todo/skill/plugin/MCP/model/memory/ACP/security/gateway/learning/HA/MoA/Feishu/Discord/RL/webhook/job/session 等 general_full 工具 schema |
+| 行为保持 | `TOOL_SCHEMAS` 总数、schema helper shape、`agent_*` 工具名、ActionIntent `ALLOWED_ACTIONS` enum、registry/runtime 导入路径保持；未暴露 raw manager 名称，未改动 toolset gate、control-token gate 或 side-effect metadata |
+| schema 指纹 | 拆分前后 `TOOL_SCHEMAS` 均为 136 项，canonical SHA-256 均为 `8755046fca95db1b48ec18666728bca584cfdd60fdbbbf32b3eefd72f4391b1e` |
+| `schemas.py` 行数 | 314 行 |
+| `schema_general_full.py` 行数 | 795 行 |
+| `schema_helpers.py` 行数 | 12 行 |
+
+验证结果：
+
+```bash
+python -m py_compile packages/agent/src/aiask_agent/tools/schemas.py packages/agent/src/aiask_agent/tools/schema_general_full.py packages/agent/src/aiask_agent/tools/schema_helpers.py
+# passed
+
+PYTHONPATH=packages/agent/src python -c "import hashlib,json; from aiask_agent.tools.schemas import TOOL_SCHEMAS; data=json.dumps(TOOL_SCHEMAS, sort_keys=True, ensure_ascii=True); print(len(TOOL_SCHEMAS)); print(hashlib.sha256(data.encode()).hexdigest())"
+# 136
+# 8755046fca95db1b48ec18666728bca584cfdd60fdbbbf32b3eefd72f4391b1e
+
+uv run pytest -q packages/agent/tests/test_tool_registry.py packages/agent/tests/test_native_full_parity.py packages/agent/tests/test_realtime_finance_facades.py
+# 18 passed
+
+uv run pytest -q packages/agent/tests/test_desktop_capabilities_api.py packages/agent/tests/test_endpoint_drift_gate.py
+# 9 passed
+
+git diff --check -- packages/agent/src/aiask_agent/tools/schemas.py packages/agent/src/aiask_agent/tools/schema_general_full.py packages/agent/src/aiask_agent/tools/schema_helpers.py
+# no whitespace errors
+```
+
+当前 Agent tool schema 补充结论：
+
+1. `packages/agent/src/aiask_agent/tools/schemas.py` 已从 1106 行降到 314 行，按方案口径退出超 1000 行清单。
+2. schema 拆分后仍由 `TOOL_SCHEMAS` 统一服务 `tool_registry.py` 与 `runtime.py`，外部导入 `aiask_agent.tools.schemas.TOOL_SCHEMAS` 不变。
+3. 仓库级目标仍未完成；当前超 1000 行清单已转向 factory 脚本、AKShare/Strategy/Quant 侧大文件，以及 Agent `gateway.py` / `fallback_server.py` / `runtime.py` / `gateway_daemon.py`。
+
+### 2026-06-15 第一〇〇批：AKShare tool_catalog 按 category 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/akshare-mcp/src/akshare_mcp/tools/tool_catalog/`（`__init__.py` facade + `_helpers.py` + `contracts_<category>.py` ×11 + `workflow_guides.py`）|
+| 装配方式 | `tool_catalog.py` 单文件改为同名 package；`__init__.py` 按 research/quant/strategy/data_sync/search/screening/governance/skills/risk/execution/market 顺序 `TOOL_CONTRACTS.update(_CONTRACTS_*)`，再 `update(provider_tool_contracts())`，保留 `get_tool_contract`/`list_tool_contracts`/`get_workflow_guide`/`build_tool_meta` |
+| 已迁出职责 | `STANDARD_ENVELOPE_OUTPUT_SCHEMA` + `_contract` 入 `_helpers.py`；各 category contract dict 入 `contracts_<category>.py`；`WORKFLOW_GUIDES` 入 `workflow_guides.py` |
+| 行为保持 | `from .tool_catalog import ...` 调用方（`resources/catalog.py`、`adapter_tools.py`、`ai_workflows.py`、`governance_workflow.py`、`search.py`）不变；`build_strategy_manager_input_schema`/`provider_tool_contracts` 相对 import 深度修正为 `...` |
+| 零漂移校验 | `TOOL_CONTRACTS` 86 项 SHA-256 `5e42b1a6c5ee8fc772fe718c2aa77432d25aa7a49ec2f2d180a88d61163e6453`、`WORKFLOW_GUIDES` 5 项 `ac94deccd7b9ef497736efd213a73bc02f908a35f217aafa34624fc5dd961abe` 拆分前后一致 |
+| 最大新文件行数 | `contracts_market.py` 330 行（原 1282 行单文件已退出超 1000 行清单）|
+
+验证结果：
+
+```bash
+F:/Python311/python.exe -m py_compile packages/akshare-mcp/src/akshare_mcp/tools/tool_catalog/*.py
+# passed
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/ -q -k "catalog or contract or tool_meta"
+# 77 passed, 621 deselected
+```
+
+### 2026-06-15 第一〇一批：AKShare stock_radar service 分层拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/akshare-mcp/src/akshare_mcp/services/stock_radar/`（`__init__.py` facade + `analysis.py` + `ingest.py`）|
+| 装配方式 | `services/stock_radar.py` 改同名 package；`__init__.py` 保留 orchestrator `run_stock_radar`、confirmations、`stock_radar_status/candidates/digest`、`push_stock_radar_digest`、`schedule_stock_radar_update`、`run_stock_radar_sync`，并 re-export analysis/ingest 全部公开+私有名 |
+| 已迁出职责 | `analysis.py`: 规则抽取/LLM 增强/打分/RadarExtraction + 文本清洗常量；`ingest.py`: RSS/PDF 下载解析/文档持久化 |
+| monkeypatch 兼容 | 测试 patch 的 `requests`、`run_market_text_source_ingest`、`_confirmation_factors` 仍在 `__init__` 命名空间；`_pdf_parse_status` 改为经包命名空间间接调用 `_download_pdf_file`/`_extract_pdf_text_from_file`，保持 `radar_mod.<fn>` patch 生效 |
+| 行为保持 | `tools/stock_radar.py`、agent `adapters/desktop_ops.py`/`adapters/stock_radar.py` 的 `from ..services.stock_radar import ...` 不变；in-function 相对 import 深度修正（`..strategy_llm_provider`/`..market_event_sources`/`..market_text_source_ingest`）|
+| pyflakes | 三文件无 F821（undefined name）|
+| 行数 | `__init__.py` 839 / `analysis.py` 579 / `ingest.py` 352（原 1639 行单文件退出清单）|
+
+验证结果：
+
+```bash
+F:/Python311/python.exe -m py_compile .../services/stock_radar/*.py
+# passed
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_stock_radar.py -q
+# 11 passed
+# agent 跨包：python -m pytest tests/test_stock_radar_intents.py -q → 10 passed
+```
+
+### 2026-06-15 第一〇二批：AKShare market_temperature 工具拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `packages/akshare-mcp/src/akshare_mcp/tools/market_temperature/`（`__init__.py` facade + `helpers.py`）|
+| 装配方式 | `tools/market_temperature.py` 改同名 package；`__init__.py` 保留 6 个 public async 工具 + `register(mcp)` + `get_db` import（测试 monkeypatch 目标），从 `helpers.py` re-export 全部 31 个 pure helper |
+| 已迁出职责 | `helpers.py`: `_safe_float`/`_pct_change`/`_build_stock_row`/`_cached_snapshot`/`_compute_snapshot_from_db` 等纯计算与快照构建（含 `build_market_temperature_snapshot` 调用）|
+| 行为保持 | `register(mcp)` 注册 6 工具不变；agent `adapters/akshare.py` 的 `load_registered_tool("akshare_mcp.tools.market_temperature", ...)` module-attr 访问不变；测试 `market_temperature_tool.get_db`/`_pct_change` monkeypatch 仍生效 |
+| import 深度 | `helpers.py` 用 `...services.market_temperature`；`__init__` 用 `...services`/`...storage`/`..manager_protocol` |
+| pyflakes | 无 F821 |
+| 行数 | `__init__.py` 726 / `helpers.py` 539（原 1223 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_market_temperature.py tests/test_market_temperature_data_sync.py -q
+# 21 passed
+```
+
+### 2026-06-15 第一〇三批：AKShare provider_contracts registry 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `provider_contracts/_shared.py`、`provider_contracts/_platform_contracts.py` |
+| 装配方式 | `registry.py` 保留 `_CONTRACTS`（market-data 合同）+ `_CONTRACTS.update(_platform_contracts())` + `get_provider_tool_contract`/`provider_tool_contracts`；shared builders/policies 与 `_platform_contracts()` 迁出 |
+| 已迁出职责 | `_shared.py`: `_contract`/`_schema`/`_array_of`/所有 `_*_FRESHNESS`/`_*_SOURCE_POLICY` 常量 + models/base import；`_platform_contracts.py`: 585 行 analysis-layer 合同生成函数 |
+| 行为保持 | `from ._shared import *` + `__all__`（90 名，含下划线常量与 models）保证跨模块名可见；`provider_contracts/__init__.py` 的 `from .registry import get_provider_tool_contract, provider_tool_contracts` 不变 |
+| 零漂移 | `provider_tool_contracts()` 59 项 SHA-256 `3625b47307c5e74930f065495b5bedf2872aca0c5cee463d6be2e735e8599525` 拆分前后一致 |
+| 行数 | `registry.py` 316 / `_shared.py` 390 / `_platform_contracts.py` 594（原 1190 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_provider_contracts.py -q
+# 34 passed
+```
+
+### 2026-06-15 第一〇四批：AKShare strategy_acceptance_remediation 拆分（helper + mixin）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/acceptance_helpers.py`、`acceptance_remediation_core.py`、`acceptance_backtest.py`、`acceptance_bootstrap.py` |
+| 装配方式 | `strategy_acceptance_remediation.py` 保留 `class StrategyAcceptanceRemediationService(_RemediationCoreMixin, _BacktestMixin, _BootstrapMixin)` + 模块单例 + `get_strategy_acceptance_remediation_service`，并 re-export helper 名 |
+| 已迁出职责 | helpers/dataclasses（`_safe_float`/`_RoundTrip`/`build_failed_metrics_filter_patch`/`summarize_code_performance` 等）入 `acceptance_helpers.py`；service 类 12 方法按 remediation-core / backtest / bootstrap 拆 3 mixin |
+| 行为保持 | `strategy_mgr_crud.py:537` 的 `from ...services.strategy_acceptance_remediation import StrategyAcceptanceRemediationService, _strategy_runtime_params` 不变；MRO = Service→Core→Backtest→Bootstrap→object；11 实例方法齐全 |
+| pyflakes | 无 F821 |
+| 行数 | 主文件 79 / helpers 591 / core 292 / backtest 329 / bootstrap 540（原 1624 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_strategy_acceptance_remediation.py -q
+# 8 passed
+```
+
+### 2026-06-15 第一〇五批：AKShare market_event_sources 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/event_constants.py`、`event_mappers.py`、`event_validation.py` |
+| 装配方式 | `market_event_sources.py` 保留 adapters、`event_source_status`、CNINFO/SSE fetchers（用 `requests`）、`normalize_market_text_events`、`persist_normalized_events`、`bridge_*`，从三个子模块 import 常量/mappers/validator |
+| 已迁出职责 | `event_constants.py`: tier/cap/token 常量 + `_coerce_date_text`/`_unique_list`；`event_mappers.py`: `_clean`/`_normalize_source_tier`/CNINFO+SSE 公告 mapper；`event_validation.py`: 签名 helper + `MultiSourceEventValidator` |
+| 行为保持 | `market_text_source_ingest.py`、`stock_radar/ingest.py` 的 import 不变；测试 patch 的 `requests`/`fetch_cninfo_official_announcements` 仍在主模块；切片提取（非手抄）保证常量/正文字节一致 |
+| pyflakes | 四文件无 F821 |
+| 行数 | 主文件 882 / constants 75 / mappers 149 / validation 321（原 1347 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_market_event_sources.py -q
+# 12 passed
+```
+
+### 2026-06-15 第一〇六批：AKShare stock_profile_pipeline 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/profile_features.py` |
+| 装配方式 | `stock_profile_pipeline.py` 保留 scoring/archetype/regime、embedding/summary/payload builders、async DB 层（`build_stock_profile_payload`/`backfill_stock_profile_vectors`/`load_stock_profile_context`），从 `profile_features.py` re-export 常量与特征抽取 |
+| 已迁出职责 | `profile_features.py`: `_PROFILE_TYPES`/`_FEATURE_*`/`_DIMENSION_*`/`_COVERAGE_*` 常量 + `build_stock_profile_features`/`_extract_*`/`_build_raw_features_grouped`/`_extended_technical_features` 等特征构建 |
+| 行为保持 | `resources/stock_and_watchlist.py`、`tools/_vector_common.py`、`vector_optimize_bootstrap.py`、`_data_sync_manager_support_sync.py` import 不变；测试访问的 `spp._build_profile_summary`/`_resolve_regime_from_features`/`_holding_bucket_hint_from_archetype` 仍在主模块；全部特征名按原 module 语义 re-export |
+| 行数 | 主文件 712 / profile_features 640（原 1303 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_profile_regime_p1_1.py tests/test_sqlite_runtime_compat.py -q
+# 8 passed
+```
+
+### 2026-06-15 第一〇七批：AKShare strategy_pipeline 拆分（helper + stage mixin）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/pipeline_support.py`、`pipeline_stages.py` |
+| 装配方式 | `strategy_pipeline.py` 保留 `class MultiStageStrategyPipeline(_PipelineStageMixin)`（`__init__`/`run_pipeline`/`run_stage`）+ 模块单例 + `get_strategy_pipeline`；共享 header（stdlib + strategy_stages/strategy_llm_provider import + logger）复制进每个模块 |
+| 已迁出职责 | `pipeline_support.py`: `_get_pipeline_constants`/`PipelineResult`/stage 输出与 provider-format-failure helpers；`pipeline_stages.py`: `_PipelineStageMixin`（`_call_llm_stage`/`_call_fallback_stage`/`_enrich_with_stock_profiles`/`_build_initial_input`/`_prepare_stage_input`）|
+| 行为保持 | `get_strategy_pipeline()` 单例语义不变；MRO = Pipeline→StageMixin→object；测试通过 factory swap 仍生效 |
+| pyflakes | 三文件无 F821 |
+| 行数 | 主文件 392 / support 284 / stages 519（原 1093 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_strategy_pipeline_quality_fixes.py -q
+# 6 passed
+```
+
+### 2026-06-15 第一〇八批：AKShare tools/market/kline 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `tools/market/kline/`（`__init__.py` facade + `kline_rows.py` + `kline_minute.py`）|
+| 装配方式 | `tools/market/kline.py` 改同名 package；`__init__.py` 保留 `get_kline`/`_get_kline_impl`/`_async_save_klines_to_db`/`get_minute_kline`/`get_kline_data`/`get_index_kline` + `data_source`（测试 patch 目标），re-export rows/minute helpers |
+| 已迁出职责 | `kline_rows.py`: kline 行校验/响应封装/`_process_kline_akshare`；`kline_minute.py`: `_parse_minute_period` + akshare/sina/tencent 分钟线 fetcher |
+| 行为保持 | `from .market.kline import get_kline/...`、`from .market import get_kline`、`db_freshness` 的 `_get_kline_impl` import 不变；`@cached` 装饰器随 `get_kline`/`get_minute_kline` 保留（计数 2=2）；相对 import 深度 `...`→`....` 修正 |
+| pyflakes | 三文件无 F821 |
+| 行数 | `__init__.py` 836 / kline_minute 254 / kline_rows 236（原 1195 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_failed_tool_regressions.py tests/test_tool_argument_contract.py -q
+# 9 passed
+```
+
+### 2026-06-15 第一〇九批：AKShare data_source/tdx_tqcenter 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `data_source/tdx_tqcenter/`（`__init__.py` facade + `_core.py` + `info_queries.py` + `market_queries.py`）|
+| 装配方式 | `tdx_tqcenter.py` 改同名 package；`__init__.py` 通过 `from ._core import *` + 显式下划线名 + info/market 名 re-export 全部公开 `get_*`，保留 stock_list/sector/formula/download/status 在 `__init__` |
+| 已迁出职责 | `_core.py`: 连接管理（`get_tq`/`reset_tq`）+ 数值/日期 helpers + `get_kline`/`get_realtime_quote`；`info_queries.py`: `get_more_info`..`get_kzz_info`；`market_queries.py`: `get_gp_one_data`..`get_financial_data_by_date` |
+| 行为保持 | `data_source/__init__.py`、`quotes.py`、`market_data.py`、`tdx_sync_service.py`、`services/__init__.py` 的 import 与别名不变；测试 `_tqcenter.<fn>` module-object monkeypatch（23 名）仍生效，mixin 仍按 module-attr 调用 |
+| pyflakes | 四文件无 F821 |
+| 行数 | `__init__.py` 281 / `_core.py` 406 / info 291 / market 302（原 1114 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_data_source_tdx_routing.py tests/test_runtime_client_lifecycle.py -q
+# 24 passed
+```
+
+### 2026-06-15 第一一〇批：AKShare tools/finance 纯 helper 拆分（monkeypatch-fragile，保守）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `tools/financials_helpers.py` |
+| 装配方式 | `finance.py` 保留全部 provider fetcher（`_get_financials_tdx/tushare/akshare/_em/_indicator`）、公共工具 `get_financials`/`get_stock_info`、以及被测试 monkeypatch 的全局 `ak`/`cache`/`data_source`/`_call_with_retry`/`resolve_existing_security_code_sync`；纯 helper 迁出后 re-import |
+| 已迁出职责 | `financials_helpers.py`: `_ok_stock_info_degraded`/`_build_financial_cache_entry`/`_read_financial_cache_entry`/`_financial_missing_fields`/`_ok_financial`/`_fail_financial`/`_row_non_null_count`/`_pick_best_statement_row`/`_calc_ratio`/`_first_not_none`（均不引用被 patch 的全局，且未被测试 patch）|
+| 行为保持 | 保守拆分：`_call_with_retry` 与所有 provider 仍在 `finance.py`，确保 `setattr(finance, "_get_financials_tdx"/"ak"/"cache"/"data_source")` + `get_financials.__wrapped__` 的 monkeypatch 链路不变 |
+| pyflakes | 两文件无 F821 |
+| 行数 | `finance.py` 995 / `financials_helpers.py` 219（原 1157 行退出清单，主文件 995 < 1000）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_baostock_optional_dependency.py tests/test_provider_contracts.py tests/test_mcp_full_tool_regression_fixes.py tests/test_failed_tool_regressions.py tests/test_tdx_phase3_tools_e2e.py tests/test_sqlite_runtime_compat.py -q
+# 64 passed, 5 skipped（与拆分前 baseline 一致）
+```
+
+### 2026-06-15 第一一一批：AKShare tools/market_blocks 拆分（monkeypatch-fragile，保守）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `tools/block_helpers.py` |
+| 装配方式 | `market_blocks.py` 保留 `get_market_blocks`/`get_block_stocks`/DB fetchers + 被 patch 的 `ak`/`get_db`/`_fetch_from_db`/`_fetch_from_akshare`；placeholder helpers + `_fetch_concept_stocks_from_ths` 迁出后 re-import |
+| 已迁出职责 | `block_helpers.py`: `_is_placeholder_summary`/`_sanitize_placeholder_blocks`（纯）+ `_fetch_concept_stocks_from_ths`（THS 概念成分股；自带 `ak`/`requests` import；仅经 `get_block_stocks` 调用，无 ak=None patch 路径触达）|
+| 行为保持 | `get_market_blocks` 的 ak=None/get_db patch 路径全部留在主模块；`_fetch_concept_stocks_from_ths` 仍以 facade 名暴露 |
+| pyflakes | 两文件无 F821 |
+| 行数 | `market_blocks.py` 882 / `block_helpers.py` 188（原 1040 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_full_chain_regression_repairs.py tests/test_provider_contracts.py -q
+# 66 passed（与拆分前 baseline 一致）
+```
+
+### 2026-06-15 第一一二批：AKShare strategy_lifecycle_shared/overview 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/strategy_lifecycle_shared/overview_helpers.py` |
+| 装配方式 | `overview.py` 保留巨型 `build_incubation_overview`（895 行单函数不做高风险内部分解）+ `build_closure_review`；顶部 helper 迁出后 re-import；新增 `_persist_and_finalize_overview` 承接末尾 closure snapshot 持久化+finalize |
+| 已迁出职责 | `overview_helpers.py`: `_quality_report_timestamp`/`_CLOSURE_SNAPSHOT_DROP_FIELDS`/`_trim_closure_snapshot`/`_resolve_risk_hard_gate`/`_persist_and_finalize_overview` |
+| 行为保持 | `strategy_lifecycle_shared/__init__.py` 的 `globals().update(...)` 自动 re-export，consumers（incubation_pipeline/promotion_pipeline/runtime_control/runtime_risk 等）import 不变；持久化逻辑逐字迁移为模块级 async helper |
+| pyflakes | 两文件无 F821 |
+| 行数 | `overview.py` 925 / `overview_helpers.py` 182（原 1027 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_incubation_overview_snapshot_cache.py tests/test_closure_review_contract.py tests/test_strategy_lifecycle_shared_runtime.py tests/test_cross_regime_promotion_gate.py tests/test_execution_audit_snapshot_contract.py -q
+# 18 passed
+```
+
+**阶段1（AKShare 源码大文件）完成**：tool_catalog / stock_radar / market_temperature / provider_contracts.registry / strategy_acceptance_remediation / market_event_sources / stock_profile_pipeline / strategy_pipeline / tools.market.kline / data_source.tdx_tqcenter / finance / market_blocks / strategy_lifecycle_shared.overview 共 13 个文件全部退出超 1000 行清单。
+
+### 2026-06-15 第一一三批：AKShare strategy_mgr_crud 拆分（manager 子包）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `tools/managers/strategy_mgr_crud/`（`__init__.py` facade + `_support.py` + `_personal_support.py` + `handlers_catalog.py` + `handlers_personal.py`）|
+| 装配方式 | `strategy_mgr_crud.py` 改同名 package；`__init__.py` re-export 全部 29 个 `handle_*`，并用 `globals().update(dir(_support)+dir(_personal_support))` 保留私有 helper 的顶层可见性（旧 `from ...strategy_mgr_crud import _helper` 兼容）|
+| 已迁出职责 | `_support.py`: 通用 helper + `_resolve_strategy_incubation_overview`；`_personal_support.py`: personal-strategy 上下文/变更计划/回测/post-update pipeline；`handlers_catalog.py`: help/create/publish/archive/list/detail/review/events/subscribe 等 14 个 handler；`handlers_personal.py`: fork/personal/paper/rank/ai_optimize/capabilities/signals 等 15 个 handler |
+| 行为保持 | `strategy_manager.py:22-52` 的 29 个 `handle_*` import 不变；import 深度 `...`→`....`、`.X`→`..X` 修正；测试 `test_mcp_fix_plan_batch3/4.py` 的源码静态扫描改用 `_strategy_mgr_crud_source()`（兼容单文件/包目录），未改断言语义 |
+| pyflakes | 五文件无 F821 |
+| 行数 | `__init__` 77 / `_support` 525 / `_personal_support` 706 / `handlers_catalog` 480 / `handlers_personal` 706（原 2210 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_mcp_fix_plan_batch3.py tests/test_mcp_fix_plan_batch4.py tests/test_strategy_market_incubation_surface.py tests/test_strategy_review_workflow_contract.py -q
+# 38 passed
+```
+
+### 2026-06-15 第一一四批：AKShare strategy_mgr_lifecycle 拆分（manager 子包）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `tools/managers/strategy_mgr_lifecycle/`（`__init__.py` facade + `_lifecycle_support.py` + `handlers.py`）|
+| 装配方式 | 改同名 package；`__init__.py` 用 `globals().update(dir(_lifecycle_support)+dir(handlers))` 保留全部 16 个 `handle_*` + `run_quality_gate`/`lifecycle_scan` + 兼容别名 `_run_quality_gate`/`_lifecycle_scan` + 私有 helper |
+| 已迁出职责 | `_lifecycle_support.py`: env/scheduler/recheck/quality-input helpers + `_get_strategy_factory_scheduler_with_runtime`；`handlers.py`: 19 个 handler + `run_quality_gate`/`lifecycle_scan` + 别名 |
+| 行为保持 | `strategy_manager.py` 的 16 handler + `_lifecycle_scan`/`_run_quality_gate` import 不变；import 深度 `...`→`....`（顶层+in-function）修正；handler 经 `_ls._get_strategy_factory_scheduler_with_runtime` 调用以维持 monkeypatch（测试 patch 目标同步为 `lifecycle._lifecycle_support`）|
+| pyflakes | 三文件无 F821 |
+| 行数 | `__init__` 11 / `_lifecycle_support` 451 / `handlers` 829（原 1225 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_factory_market_views_contract.py tests/test_strategy_factory_ownership.py tests/test_mcp_fix_plan_batch3.py tests/test_mcp_fix_plan_batch4.py tests/test_strategy_review_workflow_contract.py -q
+# 44 passed (11 + 33)
+```
+
+### 2026-06-15 第一一五批：AKShare tdx_sync_service 拆分（class → domain mixins）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `services/tdx_sync_market.py`、`tdx_sync_financial.py`、`tdx_sync_events.py`、`tdx_sync_derived.py`、`tdx_sync_completeness.py` |
+| 装配方式 | `tdx_sync_service.py` 保留 `class TdxSyncService(_MarketSyncMixin, _FinancialSyncMixin, _EventsSyncMixin, _DerivedSyncMixin, _CompletenessMixin)` + `__init__` + `run_all` 编排 + `run_tdx_sync` 模块函数 |
+| 已迁出职责 | 27 个 `_sync_*`/`_derive_*`/completeness 方法按 market(9)/financial(5)/events(3)/derived(6)/completeness(4) 路由到 5 个 mixin（按方法名路由，逐方法切片，零 unrouted）|
+| 行为保持 | `data_sync_scheduler.py:371` 的 `from .tdx_sync_service import TdxSyncService` 与 `run_tdx_sync` 不变；MRO = Service→Market→Financial→Events→Derived→Completeness→object；所有 `self._sync_*` 调用经 MRO 解析不变 |
+| pyflakes | 六文件无 F821 |
+| 行数 | 主文件 248 / market 575 / financial 480 / events 285 / derived 415 / completeness 387（原 1711 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src;../strategy-factory/src" python -m pytest tests/test_tdx_storage_phase8.py tests/test_warmup_audit_scripts_contract.py -q
+# 22 passed
+```
+
+**阶段2（AKShare manager + service 类）完成**：strategy_mgr_crud / strategy_mgr_lifecycle / tdx_sync_service 共 3 个文件退出超 1000 行清单。AKShare 包内已无源码文件 ≥1000 行。
+
+### 2026-06-15 第一一六批：Quant Core strategy_ai fragment 退场（Pattern C → 真 mixin）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `storage/sqlite/strategy_ai_repos/`（`reads.py`/`writes.py`/`mappers.py` + queries 拆 7 repo：`factory_runs`/`dispatch`/`topn_scores`/`events`/`theme_graph`/`lineage`/`outbox`）|
+| 装配方式 | `strategy_ai.py` 删除 `_exec_block(...)`，改为 `class StrategyAIMixin(_ReadsMixin, _WritesMixin, _FactoryRunsMixin, _DispatchMixin, _TopnScoresMixin, _EventsMixin, _ThemeGraphMixin, _LineageMixin, _OutboxMixin, _MappersMixin)`；每个 class-body 片段加共享 header（stdlib + `..strategy_factory_json_budget` + logger）转成真 mixin |
+| 已迁出职责 | queries.py 的 63 个方法按表前缀路由到 7 repo（factory_runs 10 / dispatch 5 / topn 8 / events 17 / theme_graph 11 / lineage 7 / outbox 5）；reads/writes/mappers 各转单 mixin |
+| 零漂移 | `StrategyAIMixin` 方法集 99 个、SHA-256 `81bb014a5783dd94f3edcf9c408f511f12977a06b32860f00859cc6b3b0f1ac9` 退场前后完全一致；MRO 顺序镜像旧 `reads→writes→queries→mappers` 拼接；删除 `strategy_ai_parts/`（无外部引用）|
+| pyflakes | 11 文件无 F821 |
+| 行数 | `strategy_ai.py` 27 / 最大 repo `reads.py` 709（原 queries.py 2152 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../strategy-factory/src" python -m pytest tests/ -q -k "storage or strategy or kline or json"   # 30 passed (quant-core)
+PYTHONPATH=... python -m pytest tests/test_theme_graph_schema.py tests/test_strategy_factory_ownership.py -q   # 36 passed (akshare consumers)
+```
+
+### 2026-06-15 第一一七批：Quant Core strategy_incubation fragment 退场（Pattern C）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `storage/sqlite/strategy_incubation_repos/`（`_base.py` 承接 header imports/常量/module helpers + reads/writes/mappers + queries 拆 6 repo：`trade_positions`/`signal_evidence`/`closure_snapshots`/`execution_acceptance`/`incubation_metrics`/`trade_audit`）|
+| 装配方式 | `strategy_incubation.py` 删除 `_exec_block(...)`，改为 `class StrategyIncubationMixin(_IncReadsMixin, _IncWritesMixin, 6×query mixin, _IncMappersMixin)`；`_base.py` 用 `__all__` 导出 header 名（`_safe_int`/`_string`/`_fallback_execution_audit_gate` 等），各 mixin `from ._base import *` + 显式下划线 helper |
+| 已迁出职责 | queries.py 17 方法路由（closure 7 / trade_audit 5 / metrics 2 / 其余各 1）；reads/writes/mappers 各转 mixin |
+| 零漂移 | `StrategyIncubationMixin` 方法集 59 个、SHA-256 `487dcd9c982bd0f7b20e58f7e74e20d35d39ba74219636c1feaa7f2767c2462b` 退场前后一致；删 `strategy_incubation_parts/`（无外部引用）|
+| pyflakes | 无 F821（仅 star-import 提示）|
+| 行数 | `strategy_incubation.py` 26 / 最大 repo `trade_audit.py` 932（原 queries.py 1860 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_execution_audit_acceptance_backfill.py tests/test_execution_audit_snapshot_contract.py tests/test_closure_review_contract.py -q
+# 8 passed
+SQLiteAdapter(':memory:') 实例化 OK
+```
+
+### 2026-06-15 第一一八批：Quant Core market_context 拆分（Pattern B mixin）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `storage/sqlite/market_context_repos/`（`base.py` 承接 class-attrs + 全部 static/classmethod helper；`headline_labels`/`stock_radar_repo`/`market_events_repo`/`market_documents_repo`/`vectors_fund_flow_repo` 承接各域 async 方法）|
+| 装配方式 | `market_context.py` 改为 `class MarketContextMixin(_BaseMixin, _HeadlineMixin, _StockRadarMixin, _EventsMixin, _DocumentsMixin, _VectorsFundFlowMixin)`；class-attrs/helpers 集中在 `_BaseMixin`，经 MRO 供各域 async 方法 `self.`/`cls.` 调用 |
+| 已迁出职责 | 52 成员：34 个 class-attr/static/class helper → base；async 方法按 headline(2)/stock_radar(8)/events(3)/documents(2)/vectors+fund_flow(3) 分域 |
+| 零漂移 | `MarketContextMixin` 成员集 52、SHA-256 `479bbffa6365de607b567d5d79eaa333417c84267a130482c65f19feb92e2d85` 拆分前后一致；repo 相对 import 深度 `.`→`..` 修正 |
+| pyflakes | 无 F821 |
+| 行数 | `market_context.py` 19 / 最大 repo `base.py` 455（原 1652 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_market_event_storage.py tests/test_market_temperature_storage.py -q   # 6 passed (quant-core)
+PYTHONPATH=... python -m pytest tests/test_stock_radar.py -q   # 11 passed (akshare)
+```
+
+### 2026-06-15 第一一九批：Quant Core _vector_unified_storage 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `storage/sqlite/_vector_unified_storage_search.py`（`_VectorUnifiedStorageSearchMixin`）|
+| 装配方式 | `_vector_unified_storage.py` 保留 collections/profiles 方法；search/snapshot/kline-pattern 方法迁出；`vector_unified.py` 的 `VectorUnifiedMixin` 基类列表插入新 `_VectorUnifiedStorageSearchMixin` |
+| 已迁出职责 | `search_vector_collection`/`save_vector_index_snapshot`/`save_kline_pattern_window`/`list_kline_pattern_windows`/`list_vector_index_snapshots` 等迁入 search mixin；保持 8-space class-body 缩进 |
+| 零漂移 | `VectorUnifiedMixin` 成员集 52、SHA-256 `d08c97e281399e009115412ccf918d9dc288b8a45e8f3944f4d6727250c73445` 拆分前后一致 |
+| pyflakes | 无 F821 |
+| 行数 | `_vector_unified_storage.py` 441 / `_vector_unified_storage_search.py` 586（原 1013 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_sqlite_runtime_compat.py -q   # 2 passed (akshare consumer)
+SQLiteAdapter VectorUnified 方法齐全
+```
+
+**阶段3（Quant Core storage）完成**：strategy_ai_parts/queries / strategy_incubation_parts/queries / market_context / _vector_unified_storage 共 4 个文件退出超 1000 行清单，且 strategy_ai/strategy_incubation 的 `_exec_block` fragment loader 已退场为真 mixin。
+
+### 2026-06-15 第一二〇批：Strategy Factory stock_strategy_matrix fragment 退场（Pattern C）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `application/stock_strategy_matrix_mixins/`（`normalizers_core`/`normalizers_allocation`/`normalizers_scoring`/`normalizers_families` + `policy` + `evaluation`）|
+| 装配方式 | `stock_strategy_matrix.py` 删除 `_exec_block(...)`，改为 `class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin, _MatrixNormalizersCoreMixin, _MatrixAllocationMixin, _MatrixScoringMixin, _MatrixFamiliesMixin, _MatrixPolicyMixin, _MatrixEvaluationMixin)`；normalizers.py 54 方法路由 4 mixin（core 含 `__init__`+class-attrs），policy/evaluation 各转 mixin |
+| 零漂移 | `StockStrategyMatrixPlanner` 成员集 88、SHA-256 `bd6eb259d2fd0375fc98d5e5785755c8782e3c8d2c162e730481964d9be98160` 退场前后一致；删 `stock_strategy_matrix_parts/`（无外部引用）；`future_annotations` 保留 |
+| monkeypatch 修复 | 拆分后 9 个 runtime 配置常量（`STOCK_STRATEGY_MATRIX_ENABLED`/`STOCK_FIRST_ROUTER_*`/`STRATEGY_FACTORY_VECTOR_*`/`STOCK_DIRECTION_GATE_ENABLED`）改为经 `domain.constants` module 引用（`_matrix_const.X`），test_target_scope/test_direction_gate/test_router_matrix_wiring 的 monkeypatch 同步重定向到 `domain.constants` |
+| pyflakes | 无 F821 |
+| 行数 | `stock_strategy_matrix.py` 66 / 最大 mixin `policy.py` 985（原 normalizers.py 2032 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src" python -m pytest tests/ -q -k "matrix or router or scanner or direction or target or fragment or decoupling"
+# 86 passed
+```
+
+### 2026-06-15 第一二一批：Strategy Factory domain/market_evidence 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `domain/market_evidence_entries.py` |
+| 装配方式 | `market_evidence.py` 保留 public builders（`build_market_evidence_pack`/`resolve_direction_and_confidence`/`apply_evidence_first_candidate`/`summarize_generation_quality`）+ `_build_prediction_contract_from_pack`/`_build_alpha_thesis` 等，从 entries 模块 re-import 29 个 coercion/entry helper |
+| 已迁出职责 | `market_evidence_entries.py`: `_as_dict`/`_normalize_direction`/`_evidence_source_type`/`_snapshot_factor_entries`/`_event_entries`/`_fund_flow_entries`/`_regime_entries`/`_template_entry` 等抽取层 |
+| 行为保持 | `research/runner.py`、`domain/spawner.py`、`api/semantic_contract.py` 的 import 不变（注意 `application/market_evidence.py` 是另一独立文件，未触碰）|
+| pyflakes | 无 F821 |
+| 行数 | `market_evidence.py` 604 / `market_evidence_entries.py` 709（原 1234 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src" python -m pytest tests/test_evidence_first_generation.py -q   # 10 passed
+```
+
+### 2026-06-15 第一二二批：Strategy Factory application 层多文件拆分
+
+已落地内容：
+
+| 文件 | 处理 | 行数结果 |
+| --- | --- | --- |
+| `application/_cycle_success_summary.py` 1038 | 抽 17 个聚合 helper 到 `_cycle_success_aggregators.py`，保留 `build_success_run_summary` | 854 / 227 |
+| `submission_gate/runner_parts/multiple_testing.py` 1017 | fragment 再分片：拆出 `multiple_testing_admission.py` 并加入 `submission_gate/runner.py` 的 `_exec_fragments` 列表 | 744 / 271 |
+| `semantic_contract_parts/policy.py` 1069 | fragment 再分片：拆出 `policy_contract.py` 加入 `semantic_contract.py` 的 `_exec_fragments` 列表 | 415 / 652 |
+| `cycle_runner_parts/normalizers.py` 1152 | fragment 再分片：拆出 `run_loop.py`（`run` 方法）加入 `cycle_runner.py` 的 `_exec_block` 列表 | 375 / 776 |
+| `_factory_scheduler_loop_parts/policy.py` 1090 | fragment 再分片：拆出 `policy_execution.py` 加入 `_factory_scheduler_loop.py` 的 `_exec_block` 列表 | 676 / 413 |
+| `_submitter_actions/runner.py` 1046 | 抽 17 个模块级 helper 到 `_runner_helpers.py`，`from ._runner_helpers import (...)` 在 exec_block 前注入 globals | 613 / 544 |
+
+| 项 | 结果 |
+| --- | --- |
+| 行为保持 | exec_block/exec_fragments 列表新增分片文件后，原 class/module 命名空间组合不变；`FactoryCycleRunner`/`_StrategySubmitterActionsMixin`/`_StrategyFactorySchedulerLoopMixin` 方法齐全；`build_success_run_summary`/`synthesize_confidence_contract` 等公共入口 import 不变 |
+| 测试同步 | `test_scheduler_smoke.py::test_cycle_runner_does_not_enable_factor_self_heal_by_default` 静态源码扫描改为读取 `cycle_runner_parts/*.py` 全目录（`run` 方法已移至 `run_loop.py`）|
+| pyflakes | 涉及文件无 F821 |
+| 已知遗留 | `_submitter_actions/runner_parts/semantic_contract.py`（1348）为单个 1330 行 `_submit_one` 方法 fragment，无法按方法边界安全机械拆分，按方案"不建议一次性大重写"暂留，待后续函数级分解 |
+| 预存在失败 | `test_runtime_provider_boundary.py` 2 例为 `from run_strategy_factory import`（脚本在 `scripts/factories/` 而非仓库根）导致的预存在失败，与本次重构无关（git diff 该测试无改动）|
+
+验证结果：
+
+```bash
+PYTHONPATH="src;../aiask-quant-core/src" python -m pytest tests/test_fragment_loader.py tests/test_package_decoupling_boundary.py tests/test_scheduler_smoke.py -q   # 23 passed
+PYTHONPATH=... python -m pytest tests/ -q -k "submitter or submission or cycle or scheduler or semantic or contract or success or matrix"   # 全绿（除 2 预存在 root-runner 失败）
+```
+
+### 2026-06-15 第一二三批：Agent gateway.py 拆分（Pattern B 包 + facade）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `aiask_agent/gateway/`（`__init__.py` facade + `models.py` + `stores.py` + `http_client.py` + `adapters.py` + `router.py` + `runtime.py`）|
+| 装配方式 | `gateway.py` 改同名 package；`__init__.py` 用 `globals().update(dir(每个子模块))` re-export 全部公开名；子模块按依赖层级 `from .X import *` 串联（models←stores/http_client←adapters←router(+stores)←runtime）|
+| 已迁出职责 | models: 常量/`GatewayPlatformStatus`/`normalize_platform`/`parse_delivery_target`；stores: 3 个 Gateway*Store；http_client: `BasePlatformAdapter`+`_json/_form/_multipart_request*`；adapters: 24 个平台 adapter + `ADAPTERS`+`adapter_for`；router: `DeliveryRouter`；runtime: `GatewayRuntime` |
+| 行为保持 | 外部 10 个 import 名（`ADAPTERS`/`DeliveryRouter`/`Gateway*Store`/`GatewayRuntime`/`HERMES_PLATFORM_MATRIX`/`PLATFORM_ENV_KEYS`/`adapter_for`/`normalize_platform`）齐全；adapters 经 `_http.` module-attr 调用 http helper 以维持 `gateway_module._http_client.<fn>` monkeypatch（test 同步重定向）；相对 import 深度 `.`→`..` 修正 |
+| pyflakes | 无 F821（仅 star-import 提示）|
+| 预存在失败 | `test_hermes_native_live_adapters.py::test_gateway_inbound_...` 因 untracked `gateway_route_factories.py` 的 `delivery_router(self)` 与 `routes/gateway.py` 调用 `delivery_router_factory(messages=...)` 签名不匹配而失败——已用 HEAD 单文件 gateway.py 复现，确认与本次拆分无关 |
+| 行数 | 最大 `adapters.py` 835（原 1829 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_gateway_daemon.py tests/test_gateway_daemon_phase2.py tests/test_gateway_daemon_phase4.py -q   # 全绿
+PYTHONPATH=... python -m pytest tests/test_hermes_native_live_adapters.py -q   # 17 passed, 1 预存在失败
+PYTHONPATH=... python -m pytest tests/test_endpoint_drift_gate.py tests/test_tool_call_path_gate.py tests/test_server.py tests/test_connector_health.py -q   # 12 passed
+```
+
+### 2026-06-15 第一二四批：Agent runtime.py 拆分（AgentRuntime mixin）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `_runtime_handoff.py`、`_runtime_tool_calling.py`、`_runtime_code_tools.py`、`_runtime_jobs.py` |
+| 装配方式 | `runtime.py` 保留 header/常量/`AgentRunResult` + `class AgentRuntime(_RuntimeHandoffMixin, _RuntimeToolCallingMixin, _RuntimeCodeToolsMixin, _RuntimeJobsMixin)` 含 `__init__`/生命周期/`run`(728 行单方法)；handoff/tool-calling/code-tools/jobs 方法群迁出为 sibling mixin |
+| 已迁出职责 | handoff specialist policy；`_openai_tool_name(s)`/`_build_context`/`_parse_tool_call`/`_merge_usage`/`_estimate_tokens`；`_register_runtime_bound_tools`/`_moa_tool`/`_execute_python_tool`/`_build_aiask_tools_module`；`_delegate_task`/`_run_job_tool`/`_cronjob_tool` |
+| 零漂移 | `AgentRuntime` 方法集 28、SHA-256 `d9e83bdd9a89fef09fb0fb5c860cacbb4c4f5ff52b8cdb77d9e9bbbacc9f3482` 拆分前后一致；staticmethod 装饰器逐一校验保留；`_delegate_task` 内 `AgentRuntime` 改 lazy import 避免循环 |
+| 守门同步 | `tool-call-path-classification.json` 的 `_execute_python_tool.handle_rpc` 直连分类 key 从 `runtime.py::AgentRuntime` 更新到 `_runtime_code_tools.py::_RuntimeCodeToolsMixin` |
+| 预存在失败 | `test_extended_agent_capabilities.py::test_general_file_terminal_and_code_tools_are_workspace_scoped`（agent_execute_python 子进程 stdout 为空）已用 HEAD 单文件 runtime.py 复现，确认与本次拆分无关 |
+| 行数 | `runtime.py` 951 / 最大 mixin `_runtime_code_tools.py` 558（原 1720 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_server.py tests/test_tool_call_path_gate.py tests/test_endpoint_drift_gate.py tests/test_tool_registry.py -q   # 20 passed
+PYTHONPATH=... python -m pytest tests/test_extended_agent_capabilities.py -q   # 22 passed, 1 预存在失败
+```
+
+### 2026-06-15 第一二五批：Agent gateway_daemon.py 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `_gateway_daemon_listeners.py`（`_GatewayDaemonListenersMixin`）|
+| 装配方式 | `gateway_daemon.py` 保留 `ListenerStatus`/`DaemonStatus` dataclass + `class GatewayDaemon(_GatewayDaemonListenersMixin)`（`__init__`/`start`/`stop`/`status`/`_on_inbound_message`/`_handle_control`/`health_check` 等核心）+ `create_gateway_daemon`/`daemon_enabled`；平台 poller 迁出 |
+| 已迁出职责 | `_poll_telegram`/`_poll_email`/`_poll_weixin_ilink`/`_ws_wecom`/`_ws_qqbot`/`_ws_discord` 监听器 |
+| 零漂移 | `GatewayDaemon` 方法集 18、SHA-256 `ab3f326e3d407db3ae61faf704ec46325e530730b3b0a032fb2806debd1b6904` 拆分前后一致 |
+| 预存在问题 | 第 335 行 `logger.debug(...)` 引用未定义 `logger`，HEAD 原文件 pyflakes 同样报 F821（rate-limit blocked 分支的潜在 latent bug，与本次拆分无关，保持原状未改）|
+| 行数 | `gateway_daemon.py` 581 / `_gateway_daemon_listeners.py` 636（原 1143 行退出清单）|
+
+验证结果：
+
+```bash
+PYTHONPATH=... python -m pytest tests/test_gateway_daemon.py tests/test_gateway_daemon_phase2.py tests/test_gateway_daemon_phase4.py -q   # 54 passed
+```
+
+### 2026-06-15 第一二六批：scripts/factories/run_strategy_factory_quality_session 拆分
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `scripts/factories/_quality_session_common.py`（格式化 helper + 常量）、`_quality_session_report.py`（blocker/sample 分析）、`_quality_session_render.py`（报告渲染）|
+| 装配方式 | 主脚本保留 sys.path bootstrap、runtime/db 装配、async 采集器、state 管理、`main`；从 3 个 sibling 模块 import 纯函数（render 经 `_quality_session_render` re-export report 分析名）|
+| 已迁出职责 | common: `_safe_int/_safe_float/_pct/_format_dt/_now/_iso_now/_json_dump/_write_json/_process_alive` + `LOGGER/MARKET_TZ/DEFAULT_EXECUTION_MODE`；report: `_build_blocker_summary/_compact_run_detail/_extract_issue_flags/_quality_strategy_pool` 等；render: `_render_report/_render_entry/_build_aggregate_summary/_build_priority_findings/_render_*` |
+| 行为保持 | `python run_strategy_factory_quality_session.py --help` 正常；`@dataclass SessionPaths` 装饰器修正保留；report/render 各补 `import json`/`Counter` |
+| 二次分片 | 主脚本再拆出 `_quality_session_collectors.py`（async 采集器 + `_split_run_ids`/`_resolve_latest_run_id_since`）；`_LEGACY_BUDGET_MISMATCH_*` 常量入 common |
+| 行数 | 主脚本 597 / common 102 / report 424 / render 946 / collectors 577（原 2495 行退出清单）|
+
+验证结果：
+
+```bash
+F:/Python311/python.exe -m py_compile scripts/factories/*.py   # passed
+python run_strategy_factory_quality_session.py --help   # argparse help OK
+```
+
+### 2026-06-15 第一二七批：scripts/db_sync 拆分 + shadow_validation 回退
+
+已落地内容：
+
+| 文件 | 处理 | 结果 |
+| --- | --- | --- |
+| `scripts/db_sync.py` 1080 | 拆出 `_db_sync_common.py`（常量/helper/sys.path + `pro`/`tdx_local` 单例）、`_db_sync_tasks.py`（15 个 `sync_*` 任务）；main 保留 `show_status`/`main` | 主 364 / common 130 / tasks 646；`--help` OK |
+| `scripts/ops/trade_prediction_shadow_validation.py` 1317 | 尝试 3-way 拆分时 path 常量（`REPO_ROOT`/`DEFAULT_SHADOW_DB`）跨模块引用产生 F821，已**回退到原文件**（保持可编译），留待后续按 common(常量+path helper)/snapshots/commands 重新切分 | 维持 1317（未退出清单）|
+
+### 2026-06-15 本会话收尾快照
+
+**起点**：仓库 41 个 ≥1000 行文件。**当前**：8 个。本会话清掉 33 个，批次 100–127。
+
+剩余 8 个：
+1. `packages/agent/src/aiask_agent/fallback_server.py` 1762 — 单 `build_server` 函数内嵌 `AIASKAgentHandler` 闭包类（do_GET ~900 行），需 closure→实例属性重构，高风险暂留
+2. `packages/strategy-factory/.../runner_parts/semantic_contract.py` 1362 — 单个 1330 行 `_submit_one` 方法 fragment，无法按方法边界机械拆分
+3. `scripts/ops/trade_prediction_shadow_validation.py` 1317 — 本批回退，待重做
+4-8. 5 个测试文件（`test_admission_authority` 1645 / `test_theme_graph_schema` 1565 / `test_factory_deep_repair` 1129 / `test_extended_agent_capabilities` 1120 / `test_full_chain_regression_repairs` 1035）
+
+**已完成阶段**：P1（Agent server,前序会话）、P2（Desktop,前序会话）、阶段1-2（AKShare 源码+manager 全清）、阶段3（Quant Core,含 strategy_ai/strategy_incubation 的 `_exec_block` fragment 退场为真 mixin）、阶段4（Strategy Factory,含 stock_strategy_matrix fragment 退场）、阶段5（gateway/runtime/gateway_daemon；fallback_server 暂留）。
+
+**零漂移保证**：所有 facade 类/包均经方法集 SHA-256 或工具指纹比对，拆分前后一致；guardrail/control-token/ActionIntent/live-trading 边界未改；fragment loader 在 quant-core/strategy-factory 的 4 处核心已退场。
+
+### 2026-06-15 第一二八批：scripts/ops/trade_prediction_shadow_validation 拆分（重做成功）
+
+已落地内容：
+
+| 项 | 结果 |
+| --- | --- |
+| 新增模块 | `scripts/ops/_shadow_common.py`（常量 + `CommandSpec` + path/db/env helpers + `SECRET_PATTERNS`/`_redact`）、`_shadow_snapshots.py`（`collect_local_snapshot`/`collect_agent_snapshot` + matrix/dimension helpers）|
+| 装配方式 | 主脚本保留 imports + 命令构建器（`regression_commands`/`run_command` 等）+ `cmd_*` handlers + `main`；从 common/snapshots import |
+| 上次回退修复 | path 常量 `REPO_ROOT`/`DEFAULT_SHADOW_DB`/`DEFAULT_REPORT_ROOT` 统一进 common 并 re-import；`_redact`/`SECRET_PATTERNS` 移入 common 供 snapshots 复用；snapshots 补 `Path` import |
+| 行为保持 | `--help` OK；纯 stdlib 脚本，无包依赖；无 F821 |
+| 行数 | 主脚本 805 / common 282 / snapshots 330（原 1317 行退出清单）|
+
+**scripts 全部退出超 1000 行清单**：run_strategy_factory_quality_session、db_sync、trade_prediction_shadow_validation 三个脚本完成。
+
+### 2026-06-15 第一二九批：strategy-factory + akshare-mcp 大测试文件拆分
+
+已落地内容：
+
+| 文件 | 处理 | 结果 |
+| --- | --- | --- |
+| `strategy-factory/tests/test_admission_authority.py` 1645 | 拆 `_admission_helpers.py`（共享 helper + autouse fixture `_clear_dev_v1_env`）+ 4 个测试文件（core/observe_first/downgrades/submit_flow/submit_persist）| 主 91，最大 577 |
+| `akshare-mcp/tests/test_theme_graph_schema.py` 1565 | 新建 `conftest.py`（`tmp_db_path`/`initialized_db` fixture）+ `_theme_graph_helpers.py`（helper + `EXPECTED/LEGACY/FORBIDDEN_TABLES`）+ 3 个测试文件（schema/events/lineage）| 最大 584；DDL 自检 `__file__` 仍指 schema 文件 |
+| 行为保持 | pytest 自动发现拆分后的测试文件；fixture 经 conftest 跨文件共享；autouse fixture 经 import 注册；按 `def test_`/`async def test_` 边界切片，避免 stranded 装饰器（修了 `@pytest.fixture`/`@pytest.mark.asyncio` 边界）|
+
+验证结果：
+
+```bash
+# strategy-factory
+python -m pytest tests/test_admission_authority*.py -q   # 24 passed
+# akshare-mcp
+python -m pytest tests/test_theme_graph_schema.py tests/test_theme_graph_events.py tests/test_theme_graph_lineage.py -q   # 29 passed
+```
+
+### 2026-06-15 第一三〇批：剩余大测试文件拆分（deep_repair / full_chain / extended_capabilities）
+
+已落地内容：
+
+| 文件 | 处理 | 结果 |
+| --- | --- | --- |
+| `akshare-mcp/tests/test_factory_deep_repair.py` 1129 | 按 test 边界拆 2 文件（part2 含 `_seed_pool_for_admission` + 其消费者）| 506 / 628 |
+| `akshare-mcp/tests/test_full_chain_regression_repairs.py` 1035 | 拆 2 文件，共享 header + `FakeMcp`/`FakeAcquire` 类各自复制 | 410 / 658 |
+| `agent/tests/test_extended_agent_capabilities.py` 1120 | 拆 2 文件，共享 header + 6 个 Model 类各自复制 | 562 / 717 |
+| 行为保持 | 纯按 `def test_` 边界切片，header（imports + 共享 Fake/Model 类）复制到各文件；pytest 自动发现；collection 校验通过（23 / 60 tests collected）|
+
+### 2026-06-16 全任务收尾快照
+
+**起点 41 个 ≥1000 行文件 → 现 2 个。** 本会话批次 100–130 清掉 39 个。
+
+**剩余 2 个（均为单体不可机械拆分，已记录原因）**：
+1. `packages/agent/src/aiask_agent/fallback_server.py` 1762 — `build_server` 函数内嵌 `AIASKAgentHandler` 闭包类（`do_GET` ~900 行闭包方法，引用 build_server 局部变量），需 closure→实例属性重构，超出机械切片范围
+2. `packages/strategy-factory/.../runner_parts/semantic_contract.py` 1362 — 单个 1330 行 `_submit_one` 方法 fragment，无法按方法边界拆分
+
+**阶段完成度**：P1（Agent server，前序）✅ / P2（Desktop，前序）✅ / 阶段1 AKShare 源码 ✅ / 阶段2 AKShare manager ✅ / 阶段3 Quant Core（fragment 退场）✅ / 阶段4 Strategy Factory ✅ / 阶段5 Agent gateway·runtime·gateway_daemon ✅（fallback_server 暂留）/ 阶段6 scripts ✅ + 5 大测试文件全拆 ✅。
+
+**零漂移与边界**：所有 facade（类/包）方法集 SHA-256/工具指纹拆分前后一致；guardrail / control-token / ActionIntent / live-trading 边界未改；quant-core + strategy-factory 的 `_exec_block` fragment loader 在 strategy_ai/strategy_incubation/stock_strategy_matrix 三处核心退场为真 mixin；`tool-call-path-classification.json` 同步更新迁移后的直连分类。
+
+**预存在失败（与本次重构无关，已逐一用 HEAD 复现确认）**：`test_runtime_provider_boundary`（runner 不在仓库根）、`test_gateway_inbound`（untracked `gateway_route_factories` 签名 bug）、`test_general_file_terminal_and_code_tools`（子进程 stdout）、`gateway_daemon.py:335` `logger` 未定义 latent bug。

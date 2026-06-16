@@ -13,16 +13,18 @@ import {
   Laptop,
   Layers3,
   Monitor,
+  Palette,
   RefreshCw,
   RotateCcw,
   ServerCog,
   ShieldCheck,
   SlidersHorizontal,
+  Thermometer,
   Webhook,
   Wrench
 } from "lucide-react";
 import type { ElementType, ReactNode } from "react";
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import { formatApiError, normalizeEndpoint } from "../../api";
 import { JsonPanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
@@ -38,24 +40,47 @@ import { WebhooksPanel } from "./WebhooksPanel";
 
 type SettingsSectionId =
   | "general"
+  | "appearance"
   | "connection"
   | "tokens"
+  | "apiKeys"
   | "models"
   | "mcp"
   | "skillsManagement"
   | "automationManagement"
   | "integrations"
+  | "gateway"
   | "webhooks"
   | "pluginsManagement"
   | "learningRl"
   | "security"
   | "workflow"
   | "data"
+  | "marketTemperature"
   | "stockDataSources"
   | "advanced"
   | "about";
 
 type SettingsSectionGroup = "基础设置" | "高级管理" | "状态与入口";
+
+type AppearanceTheme = "system" | "light" | "dark";
+type AppearanceDensity = "comfortable" | "compact";
+
+interface MarketTemperatureDefaults {
+  limit: number;
+  topN: number;
+  minBars: number;
+  useCache: boolean;
+  cacheMaxStaleDays: number;
+}
+
+const DEFAULT_MARKET_TEMPERATURE_DEFAULTS: MarketTemperatureDefaults = {
+  limit: 300,
+  topN: 8,
+  minBars: 80,
+  useCache: true,
+  cacheMaxStaleDays: 3
+};
 
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSectionId;
@@ -65,16 +90,20 @@ const SETTINGS_SECTIONS: Array<{
   group: SettingsSectionGroup;
 }> = [
   { id: "general", label: "常规", description: "默认模式、本地用户和基础行为", icon: SlidersHorizontal, group: "基础设置" },
+  { id: "appearance", label: "外观", description: "主题、密度和动效偏好", icon: Palette, group: "基础设置" },
   { id: "connection", label: "连接", description: "Agent 端点与连接恢复", icon: Globe2, group: "基础设置" },
   { id: "tokens", label: "令牌与权限", description: "API 令牌、控制令牌和完整模式", icon: KeyRound, group: "基础设置" },
+  { id: "apiKeys", label: "API Keys", description: "外部密钥环境变量状态", icon: KeyRound, group: "高级管理" },
   { id: "skillsManagement", label: "技能管理", description: "安装、更新、删除和原始快照", icon: Layers3, group: "高级管理" },
   { id: "automationManagement", label: "自动化管理", description: "高级调度、工具集和删除任务", icon: CalendarClock, group: "高级管理" },
   { id: "integrations", label: "应用集成", description: "连接器、Gateway 平台与消息审批", icon: Cable, group: "高级管理" },
+  { id: "gateway", label: "Gateway", description: "平台、消息、目录和守护进程入口", icon: ServerCog, group: "高级管理" },
   { id: "webhooks", label: "Webhook", description: "订阅、删除与受控触发", icon: Webhook, group: "高级管理" },
   { id: "pluginsManagement", label: "插件与技能包", description: "原生插件和 skill pack 治理", icon: Wrench, group: "高级管理" },
   { id: "models", label: "模型配置", description: "配置 LLM 提供方、获取模型并执行测试", icon: Bot, group: "状态与入口" },
   { id: "mcp", label: "MCP 管理入口", description: "进入 MCP 服务、资源、提示词和 OAuth 页面", icon: ServerCog, group: "状态与入口" },
   { id: "workflow", label: "工作流入口", description: "进入数据、策略、因子、孵化和工厂事件", icon: Factory, group: "状态与入口" },
+  { id: "marketTemperature", label: "市场温度配置", description: "默认窗口、缓存和榜单参数", icon: Thermometer, group: "状态与入口" },
   { id: "stockDataSources", label: "股票数据源", description: "配置 URL、Key、主机和连通测试", icon: Database, group: "状态与入口" },
   { id: "data", label: "数据路径", description: "只读查看本地数据库与量化数据路径", icon: Database, group: "状态与入口" },
   { id: "learningRl", label: "学习 / RL", description: "学习建议、RL 运行和结果", icon: BrainCircuit, group: "状态与入口" },
@@ -84,6 +113,23 @@ const SETTINGS_SECTIONS: Array<{
 ];
 
 const SETTINGS_SECTION_GROUPS: SettingsSectionGroup[] = ["基础设置", "高级管理", "状态与入口"];
+
+const SEARCH_API_PROVIDERS = new Set(["tavily", "brave_search", "serpapi", "exa"]);
+
+function clampNumber(value: string, min: number, max: number, fallback: number) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, Math.round(parsed)));
+}
+
+function providerSummary(value: unknown) {
+  const payload = value as { configured_count?: number; providers?: Array<Record<string, unknown>>; status?: string } | undefined;
+  const providers = Array.isArray(payload?.providers) ? payload.providers : [];
+  return {
+    configuredCount: Number(payload?.configured_count || providers.filter((provider) => provider.configured || provider.status === "ready").length || 0),
+    status: payload?.status || (providers.length ? "ready" : "not_loaded")
+  };
+}
 
 const workflowShortcuts: Array<{ id: MainView; label: string; description: string; icon: ElementType }> = [
   { id: "data", label: "数据与同步", description: "配置数据源、同步计划和数据新鲜度检查。", icon: Database },
@@ -222,6 +268,10 @@ export function SettingsWorkspace({
   const [managedSkillsPayload, setManagedSkillsPayload] = useState<CapabilityWorkbenchPayload["skills"] | null>(null);
   const [draftUserId, setDraftUserId] = useState(userId);
   const [draftProfileName, setDraftProfileName] = useState(profileName);
+  const [appearanceTheme, setAppearanceTheme] = useState<AppearanceTheme>("system");
+  const [appearanceDensity, setAppearanceDensity] = useState<AppearanceDensity>("comfortable");
+  const [reduceMotion, setReduceMotion] = useState(false);
+  const [marketTemperatureDefaults, setMarketTemperatureDefaults] = useState<MarketTemperatureDefaults>(DEFAULT_MARKET_TEMPERATURE_DEFAULTS);
   const [message, setMessage] = useState("NOT_LOADED");
   const [statusBusy, setStatusBusy] = useState(false);
 
@@ -241,7 +291,47 @@ export function SettingsWorkspace({
   const hasControlTokenInput = Boolean(controlToken.trim());
   const fullModeReady = fullModeEnabled && generalFullToolset && controlTokenConfigured && hasControlTokenInput && controlAuthorized;
   const llm = settingsStatus?.llm?.ai_status;
+  const llmProviderSummary = providerSummary(settingsStatus?.llm?.providers);
   const databases = settingsStatus?.databases || {};
+  const stockDataSources = settingsStatus?.stock_data_sources;
+  const stockEnvKeys = Array.from(new Set((stockDataSources?.presets || []).flatMap((preset) => preset.env_keys || []))).slice(0, 10);
+  const searchConfigured = Boolean(
+    stockDataSources?.sources?.some((source) => SEARCH_API_PROVIDERS.has(source.provider) && (source.api_key_configured || source.configured || source.status === "ready"))
+  );
+  const apiKeyRows = [
+    {
+      label: "模型提供方",
+      env: "OPENAI_API_KEY / DEEPSEEK_API_KEY / DASHSCOPE_API_KEY / ANTHROPIC_API_KEY",
+      configured: Boolean(llm?.api_key_configured || llmProviderSummary.configuredCount > 0),
+      detail: llm?.provider ? `${llm.provider} · ${llm.model || "-"}` : "由模型配置页和 Agent 环境汇总"
+    },
+    {
+      label: "股票数据源",
+      env: stockEnvKeys.length ? stockEnvKeys.join(" / ") : "TUSHARE_TOKEN / FINNHUB_API_KEY / TDX_*",
+      configured: Boolean((stockDataSources?.configured_count || 0) > 0),
+      detail: stockDataSources ? `${stockDataSources.configured_count} 已配置 · ${stockDataSources.ready_count} ready` : "等待 settings/status"
+    },
+    {
+      label: "联网搜索",
+      env: "TAVILY_API_KEY / BRAVE_SEARCH_API_KEY / SERPAPI_API_KEY / EXA_API_KEY",
+      configured: searchConfigured,
+      detail: searchConfigured ? "搜索类数据源已配置" : "未检测到搜索 API Key 状态"
+    },
+    {
+      label: "平台集成",
+      env: "FEISHU_* / DISCORD_* / HOME_ASSISTANT_* / WEBHOOK_*",
+      configured: null,
+      detail: "通过 Agent 启动环境与对应管理页验证"
+    }
+  ];
+  const anyApiKeyConfigured = apiKeyRows.some((row) => row.configured === true);
+  const marketTemperatureRequestPreview = {
+    limit: marketTemperatureDefaults.limit,
+    top_n: marketTemperatureDefaults.topN,
+    min_bars: marketTemperatureDefaults.minBars,
+    use_cache: marketTemperatureDefaults.useCache,
+    cache_max_stale_days: marketTemperatureDefaults.cacheMaxStaleDays
+  };
 
   async function refreshStatus() {
     setStatusBusy(true);
@@ -296,6 +386,12 @@ export function SettingsWorkspace({
   }, [normalizedEndpoint, apiToken, controlToken]);
 
   useEffect(() => {
+    document.documentElement.dataset.aiaskTheme = appearanceTheme;
+    document.documentElement.dataset.aiaskDensity = appearanceDensity;
+    document.documentElement.dataset.aiaskReduceMotion = reduceMotion ? "true" : "false";
+  }, [appearanceTheme, appearanceDensity, reduceMotion]);
+
+  useEffect(() => {
     if (activeSection === "skillsManagement") {
       refreshManagedSkills().catch(() => undefined);
     }
@@ -307,7 +403,7 @@ export function SettingsWorkspace({
       <aside className="settings-nav">
         <button className="settings-back" onClick={onBackToApp} type="button">
           <ArrowLeft size={15} />
-          返回工作台
+          关闭设置
         </button>
         <div className="settings-nav-title">
           <strong>设置</strong>
@@ -373,6 +469,37 @@ export function SettingsWorkspace({
           </div>
         )}
 
+        {activeSection === "appearance" && (
+          <div className="settings-section-stack">
+            <SettingsCard title="外观" description="这些偏好只影响 Desktop 本地界面，不改变 Agent 运行策略或后端配置。" status="ready" statusLabel="本地偏好">
+              <SettingsRow title="主题" description="跟随系统、浅色或深色。选择会立即写入应用根节点的 data 属性。">
+                <select value={appearanceTheme} onChange={(event) => setAppearanceTheme(event.target.value as AppearanceTheme)}>
+                  <option value="system">跟随系统</option>
+                  <option value="light">浅色</option>
+                  <option value="dark">深色</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow title="界面密度" description="紧凑模式会收紧圆角和部分组件留白，适合长时间扫描。">
+                <select value={appearanceDensity} onChange={(event) => setAppearanceDensity(event.target.value as AppearanceDensity)}>
+                  <option value="comfortable">舒适</option>
+                  <option value="compact">紧凑</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow title="减少动效" description="降低过渡和动画时长，适合需要稳定视觉反馈的场景。">
+                <input aria-label="减少动效" checked={reduceMotion} onChange={(event) => setReduceMotion(event.target.checked)} type="checkbox" />
+              </SettingsRow>
+              <div className="settings-static-grid">
+                <span>当前主题</span>
+                <strong>{appearanceTheme === "system" ? "跟随系统" : appearanceTheme === "dark" ? "深色" : "浅色"}</strong>
+                <span>当前密度</span>
+                <strong>{appearanceDensity === "compact" ? "紧凑" : "舒适"}</strong>
+                <span>动效</span>
+                <strong>{reduceMotion ? "已减少" : "标准"}</strong>
+              </div>
+            </SettingsCard>
+          </div>
+        )}
+
         {activeSection === "connection" && (
           <div className="settings-section-stack">
             <SettingsCard title="Agent 连接" description="只有健康检查成功后，当前 Agent 端点才会被标记为已验证。" status={connectionStatus === "AIASK_ONLINE" ? "implemented" : usesNonDefaultEndpoint ? "gated" : "ready"} statusLabel={connectionStatus}>
@@ -433,6 +560,44 @@ export function SettingsWorkspace({
                 <span>令牌验证</span>
                 <strong>{controlAuthorized ? "已通过" : controlReason || "等待测试连接/刷新"}</strong>
               </div>
+            </SettingsCard>
+          </div>
+        )}
+
+        {activeSection === "apiKeys" && (
+          <div className="settings-section-stack">
+            <SettingsCard title="API Keys" description="独立查看外部密钥状态；桌面端只显示环境变量名和脱敏配置结果，不读取、不保存、不回显密钥值。" status={anyApiKeyConfigured ? "ready" : "unconfigured"} statusLabel={anyApiKeyConfigured ? "已有配置" : "等待 Agent 状态"}>
+              <div className="notice">
+                密钥值应写入 Agent 启动环境或对应受控设置页。这里用于确认“哪些类别已经配置”，不会展示 .env 内容或 secret 原文。
+              </div>
+              <div className="settings-static-grid api-key-status-grid">
+                {apiKeyRows.map((row) => (
+                  <Fragment key={row.label}>
+                    <span>{row.label}</span>
+                    <strong>
+                      {row.configured === null ? "Agent 环境" : row.configured ? "已配置" : "未检测到"} · {row.env}
+                      <small>{row.detail}</small>
+                    </strong>
+                  </Fragment>
+                ))}
+              </div>
+              <ShortcutGrid
+                items={[
+                  {
+                    id: "models",
+                    label: "打开模型配置页",
+                    description: "查看模型提供方、base URL 和脱敏后的配置状态。",
+                    icon: Bot
+                  },
+                  {
+                    id: "mcp-connectors",
+                    label: "打开 MCP / 连接器",
+                    description: "查看连接器授权状态和 Agent 侧集成入口。",
+                    icon: ServerCog
+                  }
+                ]}
+                onOpenView={onOpenView}
+              />
             </SettingsCard>
           </div>
         )}
@@ -530,6 +695,33 @@ export function SettingsWorkspace({
           </div>
         )}
 
+        {activeSection === "gateway" && (
+          <div className="settings-section-stack">
+            <SettingsCard title="Gateway" description="Gateway 平台、消息、目录、失败重试和守护进程控制集中到独立页面；平台密钥由 Agent 启动环境提供。" status={controlToken.trim() ? "ready" : "gated"} statusLabel={controlToken.trim() ? "可管理" : "需要控制令牌"}>
+              <div className="notice">
+                设置中心只保留入口和权限说明；发送、重试、启停平台等动作仍通过 Gateway 页面、ActionIntent、控制令牌和后端护栏执行。
+              </div>
+              <ShortcutGrid
+                items={[
+                  {
+                    id: "gateway",
+                    label: "打开 Gateway",
+                    description: "查看平台状态、消息队列、目录、失败重试和守护进程。",
+                    icon: ServerCog
+                  },
+                  {
+                    id: "tools-intents-approvals",
+                    label: "打开消息审批",
+                    description: "复核 Gateway 发送、重试和平台动作产生的审批项。",
+                    icon: ShieldCheck
+                  }
+                ]}
+                onOpenView={onOpenView}
+              />
+            </SettingsCard>
+          </div>
+        )}
+
         {activeSection === "webhooks" && (
           <div className="settings-section-stack">
             <SettingsCard title="Webhook" description="订阅和删除是真实管理操作；触发动作创建审批意图。" status={controlToken.trim() ? "ready" : "gated"} statusLabel={controlToken.trim() ? "可管理" : "需要控制令牌"}>
@@ -552,6 +744,95 @@ export function SettingsWorkspace({
           <div className="settings-section-stack">
             <SettingsCard title="工作流入口" description="这里不配置工作流参数，只打开数据、策略、因子、孵化和工厂事件页面。" status="ready" statusLabel="打开页面">
               <ShortcutGrid items={workflowShortcuts} onOpenView={onOpenView} />
+            </SettingsCard>
+          </div>
+        )}
+
+        {activeSection === "marketTemperature" && (
+          <div className="settings-section-stack">
+            <SettingsCard title="市场温度配置" description="配置 Desktop 侧默认查询参数预览；真实数据仍通过 Agent HTTP 的市场温度页面读取。" status="ready" statusLabel="本地默认">
+              <SettingsRow title="股票样本上限" description="默认传给市场温度查询的 limit，避免一次性拉取过多样本。">
+                <input
+                  min={50}
+                  max={1000}
+                  type="number"
+                  value={marketTemperatureDefaults.limit}
+                  onChange={(event) =>
+                    setMarketTemperatureDefaults((current) => ({
+                      ...current,
+                      limit: clampNumber(event.target.value, 50, 1000, current.limit)
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow title="冷热行业数量" description="top_n 控制热门与冷门行业榜单的默认数量。">
+                <input
+                  min={3}
+                  max={30}
+                  type="number"
+                  value={marketTemperatureDefaults.topN}
+                  onChange={(event) =>
+                    setMarketTemperatureDefaults((current) => ({
+                      ...current,
+                      topN: clampNumber(event.target.value, 3, 30, current.topN)
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow title="最少 K 线数量" description="min_bars 用于过滤历史样本不足的股票。">
+                <input
+                  min={20}
+                  max={250}
+                  type="number"
+                  value={marketTemperatureDefaults.minBars}
+                  onChange={(event) =>
+                    setMarketTemperatureDefaults((current) => ({
+                      ...current,
+                      minBars: clampNumber(event.target.value, 20, 250, current.minBars)
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <SettingsRow title="缓存策略" description="开启后优先复用 Agent 侧可接受的新鲜缓存。">
+                <select
+                  value={marketTemperatureDefaults.useCache ? "enabled" : "disabled"}
+                  onChange={(event) =>
+                    setMarketTemperatureDefaults((current) => ({
+                      ...current,
+                      useCache: event.target.value === "enabled"
+                    }))
+                  }
+                >
+                  <option value="enabled">使用缓存</option>
+                  <option value="disabled">每次刷新</option>
+                </select>
+              </SettingsRow>
+              <SettingsRow title="缓存最大天数" description="cache_max_stale_days 控制缓存允许的最大陈旧天数。">
+                <input
+                  min={0}
+                  max={14}
+                  type="number"
+                  value={marketTemperatureDefaults.cacheMaxStaleDays}
+                  onChange={(event) =>
+                    setMarketTemperatureDefaults((current) => ({
+                      ...current,
+                      cacheMaxStaleDays: clampNumber(event.target.value, 0, 14, current.cacheMaxStaleDays)
+                    }))
+                  }
+                />
+              </SettingsRow>
+              <pre className="env-block">{JSON.stringify(marketTemperatureRequestPreview, null, 2)}</pre>
+              <ShortcutGrid
+                items={[
+                  {
+                    id: "market-temperature",
+                    label: "打开市场温度",
+                    description: "查看市场宽度、冷热行业轮动、缓存状态和数据质量。",
+                    icon: Thermometer
+                  }
+                ]}
+                onOpenView={onOpenView}
+              />
             </SettingsCard>
           </div>
         )}

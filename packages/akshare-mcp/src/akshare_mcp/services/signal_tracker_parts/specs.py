@@ -316,7 +316,7 @@ class SignalTracker:
                     if instance is None:
                         continue
 
-                    signals_batch = []
+                    signals_by_date: dict[date, list[dict[str, Any]]] = {}
                     for code in self._resolve_strategy_universe(s, DEFAULT_UNIVERSE):
                         klines = await self._get_klines_with_fallback(db, code, limit=200)
                         if not klines or len(klines) < 20:
@@ -346,11 +346,14 @@ class SignalTracker:
                         latest_signal = int(signal_row.get("signal") or 0)
                         if latest_signal != 0:
                             signal_row["code"] = code
-                            signals_batch.append(signal_row)
+                            signal_date = self._resolve_signal_record_date(signal_row) or today
+                            signal_row["signal_date"] = signal_date.isoformat()
+                            signals_by_date.setdefault(signal_date, []).append(signal_row)
 
-                    if signals_batch:
-                        count = await db.save_signals(s["id"], today, signals_batch)
-                        results["signals_generated"] += count
+                    for signal_date, signals_batch in sorted(signals_by_date.items()):
+                        if signals_batch:
+                            count = await db.save_signals(s["id"], signal_date, signals_batch)
+                            results["signals_generated"] += count
                 except Exception as e:
                     results["errors"].append(f"Signal gen {s.get('id')}: {e}")
         except Exception as e:
@@ -515,7 +518,9 @@ class SignalTracker:
                 computed += saved
                 total_computed += saved
                 last_record = dict(pending[-1] or {})
-                cursor_signal_date = self._coerce_trade_date(last_record.get("signal_date"))
+                cursor_signal_date = self._coerce_trade_date(
+                    last_record.get("effective_signal_date") or last_record.get("signal_date")
+                )
                 cursor_id = int(last_record.get("id") or 0)
             else:
                 truncated = True
@@ -558,17 +563,19 @@ class SignalTracker:
 
         rows_to_save: list[dict[str, Any]] = []
         for code, records in pending_by_code.items():
-            signal_dates = [self._coerce_trade_date(item.get("signal_date")) for item in records]
-            signal_dates = [item for item in signal_dates if item is not None]
-            if not signal_dates:
+            base_dates = [self._resolve_signal_base_date(item) for item in records]
+            base_dates = [item for item in base_dates if item is not None]
+            if not base_dates:
                 continue
-            earliest_signal_date = min(signal_dates)
+            earliest_signal_date = min(base_dates)
             klines = await self._get_klines_with_fallback(
                 db,
                 code,
                 start_date=earliest_signal_date,
                 limit=None,
-                allow_data_source_fallback=False,
+                allow_data_source_fallback=True,
+                required_base_dates=base_dates,
+                forward_days=forward_days,
             )
             close_series = self._build_close_series(klines)
             if not close_series:
@@ -576,7 +583,7 @@ class SignalTracker:
             index_by_date = {trade_date: idx for idx, (trade_date, _close) in enumerate(close_series)}
             closes = [close for _trade_date, close in close_series]
             for record in records:
-                signal_date = self._coerce_trade_date(record.get("signal_date"))
+                signal_date = self._resolve_signal_base_date(record)
                 if signal_date is None:
                     continue
                 base_index = index_by_date.get(signal_date)
@@ -614,6 +621,37 @@ class SignalTracker:
         return saved
 
     @staticmethod
+    def _decode_signal_metadata(record: dict[str, Any]) -> dict[str, Any]:
+        raw = dict(record or {}).get("signal_metadata")
+        if isinstance(raw, dict):
+            return dict(raw)
+        if raw in (None, "", [], {}):
+            return {}
+        try:
+            import json
+
+            parsed = json.loads(str(raw))
+            return dict(parsed or {}) if isinstance(parsed, dict) else {}
+        except Exception:
+            return {}
+
+    def _resolve_signal_record_date(self, signal_row: dict[str, Any]) -> Optional[date]:
+        metadata = dict((signal_row or {}).get("signal_metadata") or {})
+        for key in ("latest_bar_date", "latest_nonzero_signal_date", "latest_event_date"):
+            resolved = self._coerce_trade_date(metadata.get(key))
+            if resolved is not None:
+                return resolved
+        return self._coerce_trade_date((signal_row or {}).get("signal_date"))
+
+    def _resolve_signal_base_date(self, record: dict[str, Any]) -> Optional[date]:
+        metadata = self._decode_signal_metadata(record)
+        for key in ("latest_bar_date", "latest_nonzero_signal_date", "latest_event_date"):
+            resolved = self._coerce_trade_date(metadata.get(key))
+            if resolved is not None:
+                return resolved
+        return self._coerce_trade_date((record or {}).get("signal_date"))
+
+    @staticmethod
     def _coerce_trade_date(value: Any) -> Optional[date]:
         if value is None:
             return None
@@ -644,6 +682,84 @@ class SignalTracker:
             close_by_date[trade_date] = close
         return sorted(close_by_date.items(), key=lambda item: item[0])
 
+    def _has_forward_coverage(
+        self,
+        close_series: List[tuple[date, float]],
+        *,
+        required_base_dates: Optional[List[date]] = None,
+        forward_days: Optional[int] = None,
+    ) -> bool:
+        if not close_series:
+            return False
+        base_dates = [item for item in list(required_base_dates or []) if item is not None]
+        if not base_dates:
+            return True
+        horizon = max(int(forward_days or 0), 0)
+        index_by_date = {trade_date: idx for idx, (trade_date, _close) in enumerate(close_series)}
+        for base_date in base_dates:
+            base_index = index_by_date.get(base_date)
+            if base_index is None:
+                return False
+            if horizon > 0 and base_index + horizon >= len(close_series):
+                return False
+        return True
+
+    @staticmethod
+    def _normalize_provider_klines(code: str, rows: list[dict]) -> list[dict[str, Any]]:
+        normalized: list[dict[str, Any]] = []
+        for row in list(rows or []):
+            if not isinstance(row, dict):
+                continue
+            payload = dict(row)
+            payload.setdefault("code", code)
+            if not payload.get("date") and payload.get("time"):
+                payload["date"] = str(payload.get("time"))[:10]
+            if not payload.get("date") or payload.get("close") in (None, ""):
+                continue
+            normalized.append(payload)
+        return normalized
+
+    async def _fetch_provider_klines(self, code: str, *, limit: int) -> list[dict[str, Any]]:
+        providers: list[tuple[str, Any]] = []
+        try:
+            from akshare_mcp.data_source import tdx_tqcenter
+
+            providers.append(
+                (
+                    "tqcenter",
+                    lambda: tdx_tqcenter.get_kline(code, period="daily", limit=limit),
+                )
+            )
+        except Exception:
+            pass
+        try:
+            from akshare_mcp.data_source.tdx_local import get_tdx_local_source
+
+            providers.append(
+                (
+                    "tdx_local",
+                    lambda: get_tdx_local_source().get_kline(code, period="daily", limit=limit),
+                )
+            )
+        except Exception:
+            pass
+
+        for provider_name, loader in providers:
+            try:
+                rows = await asyncio.to_thread(loader)
+            except Exception as exc:
+                logger.warning(
+                    "SignalTracker: provider kline refresh failed for %s via %s: %s",
+                    code,
+                    provider_name,
+                    exc,
+                )
+                continue
+            normalized = self._normalize_provider_klines(code, list(rows or []))
+            if normalized:
+                return normalized
+        return []
+
     async def _get_klines_with_fallback(
         self,
         db,
@@ -652,8 +768,10 @@ class SignalTracker:
         start_date: Optional[date] = None,
         end_date: Optional[date] = None,
         allow_data_source_fallback: bool = False,
+        required_base_dates: Optional[List[date]] = None,
+        forward_days: Optional[int] = None,
     ) -> list:
-        """从 DB 获取 K 线；工厂链路不再直接回退到数据源。"""
+        """从 DB 获取 K 线；仅在前向收益补证据时按开关刷新 provider 数据。"""
         kwargs: dict[str, Any] = {}
         if start_date is not None:
             kwargs["start_date"] = start_date.isoformat()
@@ -664,9 +782,38 @@ class SignalTracker:
 
         klines = await db.get_klines(code, **kwargs)
         minimum_bars = 1 if start_date is not None or end_date is not None else 20
-        if klines and len(klines) >= minimum_bars:
+        close_series = self._build_close_series(list(klines or []))
+        if (
+            klines
+            and len(klines) >= minimum_bars
+            and self._has_forward_coverage(
+                close_series,
+                required_base_dates=required_base_dates,
+                forward_days=forward_days,
+            )
+        ):
             return klines
-        return klines or []
+        if not allow_data_source_fallback or not _forward_return_provider_refresh_enabled():
+            return klines or []
+
+        provider_limit = _forward_return_provider_refresh_limit()
+        if start_date is not None:
+            provider_limit = max(provider_limit, min(5000, (date.today() - start_date).days * 2 + 60))
+        provider_rows = self._normalize_provider_klines(
+            code,
+            await self._fetch_provider_klines(code, limit=provider_limit),
+        )
+        if provider_rows and hasattr(db, "save_klines"):
+            try:
+                await db.save_klines(code, provider_rows)
+            except Exception as exc:
+                logger.warning(
+                    "SignalTracker: provider kline save failed for %s: %s",
+                    code,
+                    exc,
+                )
+        merged = [*list(klines or []), *provider_rows]
+        return merged or list(klines or [])
 
     def status(self) -> dict:
         return {

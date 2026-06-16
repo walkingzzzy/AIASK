@@ -527,19 +527,43 @@ class SignalTrackingMixin:
         cursor_id = int(after_id or 0)
         async with self.acquire() as conn:
             rows = await conn.fetch(
-                """SELECT ss.id, ss.strategy_id, ss.signal_date, ss.code, ss.signal
-                   FROM strategy_signals ss
-                   WHERE ss.signal_date <= $1
+                """WITH pending_signals AS (
+                       SELECT
+                           ss.id,
+                           ss.strategy_id,
+                           ss.signal_date,
+                           ss.code,
+                           ss.signal,
+                           ss.signal_metadata,
+                           COALESCE(
+                               CASE
+                                   WHEN json_valid(ss.signal_metadata)
+                                   THEN NULLIF(json_extract(ss.signal_metadata, '$.latest_bar_date'), '')
+                                   ELSE NULL
+                               END,
+                               CASE
+                                   WHEN json_valid(ss.signal_metadata)
+                                   THEN NULLIF(json_extract(ss.signal_metadata, '$.latest_nonzero_signal_date'), '')
+                                   ELSE NULL
+                               END,
+                               ss.signal_date
+                           ) AS effective_signal_date
+                       FROM strategy_signals ss
+                   )
+                   SELECT ss.id, ss.strategy_id, ss.signal_date, ss.code, ss.signal,
+                          ss.signal_metadata, ss.effective_signal_date
+                   FROM pending_signals ss
+                   WHERE ss.effective_signal_date <= $1
                      AND (
                          $3 IS NULL
-                         OR ss.signal_date > $3
-                         OR (ss.signal_date = $3 AND ss.id > $4)
+                         OR ss.effective_signal_date > $3
+                         OR (ss.effective_signal_date = $3 AND ss.id > $4)
                      )
                      AND NOT EXISTS (
                          SELECT 1 FROM signal_forward_returns sfr
                          WHERE sfr.signal_id = ss.id AND sfr.forward_days = $2
                      )
-                   ORDER BY ss.signal_date, ss.id
+                   ORDER BY ss.effective_signal_date, ss.id
                    LIMIT $5""",
                 cutoff, forward_days,
                 cursor_signal_date, cursor_id, batch_limit,

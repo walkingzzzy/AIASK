@@ -46,16 +46,21 @@ from .sector_taxonomy import (
 
 logger = logging.getLogger(__name__)
 
-from strategy_factory._fragment_loader import exec_block as _exec_block
-
-_exec_block(
-    globals(),
-    'stock_strategy_matrix_parts',
-    'class StockStrategyMatrixPlanner(_MarketOpportunityScannerUtilityMixin):\n',
-    ['normalizers.py', 'policy.py', 'evaluation.py'],
-    future_annotations=True,
-)
+from .stock_strategy_matrix_mixins.normalizers_core import _MatrixNormalizersCoreMixin
+from .stock_strategy_matrix_mixins.normalizers_allocation import _MatrixAllocationMixin
+from .stock_strategy_matrix_mixins.normalizers_scoring import _MatrixScoringMixin
+from .stock_strategy_matrix_mixins.normalizers_families import _MatrixFamiliesMixin
+from .stock_strategy_matrix_mixins.policy import _MatrixPolicyMixin
+from .stock_strategy_matrix_mixins.evaluation import _MatrixEvaluationMixin
 
 
-
-__all__ = ["StockStrategyMatrixPlanner"]
+class StockStrategyMatrixPlanner(
+    _MarketOpportunityScannerUtilityMixin,
+    _MatrixNormalizersCoreMixin,
+    _MatrixAllocationMixin,
+    _MatrixScoringMixin,
+    _MatrixFamiliesMixin,
+    _MatrixPolicyMixin,
+    _MatrixEvaluationMixin,
+):
+    """Composed per-stock strategy-family planner (fragment loader retired)."""

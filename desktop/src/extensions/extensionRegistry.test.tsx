@@ -31,8 +31,8 @@ describe("extensionRegistry", () => {
 
   it("registers only repo-native static entries for populated slots", () => {
     expect(getInternalSlots("sidebar-top")).toHaveLength(1);
-    expect(getInternalSlots("header-left")[0].route).toBe("/readiness-health");
-    expect(getInternalSlots("header-right")[0].route).toBe("/gateway");
+    expect(getInternalSlots("header-left")[0].route).toBe("/readiness");
+    expect(getInternalSlots("header-right")[0].route).toBe("/integrations/gateway");
     expect(getInternalSlots("workbench.quick-actions").length).toBeGreaterThanOrEqual(2);
     expect(getInternalSlots("overlay")).toHaveLength(0);
   });

@@ -8,6 +8,8 @@ const ENDPOINT_KEY = "aiask.endpoint";
 const DEFAULT_ENDPOINT = "http://127.0.0.1:8767";
 const VERIFIED_ENDPOINT_KEY = "aiask.endpoint.verified";
 const AUTO_CONNECT_KEY = "aiask.endpoint.autoconnect";
+const API_TOKEN_SESSION_KEY = "aiask.session.api_token";
+const CONTROL_TOKEN_SESSION_KEY = "aiask.session.control_token";
 const LIVE_USER_ID_KEY = "aiask.local.user_id";
 const LIVE_PROFILE_NAME_KEY = "aiask.local.profile_name";
 const MOCK_USER_ID_KEY = "aiask.mock.local.user_id";
@@ -42,6 +44,26 @@ function storageSet(key: string, value: string) {
 function storageRemove(key: string) {
   try {
     localStorage.removeItem(key);
+  } catch {
+    // ignore storage issues under tests or restricted webviews
+  }
+}
+
+function sessionGet(key: string): string | null {
+  try {
+    return sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function sessionSet(key: string, value: string) {
+  try {
+    if (value.trim()) {
+      sessionStorage.setItem(key, value);
+    } else {
+      sessionStorage.removeItem(key);
+    }
   } catch {
     // ignore storage issues under tests or restricted webviews
   }
@@ -82,8 +104,8 @@ export function useAppConnectionSettings() {
         ? storageGet(ENDPOINT_KEY) || DEFAULT_ENDPOINT
         : DEFAULT_ENDPOINT
   );
-  const [apiToken, setApiToken] = useState("");
-  const [controlToken, setControlToken] = useState(() => (mockMode ? MOCK_CONTROL_TOKEN : ""));
+  const [apiToken, setApiTokenState] = useState(() => (mockMode ? "" : sessionGet(API_TOKEN_SESSION_KEY) || ""));
+  const [controlToken, setControlTokenState] = useState(() => (mockMode ? MOCK_CONTROL_TOKEN : sessionGet(CONTROL_TOKEN_SESSION_KEY) || ""));
   const [agentMode, setAgentMode] = useState<"finance_safe" | "hermes_full">("finance_safe");
   const [userId, setUserId] = useState(() => initialUserId(mockMode));
   const [profileName, setProfileName] = useState(() => initialProfileName(mockMode));
@@ -141,6 +163,16 @@ export function useAppConnectionSettings() {
       storageRemove(VERIFIED_ENDPOINT_KEY);
       storageRemove(AUTO_CONNECT_KEY);
     }
+  }, [mockMode]);
+
+  const setApiToken = useCallback((value: string) => {
+    setApiTokenState(value);
+    if (!mockMode) sessionSet(API_TOKEN_SESSION_KEY, value);
+  }, [mockMode]);
+
+  const setControlToken = useCallback((value: string) => {
+    setControlTokenState(value);
+    if (!mockMode) sessionSet(CONTROL_TOKEN_SESSION_KEY, value);
   }, [mockMode]);
 
   const updateLocalProfile = useCallback((profile: LocalProfile) => {

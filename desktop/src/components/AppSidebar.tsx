@@ -1,7 +1,21 @@
-import { ChevronDown, ChevronRight, FolderGit2, Plus, Search, Terminal } from "lucide-react";
-import { useMemo, useState } from "react";
+import {
+  ChevronDown,
+  ChevronRight,
+  FolderGit2,
+  MessageSquare,
+  PackageOpen,
+  Plus,
+  Search,
+  Settings,
+  Terminal,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
+import { useState } from "react";
+import { Link, useLocation } from "react-router-dom";
 import { SlotRenderer } from "../extensions/extensionRegistry";
-import { IconButton, StatusBadge, statusLabel } from "./shared";
+import { isViewRouteActive, viewToRoute } from "../routes";
+import { StatusBadge, statusLabel } from "./shared";
 import type { HealthDetailed, HermesStatus, InspectorTab, MainView, TaskThread } from "../types";
 import type { ViewGroup, ViewRegistryItem } from "../views";
 
@@ -42,15 +56,21 @@ function threadSummary(thread: TaskThread) {
   };
 }
 
+const HOME_NAV_ITEMS: Array<{ id: MainView; label: string; icon: LucideIcon }> = [
+  { id: "plugins-skills", label: "技能与工具", icon: Wrench },
+  { id: "gateway", label: "消息平台", icon: MessageSquare },
+  { id: "artifacts", label: "产物", icon: PackageOpen },
+];
+
 function SidebarNavGroup({
   group,
+  currentPath,
   inspectorTab,
-  mainView,
   onSelectView,
 }: {
   group: ViewGroup;
+  currentPath: string;
   inspectorTab: InspectorTab;
-  mainView: MainView;
   onSelectView: (view: MainView) => void;
 }) {
   const [collapsed, setCollapsed] = useState(Boolean(group.defaultCollapsed));
@@ -69,12 +89,21 @@ function SidebarNavGroup({
       </button>
       {!collapsed && group.items.map((view: ViewRegistryItem) => {
         const Icon = view.icon;
-        const active = mainView === view.id && (view.id !== "workbench" || inspectorTab === "details");
+        const active = isViewRouteActive(currentPath, view.id) && (view.id !== "workbench" || inspectorTab === "details");
         return (
           <div className="sidebar-nav-item" key={view.id}>
-            <IconButton active={active} data-view-id={view.id} label={view.label} onClick={() => onSelectView(view.id)}>
+            <Link
+              aria-current={active ? "page" : undefined}
+              aria-label={view.label}
+              className={`icon-action ${active ? "active" : ""}`}
+              data-view-id={view.id}
+              onClick={() => onSelectView(view.id)}
+              title={view.label}
+              to={viewToRoute(view.id)}
+            >
               <Icon size={16} />
-            </IconButton>
+              <span>{view.label}</span>
+            </Link>
             {view.badge && <span className="sidebar-nav-badge">{view.badge}</span>}
           </div>
         );
@@ -87,6 +116,7 @@ export function AppSidebar({
   controlToken,
   health,
   hermesStatus,
+  homeMode = false,
   inspectorTab,
   mainView,
   onNewTask,
@@ -100,6 +130,7 @@ export function AppSidebar({
   controlToken: string;
   health: HealthDetailed | null;
   hermesStatus: HermesStatus | null;
+  homeMode?: boolean;
   inspectorTab: InspectorTab;
   mainView: MainView;
   onNewTask: () => void;
@@ -112,8 +143,63 @@ export function AppSidebar({
 }) {
   const fullModeActive = Boolean(health?.hermes?.full_mode_active || hermesStatus?.full_mode_active);
   const connection = connectionSummary(status);
-  const primaryGroups = useMemo(() => viewGroups.filter((group) => group.id === "primary"), [viewGroups]);
-  const advancedGroups = useMemo(() => viewGroups.filter((group) => group.id !== "primary"), [viewGroups]);
+  const navigationGroups = viewGroups;
+  const location = useLocation();
+
+  if (homeMode) {
+    return (
+      <aside className="sidebar app-sidebar home-sidebar">
+        <div className="brand-row">
+          <div className="brand-mark">
+            <Terminal size={18} />
+          </div>
+          <div>
+            <strong>AIASK</strong>
+            <span>Agent</span>
+          </div>
+          <Link
+            aria-current={mainView === "settings" ? "page" : undefined}
+            aria-label="设置"
+            className={`icon-action brand-settings ${mainView === "settings" ? "active" : ""}`}
+            data-view-id="settings"
+            onClick={() => onSelectView("settings")}
+            title="设置"
+            to={viewToRoute("settings")}
+          >
+            <Settings size={16} />
+            <span>设置</span>
+          </Link>
+        </div>
+
+        <button className="new-task-button" onClick={onNewTask} type="button">
+          <Plus size={16} />
+          新建线程
+        </button>
+
+        <nav className="home-nav" aria-label="首页导航">
+          {HOME_NAV_ITEMS.map((item) => {
+            const Icon = item.icon;
+            const active = isViewRouteActive(location.pathname, item.id);
+            return (
+              <Link
+                aria-current={active ? "page" : undefined}
+                aria-label={item.label}
+                className={`icon-action ${active ? "active" : ""}`}
+                data-view-id={item.id}
+                key={item.id}
+                onClick={() => onSelectView(item.id)}
+                title={item.label}
+                to={viewToRoute(item.id)}
+              >
+                <Icon size={16} />
+                <span>{item.label}</span>
+              </Link>
+            );
+          })}
+        </nav>
+      </aside>
+    );
+  }
 
   return (
     <aside className="sidebar app-sidebar">
@@ -125,7 +211,18 @@ export function AppSidebar({
           <strong>AIASK</strong>
           <span>Agent 工作台</span>
         </div>
-        <ChevronDown className="brand-chevron" size={15} />
+        <Link
+          aria-current={mainView === "settings" ? "page" : undefined}
+          aria-label="设置"
+          className={`icon-action brand-settings ${mainView === "settings" ? "active" : ""}`}
+          data-view-id="settings"
+          onClick={() => onSelectView("settings")}
+          title="设置"
+          to={viewToRoute("settings")}
+        >
+          <Settings size={16} />
+          <span>设置</span>
+        </Link>
       </div>
 
       <button className="new-task-button" onClick={onNewTask} type="button">
@@ -156,10 +253,10 @@ export function AppSidebar({
           <span>任务线程</span>
           <small>{threads.length}</small>
         </div>
-        <button className="thread-search-button" onClick={() => onSelectView("runs-events")} type="button">
+        <Link className="thread-search-button" onClick={() => onSelectView("runs-events")} to={viewToRoute("runs-events")}>
           <Search size={14} />
           搜索与历史
-        </button>
+        </Link>
         <div className="thread-list">
           {threads.map((thread) => (
             <button
@@ -194,21 +291,12 @@ export function AppSidebar({
           <FolderGit2 size={13} />
           <span>导航</span>
         </div>
-        {primaryGroups.map((group) => (
+        {navigationGroups.map((group) => (
           <SidebarNavGroup
+            currentPath={location.pathname}
             group={group}
             inspectorTab={inspectorTab}
             key={group.id}
-            mainView={mainView}
-            onSelectView={onSelectView}
-          />
-        ))}
-        {advancedGroups.map((group) => (
-          <SidebarNavGroup
-            group={group}
-            inspectorTab={inspectorTab}
-            key={group.id}
-            mainView={mainView}
             onSelectView={onSelectView}
           />
         ))}

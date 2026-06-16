@@ -99,7 +99,7 @@ def test_factory_dispatch_run_inline_passes_target_codes(monkeypatch) -> None:
 
     db = _DispatchDb()
     monkeypatch.setattr(
-        lifecycle,
+        lifecycle._lifecycle_support,
         "_get_strategy_factory_scheduler_with_runtime",
         lambda resolved_db: _Scheduler(),
     )

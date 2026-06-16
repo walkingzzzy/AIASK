@@ -1,3 +1,4 @@
+import * as Tooltip from "@radix-ui/react-tooltip";
 import {
   Activity,
   AlertTriangle,
@@ -7,6 +8,8 @@ import {
   FileJson,
   Info,
   LockKeyhole,
+  TrendingDown,
+  TrendingUp,
   XCircle
 } from "lucide-react";
 import type { ButtonHTMLAttributes, ReactNode } from "react";
@@ -335,10 +338,22 @@ export function IconButton({
   active?: boolean;
 } & ButtonHTMLAttributes<HTMLButtonElement>) {
   return (
-    <button aria-label={label} className={`icon-action ${active ? "active" : ""}`} title={label} type="button" {...props}>
-      {children}
-      <span>{label}</span>
-    </button>
+    <Tooltip.Provider delayDuration={300}>
+      <Tooltip.Root>
+        <Tooltip.Trigger asChild>
+          <button aria-label={label} className={`icon-action ${active ? "active" : ""}`} type="button" {...props}>
+            {children}
+            <span>{label}</span>
+          </button>
+        </Tooltip.Trigger>
+        <Tooltip.Portal>
+          <Tooltip.Content className="ui-tooltip" side="bottom" sideOffset={6}>
+            {label}
+            <Tooltip.Arrow className="ui-tooltip-arrow" />
+          </Tooltip.Content>
+        </Tooltip.Portal>
+      </Tooltip.Root>
+    </Tooltip.Provider>
   );
 }
 
@@ -349,6 +364,33 @@ export function MetricCard({ label, value, status }: { label: string; value: str
       <span>{label}</span>
       <strong>{displayValue}</strong>
     </div>
+  );
+}
+
+export function PriceDelta({
+  value,
+  pct,
+  digits = 2,
+  showArrow = true
+}: {
+  value: number;
+  pct?: number;
+  digits?: number;
+  showArrow?: boolean;
+}) {
+  const safe = Number.isFinite(value) ? value : 0;
+  const dir = safe > 0 ? "up" : safe < 0 ? "down" : "flat";
+  const sign = safe > 0 ? "+" : "";
+  const Arrow = dir === "up" ? TrendingUp : dir === "down" ? TrendingDown : null;
+  return (
+    <span className={`price-delta ${dir}`}>
+      {showArrow && Arrow ? <Arrow size={13} aria-hidden /> : null}
+      <span className="price-delta-value">
+        {sign}
+        {safe.toFixed(digits)}
+        {pct != null && Number.isFinite(pct) ? ` (${sign}${pct.toFixed(digits)}%)` : ""}
+      </span>
+    </span>
   );
 }
 

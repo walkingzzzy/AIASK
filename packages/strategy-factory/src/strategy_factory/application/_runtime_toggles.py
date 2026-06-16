@@ -113,9 +113,9 @@ def trade_aware_extra_families() -> FrozenSet[str]:
 
 
 # === DEV-V1 P1: 孵化工厂消费 paper observation 候选 ===
-# 默认 False;P0 灰度产生 paper account 后再开启,否则空管道。
+# 默认 True,让已创建 paper account 的 observe 样本进入孵化工厂消费。
 def paper_intake_enabled() -> bool:
-    return _env_bool("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", default=False)
+    return _env_bool("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", default=True)
 
 
 # === DEV-V1 P1 配套:单批 paper observation 的 batch limit ===
@@ -126,6 +126,19 @@ def paper_intake_batch_limit() -> int:
     except Exception:
         value = 50
     return max(1, min(value, 500))
+
+
+def recompile_remediation_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", default=True)
+
+
+def recompile_remediation_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT", "200")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 200
+    return max(1, min(value, 1000))
 
 
 def gate3_record_only_intake_enabled() -> bool:
@@ -248,6 +261,8 @@ __all__ = [
     "trade_aware_extra_families",
     "paper_intake_enabled",
     "paper_intake_batch_limit",
+    "recompile_remediation_enabled",
+    "recompile_remediation_batch_limit",
     "gate3_record_only_intake_enabled",
     "gate3_record_only_intake_batch_limit",
     "gate3_record_only_intake_min_grade",

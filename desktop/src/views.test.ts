@@ -4,21 +4,22 @@ import type { MainView } from "./types";
 import { getViewItem, VIEW_GROUPS, VIEW_REGISTRY } from "./views";
 
 const routedViews: Array<{ id: MainView; label: string; route: string }> = [
-  { id: "workbench", label: "工作台", route: "/workbench" },
-  { id: "projects-contexts", label: "项目 / 上下文", route: "/projects-contexts" },
+  { id: "workbench", label: "工作台", route: "/" },
+  { id: "projects-contexts", label: "项目 / 上下文", route: "/projects" },
   { id: "sessions", label: "会话", route: "/sessions" },
-  { id: "runs-events", label: "运行 / 事件", route: "/runs-events" },
-  { id: "tools-intents-approvals", label: "审批", route: "/tools-intents-approvals" },
-  { id: "finance-lab", label: "金融实验室", route: "/finance-lab" },
-  { id: "market-temperature", label: "市场温度", route: "/market-temperature" },
+  { id: "runs-events", label: "运行 / 事件", route: "/runs" },
+  { id: "artifacts", label: "产物", route: "/artifacts" },
+  { id: "tools-intents-approvals", label: "审批", route: "/integrations/tools" },
+  { id: "finance-lab", label: "金融实验室", route: "/finance" },
+  { id: "market-temperature", label: "市场温度", route: "/finance/market-temperature" },
   { id: "integrations", label: "集成", route: "/integrations" },
-  { id: "automation", label: "自动化", route: "/automations" },
-  { id: "plugins-skills", label: "插件 / 技能", route: "/plugins-skills" },
-  { id: "factory-events", label: "工厂事件", route: "/factory-events" },
-  { id: "mcp-connectors", label: "MCP / 连接器", route: "/mcp-connectors" },
-  { id: "gateway", label: "Gateway", route: "/gateway" },
-  { id: "readiness-health", label: "准备度 / 健康", route: "/readiness-health" },
-  { id: "extensions-pilot", label: "扩展注册表", route: "/extensions-pilot" },
+  { id: "automation", label: "自动化", route: "/automation" },
+  { id: "plugins-skills", label: "插件 / 技能", route: "/integrations/plugins" },
+  { id: "factory-events", label: "工厂事件", route: "/finance/events" },
+  { id: "mcp-connectors", label: "MCP / 连接器", route: "/integrations/mcp" },
+  { id: "gateway", label: "Gateway", route: "/integrations/gateway" },
+  { id: "readiness-health", label: "准备度 / 健康", route: "/readiness" },
+  { id: "extensions-pilot", label: "扩展注册表", route: "/extensions" },
 ];
 
 describe("VIEW_REGISTRY", () => {
@@ -47,17 +48,14 @@ describe("VIEW_REGISTRY", () => {
     }
   });
 
-  it("keeps the primary navigation focused on eight workspace entries", () => {
-    const primary = VIEW_GROUPS.find((group) => group.id === "primary");
-    expect(primary?.items.map((item) => item.id)).toEqual([
+  it("keeps the primary navigation focused on the core entries", () => {
+    const core = VIEW_GROUPS.find((group) => group.id === "core");
+    expect(core?.items.map((item) => item.id)).toEqual([
       "workbench",
-      "projects-contexts",
       "runs-events",
-      "tools-intents-approvals",
-      "finance-lab",
       "integrations",
-      "automation",
-      "settings",
+      "finance-lab",
+      "readiness-health",
     ]);
   });
 
@@ -72,13 +70,14 @@ describe("VIEW_REGISTRY", () => {
     }
   });
 
-  it("keeps advanced and legacy groups collapsed by default", () => {
-    expect(VIEW_GROUPS.find((group) => group.id === "advanced-finance")?.defaultCollapsed).toBe(true);
-    expect(VIEW_GROUPS.find((group) => group.id === "advanced-ops")?.defaultCollapsed).toBe(true);
-    const legacy = VIEW_GROUPS.find((group) => group.id === "legacy");
-    expect(legacy?.defaultCollapsed).toBe(true);
-    expect(legacy?.diagnosticOnly).toBe(true);
-    expect(legacy?.items.every((item) => item.diagnosticOnly)).toBe(true);
+  it("keeps a single core navigation group while non-nav views stay registered", () => {
+    expect(VIEW_GROUPS).toHaveLength(1);
+    expect(VIEW_GROUPS[0]?.id).toBe("core");
+
+    const ids = new Set(VIEW_REGISTRY.map((view) => view.id));
+    for (const offNav of ["settings", "projects-contexts", "sessions", "diagnostics"] as MainView[]) {
+      expect(ids.has(offNav)).toBe(true);
+    }
   });
 
   it("keeps internal extension routes synchronized with registered view routes", () => {

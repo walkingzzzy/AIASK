@@ -40,25 +40,36 @@ describe("SettingsWorkspace", () => {
     expect(screen.getByText("高级管理")).toBeInTheDocument();
     expect(screen.getByText("状态与入口")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "常规" })).toHaveClass("active");
+    expect(screen.getByRole("button", { name: "外观" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "API Keys" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "技能管理" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "自动化管理" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Gateway" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "模型配置" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "MCP 管理入口" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "工作流入口" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "市场温度配置" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "股票数据源" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "数据路径" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "高级诊断入口" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "外观" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Git / 环境" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "工作树" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "浏览器" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "电脑操控" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "归档" })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "返回工作台" }));
+    fireEvent.click(screen.getByRole("button", { name: "关闭设置" }));
     expect(onBackToApp).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByDisplayValue("finance_safe"), { target: { value: "hermes_full" } });
     expect(onAgentModeChange).toHaveBeenCalledWith("hermes_full");
+
+    fireEvent.click(screen.getByRole("button", { name: "外观" }));
+    fireEvent.change(screen.getByDisplayValue("跟随系统"), { target: { value: "dark" } });
+    expect(document.documentElement.dataset.aiaskTheme).toBe("dark");
+    fireEvent.change(screen.getByDisplayValue("舒适"), { target: { value: "compact" } });
+    expect(document.documentElement.dataset.aiaskDensity).toBe("compact");
+    fireEvent.click(screen.getByRole("checkbox", { name: "减少动效" }));
+    expect(document.documentElement.dataset.aiaskReduceMotion).toBe("true");
 
     fireEvent.click(screen.getByRole("button", { name: "连接" }));
     expect(screen.getByDisplayValue("http://127.0.0.1:8767")).toBeInTheDocument();
@@ -72,6 +83,13 @@ describe("SettingsWorkspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "工作流入口" }));
     expect(screen.getByRole("button", { name: /数据与同步/ })).toBeInTheDocument();
     expect(screen.getByText("打开页面")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Gateway" }));
+    expect(screen.getByRole("button", { name: /打开 Gateway/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /打开消息审批/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "市场温度配置" }));
+    expect(screen.getAllByText(/cache_max_stale_days/).length).toBeGreaterThan(0);
+    fireEvent.change(screen.getByDisplayValue("300"), { target: { value: "420" } });
+    expect(screen.getByText(/\"limit\": 420/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "高级诊断入口" }));
     expect(screen.getByRole("button", { name: /能力中心/ })).toBeInTheDocument();
   });
@@ -191,6 +209,13 @@ describe("SettingsWorkspace", () => {
     expect(document.body.textContent || "").not.toContain("sk-settings-secret-value");
     fireEvent.click(screen.getByRole("button", { name: /打开模型配置页/ }));
     expect(onOpenView).toHaveBeenCalledWith("models");
+
+    fireEvent.click(screen.getByRole("button", { name: "API Keys" }));
+    expect(screen.getByText(/OPENAI_API_KEY/)).toBeInTheDocument();
+    expect(screen.getByText(/TUSHARE_TOKEN/)).toBeInTheDocument();
+    expect(screen.getByText(/FEISHU_\*/)).toBeInTheDocument();
+    expect(document.body.textContent || "").not.toContain("sk-settings-secret-value");
+    expect(document.body.textContent || "").not.toContain("settings-provider-token");
 
     fireEvent.click(screen.getByRole("button", { name: "关于" }));
     expect(document.body.textContent || "").toContain("[redacted]");

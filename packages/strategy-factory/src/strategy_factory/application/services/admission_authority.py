@@ -8,6 +8,34 @@ from typing import Any, Callable, Optional
 ADMISSION_DECISION_CONTRACT_VERSION = "strategy_factory.admission_decision.v1"
 
 
+def _canonical_formal_blocker(reason: Any) -> str:
+    token = str(reason or "").strip()
+    if not token:
+        return ""
+    normalized = token.lower()
+    if normalized in {
+        "diagnostic_only",
+        "diagnostic_only_runtime",
+        "diagnostic_only_observe",
+    } or normalized.startswith("diagnostic_only_not_allowed_for_"):
+        return "diagnostic_only_not_allowed_for_incubation"
+    if normalized == "missing_executable_contract":
+        return "execution_readiness_tier:missing_executable_contract"
+    if normalized == "execution_readiness_tier:missing":
+        return "execution_readiness_tier:missing_executable_contract"
+    return token
+
+
+def _canonical_formal_blockers(reasons: list[Any]) -> list[str]:
+    return list(
+        dict.fromkeys(
+            item
+            for item in (_canonical_formal_blocker(reason) for reason in reasons)
+            if item
+        )
+    )
+
+
 class SubmissionAdmissionAuthority:
     """Resolve the submission lane, final status, and public admission decision."""
 
@@ -89,15 +117,14 @@ class SubmissionAdmissionAuthority:
             if bool(runtime_bootstrap.get("proxy_runtime_used")):
                 formal_track_blockers.append("proxy_runtime_not_allowed_for_formal_incubation")
             if bool(runtime_bootstrap.get("diagnostic_only")):
-                formal_track_blockers.append("diagnostic_only_runtime")
+                formal_track_blockers.append("diagnostic_only_not_allowed_for_incubation")
             if readiness_tier != "formal_runtime_ready":
                 formal_track_blockers.append(f"execution_readiness_tier:{readiness_tier}")
             if not strict_formal_ready:
                 formal_track_blockers.append("strict_incubation_pass_required_for_formal_track")
-        formal_track_blockers = list(
-            dict.fromkeys([item for item in formal_track_blockers if str(item).strip()])
-        )
+        formal_track_blockers = _canonical_formal_blockers(formal_track_blockers)
         formal_track_eligible = bool(formal_track_requested and not formal_track_blockers)
+        requested_track = str(incubation_budget_track or "").strip().lower()
         if refresh_existing:
             action_type = "refresh_existing"
             submission_lane = "refresh_existing"
@@ -218,7 +245,7 @@ class SubmissionAdmissionAuthority:
             submission_lane = "deferred_submission"
             final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready")) else "rejected"
             trigger = "formal_incubation_requires_bootstrap_or_strict_gate"
-            gaps = list(dict.fromkeys([*list(admission_block_reasons), *formal_track_blockers]))
+            gaps = _canonical_formal_blockers([*list(admission_block_reasons), *formal_track_blockers])
             fallback_conditions = [
                 "promote_after_runtime_contract_is_repaired_or_quality_improves",
                 "observe_track_allowed_after_runtime_bootstrap_eligibility_is_restored",
@@ -244,6 +271,22 @@ class SubmissionAdmissionAuthority:
             next_step = "incubation"
             completed = True
 
+        planned_submission_lane = (
+            submission_lane
+            if refresh_existing
+            else "formal_incubation"
+            if formal_track_requested
+            else "observe_incubation"
+            if requested_track == "observe_incubation"
+            else submission_lane
+        )
+        planned_final_status = (
+            "incubating"
+            if planned_submission_lane == "formal_incubation"
+            else "submitted"
+            if planned_submission_lane == "observe_incubation"
+            else final_status
+        )
         admission_decision = cls._decision(
             gate=normalized_gate,
             action_type=action_type,
@@ -259,7 +302,10 @@ class SubmissionAdmissionAuthority:
             "next_step": next_step,
             "submission_lane": submission_lane,
             "final_status": final_status,
+            "planned_submission_lane": planned_submission_lane,
+            "planned_final_status": planned_final_status,
             "completed": bool(completed),
+            "incubation_budget_track": requested_track,
             "formal_track_requested": formal_track_requested,
             "formal_track_auto_corrected": formal_track_auto_corrected,
             "formal_track_eligible": formal_track_eligible,
@@ -279,6 +325,9 @@ class SubmissionAdmissionAuthority:
             "submission_action_completed": bool(completed),
             "submission_lane": submission_lane,
             "final_status": final_status,
+            "planned_submission_lane": planned_submission_lane,
+            "planned_final_status": planned_final_status,
+            "incubation_budget_track": requested_track,
             "formal_track_requested": formal_track_requested,
             "formal_track_auto_corrected": formal_track_auto_corrected,
             "formal_track_eligible": formal_track_eligible,

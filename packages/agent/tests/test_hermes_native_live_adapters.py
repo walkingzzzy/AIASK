@@ -279,7 +279,7 @@ def test_gateway_strict_adapters_signal_qqbot_and_inbound(tmp_path, monkeypatch)
         assert payload["content"] == "hello"
         return {"ok": True, "body": {"id": "msg_1"}}
 
-    monkeypatch.setattr(gateway_module, "_json_request", fake_gateway_json_request)
+    monkeypatch.setattr(gateway_module._http_client, "_json_request", fake_gateway_json_request)
     qq_result = asyncio.run(registry.call_tool("agent_gateway_send_message", {"platform": "qqbot", "target": "channel_1", "message": "hello"}))
     assert qq_result["success"] is True
     assert qq_result["data"]["message"]["status"] == "delivered"
@@ -303,7 +303,7 @@ def test_v014_gateway_adapters_line_simplex_and_teams(tmp_path, monkeypatch) -> 
         assert headers["Authorization"] == "Bearer line-token"
         return {"ok": True, "body": {"sentMessages": [{"id": "line_msg"}]}}
 
-    monkeypatch.setattr(gateway_module, "_json_request", fake_gateway_json_request)
+    monkeypatch.setattr(gateway_module._http_client, "_json_request", fake_gateway_json_request)
     line = asyncio.run(registry.call_tool("agent_gateway_send_message", {"platform": "line", "target": "user_1", "message": "hello"}))
     assert line["success"] is True
     assert line["data"]["message"]["status"] == "delivered"
@@ -331,7 +331,7 @@ def test_v014_gateway_adapters_line_simplex_and_teams(tmp_path, monkeypatch) -> 
         teams_calls.append((method, url, payload))
         return {"ok": True, "body": {"id": "teams_msg"}}
 
-    monkeypatch.setattr(gateway_module, "_json_request", fake_teams_request)
+    monkeypatch.setattr(gateway_module._http_client, "_json_request", fake_teams_request)
     teams = asyncio.run(registry.call_tool("agent_gateway_send_message", {"platform": "teams", "target": "unused", "message": "hello"}))
     assert teams["success"] is True
     assert teams_calls[0] == ("POST", "https://teams.example/webhook", {"text": "hello"})
@@ -356,8 +356,8 @@ def test_gateway_send_message_parses_hermes_target_and_media_tags(tmp_path, monk
         assert "files[0]" in files
         return {"ok": True, "body": {"id": "media_msg"}}
 
-    monkeypatch.setattr(gateway_module, "_json_request", fake_json_request)
-    monkeypatch.setattr(gateway_module, "_multipart_request", fake_multipart_request)
+    monkeypatch.setattr(gateway_module._http_client, "_json_request", fake_json_request)
+    monkeypatch.setattr(gateway_module._http_client, "_multipart_request", fake_multipart_request)
     registry = _full_registry(tmp_path)
     result = asyncio.run(
         registry.call_tool(

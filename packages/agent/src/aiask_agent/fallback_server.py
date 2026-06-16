@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import time
+
 
 def _bind_server_helpers() -> None:
     """Bind legacy server helpers lazily to avoid a server.py import cycle."""
@@ -26,39 +28,16 @@ def build_server(
         intent_executor = intent_executor or default_executor
     if intent_executor is None:
         intent_executor = IntentExecutor(ActionIntentStore())
-    full_runtime: AgentRuntime | None = None
+    full_runtime_manager = FullRuntimeManager(runtime)
     quant_store = QuantResearchStore(runtime.session_store.path)
 
     def _build_native_full_runtime() -> AgentRuntime:
-        nonlocal full_runtime
-        if full_runtime is not None:
-            return full_runtime
-        policy = ToolPolicy(
-            toolset=GENERAL_FULL_TOOLSET,
-            general_tools_enabled=True,
-            workspace_roots=runtime.tool_registry.policy_engine.policy.workspace_roots,
-        )
-        registry = build_default_tool_registry(
-            session_store=runtime.session_store,
-            policy_engine=ToolPolicyEngine(policy),
-        )
-        full_runtime = AgentRuntime(
-            model_client=runtime.model_client,
-            session_store=runtime.session_store,
-            tool_registry=registry,
-            model=runtime.model,
-            max_iterations=runtime.max_iterations,
-            model_timeout_seconds=runtime.model_timeout_seconds,
-            tool_timeout_seconds=runtime.tool_timeout_seconds,
-            retry_attempts=runtime.retry_attempts,
-        )
-        return full_runtime
+        return full_runtime_manager.build()
 
     class AIASKAgentHTTPServer(ThreadingHTTPServer):
         def server_close(self) -> None:
             try:
-                if full_runtime is not None:
-                    full_runtime.close()
+                full_runtime_manager.close()
                 runtime.close()
             finally:
                 super().server_close()
@@ -359,7 +338,7 @@ def build_server(
                         "hermes": {
                             "mode": "aiask_native",
                             "full_mode_enabled": _hermes_full_enabled(),
-                            "full_mode_active": full_runtime is not None,
+                            "full_mode_active": full_runtime_manager.active(),
                             "parity": _redact_required_env(
                                 parity,
                                 redact_sensitive_names=True,
@@ -390,9 +369,9 @@ def build_server(
                         "baseline_release_tag": HERMES_RELEASE_TAG,
                         "embedded_vendor_runtime": False,
                         "full_mode_enabled": _hermes_full_enabled(),
-                        "full_mode_active": full_runtime is not None,
+                        "full_mode_active": full_runtime_manager.active(),
                         "parity": parity_summary(
-                            full_runtime.tool_registry.names() if full_runtime is not None else runtime.tool_registry.names(),
+                            full_runtime_manager.current().tool_registry.names() if full_runtime_manager.active() else runtime.tool_registry.names(),
                             env=dict(os.environ),
                             gateway_adapters=ADAPTERS.keys(),
                         ),
@@ -1781,4 +1760,3 @@ def build_server(
             self._send_error_json(404, "not found", code="not_found")
 
     return AIASKAgentHTTPServer((host, int(port)), AIASKAgentHandler)
-

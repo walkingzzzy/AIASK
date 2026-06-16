@@ -252,9 +252,9 @@ def test_factor_research_refresh_remains_explicit_when_auto_refresh_disabled(mon
 
 def test_cycle_runner_does_not_enable_factor_self_heal_by_default():
     root = Path(__file__).resolve().parents[3]
-    text = (root / "packages/strategy-factory/src/strategy_factory/application/cycle_runner_parts/normalizers.py").read_text(
-        encoding="utf-8",
-        errors="ignore",
+    parts_dir = root / "packages/strategy-factory/src/strategy_factory/application/cycle_runner_parts"
+    text = "\n".join(
+        p.read_text(encoding="utf-8", errors="ignore") for p in sorted(parts_dir.glob("*.py"))
     )
 
     assert '"_factor_refresh_self_heal": False' in text

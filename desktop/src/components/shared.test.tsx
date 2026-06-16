@@ -1,7 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ConfirmActionButton, GatedState, JsonPanel, RawEvidencePanel, StatusBadge } from "./shared";
+import { ConfirmActionButton, GatedState, JsonPanel, PriceDelta, RawEvidencePanel, StatusBadge } from "./shared";
 
 afterEach(() => {
   cleanup();
@@ -77,5 +77,30 @@ describe("shared UI primitives", () => {
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("删除响应"));
     expect(confirm).toHaveBeenCalledWith(expect.stringContaining("此操作会改变当前任务"));
     expect(onConfirmed).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders a positive price delta with a + sign and up direction", () => {
+    const { container } = render(<PriceDelta value={1.234} pct={5.6} />);
+
+    const delta = container.querySelector(".price-delta");
+    expect(delta).toHaveClass("up");
+    expect(delta?.textContent).toBe("+1.23 (+5.60%)");
+  });
+
+  it("renders a negative price delta with the minus sign carried by toFixed and down direction", () => {
+    const { container } = render(<PriceDelta value={-0.082} />);
+
+    const delta = container.querySelector(".price-delta");
+    expect(delta).toHaveClass("down");
+    expect(delta?.textContent).toBe("-0.08");
+  });
+
+  it("renders a flat price delta without a sign", () => {
+    const { container } = render(<PriceDelta value={0} showArrow={false} />);
+
+    const delta = container.querySelector(".price-delta");
+    expect(delta).toHaveClass("flat");
+    expect(delta?.textContent).toBe("0.00");
+    expect(delta?.querySelector("svg")).toBeNull();
   });
 });

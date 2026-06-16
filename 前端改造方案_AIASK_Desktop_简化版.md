@@ -1,11 +1,83 @@
 # AIASK Desktop 前端改造方案
 
-**版本**: v3.0-detailed  
-**日期**: 2026-06-14  
-**参考**: Hermes Agent Desktop UI/UX  
+**版本**: v3.1-verified
+**日期**: 2026-06-14
+**参考**: Hermes Agent Desktop UI/UX
 **详细方案**: 参见 `docs/refactor/` 目录下的分阶段实施文档
 
+> **v3.1 更新**：新增「〇、可行性核查」一节。该节基于对 `desktop/src` 的逐文件代码核查（每条结论带 `文件:行号`），用于校准本文档其余部分的数字与措辞——下文 v3.0 正文中的部分定量描述（如"33→6""4个Tab""9模块""完全移除10个旧入口"）经核查与代码实际不符，**实施时以「〇」节为准**。
+
 ---
+
+## 〇、可行性核查（基于真实代码，2026-06-14）
+
+**总结论：本方案要的视觉效果高度可行，且现成度远超文档自身认知。** 大部分目标视觉代码里已实现，剩余是"补卡片 + 补设置面板 + 加齿轮/遮罩 + 修 2 个测试文件"的有限工作，**不引入路由也能完整呈现**。但 v3.0 正文的数字/措辞普遍夸大，需以本节为准。
+
+### 0.1 技术栈现状（核查确认）
+
+- 运行时是 **Tauri**（非 Electron）；`package.json` 有 `tauri:dev`/`tauri:build`，无 electron。→ 若做路由必须用 **HashRouter**（`file://` 下 BrowserRouter 失效），v3.0 正文写的 `BrowserRouter` 是错的。
+- React 18 + Vite 6 + Vitest；**无** react-router / Tailwind / 状态库（useState + 自定义 hooks + prop drilling）。
+- Hermes 实际**没有** `page-search-shell.tsx`，其统一框架是 `PaneShell` + `OverlayView` 两套；v3.0 多处引用的该文件不存在。
+
+### 0.2 逐项裁决
+
+| 方案条目 | v3.0 措辞 | 代码实际 | 裁决 |
+|---|---|---|---|
+| 侧边栏导航 | "33 项 → 6 项，待实施" | `VIEW_GROUPS` 已是**单组 6 项**（views.ts:366-379） | 已做到 90%，只差调整数组 |
+| 移除 10 个旧入口 | "完全移除" | overview/agent/tools/mcp 等**仍在** VIEW_REGISTRY（views.ts:251-347）、MainView 类型、viewRenderers | 措辞错；实为"隐藏不显示"，功能与 deep-link 健在 |
+| 集成中心 | "合并为 4 个 Tab" | `IntegrationsPage.tsx` 是 **5 张卡片**跳转（:5-52），非 Tab 容器 | 视觉已存在且闭环，措辞错 |
+| 金融实验室 | "下设 9 个子模块" | `financeTemplates` 实为 **7 张卡**（FinanceLabPage.tsx:39-95），漏 `market-temperature`/`workflows` | 主入口已存在，缺 2 张卡 |
+| 设置移齿轮 + Overlay | "需改造为 Overlay 模式" | SettingsWorkspace **已是全屏双栏 split-layout**（settings-context.css:150 已 `100vh` grid）；`.app-shell.settings-mode` overlay 样式已落地（responsive-shell.css:220-228） | 现成度最高，几乎不用动组件内部 |
+
+### 0.3 集成中心闭环（已验证无死链）
+
+5 张卡片 → 目标视图全部在 `App.tsx` viewRenderers 注册、组件真实存在且 export、无占位：
+- `mcp-connectors`→McpConnectorsPage（App.tsx:543）
+- `gateway`→GatewayPage（:544）
+- `plugins-skills`→PluginsSkillsPage（:471-478）
+- `tools-intents-approvals`→ToolsIntentsApprovalsPage（:534-542）
+- `readiness-health`→ReadinessHealthPage（:545-558）
+
+门控是**软门控**：卡片层仅改 badge（IntegrationsPage.tsx:89/102）、导航层 `selectView` 永远放行（App.tsx:201-213）、页面层各自 disable 写操作并走 ActionIntent。即"可进入 + 页面内自门控"，非"阻止访问"。
+
+### 0.4 金融实验室缺口
+
+- 主入口已渲染（App.tsx:305-312），7 张卡无死链，目标全部可达。
+- **缺 2 张卡**：`market-temperature`、`workflows`——两视图已注册可渲染（App.tsx:379/370），仅金融实验室页无入口卡。
+- **定位偏差**：FinanceLabPage 还内置 Broker 只读面板（:438-689）+ 工厂接力总览（:691-743），后者的因子/策略/孵化三卡与底部模板卡**功能重复**。"9 模块纯入口"实为"7 卡 + Broker + 接力监控"混合页。
+
+### 0.5 设置整合缺口
+
+- 已具备 17 个分区 / 3 组（SettingsWorkspace.tsx:60-86），目录内面板（数据源/Webhook/安全/集成管理/学习RL 等）均已接入。
+- 改 overlay **几乎不用动组件内部**：它已自包含全屏，只需外层包遮罩 + `onBackToApp`（:191/491）复用为关闭、ArrowLeft 语义改"关闭"。
+- **真要新建的 3 项**：`外观/主题`设置（SettingsWorkspace.test.tsx:51 明确断言不存在）、`市场温度`配置分区、独立 `API Keys` 页（当前外部密钥只走环境变量，:524-525）。
+
+### 0.6 测试/CSS 连带阻塞（比预想小）
+
+- **必改 2 个文件**：
+  1. `src/views.test.ts` —— L50-62、L75-82 两个 `it()` 断言旧的 primary/advanced/legacy 多组结构，**当前已是 RED**（代码已单组）。动导航前必须先修，否则混淆历史遗留与新破坏。
+  2. `e2e/support/capabilitiesNavigation.ts` —— 硬编码 `VIEW_GROUP_IDS`（L324-358）+ 折叠展开逻辑（L453-460），单组后非主导航视图定位失效，连带 `capabilities.spec.ts` 多用例红。
+- **CSS 零必改**：settings overlay 样式已落地；brand-chevron、`sidebar-nav-group.advanced` 是可选清理的死代码。
+- 所有 `.test.tsx` 组件测试**不受影响**（无 data-view-id/settings-mode/分组数量断言）。
+
+### 0.7 实施清单（以此为准，非 v3.0 的 8 周计划）
+
+**调整既有代码（低风险）**
+- views.ts：导航数组改为目标 6 项（settings 移出导航）
+- AppSidebar.tsx:128：装饰性 `ChevronDown` 换成设置齿轮 `IconButton`
+- 修 `views.test.ts` 2 个 it + `capabilitiesNavigation.ts` 分组映射
+
+**补缺口（中等）**
+- FinanceLabPage 补 `market-temperature`、`workflows` 2 张卡
+- 设置外层包 OverlayView 遮罩层
+
+**真新建（按需）**
+- 设置：外观/主题、市场温度配置、独立 API Keys 三个面板
+
+**不做即可呈现视觉**：路由化（Phase 3）、PageShell 抽象（Phase 2）均非视觉必要条件，可后置或不做。
+
+---
+
 
 ## 文档导航
 

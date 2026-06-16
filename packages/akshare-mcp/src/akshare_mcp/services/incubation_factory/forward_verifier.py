@@ -121,7 +121,8 @@ class ForwardVerifier:
         # 获取信号证据
         evidence_list = await self._load_signal_evidence(db, sid)
         if not evidence_list:
-            return self._empty_result(sid, profile)
+            stats_result = await self._verification_from_signal_stats(db, sid, profile)
+            return stats_result or self._empty_result(sid, profile)
 
         # 计算前向收益命中率
         primary_horizon = profile["primary_horizon"]
@@ -138,8 +139,8 @@ class ForwardVerifier:
         }
 
         for evidence in evidence_list:
-            forward_returns = dict(evidence.get("forward_returns") or {})
-            direction = self._normalize_direction(evidence.get("direction"))
+            forward_returns = self._resolve_forward_returns(evidence)
+            direction = self._normalize_direction(self._evidence_value(evidence, "direction"))
             regime_labels = self._resolve_regime_labels(evidence)
 
             # 主时间窗口
@@ -198,7 +199,7 @@ class ForwardVerifier:
         # 改动D：分 regime 命中率聚合（破 regime-blind）
         hit_rate_by_regime = self._aggregate_hit_rate_by_regime(regime_hits)
 
-        return {
+        result = {
             "strategy_id": sid,
             "profile": profile["profile_name"],
             "primary_horizon": primary_horizon,
@@ -225,6 +226,11 @@ class ForwardVerifier:
             ),
             "verified_at": datetime.now(timezone.utc).isoformat(),
         }
+        if primary_n <= 0:
+            stats_result = await self._verification_from_signal_stats(db, sid, profile)
+            if stats_result and int(stats_result.get("primary_effective_n") or 0) > 0:
+                return stats_result
+        return result
 
     async def _load_signal_evidence(
         self, db: Any, strategy_id: str
@@ -242,6 +248,79 @@ class ForwardVerifier:
                     exc,
                 )
         return []
+
+    async def _verification_from_signal_stats(
+        self,
+        db: Any,
+        strategy_id: str,
+        profile: dict[str, Any],
+    ) -> Optional[dict[str, Any]]:
+        getter = getattr(db, "get_signal_stats", None)
+        if not callable(getter):
+            return None
+        try:
+            signal_stats = await getter(strategy_id)
+        except Exception as exc:
+            logger.warning("ForwardVerifier: load signal stats failed for %s: %s", strategy_id, exc)
+            return None
+        if not signal_stats:
+            return None
+        try:
+            from ..strategy_lifecycle_shared import derive_signal_quality
+
+            quality = derive_signal_quality(dict(signal_stats or {}))
+        except Exception as exc:
+            logger.warning("ForwardVerifier: derive signal stats failed for %s: %s", strategy_id, exc)
+            return None
+        primary_horizon = int(quality.get("primary_horizon") or profile.get("primary_horizon") or 5)
+        secondary_horizon = int(quality.get("secondary_horizon") or profile.get("secondary_horizon") or 10)
+        primary_n = int(quality.get("primary_effective_n") or 0)
+        secondary_n = int(quality.get("secondary_effective_n") or 0)
+        return {
+            "strategy_id": strategy_id,
+            "profile": profile["profile_name"],
+            "primary_horizon": primary_horizon,
+            "secondary_horizon": secondary_horizon,
+            "primary_effective_n": primary_n,
+            "hit_rate_by_regime": dict(signal_stats.get("hit_rate_by_regime") or {}),
+            "secondary_effective_n": secondary_n,
+            "primary_hit_rate": round(float(quality.get("primary_hit_rate") or 0.0), 4),
+            "secondary_hit_rate": round(float(quality.get("secondary_hit_rate") or 0.0), 4),
+            "recent_primary_hit_rate": round(float(quality.get("recent_primary_hit_rate") or 0.0), 4),
+            "primary_skill_lcb": round(float(quality.get("primary_skill_lcb") or 0.0), 4),
+            "secondary_skill_lcb": round(float(quality.get("secondary_skill_lcb") or 0.0), 4),
+            "recent_primary_skill_lcb": round(float(quality.get("recent_primary_skill_lcb") or 0.0), 4),
+            "stability_gap": round(float(quality.get("stability_gap") or 0.0), 4),
+            "coverage_ratio": round(float(quality.get("coverage_ratio") or 0.0), 4),
+            "forward_ic": round(float(quality.get("primary_forward_ic") or quality.get("forward_ic") or 0.0), 4),
+            "forward_sharpe": round(float(quality.get("primary_forward_sharpe") or quality.get("forward_sharpe") or 0.0), 4),
+            "total_signals": int(signal_stats.get("raw_signal_count") or signal_stats.get("total_signals") or 0),
+            "min_days_remaining": max(0, int(profile["min_days"]) - primary_n),
+            "min_trades_remaining": max(0, int(profile["min_trades"]) - primary_n),
+            "source": "signal_stats",
+            "verified_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+    def _evidence_payload(self, evidence: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(evidence or {})
+        nested = payload.get("payload")
+        if isinstance(nested, dict):
+            return nested
+        nested = payload.get("evidence_payload")
+        return dict(nested or {}) if isinstance(nested, dict) else {}
+
+    def _evidence_value(self, evidence: dict[str, Any], key: str) -> Any:
+        payload = dict(evidence or {})
+        if payload.get(key) is not None:
+            return payload.get(key)
+        return self._evidence_payload(payload).get(key)
+
+    def _resolve_forward_returns(self, evidence: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(evidence or {})
+        raw = payload.get("forward_returns")
+        if raw in (None, "", {}):
+            raw = self._evidence_payload(payload).get("forward_returns")
+        return dict(raw or {}) if isinstance(raw, dict) else {}
 
     def _normalize_direction(self, direction: Any) -> int:
         """标准化信号方向。"""
@@ -264,7 +343,10 @@ class ForwardVerifier:
         任一维度缺失时归入 "unknown"，保证聚合永不丢信号。
         """
         payload = dict(evidence or {})
-        nested = dict(payload.get("evidence_payload") or {})
+        nested = {
+            **self._evidence_payload(payload),
+            **dict(payload.get("evidence_payload") or {}),
+        }
         regime_block = dict(payload.get("regime") or nested.get("regime") or {})
         labels: dict[str, str] = {}
         for dimension in REGIME_DIMENSIONS:
@@ -310,6 +392,7 @@ class ForwardVerifier:
             f"forward_{horizon}d",
             f"return_{horizon}d",
             f"fwd_{horizon}",
+            f"{horizon}d",
             str(horizon),
         ):
             value = forward_returns.get(key)
@@ -377,7 +460,7 @@ class ForwardVerifier:
             1
             for e in evidence_list
             if any(
-                self._extract_forward_return(dict(e.get("forward_returns") or {}), int(horizon)) is not None
+                self._extract_forward_return(self._resolve_forward_returns(e), int(horizon)) is not None
                 for horizon in horizons
                 if _finite_float(horizon) is not None and int(float(horizon)) > 0
             )

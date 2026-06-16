@@ -16,6 +16,8 @@ from akshare_mcp.services.incubation_pipeline import StrategyIncubationPipelineS
 def _clear_env(monkeypatch):
     monkeypatch.delenv("INCUBATION_FACTORY_DIAGNOSTIC_INTAKE_ENABLED", raising=False)
     monkeypatch.delenv("INCUBATION_FACTORY_DIAGNOSTIC_BATCH_LIMIT", raising=False)
+    monkeypatch.delenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", raising=False)
+    monkeypatch.delenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT", raising=False)
     yield
 
 
@@ -55,6 +57,47 @@ async def test_runner_diagnostic_intake_db_failure_returns_empty(monkeypatch):
     result = await runner._list_diagnostic_observation(db)
 
     assert result == []
+
+
+@pytest.mark.asyncio
+async def test_runner_recompile_remediation_enabled_by_default(monkeypatch):
+    calls = []
+
+    async def fake_backfill(db, **kwargs):
+        calls.append({"db": db, "kwargs": dict(kwargs)})
+        return {
+            "scanned": 2,
+            "recompiled": 1,
+            "promoted_to_formal": 1,
+            "revision_required": 0,
+            "updated": 1,
+            "dry_run": bool(kwargs.get("dry_run")),
+        }
+
+    monkeypatch.setenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT", "7")
+    monkeypatch.setattr(
+        "akshare_mcp.services.strategy_recompile_backfill.backfill_historical_trend_strategies",
+        fake_backfill,
+    )
+    runner = IncubationFactoryRunner(dry_run=True)
+    db = MagicMock()
+
+    result = await runner._run_recompile_remediation(db)
+
+    assert result["status"] == "ok"
+    assert result["promoted_to_formal"] == 1
+    assert calls == [
+        {
+            "db": db,
+            "kwargs": {
+                "statuses": ["submitted"],
+                "limit": 7,
+                "dry_run": True,
+                "measure_profile": True,
+                "promote_ready": True,
+            },
+        }
+    ]
 
 
 @pytest.mark.asyncio

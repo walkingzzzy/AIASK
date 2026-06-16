@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from strategy_factory.domain import constants as _matrix_const
+
 import strategy_factory.application.stock_strategy_matrix as matrix_module
 from strategy_factory.application.stock_strategy_matrix import StockStrategyMatrixPlanner
 
@@ -58,7 +60,7 @@ def _intrinsic_with_snapshot(row, snapshot):
 
 
 def test_off_does_not_use_router(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", False)
     row = _row_with_profile("trend_up", trend_score=0.8)
     families = _intrinsic(row)
     # OFF：走 recommended_families（含 multi_factor），不强制只返回趋势族
@@ -66,7 +68,7 @@ def test_off_does_not_use_router(monkeypatch):
 
 
 def test_on_trend_up_routes_to_trend_families(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
     row = _row_with_profile("trend_up", trend_score=0.8)
     families = _intrinsic(row)
     assert "momentum" in families
@@ -74,8 +76,8 @@ def test_on_trend_up_routes_to_trend_families(monkeypatch):
 
 
 def test_stock_first_execution_mode_forces_strict_router(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", False)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", False)
     row = _row_with_profile("trend_up", trend_score=0.8)
 
     families = _intrinsic_with_snapshot(
@@ -91,7 +93,7 @@ def test_stock_first_execution_mode_forces_strict_router(monkeypatch):
 
 
 def test_stock_first_execution_mode_enables_matrix_when_toggle_off(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_ENABLED", False)
     assert StockStrategyMatrixPlanner._effective_stock_matrix_enabled(
         {"factory_execution_mode": "stock_first_observe_primary"}
     ) is True
@@ -101,7 +103,7 @@ def test_stock_first_execution_mode_enables_matrix_when_toggle_off(monkeypatch):
 
 
 def test_on_range_excludes_trend_families(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
     row = _row_with_profile("range", trend_score=0.9)
     families = _intrinsic(row)
     # 震荡股：趋势族不应出现
@@ -110,8 +112,8 @@ def test_on_range_excludes_trend_families(monkeypatch):
 
 
 def test_on_failed_profile_falls_back_to_legacy(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", False)
     row = _row_with_profile("trend_up", trend_score=0.8, quality="failed")
     families = _intrinsic(row)
     # profile_quality=failed → 不走路由器，回退既有逻辑（仍返回非空 family 列表）
@@ -120,8 +122,8 @@ def test_on_failed_profile_falls_back_to_legacy(monkeypatch):
 
 
 def test_strict_missing_profile_blocks_legacy_fallback(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", True)
     row = {
         "code": "600519",
         "industry": "白酒",
@@ -135,8 +137,8 @@ def test_strict_missing_profile_blocks_legacy_fallback(monkeypatch):
 
 
 def test_strict_ignores_allocation_plans_without_profile(monkeypatch):
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", True)
     row = {
         "code": "600519",
         "industry": "白酒",

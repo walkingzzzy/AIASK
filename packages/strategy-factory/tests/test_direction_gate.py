@@ -5,6 +5,8 @@
 
 from __future__ import annotations
 
+from strategy_factory.domain import constants as _matrix_const
+
 
 def _gate():
     from strategy_factory.application.stock_strategy_matrix import (
@@ -86,7 +88,7 @@ def test_toggle_off_disables_gate(monkeypatch):
     """toggle 关闭时不过滤（紧急回退到旧逻辑）。"""
     import strategy_factory.application.stock_strategy_matrix as mod
 
-    monkeypatch.setattr(mod, "STOCK_DIRECTION_GATE_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_DIRECTION_GATE_ENABLED", False)
     gate = mod.StockStrategyMatrixPlanner._apply_direction_gate
     families = ["momentum", "ma_cross"]
     profile = {"factor_dimension_scores": {"trend": 0.02, "reversal": 0.50}}
@@ -97,8 +99,8 @@ def test_toggle_off_disables_gate(monkeypatch):
 def test_router_path_gates_downtrend_growth_family(monkeypatch):
     import strategy_factory.application.stock_strategy_matrix as mod
 
-    monkeypatch.setattr(mod, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(mod, "STOCK_FIRST_ROUTER_STRICT", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", False)
     row = {
         "code": "600001",
         "industry": "bank",
@@ -142,8 +144,8 @@ def test_router_path_gates_downtrend_growth_family(monkeypatch):
 def test_family_plan_path_preserves_router_gate_diagnostic(monkeypatch):
     import strategy_factory.application.stock_strategy_matrix as mod
 
-    monkeypatch.setattr(mod, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(mod, "STOCK_FIRST_ROUTER_STRICT", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", False)
     row = {
         "code": "600010",
         "industry": "bank",

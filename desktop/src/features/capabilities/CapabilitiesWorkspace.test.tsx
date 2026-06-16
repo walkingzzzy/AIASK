@@ -209,9 +209,9 @@ describe("CapabilitiesWorkspace", () => {
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
     await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: "插件" }));
+    fireEvent.click(screen.getByRole("tab", { name: "插件" }));
 
-    expect(screen.getByText("原生插件与技能包治理")).toBeInTheDocument();
+    expect(await screen.findByText("原生插件与技能包治理")).toBeInTheDocument();
     expect(screen.getAllByText("audit-plugin").length).toBeGreaterThan(0);
     expect(screen.getByText(/不会加载或执行外部 Hermes dashboard 插件 JavaScript/)).toBeInTheDocument();
     fireEvent.click(screen.getByText("查看详细列表（传统视图）"));
@@ -247,9 +247,9 @@ describe("CapabilitiesWorkspace", () => {
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
     await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /MCP/ }));
+    fireEvent.click(screen.getByRole("tab", { name: /MCP/ }));
 
-    expect(screen.getByText("连接器评审队列")).toBeInTheDocument();
+    expect(await screen.findByText("连接器评审队列")).toBeInTheDocument();
     expect(screen.getAllByText("2 个工具 / 1 个资源 / 1 个提示词").length).toBeGreaterThan(0);
     expect(screen.getByText("agent_mcp_quote")).toBeInTheDocument();
     expect(screen.getByText("Partial MCP discovery")).toBeInTheDocument();
@@ -281,8 +281,8 @@ describe("CapabilitiesWorkspace", () => {
     render(<CapabilitiesWorkspace endpoint="http://127.0.0.1:8767" apiToken="" controlToken="secret" />);
 
     await waitFor(() => expect(screen.getByText("运行时评审")).toBeInTheDocument());
-    fireEvent.click(screen.getByRole("button", { name: /MCP/ }));
-    fireEvent.click(screen.getByRole("button", { name: "读取 MCP 资源" }));
+    fireEvent.click(screen.getByRole("tab", { name: /MCP/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "读取 MCP 资源" }));
 
     await waitFor(() => expect(screen.getByText("MCP_DISCOVERY_AUTH_REQUIRED")).toBeInTheDocument());
     expect(screen.getByText("请设置环境变量：AIASK_MCP_AKSHARE_LOCAL_AUTHORIZATION")).toBeInTheDocument();

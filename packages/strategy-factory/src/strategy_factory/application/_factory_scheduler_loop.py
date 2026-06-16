@@ -673,6 +673,6 @@ _exec_block(
     globals(),
     '_factory_scheduler_loop_parts',
     'class _StrategyFactorySchedulerLoopMixin:\n        @staticmethod\n',
-    ['normalizers.py', 'policy.py', 'evaluation.py', 'reporting.py', 'models.py'],
+    ['normalizers.py', 'policy.py', 'policy_execution.py', 'evaluation.py', 'reporting.py', 'models.py'],
     future_annotations=True,
 )

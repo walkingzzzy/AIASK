@@ -17,7 +17,7 @@
       "reason": "Primary Agent tool loop; creates tool_invocations, run_events, evidence links, and ActionIntent/approval metadata around the call."
     },
     {
-      "key": "packages/agent/src/aiask_agent/runtime.py::AgentRuntime._execute_python_tool.handle_rpc::$name",
+      "key": "packages/agent/src/aiask_agent/_runtime_code_tools.py::_RuntimeCodeToolsMixin._execute_python_tool.handle_rpc::$name",
       "classification": "audited_python_rpc_child_tool",
       "reason": "agent_execute_python internal RPC child tools; runtime creates child tool_invocations and tool.rpc run_events before/after the call."
     },

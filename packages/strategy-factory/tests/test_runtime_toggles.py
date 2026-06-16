@@ -15,6 +15,8 @@ def _clear_env(monkeypatch):
         "STRATEGY_FACTORY_TRADE_AWARE_EXTRA_FAMILIES",
         "INCUBATION_FACTORY_PAPER_INTAKE_ENABLED",
         "INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT",
+        "INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED",
+        "INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT",
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_ENABLED",
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_BATCH_LIMIT",
         "STRATEGY_FACTORY_DIAGNOSTIC_OBSERVATION_TTL_DAYS",
@@ -111,13 +113,18 @@ def test_trade_aware_extra_families_lowercases(monkeypatch):
     )
 
 
-def test_paper_intake_enabled_default_false():
-    assert toggles.paper_intake_enabled() is False
+def test_paper_intake_enabled_default_true():
+    assert toggles.paper_intake_enabled() is True
 
 
 def test_paper_intake_enabled_via_env(monkeypatch):
     monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
     assert toggles.paper_intake_enabled() is True
+
+
+def test_paper_intake_can_be_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "0")
+    assert toggles.paper_intake_enabled() is False
 
 
 def test_paper_intake_batch_limit_default():
@@ -139,6 +146,32 @@ def test_paper_intake_batch_limit_default():
 def test_paper_intake_batch_limit_bounds(monkeypatch, value, expected):
     monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", value)
     assert toggles.paper_intake_batch_limit() == expected
+
+
+def test_recompile_remediation_enabled_default_true():
+    assert toggles.recompile_remediation_enabled() is True
+
+
+def test_recompile_remediation_can_be_disabled_via_env(monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", "0")
+    assert toggles.recompile_remediation_enabled() is False
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ("10", 10),
+        ("200", 200),
+        ("0", 1),
+        ("-5", 1),
+        ("9999", 1000),
+        ("garbage", 200),
+        ("", 200),
+    ],
+)
+def test_recompile_remediation_batch_limit_bounds(monkeypatch, value, expected):
+    monkeypatch.setenv("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_BATCH_LIMIT", value)
+    assert toggles.recompile_remediation_batch_limit() == expected
 
 
 def test_runtime_change_takes_effect(monkeypatch):

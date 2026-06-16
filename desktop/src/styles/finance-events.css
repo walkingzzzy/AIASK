@@ -1,0 +1,519 @@
+﻿.finance-relay-banner {
+  align-items: center;
+}
+
+.finance-relay-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.finance-relay-card {
+  position: relative;
+  display: grid;
+  align-content: start;
+  gap: 10px;
+  overflow: hidden;
+}
+
+.finance-relay-card.ready {
+  border-color: rgba(22, 131, 74, 0.24);
+}
+
+.finance-relay-card.partial,
+.finance-relay-card.not_loaded {
+  border-color: rgba(214, 169, 74, 0.3);
+}
+
+.finance-relay-card.failed {
+  border-color: rgba(239, 100, 97, 0.35);
+}
+
+.relay-kv-grid {
+  grid-template-columns: 1fr;
+  gap: var(--space-2);
+}
+
+.relay-evidence-row {
+  display: grid;
+  grid-template-columns: minmax(72px, 0.8fr) minmax(0, 1fr);
+  gap: var(--space-2);
+  min-width: 0;
+}
+
+.relay-evidence-row strong {
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.finance-relay-card .section-header,
+.finance-relay-card .section-header > div,
+.finance-relay-card .notice,
+.finance-relay-card .small-button {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.broker-readonly-panel {
+  display: grid;
+  gap: 14px;
+}
+
+.broker-readonly-panel .section-header.compact {
+  margin-bottom: 8px;
+}
+
+.compact-actions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.optimization-page .capabilities-header {
+  gap: 18px;
+}
+
+.optimization-page .capabilities-header .header-actions {
+  flex: 0 1 430px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.optimization-page .capabilities-header .small-button,
+.broker-readonly-panel .small-button,
+.broker-readonly-panel .primary-button {
+  white-space: nowrap;
+}
+
+.broker-summary {
+  margin: 0;
+}
+
+.broker-wizard {
+  display: grid;
+  gap: var(--space-3);
+}
+
+.broker-provider-tabs {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.broker-provider-tab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 11px;
+  color: var(--text);
+  text-align: left;
+  background: #fff;
+}
+
+.broker-provider-tab.active {
+  border-color: rgba(39, 126, 111, 0.45);
+  background: rgba(39, 126, 111, 0.08);
+}
+
+.broker-provider-tab span {
+  font-weight: 700;
+}
+
+.broker-provider-tab strong {
+  grid-column: 1 / -1;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  line-height: 1.45;
+}
+
+.broker-wizard-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  gap: var(--space-3);
+}
+
+.broker-env-list,
+.broker-test-entry {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.broker-env-list .relay-evidence-row,
+.broker-test-entry .relay-evidence-row {
+  grid-template-columns: minmax(126px, 1fr) auto;
+}
+
+.broker-env-list .relay-evidence-row span,
+.broker-test-entry .relay-evidence-row strong {
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+
+.broker-env-block {
+  min-height: 92px;
+  margin: 0;
+}
+
+.broker-check-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.broker-check-row .status-badge {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.broker-check-row strong {
+  white-space: normal;
+}
+
+.broker-consent-row {
+  align-items: flex-start;
+  margin-top: 4px;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.broker-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+
+.broker-subpanel {
+  display: grid;
+  min-width: 0;
+  align-content: start;
+  gap: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: #fff;
+}
+
+.broker-subpanel h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+}
+
+.broker-connector-row,
+.broker-position-row {
+  align-items: start;
+}
+
+.broker-connector-row p,
+.broker-position-row p {
+  margin: 4px 0 0;
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.broker-risk-list {
+  overflow-wrap: anywhere;
+}
+
+.relay-arrow {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  z-index: 2;
+  color: var(--text-dim);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.raw-evidence-panel:not([open]) {
+  background: #fff;
+}
+
+.subsystem-row summary::-webkit-details-marker,
+.raw-details summary::-webkit-details-marker {
+  display: none;
+}
+
+.subsystem-row strong {
+  color: var(--text-muted);
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+}
+
+.subsystem-actions {
+  display: grid;
+  gap: var(--space-2);
+  padding: 0 12px 12px;
+}
+
+.subsystem-actions .small-button {
+  justify-self: start;
+}
+
+.capability-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  gap: var(--space-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: #fff;
+}
+
+.capability-row.ok {
+  border-color: rgba(70, 196, 124, 0.32);
+}
+
+.capability-row.warn {
+  border-color: rgba(214, 169, 74, 0.32);
+}
+
+.capability-row.bad {
+  border-color: rgba(239, 100, 97, 0.32);
+}
+
+.capability-row span,
+.capability-row small {
+  color: var(--text-dim);
+  font-size: var(--fs-xs);
+  overflow-wrap: anywhere;
+}
+
+.capability-row strong {
+  display: block;
+  min-width: 0;
+  overflow: visible;
+  margin-top: 4px;
+  font-size: var(--fs-base);
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.capability-row small {
+  grid-column: 1 / -1;
+  font-family: var(--mono);
+}
+
+.capability-row .status-badge {
+  flex-wrap: wrap;
+  justify-self: start;
+  min-width: 0;
+  width: fit-content;
+  overflow: hidden;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.capability-row .status-badge-text {
+  flex: 1 1 0;
+  min-width: 0;
+  max-width: 100%;
+  white-space: normal;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+.capability-grid.three .capability-row {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.capability-grid.three .capability-row .status-badge {
+  width: 100%;
+}
+
+.json-panel {
+  max-width: 100%;
+  min-width: 0;
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+  border-top: 1px solid var(--border);
+  padding: var(--space-3);
+  color: var(--code);
+  background: #f7f9fc;
+  font-family: var(--mono);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.empty-state,
+.gated-state {
+  display: grid;
+  gap: 9px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fbfcfe;
+}
+
+.empty-state {
+  place-items: center;
+  min-height: 136px;
+  text-align: center;
+}
+
+.empty-state-icon {
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-muted);
+  background: #fff;
+}
+
+.empty-state strong,
+.gated-state strong {
+  color: var(--text);
+}
+
+.empty-state span,
+.gated-state p {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.5;
+}
+
+.empty-state-action,
+.gated-state .button-row {
+  margin-top: 2px;
+}
+
+.gated-state {
+  border-color: rgba(214, 169, 74, 0.38);
+  background: rgba(255, 250, 238, 0.78);
+}
+
+.gated-state-head {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.search-field {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  height: 36px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0 10px;
+  color: var(--text-dim);
+  background: #fff;
+}
+
+.search-field input {
+  width: 100%;
+  height: 100%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+}
+
+.tool-list {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: 12px;
+}
+
+.event-filter-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.event-filter-grid label,
+.event-filter-grid .field-row {
+  display: grid;
+  gap: 7px;
+}
+
+.event-filter-grid label > span,
+.event-filter-grid .field-row > span {
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  font-weight: 650;
+}
+
+.event-filter-grid input,
+.event-filter-grid select {
+  height: 36px;
+  padding: 0 10px;
+}
+
+.event-filter-grid .search-field {
+  height: 36px;
+}
+
+.event-list {
+  display: grid;
+  gap: 10px;
+}
+
+.event-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: var(--space-3);
+  background: #fff;
+}
+
+.event-card-main {
+  align-items: flex-start;
+}
+
+.event-card-icon {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 auto;
+  place-items: center;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-muted);
+  background: var(--bg-soft);
+}
+
+.event-card-main span,
+.event-card-meta small {
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: var(--fs-xs);
+}
+
+.event-card-main strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 14px;
+}
+
+.event-card-main p {
+  margin: 6px 0 0;
+  color: var(--text-muted);
+  font-size: var(--fs-sm);
+  line-height: 1.45;
+}
+
+.event-card-meta {
+  justify-content: space-between;
+}
+
+/* PR-G (Phase 5, 2026-05-24): inline action buttons row inside an event
+ * card. Reuses the existing ``.event-card-*`` token set so the trigger
+ * console blends with the read-only Event Console. */
+.event-card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: 4px;
+}
+

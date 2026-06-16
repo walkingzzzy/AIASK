@@ -40,16 +40,29 @@ describe("WorkbenchView", () => {
     userId: "local",
   };
 
-  it("renders the task object header", () => {
+  it("renders a quiet empty home without status chips", () => {
     render(<WorkbenchView {...mockProps} />);
-    expect(screen.getByText("AIASK 工作台")).toBeInTheDocument();
-    expect(screen.getByText(/http:\/\/127\.0\.0\.1:8767/)).toBeInTheDocument();
-    expect(screen.getAllByText("演示数据").length).toBeGreaterThan(0);
-    expect(screen.getAllByText(/Test user/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("heading", { name: "AIASK AGENT" })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("让 AIASK 研究、检查工具、生成报告，或继续当前线程...")).toBeInTheDocument();
+    expect(screen.queryByText("金融安全模式")).not.toBeInTheDocument();
+    expect(screen.queryByText(/准备好了/)).not.toBeInTheDocument();
   });
 
   it("shows current mode and access summary", () => {
-    render(<WorkbenchView {...mockProps} />);
+    render(
+      <WorkbenchView
+        {...mockProps}
+        sessionId="sess_tools"
+        tools={[
+          {
+            name: "agent_test",
+            capability: "test",
+            description: "test tool",
+            side_effect: "read_only",
+          },
+        ]}
+      />
+    );
     expect(screen.getAllByText("金融安全模式").length).toBeGreaterThan(0);
     expect(screen.getByText("可用范围")).toBeInTheDocument();
     expect(screen.getByText(/API 令牌已填写/)).toBeInTheDocument();
@@ -85,7 +98,7 @@ describe("WorkbenchView", () => {
       },
     ];
 
-    render(<WorkbenchView {...mockProps} summary={summaryWithSessions} recentRuns={runs} />);
+    render(<WorkbenchView {...mockProps} sessionId="sess_history" summary={summaryWithSessions} recentRuns={runs} />);
     expect(screen.getByText("最近会话")).toBeInTheDocument();
     expect(screen.getByText("Test session")).toBeInTheDocument();
     expect(screen.getByText("最近运行")).toBeInTheDocument();
@@ -107,7 +120,7 @@ describe("WorkbenchView", () => {
       recent_sessions: [],
     };
 
-    render(<WorkbenchView {...mockProps} summary={summaryWithQueues} />);
+    render(<WorkbenchView {...mockProps} sessionId="sess_queue" summary={summaryWithQueues} />);
     expect(screen.getByText("操作队列")).toBeInTheDocument();
     expect(screen.getByText("意图")).toBeInTheDocument();
     expect(screen.getAllByText("审批").length).toBeGreaterThan(0);
@@ -151,7 +164,7 @@ describe("WorkbenchView", () => {
       },
     ];
 
-    render(<WorkbenchView {...mockProps} onOpenView={onOpenView} tools={tools} />);
+    render(<WorkbenchView {...mockProps} onOpenView={onOpenView} sessionId="sess_safe_path" tools={tools} />);
     expect(screen.getByRole("region", { name: "金融 Agent 安全链路" })).toBeInTheDocument();
     expect(screen.getByText("现在可以复核什么")).toBeInTheDocument();
     expect(screen.getByText("3. 记忆 / 搜索")).toBeInTheDocument();
@@ -164,7 +177,7 @@ describe("WorkbenchView", () => {
   });
 
   it("shows Hermes full guidance when control token is missing", () => {
-    render(<WorkbenchView {...mockProps} agentMode="hermes_full" controlToken="" />);
+    render(<WorkbenchView {...mockProps} agentMode="hermes_full" controlToken="" sessionId="sess_full" />);
     expect(screen.getByText(/Hermes full 需要先在 Settings 中填写控制令牌/)).toBeInTheDocument();
   });
 
@@ -315,7 +328,7 @@ describe("WorkbenchView", () => {
       },
     ];
 
-    render(<WorkbenchView {...mockProps} tools={tools} />);
+    render(<WorkbenchView {...mockProps} sessionId="sess_tools" tools={tools} />);
     expect(screen.getByText("1 个工具可用")).toBeInTheDocument();
   });
 });

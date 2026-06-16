@@ -11,6 +11,16 @@ import pytest
 _SRC = Path(__file__).resolve().parents[1] / "src" / "akshare_mcp"
 
 
+def _strategy_mgr_crud_source() -> str:
+    """Read strategy_mgr_crud source, tolerating either a single module file or a package dir."""
+    managers = _SRC / "tools" / "managers"
+    single = managers / "strategy_mgr_crud.py"
+    if single.exists():
+        return single.read_text(encoding="utf-8")
+    pkg = managers / "strategy_mgr_crud"
+    return "\n".join(p.read_text(encoding="utf-8") for p in sorted(pkg.glob("*.py")))
+
+
 # ── FIX-35a: factory run 摘要化 ──────────────────────────────────────
 
 def test_fix35_summarize_factory_run_drops_stages():
@@ -83,7 +93,7 @@ def test_fix36_incubation_overview_no_id_not_required():
 # ── FIX-37: rank sort_by 枚举校验 (F-N22-3) ──────────────────────────
 
 def test_fix37_rank_sort_by_validation_static():
-    src = (_SRC / "tools" / "managers" / "strategy_mgr_crud.py").read_text(encoding="utf-8")
+    src = _strategy_mgr_crud_source()
     rank_idx = src.find("async def handle_rank")
     assert rank_idx != -1
     rank_src = src[rank_idx:rank_idx + 2000]
@@ -94,7 +104,7 @@ def test_fix37_rank_sort_by_validation_static():
 # ── FIX-38: publish 不可逆提示 (F-N42-3) ─────────────────────────────
 
 def test_fix38_publish_irreversible_note_static():
-    src = (_SRC / "tools" / "managers" / "strategy_mgr_crud.py").read_text(encoding="utf-8")
+    src = _strategy_mgr_crud_source()
     assert "irreversible_note" in src
 
 

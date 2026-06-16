@@ -1,4 +1,4 @@
-import { BarChart3, Database, Factory, FlaskConical, Landmark, LineChart, Radio, Zap } from "lucide-react";
+import { BarChart3, CalendarClock, Database, Factory, FlaskConical, Landmark, LineChart, Radio, Zap } from "lucide-react";
 import type { MainView } from "../../types";
 import { StatusBadge } from "../../components/shared";
 
@@ -64,6 +64,15 @@ const workflowCards: Array<{
     status: "ready",
     statusLabel: "孵化",
     icon: FlaskConical
+  },
+  {
+    id: "automation",
+    label: "自动化",
+    eyebrow: "任务调度",
+    description: "创建、运行、暂停和恢复日常自动化任务；删除和高级调度留在设置管理页。",
+    status: "ready",
+    statusLabel: "任务",
+    icon: CalendarClock
   }
 ];
 

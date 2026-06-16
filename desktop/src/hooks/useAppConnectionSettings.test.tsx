@@ -4,12 +4,14 @@ import { useAppConnectionSettings } from "./useAppConnectionSettings";
 
 beforeEach(() => {
   localStorage.clear();
+  sessionStorage.clear();
   window.history.pushState({}, "", "/");
 });
 
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  sessionStorage.clear();
   window.history.pushState({}, "", "/");
 });
 
@@ -52,5 +54,22 @@ describe("useAppConnectionSettings", () => {
     expect(result.current.profileName).toBe("真实后端操作者");
     expect(localStorage.getItem("aiask.local.profile_name")).toBe("真实后端操作者");
     expect(localStorage.getItem("aiask.mock.local.profile_name")).toBeNull();
+  });
+
+  it("restores live tokens from session storage without writing them to local storage", () => {
+    const first = renderHook(() => useAppConnectionSettings());
+
+    act(() => {
+      first.result.current.setApiToken("api-session-token");
+      first.result.current.setControlToken("control-session-token");
+    });
+
+    first.unmount();
+    const second = renderHook(() => useAppConnectionSettings());
+
+    expect(second.result.current.apiToken).toBe("api-session-token");
+    expect(second.result.current.controlToken).toBe("control-session-token");
+    expect(localStorage.getItem("aiask.session.api_token")).toBeNull();
+    expect(localStorage.getItem("aiask.session.control_token")).toBeNull();
   });
 });

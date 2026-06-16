@@ -24,7 +24,6 @@ import {
   ClipboardCheck,
   Compass,
   Filter,
-  Plus,
   RefreshCw,
   Search,
   ShieldAlert,
@@ -33,293 +32,32 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { RawEvidencePanel, StatusBadge, compact, shortText, statusLabel } from "../../components/shared";
+import { RawEvidencePanel, StatusBadge, shortText } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type { ToolEnvelope } from "../../types";
-
-interface FactoryEventRow {
-  event_id: string;
-  event_name: string;
-  event_type: string;
-  event_source: string;
-  status: string;
-  direction: string;
-  intensity: number;
-  confidence: number;
-  primary_themes: string[];
-  operator_id?: string;
-  approver_id?: string | null;
-  created_at?: string;
-  valid_from?: string;
-  valid_until?: string;
-  [key: string]: unknown;
-}
-
-interface PreviewImpact {
-  theme_code: string;
-  depth: number;
-  magnitude: number;
-  source_path?: string;
-}
-
-interface PreviewPayload {
-  event_id?: string;
-  impacts?: PreviewImpact[];
-  candidate_symbols?: string[];
-  target_count?: number;
-  warnings?: string[];
-  preview_mode?: string;
-}
-
-interface LineageRow {
-  lineage_id?: number;
-  dedupe_key?: string;
-  event_id: string;
-  event_name?: string;
-  event_type?: string;
-  event_status?: string;
-  task_id: string;
-  theme_code: string;
-  impact_direction?: string;
-  impact_magnitude?: number;
-  target_symbols?: string[];
-  target_count?: number;
-  breadth_resolved?: string;
-  generated_at?: string;
-  gate_1_passed?: number | boolean | null;
-  gate_2_passed?: number | boolean | null;
-  gate_3_passed?: number | boolean | null;
-  strategies_submitted?: number;
-  [key: string]: unknown;
-}
-
-interface RadarCandidateRow {
-  candidate_id: string;
-  run_id: string;
-  symbol: string;
-  stock_name?: string;
-  tier: string;
-  radar_score: number;
-  event_id?: string;
-  event_type: string;
-  direction: string;
-  summary?: string;
-  source_doc_uids: string[];
-  source_chain: unknown[];
-  extraction: Record<string, unknown>;
-  confirmations: Record<string, unknown>;
-  risk_flags: string[];
-  push_status?: string;
-  [key: string]: unknown;
-}
-
-interface IntentEnvelope {
-  intent?: {
-    intent_id?: string;
-    status?: string;
-    target_action?: string;
-  };
-  intent_id?: string;
-  status?: string;
-}
+import {
+  HIGH_INTENSITY_THRESHOLD,
+  OUTCOME_OPTIONS,
+  SOURCE_OPTIONS,
+  STATUS_OPTIONS,
+  TYPE_OPTIONS,
+  classifyEventStatus,
+  eventListFromData,
+  formatTime,
+  intentIdFromEnvelope,
+  latestRunId,
+  lineageFromData,
+  previewFromData,
+  radarCandidatesFromData
+} from "./FactoryEventTriggerData";
+import type { FactoryEventRow, LineageRow, PreviewPayload, RadarCandidateRow, TabId } from "./FactoryEventTriggerData";
+import { ActionLogPanel, CreateTab, LineageTab, MaintenancePanel, RadarTab } from "./FactoryEventTriggerPanels";
+import type { ActionLogEntry } from "./FactoryEventTriggerPanels";
 
 interface Props {
   endpoint: string;
   apiToken: string;
   controlToken: string;
-}
-
-type TabId = "events" | "radar" | "create" | "preview" | "lineage";
-
-const STATUS_OPTIONS = ["", "pending_review", "active", "paused", "expired"];
-const SOURCE_OPTIONS = ["", "manual", "news_llm", "macro_shock", "market_anomaly", "price_inference"];
-const TYPE_OPTIONS = ["", "policy_shock", "earnings", "guidance", "regulation", "macro_data", "other"];
-const DIRECTION_OPTIONS = ["bullish", "bearish", "neutral"];
-const OUTCOME_OPTIONS = ["positive", "negative", "mixed", "no_effect"] as const;
-const RADAR_TIER_OPTIONS = [
-  { value: "", label: "全部级别" },
-  { value: "alert", label: "警报" },
-  { value: "watch", label: "观察" },
-  { value: "observe", label: "跟踪" },
-  { value: "reject", label: "排除" }
-];
-
-const HIGH_INTENSITY_THRESHOLD = 0.8;
-
-function eventListFromData(data: unknown): FactoryEventRow[] {
-  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
-  const rawEvents = Array.isArray(record.events) ? record.events : Array.isArray(data) ? data : [];
-  return rawEvents.map((item, index) => {
-    const event = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-    const themes = Array.isArray(event.primary_themes)
-      ? (event.primary_themes as unknown[]).map((value) => compact(value))
-      : [];
-    return {
-      ...event,
-      event_id: compact(event.event_id || event.id || `evt_${index}`),
-      event_name: compact(event.event_name || event.name || event.event_id || "(unnamed)"),
-      event_type: compact(event.event_type || event.type || "unknown"),
-      event_source: compact(event.event_source || event.source || "unknown"),
-      status: compact(event.status || "unknown"),
-      direction: compact(event.direction || "neutral"),
-      intensity: Number(event.intensity || 0),
-      confidence: Number(event.confidence || 0),
-      primary_themes: themes,
-      operator_id: compact(event.operator_id || ""),
-      approver_id: event.approver_id == null ? null : compact(event.approver_id),
-      created_at: compact(event.created_at || ""),
-      valid_from: compact(event.valid_from || ""),
-      valid_until: compact(event.valid_until || "")
-    } as FactoryEventRow;
-  });
-}
-
-function previewFromData(data: unknown): PreviewPayload {
-  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
-  const impacts = Array.isArray(record.impacts)
-    ? (record.impacts as unknown[]).map((item) => {
-        const row = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-        return {
-          theme_code: compact(row.theme_code || row.theme || "unknown"),
-          depth: Number(row.depth || 0),
-          magnitude: Number(row.magnitude || 0),
-          source_path: compact(row.source_path || "")
-        };
-      })
-    : [];
-  const candidateSymbols = Array.isArray(record.candidate_symbols)
-    ? (record.candidate_symbols as unknown[]).map((value) => compact(value))
-    : [];
-  const warnings = Array.isArray(record.warnings)
-    ? (record.warnings as unknown[]).map((value) => compact(value))
-    : [];
-  return {
-    event_id: compact(record.event_id || ""),
-    impacts,
-    candidate_symbols: candidateSymbols,
-    target_count: Number(record.target_count || candidateSymbols.length),
-    warnings,
-    preview_mode: compact(record.preview_mode || "")
-  };
-}
-
-function lineageFromData(data: unknown): LineageRow[] {
-  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
-  const rawRows = Array.isArray(record.lineage)
-    ? record.lineage
-    : Array.isArray(record.items)
-      ? record.items
-      : Array.isArray(data)
-        ? data
-        : [];
-  return rawRows.map((item, index) => {
-    const row = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-    const rawSymbols = Array.isArray(row.target_symbols) ? row.target_symbols : [];
-    return {
-      ...row,
-      lineage_id: Number(row.lineage_id || index + 1),
-      dedupe_key: compact(row.dedupe_key || ""),
-      event_id: compact(row.event_id || ""),
-      event_name: compact(row.event_name || ""),
-      event_type: compact(row.event_type || ""),
-      event_status: compact(row.event_status || ""),
-      task_id: compact(row.task_id || ""),
-      theme_code: compact(row.theme_code || ""),
-      impact_direction: compact(row.impact_direction || ""),
-      impact_magnitude: Number(row.impact_magnitude || 0),
-      target_symbols: rawSymbols.map((value) => compact(value)).filter(Boolean),
-      target_count: Number(row.target_count || rawSymbols.length || 0),
-      breadth_resolved: compact(row.breadth_resolved || ""),
-      generated_at: compact(row.generated_at || ""),
-      strategies_submitted: Number(row.strategies_submitted || 0)
-    } as LineageRow;
-  });
-}
-
-function radarCandidatesFromData(data: unknown): RadarCandidateRow[] {
-  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as Record<string, unknown>) : {};
-  const rawRows = Array.isArray(record.candidates)
-    ? record.candidates
-    : Array.isArray(data)
-      ? data
-      : [];
-  return rawRows.map((item, index) => {
-    const row = (item && typeof item === "object" ? item : {}) as Record<string, unknown>;
-    return {
-      ...row,
-      candidate_id: compact(row.candidate_id || `radar_candidate_${index}`),
-      run_id: compact(row.run_id || ""),
-      symbol: compact(row.symbol || row.stock_code || ""),
-      stock_name: compact(row.stock_name || row.name || ""),
-      tier: compact(row.tier || "observe"),
-      radar_score: Number(row.radar_score || 0),
-      event_id: compact(row.event_id || ""),
-      event_type: compact(row.event_type || "unknown"),
-      direction: compact(row.direction || "neutral"),
-      summary: compact(row.summary || ""),
-      source_doc_uids: Array.isArray(row.source_doc_uids) ? row.source_doc_uids.map((value) => compact(value)).filter(Boolean) : [],
-      source_chain: Array.isArray(row.source_chain) ? row.source_chain : [],
-      extraction: row.extraction && typeof row.extraction === "object" && !Array.isArray(row.extraction) ? row.extraction as Record<string, unknown> : {},
-      confirmations: row.confirmations && typeof row.confirmations === "object" && !Array.isArray(row.confirmations) ? row.confirmations as Record<string, unknown> : {},
-      risk_flags: Array.isArray(row.risk_flags) ? row.risk_flags.map((value) => compact(value)).filter(Boolean) : [],
-      push_status: compact(row.push_status || "")
-    } as RadarCandidateRow;
-  });
-}
-
-function numericStatus(value: Record<string, unknown> | null, key: string): number {
-  if (!value) return 0;
-  const raw = value[key];
-  const parsed = Number(raw || 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function latestRunId(value: Record<string, unknown> | null): string {
-  const latest = value && typeof value.latest_run === "object" && value.latest_run !== null
-    ? value.latest_run as Record<string, unknown>
-    : {};
-  return compact(latest.run_id || "");
-}
-
-function radarTierLabel(value: string) {
-  return RADAR_TIER_OPTIONS.find((option) => option.value === value)?.label || value || "全部级别";
-}
-
-function outboxCount(value: Record<string, unknown> | null, status: string): number {
-  const counts = value && typeof value.counts === "object" && value.counts !== null
-    ? (value.counts as Record<string, unknown>)
-    : {};
-  const parsed = Number(counts[status] || 0);
-  return Number.isFinite(parsed) ? parsed : 0;
-}
-
-function intentIdFromEnvelope(data: unknown): string {
-  const record = data && typeof data === "object" && !Array.isArray(data) ? (data as IntentEnvelope) : {};
-  if (typeof record.intent_id === "string" && record.intent_id) return record.intent_id;
-  if (record.intent && typeof record.intent.intent_id === "string") return record.intent.intent_id;
-  return "";
-}
-
-function formatTime(value?: string): string {
-  if (!value || value === "-") return "-";
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return value;
-  return parsed.toLocaleString();
-}
-
-function classifyEventStatus(event: FactoryEventRow): string {
-  switch (event.status) {
-    case "active":
-      return "implemented";
-    case "pending_review":
-      return "warning";
-    case "paused":
-      return "not_loaded";
-    case "expired":
-      return "deprecated";
-    default:
-      return "info";
-  }
 }
 
 export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: Props) {
@@ -344,7 +82,7 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewMessage, setPreviewMessage] = useState<string>("");
 
-  const [actionLog, setActionLog] = useState<Array<{ stamp: string; text: string; ok: boolean }>>([]);
+  const [actionLog, setActionLog] = useState<ActionLogEntry[]>([]);
   const appendLog = useCallback((text: string, ok: boolean) => {
     setActionLog((prev) => [
       { stamp: new Date().toLocaleTimeString(), text, ok },
@@ -834,228 +572,6 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     ).then(() => loadRadar());
   }, [client, createAndConfirmMaintenanceIntent, loadRadar]);
 
-  const renderActionLogPanel = () => (
-    <section className="capability-section">
-      <div className="section-header">
-        <div>
-          <span>操作日志</span>
-          <h3>最近意图派发</h3>
-        </div>
-        <Workflow size={18} />
-      </div>
-      <div className="event-list">
-        {actionLog.map((entry, index) => (
-          <article className="event-card" key={`${entry.stamp}_${index}`}>
-            <div className="event-card-main">
-              <div className="event-card-icon">
-                {entry.ok ? <CheckCircle2 size={15} /> : <AlertTriangle size={15} />}
-              </div>
-              <div>
-                <span>{entry.stamp}</span>
-                <strong>{entry.text}</strong>
-              </div>
-            </div>
-            <div className="event-card-meta">
-              <StatusBadge status={entry.ok ? "implemented" : "warning"} label={entry.ok ? "成功" : "已阻塞"} />
-            </div>
-          </article>
-        ))}
-        {!actionLog.length && (
-          <div className="empty-mini">
-            <ClipboardCheck size={24} />
-            <span>尚未创建或确认任何意图。</span>
-          </div>
-        )}
-      </div>
-    </section>
-  );
-
-  const renderMaintenancePanel = () => (
-    <section className="capability-section">
-      <div className="section-header">
-        <div>
-          <span>{statusLabel(maintenanceMessage)}</span>
-          <h3>暴露与出站队列状态</h3>
-        </div>
-        <RefreshCw size={18} className={maintenanceLoading ? "spin" : ""} />
-      </div>
-      <div className="status-cluster">
-        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "row_count")} 行暴露`} />
-        <StatusBadge status="info" label={`${numericStatus(exposureStatus, "theme_count")} 个主题`} />
-        <StatusBadge status={outboxCount(outboxStatus, "failed") ? "warning" : "implemented"} label={`${outboxCount(outboxStatus, "failed")} 条出站失败`} />
-        <StatusBadge status="info" label={`${outboxCount(outboxStatus, "processed")} 条已处理`} />
-        <StatusBadge status={bootstrapStatus === "BOOTSTRAP_CONFIRMED" ? "implemented" : "info"} label={bootstrapStatus} />
-      </div>
-      <div className="header-actions">
-        <button className="small-button" type="button" onClick={loadMaintenanceStatus} disabled={maintenanceLoading}>
-          <RefreshCw size={13} className={maintenanceLoading ? "spin" : ""} />
-          刷新状态
-        </button>
-        <button className="small-button" type="button" onClick={handleBootstrap} disabled={!hasControlToken || maintenanceLoading}>
-          <Compass size={13} />
-          初始化引导
-        </button>
-        <button className="small-button" type="button" onClick={handleExposureRefresh} disabled={!hasControlToken || maintenanceLoading}>
-          <Target size={13} />
-          刷新暴露
-        </button>
-        <button className="small-button" type="button" onClick={handleOutboxDrain} disabled={!hasControlToken || maintenanceLoading}>
-          <Workflow size={13} />
-          排空出站队列
-        </button>
-        <button className="small-button" type="button" onClick={handleRegressionRun} disabled={!hasControlToken || maintenanceLoading}>
-          <Compass size={13} />
-          运行回归
-        </button>
-      </div>
-      {!hasControlToken && (
-        <div className="notice warn">
-          <AlertTriangle size={15} />
-          维护类写操作需要控制令牌；只读状态仍可查看。
-        </div>
-      )}
-    </section>
-  );
-
-  const renderRadarTab = () => {
-    const degradedFlags = Array.isArray(radarStatus?.degraded_flags)
-      ? radarStatus.degraded_flags.map((value) => compact(value)).filter(Boolean)
-      : [];
-    const digestPreview = compact(radarDigest?.digest_preview || radarStatus?.digest_preview || "");
-    const counts = radarStatus?.counts && typeof radarStatus.counts === "object"
-      ? radarStatus.counts as Record<string, unknown>
-      : {};
-    return (
-      <>
-        <section className="capability-section">
-          <div className="section-header">
-            <div>
-              <span>状态：{statusLabel(radarMessage)}</span>
-              <h3>股票雷达观察池</h3>
-            </div>
-            <Target size={18} />
-          </div>
-          <div className="status-cluster">
-            <StatusBadge status={radarMessage.startsWith("AIASK_") ? "warning" : "implemented"} label={`状态 ${String(radarStatus?.status || "unknown")}`} />
-            <StatusBadge status="info" label={`警报 ${Number(counts.alert || 0)}`} />
-            <StatusBadge status="info" label={`观察 ${Number(counts.watch || 0)}`} />
-            <StatusBadge status={degradedFlags.length ? "warning" : "implemented"} label={`降级 ${degradedFlags.length}`} />
-            <StatusBadge status="info" label={`运行 ${latestRunId(radarStatus) || "-"}`} />
-          </div>
-          <div className="event-filter-grid">
-            <label>
-              <span>级别</span>
-              <select value={radarTierFilter} onChange={(event) => setRadarTierFilter(event.target.value)}>
-                {RADAR_TIER_OPTIONS.map((option) => (
-                  <option key={option.value || "all"} value={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
-            <div className="field-row action-field">
-              <span>&nbsp;</span>
-              <button aria-label="刷新雷达" className="small-button" type="button" onClick={loadRadar} disabled={radarLoading}>
-                <RefreshCw size={13} className={radarLoading ? "spin" : ""} />
-                刷新雷达
-              </button>
-            </div>
-            <div className="field-row action-field">
-              <span>&nbsp;</span>
-              <button aria-label="创建雷达运行意图" className="small-button" type="button" onClick={handleRadarRun} disabled={!hasControlToken || radarLoading}>
-                <Compass size={13} />
-                创建雷达运行意图
-              </button>
-            </div>
-            <div className="field-row action-field">
-              <span>&nbsp;</span>
-              <button aria-label="创建推送预览意图" className="small-button" type="button" onClick={handleRadarPushPreview} disabled={!hasControlToken || radarLoading}>
-                <ClipboardCheck size={13} />
-                创建推送预览意图
-              </button>
-            </div>
-            <div className="field-row action-field">
-              <span>&nbsp;</span>
-              <button aria-label="创建调度意图" className="small-button" type="button" onClick={handleRadarSchedulePreview} disabled={!hasControlToken || radarLoading}>
-                <Workflow size={13} />
-                创建调度意图
-              </button>
-            </div>
-          </div>
-          {degradedFlags.length > 0 && (
-            <div className="notice warn">
-              <AlertTriangle size={15} />
-              {degradedFlags.slice(0, 8).join(", ")}
-            </div>
-          )}
-          {!hasControlToken && (
-            <div className="notice warn">
-              <AlertTriangle size={15} />
-              雷达运行、推送预览和调度更新需要控制令牌；状态、候选和推送预览仍可只读查看。
-            </div>
-          )}
-        </section>
-
-        <section className="capability-section">
-          <div className="section-header">
-            <div>
-              <span>{radarCandidates.length} 个候选</span>
-              <h3>证据排序候选</h3>
-            </div>
-            <Workflow size={18} />
-          </div>
-          <div className="event-list">
-            {radarCandidates.map((candidate) => (
-              <article className="event-card" key={candidate.candidate_id}>
-                <div className="event-card-main">
-                  <div className="event-card-icon">
-                    <Target size={15} />
-                  </div>
-                  <div>
-                    <span>
-                      {candidate.symbol} / {candidate.event_type} / {candidate.direction}
-                    </span>
-                    <strong>{candidate.stock_name || candidate.symbol}</strong>
-                    <p>{shortText(candidate.summary || "", 220)}</p>
-                  </div>
-                </div>
-                <div className="event-card-meta">
-                  <StatusBadge status={candidate.tier === "alert" ? "implemented" : candidate.tier === "watch" ? "info" : "warning"} label={`${radarTierLabel(candidate.tier)} ${candidate.radar_score.toFixed(1)}`} />
-                  <small>{candidate.source_doc_uids.length} 条来源</small>
-                </div>
-                <RawEvidencePanel
-                  title="证据、确认与风险标记"
-                  value={{ source_chain: candidate.source_chain, extraction: candidate.extraction, confirmations: candidate.confirmations, risk_flags: candidate.risk_flags }}
-                />
-              </article>
-            ))}
-            {!radarCandidates.length && (
-              <div className="empty-mini">
-                <ClipboardCheck size={24} />
-                <span>当前筛选条件下没有雷达候选。</span>
-              </div>
-            )}
-          </div>
-        </section>
-
-        <section className="capability-section">
-          <div className="section-header">
-            <div>
-              <span>推送预览</span>
-              <h3>企微 / Telegram 载荷预览</h3>
-            </div>
-            <ClipboardCheck size={18} />
-          </div>
-          <pre className="json-panel">{digestPreview || "暂无推送预览。"}</pre>
-          <div className="notice">
-            <ShieldAlert size={15} />
-            仅用于观察池和消息预览，文案不包含买入或卖出指令。
-          </div>
-        </section>
-
-        {renderActionLogPanel()}
-      </>
-    );
-  };
-
   const renderEventsTab = () => (
     <>
       <section className="capability-section">
@@ -1177,129 +693,8 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
         </div>
       </section>
 
-      {renderActionLogPanel()}
+      <ActionLogPanel actionLog={actionLog} />
     </>
-  );
-
-  const renderCreateTab = () => (
-    <section className="capability-section">
-        <div className="section-header">
-          <div>
-          <span>创建事件</span>
-          <h3>所有写操作都通过 ActionIntent</h3>
-        </div>
-        <Plus size={18} />
-      </div>
-      {!hasControlToken && (
-        <div className="notice warn">
-          <AlertTriangle size={15} />
-          缺少控制令牌。读取仍可使用，但“创建”/“批准”/“暂停”无法派发意图。
-        </div>
-      )}
-      <div className="event-filter-grid">
-        <label>
-          <span>事件名称</span>
-          <input value={formName} onChange={(event) => setFormName(event.target.value)} placeholder="e.g. 稀土出口管制" />
-        </label>
-        <label>
-          <span>类型</span>
-          <select value={formType} onChange={(event) => setFormType(event.target.value)}>
-            {TYPE_OPTIONS.filter(Boolean).map((value) => (
-              <option key={value} value={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>来源</span>
-          <select value={formSource} onChange={(event) => setFormSource(event.target.value)}>
-            {SOURCE_OPTIONS.filter(Boolean).map((value) => (
-              <option key={value} value={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>方向</span>
-          <select value={formDirection} onChange={(event) => setFormDirection(event.target.value as "bullish" | "bearish" | "neutral")}>
-            {DIRECTION_OPTIONS.map((value) => (
-              <option key={value} value={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          <span>强度 Intensity (0-1)</span>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={formIntensity}
-            onChange={(event) => setFormIntensity(Math.max(0, Math.min(1, Number(event.target.value) || 0)))}
-          />
-        </label>
-        <label>
-          <span>置信度 Confidence (0-1)</span>
-          <input
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={formConfidence}
-            onChange={(event) => setFormConfidence(Math.max(0, Math.min(1, Number(event.target.value) || 0)))}
-          />
-        </label>
-        <label>
-          <span>Primary themes（逗号分隔）</span>
-          <input value={formThemes} onChange={(event) => setFormThemes(event.target.value)} placeholder="critical_minerals, rare_earth" />
-        </label>
-        <label>
-          <span>有效期至 (ISO)</span>
-          <input value={formValidUntil} onChange={(event) => setFormValidUntil(event.target.value)} placeholder="2026-06-24T08:00:00Z" />
-        </label>
-        <label>
-          <span>证据 URL</span>
-          <input value={formEvidenceUrl} onChange={(event) => setFormEvidenceUrl(event.target.value)} placeholder="https://..." />
-        </label>
-        <label>
-          <span>证据摘要</span>
-          <input value={formEvidenceSummary} onChange={(event) => setFormEvidenceSummary(event.target.value)} placeholder="简要背景" />
-        </label>
-        <label>
-          <span>操作者 id</span>
-          <input value={formOperator} onChange={(event) => setFormOperator(event.target.value)} />
-        </label>
-      </div>
-      <div className="header-actions">
-        <button
-          className="small-button"
-          type="button"
-          onClick={handleCreate}
-          disabled={!hasControlToken}
-        >
-          <Plus size={13} />
-          仅创建意图
-        </button>
-        <button
-          className="small-button"
-          type="button"
-          onClick={handleCreateAndConfirm}
-          disabled={!hasControlToken || formIntensity >= HIGH_INTENSITY_THRESHOLD}
-          title={
-            formIntensity >= HIGH_INTENSITY_THRESHOLD
-              ? "高强度事件必须经过双人复核，只能先创建意图。"
-              : undefined
-          }
-        >
-          <CheckCircle2 size={13} />
-          创建并确认
-        </button>
-      </div>
-      {formIntensity >= HIGH_INTENSITY_THRESHOLD && (
-        <div className="notice warn">
-          <ShieldAlert size={15} />
-          强度 {">="} {HIGH_INTENSITY_THRESHOLD.toFixed(2)} 会强制进入 `pending_review`，只能使用“仅创建意图”。
-        </div>
-      )}
-    </section>
   );
 
   const renderPreviewTab = () => (
@@ -1403,76 +798,6 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
     </section>
   );
 
-  const renderLineageTab = () => (
-    <>
-      <section className="capability-section">
-        <div className="section-header">
-          <div>
-            <span>{lineageMessage}</span>
-            <h3>已持久化的事件血缘</h3>
-          </div>
-          <Workflow size={18} />
-        </div>
-        <div className="header-actions">
-          <label>
-            <span>事件 id 筛选</span>
-            <input
-              value={selectedEventId}
-              onChange={(event) => setSelectedEventId(event.target.value)}
-              placeholder="全部事件"
-            />
-          </label>
-          <button className="small-button" type="button" onClick={loadLineage} disabled={lineageLoading}>
-            <RefreshCw size={13} className={lineageLoading ? "spin" : ""} />
-            刷新血缘
-          </button>
-        </div>
-        <div className="event-list">
-          {lineage.map((row) => (
-            <article className="event-card" key={`${row.lineage_id}_${row.task_id}`}>
-              <div className="event-card-main">
-                <div className="event-card-icon">
-                  <Workflow size={15} />
-                </div>
-                <div>
-                  <span>
-                    {row.event_id} / {row.event_status || "event"} / {row.theme_code}
-                  </span>
-                  <strong>{row.task_id}</strong>
-                  <p>
-                    {row.impact_direction || "neutral"} {Number(row.impact_magnitude || 0).toFixed(2)}
-                    {" "}/ {row.target_count || 0} 个目标 / {row.breadth_resolved || "unknown"}
-                  </p>
-                </div>
-              </div>
-              <div className="event-card-meta">
-                <StatusBadge
-                  status={row.gate_3_passed ? "implemented" : row.gate_1_passed ? "info" : "warning"}
-                  label={`已提交 ${row.strategies_submitted || 0}`}
-                />
-                <small>{formatTime(row.generated_at)}</small>
-              </div>
-              <RawEvidencePanel title="血缘载荷" value={row} />
-            </article>
-          ))}
-          {!lineage.length && (
-            <div className="empty-mini">
-              <ClipboardCheck size={24} />
-              <span>没有符合当前筛选条件的持久化血缘记录。</span>
-            </div>
-          )}
-        </div>
-      </section>
-
-      {renderActionLogPanel()}
-      <div className="notice">
-        <Workflow size={15} />
-        持久化血缘（event -&gt; task -&gt; gate -&gt; strategy/outcome）通过 `factory_event_lineage`
-        读取 `strategy_factory_event_task_lineage`。
-      </div>
-    </>
-  );
-
   // ── Render ───────────────────────────────────────────────────────────
 
   const tabs: Array<{ id: TabId; label: string }> = [
@@ -1517,7 +842,19 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
             </div>
           </section>
 
-          {renderMaintenancePanel()}
+          <MaintenancePanel
+            bootstrapStatus={bootstrapStatus}
+            exposureStatus={exposureStatus}
+            handleBootstrap={handleBootstrap}
+            handleExposureRefresh={handleExposureRefresh}
+            handleOutboxDrain={handleOutboxDrain}
+            handleRegressionRun={handleRegressionRun}
+            hasControlToken={hasControlToken}
+            loadMaintenanceStatus={loadMaintenanceStatus}
+            maintenanceLoading={maintenanceLoading}
+            maintenanceMessage={maintenanceMessage}
+            outboxStatus={outboxStatus}
+          />
 
           <div className="header-actions" role="tablist">
             {tabs.map((entry) => (
@@ -1542,10 +879,64 @@ export function FactoryEventTriggerPanel({ endpoint, apiToken, controlToken }: P
           )}
 
           {tab === "events" && renderEventsTab()}
-          {tab === "radar" && renderRadarTab()}
-          {tab === "create" && renderCreateTab()}
+          {tab === "radar" && (
+            <RadarTab
+              actionLog={actionLog}
+              handleRadarPushPreview={handleRadarPushPreview}
+              handleRadarRun={handleRadarRun}
+              handleRadarSchedulePreview={handleRadarSchedulePreview}
+              hasControlToken={hasControlToken}
+              loadRadar={loadRadar}
+              radarCandidates={radarCandidates}
+              radarDigest={radarDigest}
+              radarLoading={radarLoading}
+              radarMessage={radarMessage}
+              radarStatus={radarStatus}
+              radarTierFilter={radarTierFilter}
+              setRadarTierFilter={setRadarTierFilter}
+            />
+          )}
+          {tab === "create" && (
+            <CreateTab
+              formConfidence={formConfidence}
+              formDirection={formDirection}
+              formEvidenceSummary={formEvidenceSummary}
+              formEvidenceUrl={formEvidenceUrl}
+              formIntensity={formIntensity}
+              formName={formName}
+              formOperator={formOperator}
+              formSource={formSource}
+              formThemes={formThemes}
+              formType={formType}
+              formValidUntil={formValidUntil}
+              handleCreate={handleCreate}
+              handleCreateAndConfirm={handleCreateAndConfirm}
+              hasControlToken={hasControlToken}
+              setFormConfidence={setFormConfidence}
+              setFormDirection={setFormDirection}
+              setFormEvidenceSummary={setFormEvidenceSummary}
+              setFormEvidenceUrl={setFormEvidenceUrl}
+              setFormIntensity={setFormIntensity}
+              setFormName={setFormName}
+              setFormOperator={setFormOperator}
+              setFormSource={setFormSource}
+              setFormThemes={setFormThemes}
+              setFormType={setFormType}
+              setFormValidUntil={setFormValidUntil}
+            />
+          )}
           {tab === "preview" && renderPreviewTab()}
-          {tab === "lineage" && renderLineageTab()}
+          {tab === "lineage" && (
+            <LineageTab
+              actionLog={actionLog}
+              lineage={lineage}
+              lineageLoading={lineageLoading}
+              lineageMessage={lineageMessage}
+              loadLineage={loadLineage}
+              selectedEventId={selectedEventId}
+              setSelectedEventId={setSelectedEventId}
+            />
+          )}
         </div>
       </div>
     </section>

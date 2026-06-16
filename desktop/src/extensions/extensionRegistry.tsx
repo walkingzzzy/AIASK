@@ -1,6 +1,7 @@
 import { Braces, Cable, CircleGauge, MessageSquareText, Puzzle, ShieldCheck } from "lucide-react";
 import type { ElementType, ReactNode } from "react";
 import { StatusBadge } from "../components/shared";
+import { viewToRoute } from "../routes";
 import type { MainView } from "../types";
 
 export type ExtensionGroup = "agent" | "finance" | "ops" | "internal";
@@ -62,7 +63,7 @@ export const INTERNAL_EXTENSION_PAGES: InternalExtensionPage[] = [
     label: "扩展注册表",
     group: "internal",
     icon: Braces,
-    route: "/extensions-pilot",
+    route: viewToRoute("extensions-pilot"),
     requiresControlToken: true,
     mountPosition: "secondary",
   },
@@ -75,7 +76,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "会话",
     group: "agent",
     icon: MessageSquareText,
-    route: "/sessions",
+    route: viewToRoute("sessions"),
     requiresControlToken: true,
     requiresFullMode: true,
     mountPosition: "secondary",
@@ -93,7 +94,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "准备度 / 健康",
     group: "ops",
     icon: CircleGauge,
-    route: "/readiness-health",
+    route: viewToRoute("readiness-health"),
     mountPosition: "primary",
     render: ({ onOpenView }) => (
       <button className="small-button" onClick={() => onOpenView("readiness-health")} type="button">
@@ -108,7 +109,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "Gateway",
     group: "ops",
     icon: Cable,
-    route: "/gateway",
+    route: viewToRoute("gateway"),
     requiresControlToken: true,
     mountPosition: "primary",
     render: ({ controlToken, onOpenView }) => (
@@ -125,7 +126,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "插件 / 技能生命周期",
     group: "ops",
     icon: Puzzle,
-    route: "/plugins-skills",
+    route: viewToRoute("plugins-skills"),
     requiresControlToken: true,
     mountPosition: "primary",
     render: ({ controlToken, onOpenView }) => (
@@ -142,7 +143,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "内部扩展注册表",
     group: "internal",
     icon: Braces,
-    route: "/extensions-pilot",
+    route: viewToRoute("extensions-pilot"),
     requiresControlToken: true,
     mountPosition: "secondary",
     render: ({ controlToken, onOpenView }) => (
@@ -159,7 +160,7 @@ export const INTERNAL_EXTENSION_SLOTS: InternalExtensionSlot[] = [
     label: "内部扩展注册表",
     group: "internal",
     icon: Braces,
-    route: "/extensions-pilot",
+    route: viewToRoute("extensions-pilot"),
     requiresControlToken: true,
     mountPosition: "secondary",
     render: ({ controlToken, onOpenView }) => (

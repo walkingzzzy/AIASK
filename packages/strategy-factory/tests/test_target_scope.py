@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from strategy_factory.domain import constants as _matrix_const
+
 import asyncio
 
 
@@ -71,12 +73,12 @@ def test_opportunity_scanner_respects_explicit_candidate_codes():
 def test_stock_strategy_matrix_respects_explicit_candidate_codes(monkeypatch):
     import strategy_factory.application.stock_strategy_matrix as matrix_module
 
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT", 10)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 20)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 20)
-    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_REUSE_ENABLED", False)
-    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_SIMILAR_PROFILE_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT", 10)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 20)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 20)
+    monkeypatch.setattr(_matrix_const, "STRATEGY_FACTORY_VECTOR_REUSE_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STRATEGY_FACTORY_VECTOR_SIMILAR_PROFILE_ENABLED", False)
 
     report = asyncio.run(
         matrix_module.StockStrategyMatrixPlanner().plan(_UniverseDb(), _targeted_snapshot())
@@ -92,14 +94,14 @@ def test_stock_strategy_matrix_respects_explicit_candidate_codes(monkeypatch):
 def test_stock_strategy_matrix_strict_generates_lightweight_profiles(monkeypatch):
     import strategy_factory.application.stock_strategy_matrix as matrix_module
 
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_ENABLED", True)
-    monkeypatch.setattr(matrix_module, "STOCK_FIRST_ROUTER_STRICT", True)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT", 10)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 20)
-    monkeypatch.setattr(matrix_module, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 20)
-    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_REUSE_ENABLED", False)
-    monkeypatch.setattr(matrix_module, "STRATEGY_FACTORY_VECTOR_SIMILAR_PROFILE_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_ENABLED", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_FIRST_ROUTER_STRICT", True)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_UNIVERSE_LIMIT", 10)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_MAX_TASKS_PER_RUN", 20)
+    monkeypatch.setattr(_matrix_const, "STOCK_STRATEGY_MATRIX_MAX_CANDIDATES_PER_RUN", 20)
+    monkeypatch.setattr(_matrix_const, "STRATEGY_FACTORY_VECTOR_REUSE_ENABLED", False)
+    monkeypatch.setattr(_matrix_const, "STRATEGY_FACTORY_VECTOR_SIMILAR_PROFILE_ENABLED", False)
 
     report = asyncio.run(
         matrix_module.StockStrategyMatrixPlanner().plan(_UniverseDb(), _targeted_snapshot())

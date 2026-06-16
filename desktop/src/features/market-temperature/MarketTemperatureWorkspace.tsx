@@ -1,7 +1,7 @@
 import { Activity, BarChart3, Database, RefreshCw, Thermometer } from "lucide-react";
 import { CSSProperties, FormEvent, useEffect, useMemo, useState } from "react";
 import { formatApiError } from "../../api";
-import { MetricCard, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
+import { MetricCard, PriceDelta, RawEvidencePanel, StatusBadge, compact } from "../../components/shared";
 import { AiaskApi } from "../../services/aiaskApi";
 import type {
   MarketTemperatureCacheHistory,
@@ -37,11 +37,6 @@ function boundedInteger(value: string, fallback: number, min: number, max: numbe
 function ratio(value: unknown): string {
   const number = numeric(value);
   return number === null ? "-" : `${(number * 100).toFixed(1)}%`;
-}
-
-function pct(value: unknown): string {
-  const number = numeric(value);
-  return number === null ? "-" : `${number.toFixed(2)}%`;
 }
 
 function fixed(value: unknown, digits = 1): string {
@@ -660,9 +655,13 @@ export function MarketTemperatureWorkspace({ endpoint, apiToken }: Props) {
                       <StatusBadge status={oneDay?.reliable ? "ready" : "partial"} label={`${oneDay?.sample_n ?? 0} 样本`} />
                     </div>
                     <span>
-                      1日命中 {ratio(oneDay?.hit_rate)} | 均值 {pct(oneDay?.avg_forward_return)}
+                      1日命中 {ratio(oneDay?.hit_rate)} | 均值{" "}
+                      {numeric(oneDay?.avg_forward_return) === null ? "-" : <PriceDelta value={numeric(oneDay?.avg_forward_return) as number} showArrow={false} />}
                     </span>
-                    <p>3日命中 {ratio(threeDay?.hit_rate)} | 均值 {pct(threeDay?.avg_forward_return)}</p>
+                    <p>
+                      3日命中 {ratio(threeDay?.hit_rate)} | 均值{" "}
+                      {numeric(threeDay?.avg_forward_return) === null ? "-" : <PriceDelta value={numeric(threeDay?.avg_forward_return) as number} showArrow={false} />}
+                    </p>
                   </article>
                 );
               })}
@@ -732,8 +731,18 @@ export function MarketTemperatureWorkspace({ endpoint, apiToken }: Props) {
               <StatusBadge status={stateStatus(market.state)} label={stateLabel(market.state)} />
             </div>
             <div className="diagnostics-summary wide">
-              <MetricCard label="均涨跌" value={pct(market.avg_pct_change)} status={stateStatus(market.state)} />
-              <MetricCard label="加权涨跌" value={pct(market.weighted_pct_change)} status={stateStatus(market.state)} />
+              <div className={`metric-card ${stateStatus(market.state)}`}>
+                <span>均涨跌 %</span>
+                <strong>
+                  {numeric(market.avg_pct_change) === null ? "-" : <PriceDelta value={numeric(market.avg_pct_change) as number} />}
+                </strong>
+              </div>
+              <div className={`metric-card ${stateStatus(market.state)}`}>
+                <span>加权涨跌 %</span>
+                <strong>
+                  {numeric(market.weighted_pct_change) === null ? "-" : <PriceDelta value={numeric(market.weighted_pct_change) as number} />}
+                </strong>
+              </div>
               <MetricCard label="上涨占比" value={ratio(market.advance_ratio)} status={stateStatus(market.state)} />
               <MetricCard label="行业数" value={quality.industry_count ?? industries.length} status={industries.length ? "ready" : "not_loaded"} />
             </div>

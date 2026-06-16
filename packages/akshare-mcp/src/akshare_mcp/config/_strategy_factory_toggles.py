@@ -20,7 +20,7 @@ def _env_bool(name: str, default: bool) -> bool:
 
 
 def paper_intake_enabled() -> bool:
-    return _env_bool("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", default=False)
+    return _env_bool("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", default=True)
 
 
 def paper_intake_batch_limit() -> int:
@@ -35,8 +35,8 @@ def paper_intake_batch_limit() -> int:
 def recompile_remediation_enabled() -> bool:
     """P0-b/P1: 孵化工厂每轮对 observe 池趋势策略重编译补 compiled_dsl + 测量
     instrument_profile,并把满足 formal readiness 的样本升级到 formal_incubation。
-    默认 OFF,行为与改造前一致。"""
-    return _env_bool("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", default=False)
+    默认 ON,用于持续修复 observe 池里可转 formal 的样本。"""
+    return _env_bool("INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED", default=True)
 
 
 def recompile_remediation_batch_limit() -> int:
@@ -82,6 +82,8 @@ def gate3_record_only_intake_min_grade() -> str:
 __all__ = [
     "paper_intake_enabled",
     "paper_intake_batch_limit",
+    "recompile_remediation_enabled",
+    "recompile_remediation_batch_limit",
     "diagnostic_intake_enabled",
     "diagnostic_intake_batch_limit",
     "gate3_record_only_intake_enabled",

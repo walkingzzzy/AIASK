@@ -1,21 +1,26 @@
 import type { ReactNode } from "react";
 import { lazy, Suspense, useEffect, useState } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
 import { formatApiError } from "./api";
 import { AppContextPanel } from "./components/AppContextPanel";
 import { AppSidebar } from "./components/AppSidebar";
 import { DiagnosticsPanel } from "./components/DiagnosticsPanel";
 import { InspectorPanel } from "./components/InspectorPanel";
+import { OverlayView } from "./components/OverlayView";
+import { PageShell } from "./components/PageShell";
 import { ToolCatalog } from "./components/InspectorPanels";
 import { WorkbenchView } from "./components/WorkbenchView";
 import { ExtensionsPilotPage, SlotRenderer } from "./extensions/extensionRegistry";
 import { useAppConnectionSettings } from "./hooks/useAppConnectionSettings";
 import { useAgentWorkbench } from "./hooks/useAgentWorkbench";
 import { useHermesConsole } from "./hooks/useHermesConsole";
+import { routeToView, viewToRoute } from "./routes";
 import { AiaskApi } from "./services/aiaskApi";
 import type { InspectorTab, MainView, SessionResumeContextPayload, SkillView } from "./types";
 import { getViewItem, VIEW_GROUPS } from "./views";
 
 const AgentWorkspace = lazy(() => import("./features/agent/AgentWorkspace").then((module) => ({ default: module.AgentWorkspace })));
+const ArtifactsPage = lazy(() => import("./features/agent-pages/ArtifactsPage").then((module) => ({ default: module.ArtifactsPage })));
 const AutomationWorkspace = lazy(() => import("./features/automation/AutomationWorkspace").then((module) => ({ default: module.AutomationWorkspace })));
 const CapabilitiesWorkspace = lazy(() => import("./features/capabilities/CapabilitiesWorkspace").then((module) => ({ default: module.CapabilitiesWorkspace })));
 const CoverageWorkspace = lazy(() => import("./features/coverage/CoverageWorkspace").then((module) => ({ default: module.CoverageWorkspace })));
@@ -47,14 +52,43 @@ const WorkflowsWorkspace = lazy(() => import("./features/workflows/WorkflowsWork
 
 function ViewLoading() {
   return (
-    <section className="capabilities-workspace" aria-busy="true" aria-label="Loading view">
-      <div className="capabilities-body">
-        <div className="capability-stack">
-          <div className="notice info compact">Loading view...</div>
-        </div>
-      </div>
-    </section>
+    <PageShell title="加载视图" loading loadingText="加载中...">
+      <span />
+    </PageShell>
   );
+}
+
+function RouteNotFound({ path, onOpenHome }: { path: string; onOpenHome: () => void }) {
+  return (
+    <PageShell
+      title="未找到页面"
+      eyebrow="Routing"
+      description={`当前路径 ${path || "/"} 没有对应的桌面视图。`}
+      actions={
+        <button className="small-button" onClick={onOpenHome} type="button">
+          返回工作台
+        </button>
+      }
+    >
+      <div className="notice info compact">可以从左侧导航重新打开工作台、集成、金融实验室或准备度页面。</div>
+    </PageShell>
+  );
+}
+
+const CORE_SHORTCUT_VIEWS: MainView[] = [
+  "workbench",
+  "runs-events",
+  "integrations",
+  "finance-lab",
+  "readiness-health",
+];
+
+const HERMES_LIKE_SURFACE_VIEWS: MainView[] = ["plugins-skills", "gateway", "artifacts"];
+
+function isEditableShortcutTarget(target: EventTarget | null) {
+  if (!(target instanceof HTMLElement)) return false;
+  const tag = target.tagName.toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" || target.isContentEditable;
 }
 
 function legacyMeta(view: MainView): {
@@ -121,6 +155,11 @@ function legacyMeta(view: MainView): {
 }
 
 export function App() {
+  const location = useLocation();
+  const navigate = useNavigate();
+  const routeMatch = routeToView(location.pathname);
+  const mainView = routeMatch.view;
+  const routeMatched = routeMatch.matched;
   const {
     agentMode,
     agentReachable,
@@ -147,7 +186,6 @@ export function App() {
     updateLocalProfile,
     userId,
   } = useAppConnectionSettings();
-  const [mainView, setMainView] = useState<MainView>("workbench");
   const [sessionDetailId, setSessionDetailId] = useState("");
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>("details");
 
@@ -170,8 +208,21 @@ export function App() {
 
   const busy = connectionBusy || hermes.busy || workbench.busy;
   const parity = hermes.fullConsole.parity || hermes.hermesStatus?.parity || health?.hermes?.parity;
-  const inspectorVisible = mainView === "workbench";
-  const settingsMode = mainView === "settings";
+  const settingsMode = routeMatched && mainView === "settings";
+  const hasActiveWorkbenchContext = Boolean(
+    workbench.selectedThread ||
+      workbench.sessionId.trim() ||
+      workbench.timelineEvents.length ||
+      workbench.selectedRunArtifacts?.length ||
+      workbench.selectedRunSources?.length ||
+      workbench.currentIntent ||
+      workbench.selectedResponse ||
+      workbench.selectedRunId
+  );
+  const homeMode = routeMatched && mainView === "workbench" && !hasActiveWorkbenchContext;
+  const hermesSurfaceMode = routeMatched && !settingsMode && (homeMode || HERMES_LIKE_SURFACE_VIEWS.includes(mainView));
+  const sidebarHomeMode = hermesSurfaceMode || (settingsMode && !hasActiveWorkbenchContext);
+  const inspectorVisible = routeMatched && mainView === "workbench" && !homeMode;
   const sessionsAccess = workbench.summary?.access;
   const fullModeActive = Boolean(sessionsAccess?.full_mode_active || health?.hermes?.full_mode_active);
   const sessionsAdminAvailable = Boolean(sessionsAccess?.sessions_admin_available);
@@ -199,7 +250,10 @@ export function App() {
   }
 
   function selectView(view: MainView) {
-    setMainView(view);
+    const nextRoute = viewToRoute(view);
+    if (location.pathname !== nextRoute) {
+      navigate(nextRoute);
+    }
     if (view === "workbench") {
       setInspectorTab("details");
       return;
@@ -213,18 +267,18 @@ export function App() {
   }
 
   function startNewTask() {
-    setMainView("workbench");
+    selectView("workbench");
     workbench.startNewTask();
   }
 
   function selectThread(id: string) {
-    setMainView("workbench");
+    selectView("workbench");
     workbench.selectThread(id);
   }
 
   function openSessionDetail(sessionId: string) {
     setSessionDetailId(sessionId);
-    setMainView("sessions");
+    selectView("sessions");
   }
 
   function resumeSession(sessionId: string, resumeContext?: SessionResumeContextPayload) {
@@ -233,17 +287,60 @@ export function App() {
     const prompt = resumeContext?.resume_context?.resume_prompt;
     if (prompt) workbench.setPrompt(prompt);
     setSessionDetailId(sessionId);
-    setMainView("workbench");
-    setInspectorTab("details");
+    selectView("workbench");
   }
 
   function applySkillToChat(skill: SkillView | null) {
     if (!skill) return;
     const nextPrompt = `请使用 ${skill.name} 技能协助我完成：${skill.description || "分析当前请求并给出可执行下一步。"}`;
     workbench.setPrompt(nextPrompt);
-    setMainView("workbench");
-    setInspectorTab("details");
+    selectView("workbench");
   }
+
+  useEffect(() => {
+    if (!routeMatched) return;
+    const canonicalRoute = viewToRoute(mainView);
+    if (location.pathname !== canonicalRoute) {
+      navigate(canonicalRoute, { replace: true });
+    }
+  }, [location.pathname, mainView, navigate, routeMatched]);
+
+  useEffect(() => {
+    function onGlobalKeyDown(event: KeyboardEvent) {
+      const usesCommandModifier = event.ctrlKey || event.metaKey;
+      if (!usesCommandModifier || event.altKey) return;
+
+      const key = event.key.toLowerCase();
+      if (isEditableShortcutTarget(event.target) && key !== ",") return;
+
+      if (key === ",") {
+        event.preventDefault();
+        selectView("settings");
+        return;
+      }
+
+      if (key === "n") {
+        event.preventDefault();
+        startNewTask();
+        return;
+      }
+
+      if (key === "k") {
+        event.preventDefault();
+        selectView("runs-events");
+        return;
+      }
+
+      const index = Number(key);
+      if (Number.isInteger(index) && index >= 1 && index <= CORE_SHORTCUT_VIEWS.length) {
+        event.preventDefault();
+        selectView(CORE_SHORTCUT_VIEWS[index - 1]);
+      }
+    }
+
+    window.addEventListener("keydown", onGlobalKeyDown);
+    return () => window.removeEventListener("keydown", onGlobalKeyDown);
+  });
 
   useEffect(() => {
     if (mockMode || autoConnectEnabled || defaultEndpointActive) {
@@ -259,7 +356,7 @@ export function App() {
       user_id: userId,
       session_id: workbench.sessionId || undefined,
       page_key: mainView,
-      route: `/${mainView}`,
+      route: location.pathname,
       event_type: "page_view",
       source: mockMode ? "desktop.mock" : "desktop",
       payload: {
@@ -268,7 +365,7 @@ export function App() {
         status,
       },
     }).catch(() => undefined);
-  }, [agentMode, apiToken, controlToken, mainView, mockMode, normalizedEndpoint, status, userId, workbench.sessionId]);
+  }, [agentMode, apiToken, controlToken, location.pathname, mainView, mockMode, normalizedEndpoint, status, userId, workbench.sessionId]);
 
   function renderLegacyShell(view: MainView, child: ReactNode) {
     const meta = legacyMeta(view);
@@ -476,29 +573,6 @@ export function App() {
         onApplyToChat={applySkillToChat}
       />
     ),
-    settings: () => (
-      <SettingsWorkspace
-        agentMode={agentMode}
-        apiToken={apiToken}
-        busy={busy}
-        controlToken={controlToken}
-        connectionStatus={status}
-        defaultEndpoint={defaultEndpoint}
-        endpoint={endpoint}
-        health={health}
-        onAgentModeChange={setAgentMode}
-        onApiTokenChange={setApiToken}
-        onBackToApp={() => setMainView("workbench")}
-        onControlTokenChange={setControlToken}
-        onEndpointChange={setEndpoint}
-        onOpenView={selectView}
-        onProfileChange={updateLocalProfile}
-        onRefresh={refreshHealth}
-        onResetEndpoint={resetEndpointToDefault}
-        profileName={profileName}
-        userId={userId}
-      />
-    ),
     user: () =>
       renderLegacyShell(
         "user",
@@ -525,6 +599,14 @@ export function App() {
     ),
     "runs-events": () => (
       <RunsEventsPage
+        apiToken={apiToken}
+        controlToken={controlToken}
+        endpoint={normalizedEndpoint}
+        onOpenView={selectView}
+      />
+    ),
+    artifacts: () => (
+      <ArtifactsPage
         apiToken={apiToken}
         controlToken={controlToken}
         endpoint={normalizedEndpoint}
@@ -591,31 +673,36 @@ export function App() {
   };
 
   function renderMainView() {
-    const item = getViewItem(mainView);
+    if (!routeMatched) {
+      return <RouteNotFound path={location.pathname} onOpenHome={() => selectView("workbench")} />;
+    }
+    const activeView: MainView = settingsMode ? "workbench" : mainView;
+    const item = getViewItem(activeView);
     const content = item?.render
       ? item.render()
-      : (viewRenderers[item?.id || mainView] || viewRenderers.workbench)?.();
+      : (viewRenderers[item?.id || activeView] || viewRenderers.workbench)?.();
     return <Suspense fallback={<ViewLoading />}>{content}</Suspense>;
   }
 
+  const shellModeClass = settingsMode ? "settings-mode" : hermesSurfaceMode ? "home-mode" : inspectorVisible ? "task-mode" : "context-mode";
+
   return (
-    <div className={`app-shell ${settingsMode ? "settings-mode" : inspectorVisible ? "task-mode" : "context-mode"}`}>
-      {!settingsMode && (
-        <AppSidebar
-          controlToken={controlToken}
-          health={health}
-          hermesStatus={hermes.hermesStatus}
-          inspectorTab={inspectorTab}
-          mainView={mainView}
-          onNewTask={startNewTask}
-          onSelectThread={selectThread}
-          onSelectView={selectView}
-          selectedThreadId={workbench.selectedThreadId}
-          status={status}
-          threads={workbench.threads}
-          viewGroups={VIEW_GROUPS}
-        />
-      )}
+    <div className={`app-shell ${shellModeClass}`}>
+      <AppSidebar
+        controlToken={controlToken}
+        health={health}
+        hermesStatus={hermes.hermesStatus}
+        homeMode={sidebarHomeMode}
+        inspectorTab={inspectorTab}
+        mainView={mainView}
+        onNewTask={startNewTask}
+        onSelectThread={selectThread}
+        onSelectView={selectView}
+        selectedThreadId={workbench.selectedThreadId}
+        status={status}
+        threads={workbench.threads}
+        viewGroups={VIEW_GROUPS}
+      />
 
       <main className="workbench">
         <div className="extension-slot-row main-slot">
@@ -694,7 +781,7 @@ export function App() {
         />
       )}
 
-      {!settingsMode && !inspectorVisible && (
+      {!settingsMode && !inspectorVisible && !hermesSurfaceMode && (
         <AppContextPanel
           compact
           controlToken={controlToken}
@@ -707,6 +794,34 @@ export function App() {
           status={status}
           tools={tools}
         />
+      )}
+
+      {settingsMode && (
+        <OverlayView title="设置" onClose={() => selectView("workbench")}>
+          <Suspense fallback={<ViewLoading />}>
+            <SettingsWorkspace
+              agentMode={agentMode}
+              apiToken={apiToken}
+              busy={busy}
+              controlToken={controlToken}
+              connectionStatus={status}
+              defaultEndpoint={defaultEndpoint}
+              endpoint={endpoint}
+              health={health}
+              onAgentModeChange={setAgentMode}
+              onApiTokenChange={setApiToken}
+              onBackToApp={() => selectView("workbench")}
+              onControlTokenChange={setControlToken}
+              onEndpointChange={setEndpoint}
+              onOpenView={selectView}
+              onProfileChange={updateLocalProfile}
+              onRefresh={refreshHealth}
+              onResetEndpoint={resetEndpointToDefault}
+              profileName={profileName}
+              userId={userId}
+            />
+          </Suspense>
+        </OverlayView>
       )}
     </div>
   );

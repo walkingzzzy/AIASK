@@ -67,7 +67,9 @@ describe("SessionsPage", () => {
     expect(screen.getByText("run_mock")).toBeInTheDocument();
     expect(screen.getByText("approval.intent_created")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText("继续会话"));
+    const resumeButton = screen.getByRole("button", { name: /继续会话/ });
+    await waitFor(() => expect(resumeButton).not.toBeDisabled());
+    fireEvent.click(resumeButton);
     await waitFor(() =>
       expect(onResumeSession).toHaveBeenCalledWith(
         "sess_mock",
@@ -95,7 +97,9 @@ describe("SessionsPage", () => {
     render(<SessionsPage {...mockProps} />);
 
     await waitFor(() => expect(screen.getByText("Mock 研究会话")).toBeInTheDocument());
-    fireEvent.click(screen.getByText("继续会话"));
+    const resumeButton = screen.getByRole("button", { name: /继续会话/ });
+    await waitFor(() => expect(resumeButton).not.toBeDisabled());
+    fireEvent.click(resumeButton);
 
     await waitFor(() => expect(screen.getByText("RESUME_CONTEXT_LOADED")).toBeInTheDocument());
     expect(screen.getByLabelText("会话恢复上下文")).toHaveTextContent("ctxsnap_mock_source");

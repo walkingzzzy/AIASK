@@ -9,8 +9,10 @@ describe("build preload policy", () => {
   it("groups desktop build chunks by runtime ownership", () => {
     expect(desktopChunkName("C:/repo/desktop/node_modules/react/index.js")).toBe("vendor-react");
     expect(desktopChunkName("C:/repo/desktop/node_modules/react-dom/index.js")).toBe("vendor-react");
+    expect(desktopChunkName("C:/repo/desktop/node_modules/scheduler/index.js")).toBe("vendor-react");
     expect(desktopChunkName("C:/repo/desktop/node_modules/lucide-react/dist/esm/icons/chart.js")).toBe("vendor-icons");
     expect(desktopChunkName("C:/repo/desktop/node_modules/vite/dist/client/client.mjs")).toBe("vendor");
+    expect(desktopChunkName("C:/repo/desktop/src/components/PageShell.tsx")).toBe("app-shell");
     expect(desktopChunkName("C:/repo/desktop/src/features/agent-pages/GatewayPage.tsx")).toBe("agent-pages");
     expect(desktopChunkName("C:/repo/desktop/src/features/financial-manager/FinancialManagerWorkspace.tsx")).toBe("workspaces");
     expect(desktopChunkName("C:/repo/desktop/src/App.tsx")).toBeUndefined();

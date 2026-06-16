@@ -1,6 +1,10 @@
 export function desktopChunkName(id: string): string | undefined {
   const normalized = id.replace(/\\/g, "/");
-  if (normalized.includes("/node_modules/react/") || normalized.includes("/node_modules/react-dom/")) {
+  if (
+    normalized.includes("/node_modules/react/") ||
+    normalized.includes("/node_modules/react-dom/") ||
+    normalized.includes("/node_modules/scheduler/")
+  ) {
     return "vendor-react";
   }
   if (normalized.includes("/node_modules/lucide-react/")) {
@@ -10,6 +14,9 @@ export function desktopChunkName(id: string): string | undefined {
     return "vendor";
   }
 
+  if (normalized.includes("/src/components/PageShell.")) {
+    return "app-shell";
+  }
   if (normalized.includes("/src/features/agent-pages/")) {
     return "agent-pages";
   }

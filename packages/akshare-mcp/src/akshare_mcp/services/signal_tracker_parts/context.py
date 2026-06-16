@@ -37,6 +37,26 @@ FORWARD_RETURN_MAX_ROUNDS = 100
 RECENT_SIGNAL_EVENT_LIMIT = 8
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _forward_return_provider_refresh_enabled() -> bool:
+    return _env_bool("STRATEGY_FACTORY_FORWARD_RETURN_PROVIDER_REFRESH_ENABLED", default=True)
+
+
+def _forward_return_provider_refresh_limit() -> int:
+    raw = os.getenv("STRATEGY_FACTORY_FORWARD_RETURN_PROVIDER_LIMIT", "260")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 260
+    return max(60, min(value, 5000))
+
+
 def _signal_series_from_events(length: int, events: list[dict[str, Any]] | None) -> np.ndarray:
     signals = np.zeros(max(0, int(length)), dtype=np.int8)
     for event in list(events or []):

@@ -32,7 +32,7 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
-from .intake import IncubationIntake
+from .intake import IncubationIntake, _resolve_db_async_method
 from .signal_generator import SignalGenerator
 from .forward_verifier import ForwardVerifier
 from .metrics_recorder import MetricsRecorder
@@ -250,7 +250,7 @@ class IncubationFactoryRunner:
             ) or {}
 
             # Phase 1.5: observe 池趋势策略重编译 remediation + observe->formal 转正。
-            # toggle OFF 默认时跳过,行为与改造前完全一致。
+            # 默认开启; 设置 INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED=0 时跳过。
             remediation_result = await _run_phase(
                 "recompile_remediation",
                 lambda: self._run_recompile_remediation(db),
@@ -260,7 +260,7 @@ class IncubationFactoryRunner:
             # Phase 2: 加载所有孵化中的策略 (cheap, no timeout)
             incubating = await self._list_incubating(db)
             # === DEV-V1 P1: 加载 paper observation 策略 ===
-            # toggle OFF 默认时返回空列表,行为与改造前完全一致。
+            # 默认开启; 设置 INCUBATION_FACTORY_PAPER_INTAKE_ENABLED=0 时返回空列表。
             paper_observation = await self._list_paper_observation(db)
             diagnostic_observation = await self._list_diagnostic_observation(db)
             # 给两个集合打 stage 标记,便于 Phase 3 阈值差异化(后续优化用)。
@@ -586,7 +586,7 @@ class IncubationFactoryRunner:
         """P0-b/P1: 对 observe 池(submitted)趋势策略重编译补 compiled_dsl + 测量
         instrument_profile,满足 formal readiness 的样本升级到 formal_incubation。
 
-        toggle OFF 默认时直接跳过,返回 skipped,行为与改造前一致。
+        默认开启; 设置 INCUBATION_FACTORY_RECOMPILE_REMEDIATION_ENABLED=0 时返回 skipped。
         """
         try:
             from akshare_mcp.config._strategy_factory_toggles import (
@@ -646,22 +646,21 @@ class IncubationFactoryRunner:
             return []
         if not paper_intake_enabled():
             return []
-        method = None
-        if hasattr(db, "list_active_paper_observation_strategies"):
-            method = getattr(db, "list_active_paper_observation_strategies")
-        elif hasattr(db, "list_paper_observation_strategies"):
-            method = getattr(db, "list_paper_observation_strategies")
-        if not callable(method):
-            return []
-        try:
-            return await method(
-                limit=paper_intake_batch_limit(),
-            )
-        except Exception as exc:
-            logger.warning(
-                "IncubationFactory: list_active_paper_observation_strategies failed: %s", exc,
-            )
-            return []
+        for method_name in (
+            "list_active_paper_observation_strategies",
+            "list_paper_observation_strategies",
+        ):
+            method = _resolve_db_async_method(db, method_name)
+            if method is None:
+                continue
+            try:
+                return await method(limit=paper_intake_batch_limit())
+            except Exception as exc:
+                logger.warning(
+                    "IncubationFactory: %s failed: %s", method_name, exc,
+                )
+                return []
+        return []
 
     async def _list_diagnostic_observation(self, db: Any) -> list[dict[str, Any]]:
         try:

@@ -1,3 +1,4 @@
+import * as Tabs from "@radix-ui/react-tabs";
 import { Activity, Bot, Boxes, BrainCircuit, Cable, Factory, FlaskConical, Layers3, Puzzle, RefreshCw, ServerCog, ShieldCheck } from "lucide-react";
 import type { ElementType } from "react";
 import { useEffect, useMemo, useState } from "react";
@@ -202,45 +203,64 @@ export function CapabilitiesWorkspace({
         </div>
       </header>
 
-      <div className="capabilities-tabs">
-        {tabs.map((tab) => {
-          const Icon = tab.icon;
-          return (
-            <button
-              aria-label={tab.label}
-              aria-pressed={activeTab === tab.id}
-              className={activeTab === tab.id ? "active" : ""}
-              key={tab.id}
-              onClick={() => setActiveTab(tab.id)}
-              title={tab.label}
-              type="button"
-            >
-              <Icon size={15} />
-              {tab.label}
-            </button>
-          );
-        })}
-      </div>
+      <Tabs.Root
+        className="capabilities-tabs-root"
+        value={activeTab}
+        onValueChange={(value) => setActiveTab(value as CapabilityTab)}
+        activationMode="manual"
+      >
+        <Tabs.List className="capabilities-tabs" aria-label="能力中心分区">
+          {tabs.map((tab) => {
+            const Icon = tab.icon;
+            return (
+              <Tabs.Trigger value={tab.id} key={tab.id} aria-label={tab.label} title={tab.label}>
+                <Icon size={15} />
+                {tab.label}
+              </Tabs.Trigger>
+            );
+          })}
+        </Tabs.List>
 
-      <div className="capabilities-body">
-        {!payload && busy && (
-          <div className="empty-thread">
-            <Bot size={28} />
-            <strong>正在加载能力</strong>
-            <span>正在读取 Hermes 对齐、MCP、策略工厂、技能和 AI 诊断。</span>
-          </div>
-        )}
-        {activeTab === "overview" && <Overview payload={payload} message={message} />}
-        {activeTab === "coverage" && <CoverageMatrixPanel capabilities={payload} />}
-        {activeTab === "connectors" && <ConnectorsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} />}
-        {activeTab === "hermes" && <HermesPanel payload={payload} />}
-        {activeTab === "mcp" && <McpPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />}
-        {activeTab === "factory" && <StrategyFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} payload={payload} />}
-        {activeTab === "incubation" && <IncubationFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} />}
-        {activeTab === "skills" && <SkillsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />}
-        {activeTab === "plugins" && <PluginsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />}
-        {activeTab === "ai" && <AiTestingPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} payload={payload} />}
-      </div>
+        <div className="capabilities-body">
+          {!payload && busy && (
+            <div className="empty-thread">
+              <Bot size={28} />
+              <strong>正在加载能力</strong>
+              <span>正在读取 Hermes 对齐、MCP、策略工厂、技能和 AI 诊断。</span>
+            </div>
+          )}
+          <Tabs.Content value="overview">
+            <Overview payload={payload} message={message} />
+          </Tabs.Content>
+          <Tabs.Content value="coverage">
+            <CoverageMatrixPanel capabilities={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="connectors">
+            <ConnectorsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} />
+          </Tabs.Content>
+          <Tabs.Content value="hermes">
+            <HermesPanel payload={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="mcp">
+            <McpPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="factory">
+            <StrategyFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} payload={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="incubation">
+            <IncubationFactoryPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} />
+          </Tabs.Content>
+          <Tabs.Content value="skills">
+            <SkillsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="plugins">
+            <PluginsPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} onRefresh={refresh} payload={payload} />
+          </Tabs.Content>
+          <Tabs.Content value="ai">
+            <AiTestingPanel apiToken={apiToken} controlToken={controlToken} endpoint={endpoint} payload={payload} />
+          </Tabs.Content>
+        </div>
+      </Tabs.Root>
     </section>
   );
 }

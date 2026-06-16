@@ -15,6 +15,23 @@ from .strategy_spec import StrategySpec
 _EMPTY_VALUES = (None, "", [], {})
 _TREND_RECOMPILE_TYPES = {"ma_cross", "momentum", "volatility_breakout"}
 _DEFAULT_STATUSES = ("submitted", "incubating")
+_FORMAL_REPAIRABLE_BLOCKER_PREFIXES = (
+    "missing_executable_contract",
+    "default_profile_not_allowed_for_single_name_runtime",
+    "measured_profile_incomplete",
+    "diagnostic_only_not_allowed_for_",
+    "diagnostic_only_runtime",
+    "observe_diagnostic_only",
+    "execution_readiness_tier:missing",
+    "execution_readiness_tier:missing_executable_contract",
+    "execution_readiness_tier:observe_diagnostic_only",
+    "runtime_family_semantic_mismatch",
+    "semantic_runtime_mismatch",
+    "proxy_runtime_not_allowed_for_formal_incubation",
+    "final_strategy_missing_semantic_contract",
+    "execution_semantic_gap",
+)
+_FORMAL_GRADE_ORDER = {"D": 0, "C": 1, "B": 2, "A": 3, "S": 4, "SS": 5, "SSS": 6}
 _ALWAYS_REPLACE_PARAM_FIELDS = {
     "execution_semantic_mode",
     "execution_semantic_gap",
@@ -24,6 +41,15 @@ _ALWAYS_REPLACE_PARAM_FIELDS = {
     "dsl_compile_failure_reasons",
     "runtime_recompile_backfill",
     "revision_required",
+    # 重编译/测量后,样本的运行时准入判决必须以重算结果为准,否则会保留提交期
+    # 冻结的旧 tier(如 dsl 已补齐但仍写 missing_executable_contract),导致
+    # _recompiled_formal_ready 永远读到陈旧判决而无法转正。
+    "execution_readiness_tier",
+    "diagnostic_only",
+    "semantic_runtime_match",
+    "proxy_runtime_used",
+    "runtime_family_data_source",
+    "semantic_contract_missing_fields",
 }
 
 
@@ -36,6 +62,185 @@ def _safe_bool(value: Any) -> bool:
         return value
     token = _text(value).lower()
     return token in {"1", "true", "yes", "y", "on"}
+
+
+def _grade_at_least(value: Any, floor: str = "B") -> bool:
+    grade = _text(value).upper()
+    if not grade:
+        return False
+    return _FORMAL_GRADE_ORDER.get(grade, -1) >= _FORMAL_GRADE_ORDER.get(floor, 0)
+
+
+def _reason_tokens(value: Any) -> list[str]:
+    queue = [value]
+    tokens: list[str] = []
+    while queue:
+        item = queue.pop(0)
+        if item in _EMPTY_VALUES:
+            continue
+        if isinstance(item, dict):
+            for key in (
+                "reason",
+                "reason_code",
+                "code",
+                "message",
+                "example",
+                "admission_block_reasons",
+                "formal_track_blockers",
+                "reasons",
+                "blockers",
+            ):
+                if item.get(key) not in _EMPTY_VALUES:
+                    queue.append(item.get(key))
+            continue
+        if isinstance(item, (list, tuple, set)):
+            queue[:0] = list(item)
+            continue
+        token = _text(item)
+        if token:
+            tokens.append(token)
+    return tokens
+
+
+def _collect_formal_blockers(*payloads: dict[str, Any]) -> list[str]:
+    blockers: list[str] = []
+    for payload in payloads:
+        data = dict(payload or {})
+        for key in (
+            "admission_block_reasons",
+            "formal_track_blockers",
+            "reasons",
+            "blockers",
+        ):
+            blockers.extend(_reason_tokens(data.get(key)))
+    return list(dict.fromkeys(blockers))
+
+
+def _is_runtime_repairable_blocker(reason: str) -> bool:
+    token = _text(reason).lower()
+    if not token:
+        return True
+    return any(token.startswith(prefix) for prefix in _FORMAL_REPAIRABLE_BLOCKER_PREFIXES)
+
+
+def _runtime_recompile_already_done(strategy: dict[str, Any]) -> bool:
+    params = dict((strategy or {}).get("params") or {})
+    return bool(params.get("runtime_recompile_backfill")) and _is_compiled_dsl_ready(params)
+
+
+def _strategy_has_repairable_runtime_blocker(strategy: dict[str, Any]) -> bool:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    blockers = _collect_formal_blockers(payload, params)
+    if not blockers:
+        mode = _text(params.get("execution_semantic_mode")).lower()
+        readiness = _text(params.get("execution_readiness_tier")).lower()
+        if mode in {"", "missing_executable_contract"} or readiness in {
+            "",
+            "missing_executable_contract",
+            "observe_diagnostic_only",
+        }:
+            return True
+        if bool(params.get("proxy_runtime_used")) or bool(params.get("diagnostic_only")):
+            return True
+        profile = dict(params.get("instrument_profile") or {})
+        if str(payload.get("strategy_type") or "").strip().lower() in _TREND_RECOMPILE_TYPES:
+            if not bool(profile.get("measured_profile_complete")):
+                return True
+        return False
+    return any(_is_runtime_repairable_blocker(item) for item in blockers)
+
+
+def _strategy_recency_token(strategy: dict[str, Any]) -> str:
+    payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    for key in (
+        "updated_at",
+        "created_at",
+        "submitted_at",
+        "paper_bound_at",
+        "factory_run_id",
+        "source_factory_run_id",
+        "source_run_id",
+        "task_run_id",
+    ):
+        value = payload.get(key)
+        if value not in _EMPTY_VALUES:
+            return _text(value)
+    for key in (
+        "updated_at",
+        "created_at",
+        "submitted_at",
+        "factory_run_id",
+        "source_factory_run_id",
+        "source_run_id",
+        "task_run_id",
+    ):
+        value = params.get(key)
+        if value not in _EMPTY_VALUES:
+            return _text(value)
+    return ""
+
+
+def _prioritize_recompile_rows(rows: list[dict[str, Any]], *, limit: Optional[int] = None) -> list[dict[str, Any]]:
+    indexed_rows = [(idx, dict(row or {})) for idx, row in enumerate(rows or [])]
+
+    def sort_key(item: tuple[int, dict[str, Any]]) -> tuple[int, int, int, int, str, int]:
+        idx, row = item
+        params = dict(row.get("params") or {})
+        lane = _text(params.get("submission_lane") or row.get("submission_lane")).lower()
+        status = _text(row.get("status")).lower()
+        return (
+            1 if _strategy_has_repairable_runtime_blocker(row) else 0,
+            1 if lane == "observe_incubation" else 0,
+            1 if status == "submitted" else 0,
+            0 if _runtime_recompile_already_done(row) else 1,
+            _strategy_recency_token(row),
+            idx,
+        )
+
+    prioritized = [row for _, row in sorted(indexed_rows, key=sort_key, reverse=True)]
+    if limit:
+        return prioritized[: max(0, int(limit))]
+    return prioritized
+
+
+def _quality_report_allows_runtime_repair_promotion(
+    strategy: dict[str, Any],
+    params: dict[str, Any],
+    quality_report: Optional[dict[str, Any]],
+) -> bool:
+    report = dict(quality_report or {})
+    if not report:
+        return False
+    summary = dict(report.get("summary") or {})
+    quality_gate = dict(report.get("quality_gate") or {})
+    snapshot = dict(report.get("snapshot") or {})
+    quality_passed = any(
+        bool(source.get(key))
+        for source in (report, summary, quality_gate, snapshot)
+        for key in (
+            "passed",
+            "review_passed",
+            "quality_gate_passed",
+            "business_admission_passed",
+        )
+    )
+    business_status = _text(summary.get("business_admission_status") or quality_gate.get("business_admission_status")).lower()
+    quality_passed = quality_passed or business_status == "passed"
+    grade = (
+        summary.get("effective_validation_grade")
+        or summary.get("validation_grade")
+        or summary.get("raw_validation_grade")
+        or quality_gate.get("validation_grade")
+        or params.get("validation_grade")
+        or strategy.get("validation_grade")
+    )
+    if not quality_passed or not _grade_at_least(grade, "B"):
+        return False
+    blockers = _collect_formal_blockers(params, strategy, summary, quality_gate, snapshot)
+    non_repairable = [item for item in blockers if not _is_runtime_repairable_blocker(item)]
+    return not non_repairable
 
 
 def _normalize_strategy_ids(values: Any) -> list[str]:
@@ -261,7 +466,12 @@ def _is_compiled_dsl_ready(params: dict[str, Any]) -> bool:
     return True
 
 
-def _strict_gate_passed(strategy: dict[str, Any], params: dict[str, Any]) -> bool:
+def _strict_gate_passed(
+    strategy: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    quality_report: Optional[dict[str, Any]] = None,
+) -> bool:
     """读取原策略的 strict gate 通过证据(来自提交期 quality summary)。
 
     缺证据时返回 False —— 宁可不升 formal,也不误升未经严格门的样本。
@@ -275,10 +485,17 @@ def _strict_gate_passed(strategy: dict[str, Any], params: dict[str, Any]) -> boo
                     return True
             elif _safe_bool(value) and _text(value):
                 return True
+    if _quality_report_allows_runtime_repair_promotion(strategy, params, quality_report):
+        return True
     return False
 
 
-def _recompiled_formal_ready(params: dict[str, Any], strategy: dict[str, Any]) -> bool:
+def _recompiled_formal_ready(
+    params: dict[str, Any],
+    strategy: dict[str, Any],
+    *,
+    quality_report: Optional[dict[str, Any]] = None,
+) -> bool:
     """重编译 + 测量后,判断样本是否满足 formal_runtime 升级条件。
 
     严格复核,不另造门:复用 admission_authority.formal_runtime_ready 的等价语义子集。
@@ -314,7 +531,7 @@ def _recompiled_formal_ready(params: dict[str, Any], strategy: dict[str, Any]) -
             return False
         if not bool(instrument_profile.get("measured_profile_complete")):
             return False
-    return _strict_gate_passed(strategy, payload)
+    return _strict_gate_passed(strategy, payload, quality_report=quality_report)
 
 
 def build_trend_strategy_recompile_backfill(
@@ -594,7 +811,13 @@ async def backfill_historical_trend_strategies(
     else:
         resolved_statuses = _normalize_statuses(statuses)
         current_offset = max(0, int(offset or 0))
-        remaining = int(limit or 0) if limit else None
+        requested_limit = int(limit or 0) if limit else None
+        priority_window_limit = (
+            max(int(batch_size or 100), requested_limit * 5)
+            if requested_limit
+            else None
+        )
+        remaining = priority_window_limit
         while True:
             fetch_limit = min(max(1, int(batch_size or 100)), remaining or max(1, int(batch_size or 100)))
             batch = await db.list_strategies(status=resolved_statuses, limit=fetch_limit, offset=current_offset)
@@ -608,6 +831,7 @@ async def backfill_historical_trend_strategies(
                     break
             if len(batch) < fetch_limit:
                 break
+        rows = _prioritize_recompile_rows(rows, limit=requested_limit)
 
     scanned = 0
     updated = 0
@@ -622,6 +846,13 @@ async def backfill_historical_trend_strategies(
         if hasattr(db, "get_strategy_metrics"):
             metrics_rows = await db.get_strategy_metrics(_text(strategy.get("id")))
             backtest_metrics = _pick_backtest_metrics(metrics_rows)
+        quality_report = None
+        get_quality_report = getattr(db, "get_strategy_quality_report", None)
+        if callable(get_quality_report):
+            try:
+                quality_report = await get_quality_report(_text(strategy.get("id")), "submission")
+            except TypeError:
+                quality_report = await get_quality_report(_text(strategy.get("id")))
         strategy_type = _text(strategy.get("strategy_type")).lower()
         target_symbols = _normalize_target_symbols(strategy)
         if strategy_type in _FACTOR_RECOMPILE_TYPES:
@@ -657,7 +888,7 @@ async def backfill_historical_trend_strategies(
             and _text(strategy.get("status")).lower() == "submitted"
         ):
             merged_params = dict(updated_payload.get("params") or {})
-            if _recompiled_formal_ready(merged_params, strategy):
+            if _recompiled_formal_ready(merged_params, strategy, quality_report=quality_report):
                 merged_params["submission_lane"] = "formal_incubation"
                 merged_params["incubation_budget_track"] = "formal_incubation"
                 merged_params["final_status"] = "incubating"

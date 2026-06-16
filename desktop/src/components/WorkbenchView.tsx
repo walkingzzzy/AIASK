@@ -197,6 +197,15 @@ export function WorkbenchView({
   const connection = connectionDisplay(status, health);
   const currentRun = recentRuns[0];
   const currentRunSummary = currentRun ? runSummary(currentRun) : null;
+  const recentSessions = summary?.recent_sessions || [];
+  const hasActiveTaskSurface = Boolean(
+    selectedThread ||
+      sessionId.trim() ||
+      timelineEvents.length ||
+      selectedRunArtifacts?.length ||
+      selectedRunSources?.length
+  );
+  const quietHome = !hasActiveTaskSurface;
   const taskContext: TaskContextSummary = {
     projectLabel: profileName || "本地工作区",
     threadLabel: selectedThread?.title || sessionId || "新线程",
@@ -271,7 +280,7 @@ export function WorkbenchView({
 
   return (
     <>
-      <header className="workbench-header task-object-header">
+      {!quietHome && <header className="workbench-header task-object-header">
         <div>
           <span className="endpoint-chip">{connection.label}</span>
           <h1>{selectedThread?.title || "AIASK 工作台"}</h1>
@@ -312,9 +321,14 @@ export function WorkbenchView({
             {status === "AIASK_DISCONNECTED" ? "连接" : "同步"}
           </button>
         </div>
-      </header>
+      </header>}
 
-      <section className="thread-surface">
+      <section className={`thread-surface ${quietHome ? "quiet-home-surface" : ""}`}>
+        {quietHome ? (
+          <section className="aiask-home-hero" aria-label="AIASK 工作台">
+            <h1>AIASK AGENT</h1>
+          </section>
+        ) : (
         <div className="thread-command-center optimized">
           <section className="workflow-panel">
             <div className="section-header">
@@ -480,10 +494,11 @@ export function WorkbenchView({
             <ReviewPanel comments={reviewComments} compact />
           </div>
         </div>
+        )}
       </section>
 
-      <form className="composer" onSubmit={onSubmit}>
-        <div className="composer-toolbar">
+      <form className={`composer ${quietHome ? "quiet" : ""}`} onSubmit={onSubmit}>
+        {!quietHome && <div className="composer-toolbar">
           <div aria-label="Agent 模式" className="segmented" role="group">
             <button
               aria-pressed={agentMode === "finance_safe"}
@@ -524,9 +539,9 @@ export function WorkbenchView({
           )}
 
           <span className="muted">{tools.length} 个工具可用</span>
-        </div>
+        </div>}
 
-        {agentMode === "hermes_full" && !controlToken.trim() && (
+        {!quietHome && agentMode === "hermes_full" && !controlToken.trim() && (
           <div className="notice warn compact-notice">
             <ShieldCheck size={14} />
             Hermes full 需要先在 Settings 中填写控制令牌。
@@ -542,7 +557,7 @@ export function WorkbenchView({
           />
           <button aria-label="运行线程任务" className="send-button" disabled={busy || !prompt.trim()} title="运行线程任务" type="submit">
             <Send size={16} />
-            运行
+            <span className="send-button-label">运行</span>
           </button>
         </div>
       </form>

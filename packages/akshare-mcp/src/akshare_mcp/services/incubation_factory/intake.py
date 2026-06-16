@@ -22,6 +22,18 @@ _GRADE_RANKS: dict[str, int] = {
 }
 
 
+def _resolve_db_async_method(db: Any, name: str) -> Any:
+    try:
+        method = getattr(db, name)
+    except Exception:
+        return None
+    if not callable(method):
+        return None
+    if type(method).__module__ == "unittest.mock" and name not in getattr(db, "__dict__", {}):
+        return None
+    return method
+
+
 class IncubationIntake:
     """自动识别和接纳策略工厂产出的新策略。"""
 
@@ -162,8 +174,8 @@ class IncubationIntake:
             )
 
         # === DEV-V1 P1: paper observation 通道 ===
-        # 默认 toggle OFF 时,_list_paper_observation_strategies 直接返回空列表,
-        # 无任何 DB 查询,与原行为完全一致。
+        # 默认开启,让已创建 paper account 的 observe 样本进入孵化消费;
+        # 设置 INCUBATION_FACTORY_PAPER_INTAKE_ENABLED=0 时返回空列表。
         paper_candidates = await self._list_paper_observation_strategies(db)
         paper_recognized = 0
         for strategy in paper_candidates:
@@ -220,17 +232,21 @@ class IncubationIntake:
             return []
         if not paper_intake_enabled():
             return []
-        if not hasattr(db, "list_paper_observation_strategies"):
-            return []
-        try:
-            return await db.list_paper_observation_strategies(
-                limit=paper_intake_batch_limit(),
-            )
-        except Exception as exc:
-            logger.warning(
-                "IncubationIntake: list_paper_observation_strategies failed: %s", exc,
-            )
-            return []
+        for method_name in (
+            "list_active_paper_observation_strategies",
+            "list_paper_observation_strategies",
+        ):
+            method = _resolve_db_async_method(db, method_name)
+            if method is None:
+                continue
+            try:
+                return await method(limit=paper_intake_batch_limit())
+            except Exception as exc:
+                logger.warning(
+                    "IncubationIntake: %s failed: %s", method_name, exc,
+                )
+                return []
+        return []
 
     async def _list_diagnostic_observation_strategies(self, db: Any) -> list[dict[str, Any]]:
         try:

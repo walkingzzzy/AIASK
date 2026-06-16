@@ -16,6 +16,7 @@ import {
   LineChart,
   MessageSquare,
   MessagesSquare,
+  PackageOpen,
   PlugZap,
   Puzzle,
   Radio,
@@ -30,6 +31,7 @@ import {
 } from "lucide-react";
 import type { ElementType } from "react";
 import type { ComponentType, ReactNode } from "react";
+import { viewToRoute } from "./routes";
 import type { MainView } from "./types";
 
 export interface ViewRegistryItem {
@@ -58,7 +60,7 @@ export interface ViewGroup {
   diagnosticOnly?: boolean;
 }
 
-export const VIEW_REGISTRY: ViewRegistryItem[] = [
+const VIEW_REGISTRY_BASE = [
   {
     id: "workbench",
     label: "工作台",
@@ -95,6 +97,14 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     description: "运行摘要、时间线视图和事件过滤。",
     group: "agent",
     route: "/runs-events",
+  },
+  {
+    id: "artifacts",
+    label: "产物",
+    icon: PackageOpen,
+    description: "聚合最近运行沉淀的 durable artifacts。",
+    group: "agent",
+    route: "/artifacts",
   },
   {
     id: "tools-intents-approvals",
@@ -353,7 +363,12 @@ export const VIEW_REGISTRY: ViewRegistryItem[] = [
     group: "ops",
     route: "/models",
   },
-];
+] satisfies ViewRegistryItem[];
+
+export const VIEW_REGISTRY: ViewRegistryItem[] = VIEW_REGISTRY_BASE.map((view) => ({
+  ...view,
+  route: viewToRoute(view.id),
+}));
 
 function pick(ids: MainView[]): ViewRegistryItem[] {
   return ids.map((id) => {
@@ -369,11 +384,10 @@ export const VIEW_GROUPS: ViewGroup[] = [
     label: "核心功能",
     items: pick([
       "workbench",
-      "projects-contexts",
       "runs-events",
       "integrations",
       "finance-lab",
-      "settings"
+      "readiness-health"
     ]),
   },
 ];

@@ -30,8 +30,20 @@ def _clear_env(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_paper_intake_disabled_by_default(intake):
-    """默认 toggle OFF: 不查询 paper 候选。"""
+async def test_paper_intake_enabled_by_default(intake):
+    """默认启用: 查询 paper 候选,让 observe 样本进入孵化消费。"""
+    db = MagicMock()
+    db.list_paper_observation_strategies = AsyncMock(return_value=[
+        {"id": "s1", "strategy_type": "volatility_breakout"},
+    ])
+    result = await intake._list_paper_observation_strategies(db)
+    assert result == [{"id": "s1", "strategy_type": "volatility_breakout"}]
+    db.list_paper_observation_strategies.assert_called_once_with(limit=50)
+
+
+@pytest.mark.asyncio
+async def test_paper_intake_can_be_disabled_by_env(intake, monkeypatch):
+    monkeypatch.setenv("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "0")
     db = MagicMock()
     db.list_paper_observation_strategies = AsyncMock(return_value=[
         {"id": "s1", "strategy_type": "volatility_breakout"},

@@ -1,0 +1,99 @@
+- generic [ref=e3] [box=8,8,1424,2303]:
+  - generic "Window controls" [ref=e4] [box=8,8,1424,18]:
+    - button "Hide sidebar" [ref=e5] [box=8,19,16,6]
+    - button "Swap sidebar sides" [ref=e6] [box=24,19,16,6]
+  - generic "App controls" [ref=e7] [box=8,26,1424,18]:
+    - button "Mute haptics" [ref=e8] [box=8,37,16,6]
+    - button "Keyboard shortcuts" [ref=e9] [box=24,37,16,6]
+    - button "Open settings" [ref=e10] [box=40,37,16,6]
+    - button "Show right sidebar" [ref=e11] [box=56,37,16,6]
+  - main [ref=e12] [box=8,60,1424,1844]:
+    - generic [ref=e13] [box=8,60,1424,1778]:
+      - generic [ref=e14] [box=8,60,1424,118]:
+        - separator "Resize chat-sidebar" [box=8,60,1424,0]
+        - generic [ref=e16] [box=8,60,1424,118]:
+          - list [ref=e19] [box=8,60,1424,84]:
+            - listitem [ref=e20] [box=48,60,1384,21]:
+              - button "New sessionCtrl N" [ref=e21] [box=48,60,128,21]
+            - listitem [ref=e23] [box=48,81,1384,21]:
+              - button "Skills & Tools" [ref=e24] [box=48,81,94,21]
+            - listitem [ref=e25] [box=48,102,1384,21]:
+              - button "Messaging" [ref=e26] [box=48,102,80,21]
+            - listitem [ref=e27] [box=48,123,1384,21]:
+              - button "Artifacts" [ref=e28] [box=48,123,64,21]
+          - tablist "Profiles" [ref=e30] [box=8,160,1424,18]:
+            - button "New profile" [ref=e32] [box=8,171,16,6]
+      - generic [ref=e36] [box=8,1622,1424,123]:
+        - generic [ref=e41] [box=8,1622,1424,84]:
+          - button "Add context" [ref=e43] [box=8,1633,16,6]
+          - generic [ref=e45] [box=8,1640,1424,40]:
+            - textbox "Message" [box=8,1640,1424,0]
+            - textbox [ref=e46] [box=8,1640,168,36]
+          - generic [ref=e48] [box=8,1680,1424,26]:
+            - button "Voice dictation" [disabled] [ref=e49] [box=8,1697,16,6]
+            - button "Start voice conversation" [disabled] [ref=e50] [box=24,1680,33,26]:
+              - img [ref=e51] [box=32,1683,17,17]
+        - generic [ref=e54] [box=8,1706,1424,18]: Drop files to attach
+        - generic [ref=e56] [box=8,1724,1424,21]: ⠋Waking up …
+      - complementary "Right sidebar" [ref=e60] [box=8,1745,237,93]:
+        - navigation "Right sidebar panels" [ref=e63] [box=8,1745,237,18]:
+          - button "File system" [pressed] [ref=e64] [box=8,1756,16,6]
+          - button "Terminal" [ref=e65] [box=24,1756,16,6]
+        - generic [ref=e66] [box=8,1763,237,75]:
+          - generic [ref=e67] [box=8,1763,237,21]:
+            - button "No folder selected" [ref=e68] [box=8,1763,123,21]:
+              - generic [ref=e69] [box=16,1766,107,15]: No folder selected
+            - button "Refresh tree" [disabled] [ref=e70] [box=131,1775,16,6]
+            - button "Open folder" [ref=e71] [box=147,1775,16,6]
+            - button "Collapse all folders" [disabled] [ref=e72] [box=163,1775,16,6]
+          - generic [ref=e73] [box=8,1784,237,54]:
+            - generic [ref=e74] [box=8,1784,237,18]: No project
+            - generic [ref=e75] [box=8,1802,237,36]: Set a working directory from the status bar to browse files.
+    - generic [ref=e76] [box=8,1838,1424,66]:
+      - generic [ref=e77] [box=8,1838,1424,33]:
+        - button [ref=e78] [box=8,1838,40,33]:
+          - img [ref=e79] [box=16,1841,24,24]
+        - button "Gatewayoffline" [ref=e81] [box=48,1838,128,33]:
+          - img [ref=e82] [box=56,1841,24,24]
+          - text: Gatewayoffline
+        - button "Agents" [ref=e84] [box=176,1838,82,33]:
+          - img [ref=e85] [box=184,1841,24,24]
+          - text: Agents
+        - button "Cron" [ref=e87] [box=257,1838,69,33]:
+          - img [ref=e88] [box=265,1841,24,24]
+          - text: Cron
+      - button "No model" [ref=e92] [box=8,1871,97,33]:
+        - generic [ref=e94] [box=16,1886,81,15]:
+          - text: No model
+          - img [ref=e95] [box=73,1874,24,24]
+  - generic [ref=e98] [box=8,1924,1424,201]:
+    - generic [ref=e99] [box=8,1924,1424,65]:
+      - heading "Let's get you setup with Hermes Agent" [level=2] [ref=e100] [box=8,1924,1424,27]
+      - paragraph [ref=e101] [box=8,1971,1424,18]: Connect a model provider to start chatting. Most options take one click.
+    - generic [ref=e102] [box=8,2005,1424,120]:
+      - generic [ref=e103] [box=8,2005,1424,18]: Hermes gateway unavailable
+      - status [ref=e104] [box=8,2039,1424,86]:
+        - paragraph [ref=e105] [box=8,2039,1424,18]: Starting Hermes…
+        - generic [ref=e106] [box=8,2073,1424,18]:
+          - text: "Desktop boot failed: Desktop IPC bridge is unavailable."
+          - generic [ref=e107] [box=366,2073,21,17]: 2%
+        - paragraph [ref=e108] [box=8,2107,1424,18]: Desktop IPC bridge is unavailable.
+  - generic [ref=e110] [box=8,2145,1424,166]:
+    - generic [ref=e112] [box=8,2145,1424,65]:
+      - heading "Hermes couldn't start" [level=2] [ref=e113] [box=8,2145,1424,27]
+      - paragraph [ref=e114] [box=8,2192,1424,18]: The background gateway didn't come up. Try one of the recovery steps below. Nothing here deletes your chats or settings.
+    - generic [ref=e115] [box=8,2226,1424,85]:
+      - generic [ref=e116] [box=8,2226,1424,18]: Desktop IPC bridge is unavailable.
+      - generic [ref=e117] [box=8,2244,1424,67]:
+        - generic [ref=e118] [box=8,2244,1424,33]:
+          - button "Retry" [ref=e119] [box=8,2244,72,33]:
+            - img [ref=e120] [box=16,2247,24,24]
+            - text: Retry
+          - button "Repair install" [ref=e123] [box=80,2244,117,33]:
+            - img [ref=e124] [box=88,2247,24,24]
+            - text: Repair install
+          - button "Use local gateway" [ref=e126] [box=197,2256,124,21]
+          - button "Open logs" [ref=e127] [box=321,2244,101,33]:
+            - img [ref=e128] [box=329,2247,24,24]
+            - text: Open logs
+        - paragraph [ref=e131] [box=8,2293,1424,18]: Repair re-runs the installer and can take a few minutes on a fresh machine.
