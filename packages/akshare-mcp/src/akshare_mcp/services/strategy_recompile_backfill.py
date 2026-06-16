@@ -64,6 +64,20 @@ def _safe_bool(value: Any) -> bool:
     return token in {"1", "true", "yes", "y", "on"}
 
 
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return float(default)
+
+
+def _safe_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return int(default)
+
+
 def _grade_at_least(value: Any, floor: str = "B") -> bool:
     grade = _text(value).upper()
     if not grade:
@@ -534,6 +548,82 @@ def _recompiled_formal_ready(
     return _strict_gate_passed(strategy, payload, quality_report=quality_report)
 
 
+async def _forward_skill_supports_promotion(
+    db: Any,
+    strategy: dict[str, Any],
+) -> tuple[bool, dict[str, Any]]:
+    """重编译转正前的真实前向 skill 门。
+
+    复用真转正路径(graduation)同一数据源:db.get_signal_stats → derive_signal_quality
+    → primary_skill_lcb。要求 primary_skill_lcb>0 且 primary_effective_n 达下限。
+    守诚实边界:取不到信号统计/无前向收益(effective_n=0)即返回 (False, ...),宁可不升。
+    门关闭时(toggle=0)返回 (True, {"gate":"disabled"}),保持旧行为。
+    """
+    try:
+        from akshare_mcp.config._strategy_factory_toggles import (
+            recompile_promotion_forward_skill_gate_enabled,
+            recompile_promotion_min_effective_n,
+        )
+    except Exception:
+        # toggle 模块不可用时,保守起见放行(等价旧行为),不阻断。
+        return True, {"gate": "toggle_import_failed"}
+
+    if not recompile_promotion_forward_skill_gate_enabled():
+        return True, {"gate": "disabled"}
+
+    strategy_id = _text(strategy.get("id"))
+    if not strategy_id:
+        return False, {"gate": "blocked", "reason": "missing_strategy_id"}
+
+    get_signal_stats = getattr(db, "get_signal_stats", None)
+    if not callable(get_signal_stats):
+        # 无法读前向证据时不放行——避免在缺数据环境下静默伪转正。
+        return False, {"gate": "blocked", "reason": "signal_stats_unavailable"}
+
+    try:
+        signal_stats = await get_signal_stats(strategy_id)
+    except Exception as exc:  # noqa: BLE001 - 取信号统计失败不得伪转正
+        return False, {"gate": "blocked", "reason": f"signal_stats_error:{type(exc).__name__}"}
+
+    try:
+        from akshare_mcp.services.strategy_lifecycle_shared.execution_quality import (
+            derive_signal_quality,
+        )
+    except Exception:
+        return False, {"gate": "blocked", "reason": "derive_signal_quality_unavailable"}
+
+    holding_bucket = None
+    params = dict(strategy.get("params") or {})
+    for key in ("holding_period_bucket", "holding_bucket"):
+        value = _text(params.get(key)) or _text(strategy.get(key))
+        if value:
+            holding_bucket = value
+            break
+
+    signal_quality = derive_signal_quality(signal_stats, holding_period_bucket=holding_bucket)
+    primary_skill_lcb = _safe_float(signal_quality.get("primary_skill_lcb"))
+    primary_effective_n = _safe_int(signal_quality.get("primary_effective_n"))
+    min_effective_n = recompile_promotion_min_effective_n()
+
+    evidence = {
+        "gate": "evaluated",
+        "primary_skill_lcb": primary_skill_lcb,
+        "primary_effective_n": primary_effective_n,
+        "min_effective_n": min_effective_n,
+        "coverage_ratio": _safe_float(signal_quality.get("coverage_ratio")),
+    }
+
+    if primary_effective_n < min_effective_n:
+        evidence["reason"] = "insufficient_forward_samples"
+        return False, evidence
+    if not (primary_skill_lcb > 0.0):
+        evidence["reason"] = "forward_skill_lcb_not_positive"
+        return False, evidence
+
+    evidence["passed"] = True
+    return True, evidence
+
+
 def build_trend_strategy_recompile_backfill(
     strategy: dict[str, Any],
     *,
@@ -839,6 +929,7 @@ async def backfill_historical_trend_strategies(
     revision_required = 0
     skipped = 0
     promoted_count = 0
+    promotion_forward_skill_blocked = 0
     items: list[dict[str, Any]] = []
     for strategy in rows:
         scanned += 1
@@ -882,6 +973,7 @@ async def backfill_historical_trend_strategies(
             )
         updated_payload = dict(result.get("updated_payload") or {})
         promoted = False
+        forward_skill_evidence: dict[str, Any] = {}
         if (
             promote_ready
             and result.get("status") == "recompiled"
@@ -889,15 +981,23 @@ async def backfill_historical_trend_strategies(
         ):
             merged_params = dict(updated_payload.get("params") or {})
             if _recompiled_formal_ready(merged_params, strategy, quality_report=quality_report):
-                merged_params["submission_lane"] = "formal_incubation"
-                merged_params["incubation_budget_track"] = "formal_incubation"
-                merged_params["final_status"] = "incubating"
-                merged_params["formal_track_requested"] = True
-                merged_params["formal_track_auto_corrected"] = True
-                merged_params["formal_promoted_via"] = "trend_recompile_backfill"
-                updated_payload["params"] = merged_params
-                updated_payload["status"] = "incubating"
-                promoted = True
+                # 结构性 readiness 满足后,再加真实前向 skill 门:observe 期本应积累的
+                # 前向收益必须显著(primary_skill_lcb>0 且样本量达标)才允许转 formal,
+                # 否则保留在 observe 池继续观察。守诚实边界:缺前向证据不升。
+                forward_ok, forward_skill_evidence = await _forward_skill_supports_promotion(
+                    db, strategy
+                )
+                if forward_ok:
+                    merged_params["submission_lane"] = "formal_incubation"
+                    merged_params["incubation_budget_track"] = "formal_incubation"
+                    merged_params["final_status"] = "incubating"
+                    merged_params["formal_track_requested"] = True
+                    merged_params["formal_track_auto_corrected"] = True
+                    merged_params["formal_promoted_via"] = "trend_recompile_backfill"
+                    merged_params["formal_promotion_forward_skill"] = dict(forward_skill_evidence)
+                    updated_payload["params"] = merged_params
+                    updated_payload["status"] = "incubating"
+                    promoted = True
         changed = _save_payload_changed(strategy, updated_payload) or promoted
         if result.get("status") == "recompiled":
             recompiled += 1
@@ -920,10 +1020,17 @@ async def backfill_historical_trend_strategies(
                 "target_symbols": list(result.get("target_symbols") or []),
                 "changed": changed,
                 "promoted_to_formal": promoted,
+                "forward_skill_gate": dict(forward_skill_evidence) if forward_skill_evidence else {},
                 "applied_param_fields": list(result.get("applied_param_fields") or []),
                 "preserved_param_fields": list(result.get("preserved_param_fields") or []),
             }
         )
+        if (
+            forward_skill_evidence
+            and not promoted
+            and str(forward_skill_evidence.get("gate")) == "evaluated"
+        ):
+            promotion_forward_skill_blocked += 1
     return {
         "scanned": scanned,
         "updated": updated,
@@ -931,6 +1038,7 @@ async def backfill_historical_trend_strategies(
         "revision_required": revision_required,
         "skipped": skipped,
         "promoted_to_formal": promoted_count,
+        "promotion_forward_skill_blocked": promotion_forward_skill_blocked,
         "dry_run": bool(dry_run),
         "force": bool(force),
         "items": items,

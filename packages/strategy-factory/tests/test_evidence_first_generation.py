@@ -308,3 +308,55 @@ def test_market_evidence_sanitizes_non_finite_factor_metrics() -> None:
     }
     assert resolved["market_evidence_pack"]["factor_backed"] is True
     _assert_all_finite(resolved)
+
+
+def _default_entry_evidence(pack):
+    """Build the backfill default evidence chain and return ev_entry_signal."""
+    from strategy_factory.application import semantic_contract as sc
+
+    candidate = {"name": "t", "hypothesis": "h"}
+    if pack is not None:
+        candidate["market_evidence_pack"] = pack
+    chain = sc._build_default_evidence_chain(
+        candidate,
+        strategy_type="momentum",
+        target_symbols=["600000"],
+        horizon_days=10,
+    )
+    return chain["evidences"][0]
+
+
+def test_backfill_evidence_chain_marks_missing_pack_as_proxy() -> None:
+    # 无 market_evidence_pack 的纯模板兜底候选必须诚实标 proxy_only=True,
+    # 而非伪装成 price_volume_confirmation 真实证据(历史 >=0.999 阈值 bug)。
+    entry = _default_entry_evidence(None)
+    assert entry["proxy_only"] is True
+    assert entry["source_type"] == "template_fallback"
+
+
+def test_backfill_evidence_chain_zero_score_without_real_evidence_is_proxy() -> None:
+    # 有 pack 但 non_proxy_evidence_ratio=0(无真实非模板证据)仍是 proxy。
+    entry = _default_entry_evidence(
+        {"template_dominance_score": 0.0, "non_proxy_evidence_ratio": 0.0}
+    )
+    assert entry["proxy_only"] is True
+    assert entry["source_type"] == "template_fallback"
+
+
+def test_backfill_evidence_chain_high_template_dominance_is_proxy() -> None:
+    # 高模板主导(0<score<0.999)旧逻辑错标 proxy_only=False,现必须为 True。
+    for score in (0.5, 0.95, 0.998):
+        entry = _default_entry_evidence(
+            {"template_dominance_score": score, "non_proxy_evidence_ratio": 1.0 - score}
+        )
+        assert entry["proxy_only"] is True, f"score={score} should be proxy"
+        assert entry["source_type"] == "template_fallback"
+
+
+def test_backfill_evidence_chain_real_evidence_is_not_proxy() -> None:
+    # 仅当 pack 存在 + 无模板主导 + 有真实非模板证据时才标 price_volume_confirmation。
+    entry = _default_entry_evidence(
+        {"template_dominance_score": 0.0, "non_proxy_evidence_ratio": 1.0}
+    )
+    assert entry["proxy_only"] is False
+    assert entry["source_type"] == "price_volume_confirmation"

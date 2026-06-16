@@ -108,6 +108,13 @@
             })
             created = True
 
+        # 仅当账户新建或 stage 实际发生跃迁时才发 account_bound 事件。
+        # 历史问题:每轮孵化对所有已绑定账户重复发 account_bound(created=False 且 stage 未变),
+        # 使 strategy_domain_events 表里该事件膨胀到 86 万行(13406 账户 × ~64 轮),
+        # 绝大多数是无变化的重复噪声。幂等 re-bind 不应留痕。
+        stage_changed = bool(existing_stage) and existing_stage != stage
+        emit_bound_event = created or stage_changed
+
         bind = await db.save_strategy_incubation_account(
             strategy_id,
             account['id'],
@@ -120,19 +127,22 @@
                 **trace_metadata,
             },
         )
-        await self._record_domain_event(
-            db,
-            strategy_id,
-            'incubation.account_bound',
-            {
-                'account_id': account['id'],
-                'stage': stage,
-                'created': created,
-                'source_run_id': source_run_id,
-                'trace': trace_metadata,
-            },
-            correlation_id=trace_metadata.get('correlation_id') or source_run_id,
-        )
+        if emit_bound_event:
+            await self._record_domain_event(
+                db,
+                strategy_id,
+                'incubation.account_bound',
+                {
+                    'account_id': account['id'],
+                    'stage': stage,
+                    'created': created,
+                    'stage_changed': stage_changed,
+                    'previous_stage': existing_stage,
+                    'source_run_id': source_run_id,
+                    'trace': trace_metadata,
+                },
+                correlation_id=trace_metadata.get('correlation_id') or source_run_id,
+            )
         return {'created': created, 'account': account, 'binding': bind}
 
     async def _latest_price(self, db, code: str) -> Optional[float]:

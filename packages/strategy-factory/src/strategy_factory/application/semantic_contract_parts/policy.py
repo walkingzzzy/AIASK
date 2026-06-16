@@ -377,6 +377,18 @@ def _build_default_evidence_chain(
     confidence = _semantic_contract_confidence(candidate, default=0.45)
     market_evidence_pack = _as_dict(_candidate_value(candidate, "market_evidence_pack"))
     template_dominance_score = _safe_float(market_evidence_pack.get("template_dominance_score"))
+    non_proxy_evidence_ratio = _safe_float(market_evidence_pack.get("non_proxy_evidence_ratio"))
+    # 诚实判定:这是 default/backfill 兜底构造器,ev_entry_signal 默认就是模板派生的 proxy。
+    # 仅当候选带真实 market_evidence_pack 且其中有非模板证据(template_dominance<=阈值
+    # 且 non_proxy_evidence_ratio>0)时才标 price_volume_confirmation。
+    # 历史 bug:旧阈值 >=0.999 把无 pack(score=0,_safe_float(None)=0.0)与高模板主导
+    # (0<score<0.999)的候选都错标成 proxy_only=False,伪装真实价量证据。
+    has_real_evidence_backing = (
+        bool(market_evidence_pack)
+        and template_dominance_score <= _TEMPLATE_FALLBACK_DOMINANCE_THRESHOLD
+        and non_proxy_evidence_ratio > 0.0
+    )
+    is_template_proxy = not has_real_evidence_backing
     return {
         "contract_version": "strategy_factory.semantic_contract.v1",
         "producer": "strategy_factory",
@@ -385,10 +397,10 @@ def _build_default_evidence_chain(
         "evidences": [
             {
                 "evidence_id": "ev_entry_signal",
-                "source_type": "template_fallback" if template_dominance_score >= 0.999 else "price_volume_confirmation",
+                "source_type": "template_fallback" if is_template_proxy else "price_volume_confirmation",
                 "direction": direction,
                 "summary": thesis,
-                "proxy_only": template_dominance_score >= 0.999,
+                "proxy_only": is_template_proxy,
                 "raw_confidence": confidence,
                 "calibrated_confidence": confidence,
                 "target_symbols": list(target_symbols),

@@ -24,12 +24,15 @@ def paper_intake_enabled() -> bool:
 
 
 def paper_intake_batch_limit() -> int:
-    raw = os.getenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "50")
+    # 默认 500、硬上界 3000。实测每策略孵化处理 ~0.05s(信号/前向/指标多数无新数据快速跳过),
+    # 单轮 BATCH_TIMEOUT_SEC=600s 下可安全处理数千策略,旧上界 500 是人为瓶颈——observe
+    # 积压(stage=paper)上万时每轮只吃 300-500 需数十轮才清一遍。放宽上界让积压更快收敛。
+    raw = os.getenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "500")
     try:
         value = int(str(raw).strip())
     except Exception:
-        value = 50
-    return max(1, min(value, 500))
+        value = 500
+    return max(1, min(value, 3000))
 
 
 def recompile_remediation_enabled() -> bool:
@@ -46,6 +49,31 @@ def recompile_remediation_batch_limit() -> int:
     except Exception:
         value = 200
     return max(1, min(value, 1000))
+
+
+def recompile_promotion_forward_skill_gate_enabled() -> bool:
+    """重编译转正(observe submitted → formal incubating)前是否强制真实前向 skill 门。
+
+    默认 ON。原 recompile 转正只看结构性条件(compiled_dsl/measured profile/提交期回测
+    grade),完全不读前向收益,会把"observe 期未经任何前向 skill 验证"的样本仅凭工程补齐
+    就升进 incubating 池——伪转正。开启后要求 primary_skill_lcb>0 且 effective_n 达 warmup
+    底线才放行。守诚实边界:取不到前向证据(无信号/无 forward_returns)即不升,宁可留在 observe。
+    设 INCUBATION_FACTORY_RECOMPILE_PROMOTION_FORWARD_SKILL_GATE_ENABLED=0 可关(不建议)。"""
+    return _env_bool(
+        "INCUBATION_FACTORY_RECOMPILE_PROMOTION_FORWARD_SKILL_GATE_ENABLED",
+        default=True,
+    )
+
+
+def recompile_promotion_min_effective_n() -> int:
+    """重编译转正前向 skill 门要求的 primary_effective_n 下限(默认 12,对齐 long-bucket
+    warmup_min_n)。低于此样本量视为前向证据不足,不放行转正。"""
+    raw = os.getenv("INCUBATION_FACTORY_RECOMPILE_PROMOTION_MIN_EFFECTIVE_N", "12")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 12
+    return max(1, min(value, 200))
 
 
 def diagnostic_intake_enabled() -> bool:

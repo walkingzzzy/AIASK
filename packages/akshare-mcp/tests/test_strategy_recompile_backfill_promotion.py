@@ -42,10 +42,61 @@ def _synth_trend_klines(n: int = 220, *, start: float = 10.0) -> list[dict]:
     return rows
 
 
+def _strong_signal_stats() -> dict:
+    """强前向 skill:5d/10d hit_rate≈0.62,样本充足 → primary_skill_lcb>0。
+
+    signal_stats 的指标按 horizon (1/5/10/20) 分桶,derive_signal_quality 默认 primary=5d。
+    """
+    return {
+        "raw_signal_count": 60,
+        "signals_with_forward_returns_count": 60,
+        "hit_rate": {1: 0.6, 5: 0.62, 10: 0.6, 20: 0.58},
+        "hit_rate_lcb": {1: 0.55, 5: 0.57, 10: 0.55, 20: 0.53},
+        "null_hit_rate": {1: 0.5, 5: 0.5, 10: 0.5, 20: 0.5},
+        "sample_count": {1: 60, 5: 60, 10: 60, 20: 55},
+        "effective_n": {1: 40, 5: 40, 10: 35, 20: 30},
+    }
+
+
+def _weak_signal_stats() -> dict:
+    """弱前向 skill:hit_rate_lcb 低于 null → primary_skill_lcb<=0,应被转正门拦住。"""
+    return {
+        "raw_signal_count": 60,
+        "signals_with_forward_returns_count": 60,
+        "hit_rate": {1: 0.48, 5: 0.47, 10: 0.46, 20: 0.45},
+        "hit_rate_lcb": {1: 0.42, 5: 0.41, 10: 0.40, 20: 0.39},
+        "null_hit_rate": {1: 0.5, 5: 0.5, 10: 0.5, 20: 0.5},
+        "sample_count": {1: 60, 5: 60, 10: 60, 20: 55},
+        "effective_n": {1: 40, 5: 40, 10: 35, 20: 30},
+    }
+
+
+def _thin_signal_stats() -> dict:
+    """前向样本不足:effective_n 低于 min_effective_n(12),即便方向对也不放行。"""
+    return {
+        "raw_signal_count": 6,
+        "signals_with_forward_returns_count": 6,
+        "hit_rate": {5: 0.7, 10: 0.68},
+        "hit_rate_lcb": {5: 0.6, 10: 0.58},
+        "null_hit_rate": {5: 0.5, 10: 0.5},
+        "sample_count": {5: 6, 10: 6},
+        "effective_n": {5: 4, 10: 3},
+    }
+
+
 class _FakeDB:
-    def __init__(self, strategies: list[dict], quality_reports: dict[str, dict] | None = None) -> None:
+    def __init__(
+        self,
+        strategies: list[dict],
+        quality_reports: dict[str, dict] | None = None,
+        signal_stats: dict[str, dict] | None = None,
+    ) -> None:
         self._strategies = {s["id"]: dict(s) for s in strategies}
         self._quality_reports = dict(quality_reports or {})
+        # 默认给每个策略一份强前向 skill 统计,使结构性 readiness 满足者能通过新的
+        # 前向 skill 转正门。需测试"弱/缺前向 skill 被门拦住"时传入显式 signal_stats
+        # 或 signal_stats={} 关闭默认。
+        self._signal_stats = dict(signal_stats) if signal_stats is not None else None
         self.saved: list[dict] = []
         self.klines = _synth_trend_klines(220)
 
@@ -67,6 +118,12 @@ class _FakeDB:
         _ = report_type
         report = self._quality_reports.get(strategy_id)
         return dict(report) if report else None
+
+    async def get_signal_stats(self, strategy_id):
+        if self._signal_stats is not None:
+            return dict(self._signal_stats.get(strategy_id) or {})
+        # 默认强前向 skill:5d/10d hit_rate 高、样本充足 → primary_skill_lcb>0。
+        return _strong_signal_stats()
 
     async def get_klines(self, code, start_date=None, end_date=None, limit=None):
         rows = list(self.klines)
@@ -242,6 +299,73 @@ async def test_backfill_promotes_ready_observe_to_formal() -> None:
     saved = db.saved[-1]
     assert saved["status"] == "incubating"
     assert dict(saved["params"]).get("submission_lane") == "formal_incubation"
+
+
+@pytest.mark.asyncio
+async def test_backfill_blocks_promotion_when_forward_skill_not_positive() -> None:
+    # 结构性 readiness 满足,但真实前向 skill_lcb<=0 → 不升 formal(防伪转正)。
+    db = _FakeDB(
+        [_momentum_strategy("mom-weak", strict_ready=True)],
+        signal_stats={"mom-weak": _weak_signal_stats()},
+    )
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-weak"], measure_profile=True, promote_ready=True
+    )
+    assert report["recompiled"] == 1
+    assert report["promoted_to_formal"] == 0
+    assert report["promotion_forward_skill_blocked"] == 1
+    if db.saved:
+        assert db.saved[-1]["status"] != "incubating"
+    item = next(i for i in report["items"] if i["strategy_id"] == "mom-weak")
+    assert item["forward_skill_gate"]["reason"] == "forward_skill_lcb_not_positive"
+
+
+@pytest.mark.asyncio
+async def test_backfill_blocks_promotion_when_forward_samples_insufficient() -> None:
+    # 前向样本量不足(effective_n < min)即便方向对也不放行。
+    db = _FakeDB(
+        [_momentum_strategy("mom-thin", strict_ready=True)],
+        signal_stats={"mom-thin": _thin_signal_stats()},
+    )
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-thin"], measure_profile=True, promote_ready=True
+    )
+    assert report["promoted_to_formal"] == 0
+    assert report["promotion_forward_skill_blocked"] == 1
+    item = next(i for i in report["items"] if i["strategy_id"] == "mom-thin")
+    assert item["forward_skill_gate"]["reason"] == "insufficient_forward_samples"
+
+
+@pytest.mark.asyncio
+async def test_backfill_blocks_promotion_when_signal_stats_unavailable() -> None:
+    # db 无 get_signal_stats(缺前向证据来源)→ 守诚实边界,不伪转正。
+    db = _FakeDB([_momentum_strategy("mom-nostats", strict_ready=True)])
+    db.get_signal_stats = None  # 使 callable() 判定为 False,模拟缺数据来源环境
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-nostats"], measure_profile=True, promote_ready=True
+    )
+    assert report["promoted_to_formal"] == 0
+    item = next(i for i in report["items"] if i["strategy_id"] == "mom-nostats")
+    assert item["forward_skill_gate"]["reason"] == "signal_stats_unavailable"
+
+
+@pytest.mark.asyncio
+async def test_backfill_forward_skill_gate_can_be_disabled(monkeypatch) -> None:
+    # 关闭门(toggle=0)恢复旧行为:仅凭结构性条件转正(用于显式回退,不建议)。
+    monkeypatch.setenv(
+        "INCUBATION_FACTORY_RECOMPILE_PROMOTION_FORWARD_SKILL_GATE_ENABLED", "0"
+    )
+    db = _FakeDB(
+        [_momentum_strategy("mom-gateoff", strict_ready=True)],
+        signal_stats={"mom-gateoff": _weak_signal_stats()},
+    )
+    report = await backfill_historical_trend_strategies(
+        db, strategy_ids=["mom-gateoff"], measure_profile=True, promote_ready=True
+    )
+    # 门关闭 → 即使前向 skill 弱也转正(旧行为)
+    assert report["promoted_to_formal"] == 1
+    item = next(i for i in report["items"] if i["strategy_id"] == "mom-gateoff")
+    assert item["forward_skill_gate"]["gate"] == "disabled"
 
 
 @pytest.mark.asyncio

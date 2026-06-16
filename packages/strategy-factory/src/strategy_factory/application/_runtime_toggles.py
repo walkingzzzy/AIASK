@@ -120,12 +120,15 @@ def paper_intake_enabled() -> bool:
 
 # === DEV-V1 P1 配套:单批 paper observation 的 batch limit ===
 def paper_intake_batch_limit() -> int:
-    raw = os.getenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "50")
+    # 默认 500、硬上界 3000(与 akshare-mcp/_strategy_factory_toggles.py 同步)。
+    # 实测每策略孵化处理 ~0.05s,单轮 BATCH_TIMEOUT_SEC=600s 下可处理数千,旧上界 500
+    # 是人为瓶颈——observe(stage=paper)积压上万时收敛太慢。
+    raw = os.getenv("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "500")
     try:
         value = int(str(raw).strip())
     except Exception:
-        value = 50
-    return max(1, min(value, 500))
+        value = 500
+    return max(1, min(value, 3000))
 
 
 def recompile_remediation_enabled() -> bool:

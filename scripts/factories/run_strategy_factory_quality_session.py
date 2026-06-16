@@ -210,7 +210,9 @@ def _apply_session_env(sqlite_path: Path) -> None:
     os.environ.setdefault("FACTOR_MINING_FACTORY_ENABLED", "1")
     os.environ.setdefault("STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED", "1")
     os.environ.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
-    os.environ.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "300")
+    # 1500/轮:observe(stage=paper)积压上万时加速收敛(实测每策略孵化 ~0.05s,
+    # incubating200+paper1500 串行约 85s,远低于 BATCH_TIMEOUT_SEC=600)。
+    os.environ.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "1500")
     os.environ["INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED"] = "0"
     os.environ.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "300")
     os.environ.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "C")

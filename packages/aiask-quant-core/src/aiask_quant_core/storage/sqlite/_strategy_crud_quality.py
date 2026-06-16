@@ -310,6 +310,89 @@ class _StrategyCrudQualityMixin:
                 rows = await conn.fetch(sql, *params)
             return [self._decode_domain_event(dict(row)) for row in rows]
 
+        async def prune_strategy_domain_events(
+            self,
+            *,
+            event_types: Optional[List[str]] = None,
+            keep_per_type: int = 5000,
+            older_than_days: Optional[int] = None,
+            dry_run: bool = True,
+        ) -> dict:
+            """有界裁剪 strategy_domain_events 高频低价值事件,缓解表膨胀。
+
+            该表无任何保留机制,高频幂等事件(如 incubation.account_bound /
+            incubation.pipeline_evaluated)会无上限累积到百万行级。此方法按 event_type
+            分组,每类保留最近 keep_per_type 行(按 created_at DESC),其余删除;可选叠加
+            older_than_days 只删超期行。dry_run=True(默认)只统计不删除,供先审计后执行。
+
+            守边界:默认 dry_run;只动显式传入的 event_types(不传则不删任何东西,仅返回
+            各类型计数供决策);不触碰 stage_transitioned / status_changed 等低频审计事件
+            除非调用方显式列出。删除按 id 范围,不影响每类最近窗口。
+            """
+            async with self.acquire() as conn:
+                type_rows = await conn.fetch(
+                    "SELECT event_type, COUNT(*) AS cnt FROM strategy_domain_events GROUP BY event_type ORDER BY cnt DESC"
+                )
+                counts = {str(r["event_type"]): int(r["cnt"]) for r in type_rows}
+                if not event_types:
+                    return {
+                        "dry_run": bool(dry_run),
+                        "event_type_counts": counts,
+                        "deleted": 0,
+                        "planned_deletes": {},
+                        "note": "no event_types supplied; returning counts only (no deletion)",
+                    }
+
+                keep_n = max(0, int(keep_per_type or 0))
+                planned: dict[str, int] = {}
+                deleted_total = 0
+                for event_type in event_types:
+                    etype = str(event_type or "").strip()
+                    if not etype:
+                        continue
+                    # 用自增主键 id 作精确游标(created_at 是秒级 TEXT,同秒批量插入会产生
+                    # 并列时间戳,用 created_at<=cutoff 会误删保留窗口内的同秒行)。
+                    # 取该类型第 keep_n 新行的 id 作为保留下界:id <= cutoff_id 的才删。
+                    threshold_row = await conn.fetchrow(
+                        """
+                        SELECT id FROM strategy_domain_events
+                        WHERE event_type = $1
+                        ORDER BY id DESC
+                        LIMIT 1 OFFSET $2
+                        """,
+                        etype,
+                        keep_n,
+                    )
+                    if threshold_row is None:
+                        # 总行数 <= keep_n,无需裁剪。
+                        planned[etype] = 0
+                        continue
+                    cutoff_id = threshold_row["id"]
+                    where = "event_type = $1 AND id <= $2"
+                    args: list = [etype, cutoff_id]
+                    if older_than_days is not None and int(older_than_days) > 0:
+                        where += f" AND created_at < datetime('now', '-{int(older_than_days)} days')"
+                    count_row = await conn.fetchrow(
+                        f"SELECT COUNT(*) AS cnt FROM strategy_domain_events WHERE {where}",
+                        *args,
+                    )
+                    n = int((count_row or {}).get("cnt") or 0)
+                    planned[etype] = n
+                    if not dry_run and n > 0:
+                        await conn.execute(
+                            f"DELETE FROM strategy_domain_events WHERE {where}",
+                            *args,
+                        )
+                        deleted_total += n
+            return {
+                "dry_run": bool(dry_run),
+                "event_type_counts": counts,
+                "keep_per_type": keep_n,
+                "older_than_days": older_than_days,
+                "planned_deletes": planned,
+                "deleted": deleted_total,
+            }
+
         async def count_strategies_by_type(self, status: str = "listed") -> Dict[str, int]:
             async with self.acquire() as conn:
                 rows = await conn.fetch(

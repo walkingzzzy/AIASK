@@ -165,6 +165,20 @@ def test_ensure_account_is_idempotent_for_same_strategy_and_run():
     assert len(db.bindings) == 1
     assert list(db.bindings.values())[0]["source_run_id"] == "factory-run-1"
 
+    # 事件去重:首次新建发 account_bound,第二次幂等 re-bind(stage 未变)不再发,
+    # 避免 strategy_domain_events 表被无变化的重复事件膨胀。
+    bound_events = [e for e in db.events if e.get("event_type") == "incubation.account_bound"]
+    assert len(bound_events) == 1
+    assert bound_events[0]["payload"]["created"] is True
+
+    # stage 真正跃迁时应重新发事件(warmup → paper)。
+    asyncio.run(service.ensure_account(db, strategy, stage="paper", source_run_id="factory-run-2"))
+    bound_events = [e for e in db.events if e.get("event_type") == "incubation.account_bound"]
+    assert len(bound_events) == 2
+    assert bound_events[1]["payload"]["stage_changed"] is True
+    assert bound_events[1]["payload"]["previous_stage"] == "warmup"
+    assert bound_events[1]["payload"]["stage"] == "paper"
+
 
 def test_replay_strategy_history_replays_market_days_in_chronological_order():
     service = _RecordingReplayService()

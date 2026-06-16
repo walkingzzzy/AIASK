@@ -36,6 +36,12 @@ _SUPPORTED_DSL_COMPARE_OPS = {
 }
 _SUPPORTED_DSL_BINARY_OPS = {"add", "sub", "mul", "div", "max", "min"}
 _CONFIDENCE_CONTRACT_VERSION = "p2-stable/v1"
+# 模板主导度阈值：default/backfill 兜底证据链里,只要存在任何模板兜底成分
+# (template_dominance_score > 0),该 evidence 即标 proxy_only=True / source_type=template_fallback。
+# 历史 bug:旧阈值 >=0.999 把 score∈[0,0.999) 的候选(含 score=0 的纯模板兜底、无真实 pack 者)
+# 错标成 proxy_only=False/price_volume_confirmation,伪装真实价量证据。与 policy_contract.py
+# 的 template_fallback_used(>0) 及 market_evidence.py 的 template_fallback_used(>0) 口径对齐。
+_TEMPLATE_FALLBACK_DOMINANCE_THRESHOLD = 0.0
 _TREND_EXECUTABLE_DSL_TYPES = {"ma_cross", "momentum", "volatility_breakout", "event_structure_breakout"}
 _AMBIGUOUS_REGIME_TOKENS = {
     "明显震荡",
