@@ -28,6 +28,7 @@ desktop/dist/
 desktop/test-results/
 desktop/playwright-report/
 desktop/manual-results/
+desktop/src-tauri/gen/
 desktop/src-tauri/target/
 desktop/.pytest_cache/
 

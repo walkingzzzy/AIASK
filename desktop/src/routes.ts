@@ -1,0 +1,63 @@
+import type { DeferredViewId, ViewId } from "./types";
+
+export const V1_DEFERRED_VIEWS: readonly DeferredViewId[] = [
+  "strategy-factory",
+  "factor-factory",
+  "incubation",
+  "factory-events"
+] as const;
+
+export const V1_ROUTES: Record<ViewId, string> = {
+  workbench: "/",
+  models: "/models",
+  "projects-contexts": "/projects",
+  "sessions-runs": "/sessions-runs",
+  "tools-approvals": "/tools-approvals",
+  integrations: "/integrations",
+  "mcp-connectors": "/mcp-connectors",
+  "plugins-skills": "/plugins-skills",
+  "gateway-webhooks": "/gateway-webhooks",
+  "stock-data-sources": "/stock-data-sources",
+  "data-sync": "/data-sync",
+  "finance-lab": "/finance",
+  "stock-radar": "/stock-radar",
+  "market-temperature": "/market-temperature",
+  "quant-research": "/quant-research",
+  "financial-manager": "/financial-manager",
+  automation: "/automation",
+  workflows: "/workflows",
+  "settings-security": "/settings",
+  "readiness-health": "/readiness",
+  "local-user-memory": "/local-user-memory",
+  "learning-rl": "/learning-rl",
+  "native-diagnostics": "/native-diagnostics"
+};
+
+export const DEFERRED_ROUTE_ALIASES: Record<string, ViewId> = {
+  "/strategy-factory": "finance-lab",
+  "/factor-factory": "finance-lab",
+  "/incubation": "finance-lab",
+  "/factory-events": "finance-lab",
+  "/finance/strategy": "finance-lab",
+  "/finance/factor": "finance-lab",
+  "/finance/incubation": "finance-lab",
+  "/finance/events": "finance-lab"
+};
+
+const VIEW_BY_ROUTE = Object.entries(V1_ROUTES).reduce<Record<string, ViewId>>(
+  (acc, [view, route]) => ({ ...acc, [route]: view as ViewId }),
+  {}
+);
+
+export function routeToView(pathname: string): ViewId {
+  const normalized = pathname.replace(/\/+$/, "") || "/";
+  return VIEW_BY_ROUTE[normalized] ?? DEFERRED_ROUTE_ALIASES[normalized] ?? "workbench";
+}
+
+export function viewToRoute(view: ViewId): string {
+  return V1_ROUTES[view];
+}
+
+export function isDeferredView(view: string): view is DeferredViewId {
+  return V1_DEFERRED_VIEWS.includes(view as DeferredViewId);
+}
