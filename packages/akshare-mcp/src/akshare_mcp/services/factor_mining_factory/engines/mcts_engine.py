@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import math
 import random
@@ -186,6 +187,10 @@ class MCTSSearchEngine:
                     if self._validate_expression(best_expr):
                         self._visited_expressions.add(best_expr)
                         candidates.append(self._build_candidate(best_expr, i))
+
+                # P1-F: 每次 MCTS 搜索后让出 event loop,使并行 llm_primary httpx 回调有调度窗口。
+                # _run_mcts 是纯 CPU 同步、整循环无 await,会独占 loop 阻塞 LLM 引擎。
+                await asyncio.sleep(0)
 
             # 如果 MCTS 产出不足，用随机合法表达式补充
             if len(candidates) < budget.candidate_count:

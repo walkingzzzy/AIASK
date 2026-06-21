@@ -36,9 +36,9 @@ def test_event_recognition_accepts_string_array():
     assert "robotics_automation" in theme_codes
 
 
-def test_event_recognition_rejects_empty_list():
+def test_event_recognition_accepts_empty_list_as_valid_no_signal():
     output = {"events": []}
-    assert validate_stage_output("event_recognition", output) is False
+    assert validate_stage_output("event_recognition", output) is True
 
 
 def test_event_recognition_accepts_proper_object_list():
@@ -80,9 +80,9 @@ def test_theme_propagation_rejects_placeholder_string():
     assert validate_stage_output("theme_propagation", output) is False
 
 
-def test_theme_propagation_rejects_empty():
+def test_theme_propagation_accepts_empty_as_valid_no_signal():
     output = {"themes": []}
-    assert validate_stage_output("theme_propagation", output) is False
+    assert validate_stage_output("theme_propagation", output) is True
 
 
 # ---------------------------------------------------------------------------
@@ -116,9 +116,9 @@ def test_exposure_mapping_accepts_singleton_object():
     assert output["exposures"][0]["theme_code"] == "new_energy_vehicle"
 
 
-def test_exposure_mapping_rejects_empty():
+def test_exposure_mapping_accepts_empty_as_valid_no_signal():
     output = {"exposures": []}
-    assert validate_stage_output("exposure_mapping", output) is False
+    assert validate_stage_output("exposure_mapping", output) is True
 
 
 def test_exposure_mapping_rejects_pure_industry_names():

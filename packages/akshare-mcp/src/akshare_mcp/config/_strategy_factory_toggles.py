@@ -89,6 +89,93 @@ def diagnostic_intake_batch_limit() -> int:
     return max(1, min(value, 50))
 
 
+def execution_audit_acceptance_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_EXECUTION_AUDIT_ACCEPTANCE_ENABLED", default=True)
+
+
+def execution_audit_acceptance_backfill_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_EXECUTION_AUDIT_ACCEPTANCE_BACKFILL_ENABLED", default=True)
+
+
+def execution_audit_acceptance_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_EXECUTION_AUDIT_ACCEPTANCE_BATCH_LIMIT", "80")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 80
+    return max(1, min(value, 500))
+
+
+def execution_audit_remediation_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_EXECUTION_AUDIT_REMEDIATION_ENABLED", default=False)
+
+
+def execution_audit_remediation_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_EXECUTION_AUDIT_REMEDIATION_BATCH_LIMIT", "5")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 5
+    return max(1, min(value, 50))
+
+
+def execution_audit_remediation_target_trade_count() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_EXECUTION_AUDIT_REMEDIATION_TARGET_TRADE_COUNT", "20")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 20
+    return max(1, min(value, 200))
+
+
+def paper_execution_backlog_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_ENABLED", default=True)
+
+
+def paper_execution_backlog_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_BATCH_LIMIT", "200")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 200
+    return max(1, min(value, 1000))
+
+
+def execution_audit_native_evidence_backfill_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_ENABLED", default=True)
+
+
+def execution_audit_native_evidence_backfill_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_BATCH_LIMIT", "200")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 200
+    return max(1, min(value, 1000))
+
+
+def stale_paper_position_closure_enabled() -> bool:
+    return _env_bool("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", default=False)
+
+
+def stale_paper_position_closure_batch_limit() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_BATCH_LIMIT", "40")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 40
+    return max(1, min(value, 200))
+
+
+def stale_paper_position_closure_grace_days() -> int:
+    raw = os.getenv("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_GRACE_DAYS", "0")
+    try:
+        value = int(str(raw).strip())
+    except Exception:
+        value = 0
+    return max(0, min(value, 30))
+
+
 def gate3_record_only_intake_enabled() -> bool:
     return _env_bool("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", default=False)
 
@@ -114,6 +201,19 @@ __all__ = [
     "recompile_remediation_batch_limit",
     "diagnostic_intake_enabled",
     "diagnostic_intake_batch_limit",
+    "execution_audit_acceptance_enabled",
+    "execution_audit_acceptance_backfill_enabled",
+    "execution_audit_acceptance_batch_limit",
+    "execution_audit_remediation_enabled",
+    "execution_audit_remediation_batch_limit",
+    "execution_audit_remediation_target_trade_count",
+    "paper_execution_backlog_enabled",
+    "paper_execution_backlog_batch_limit",
+    "execution_audit_native_evidence_backfill_enabled",
+    "execution_audit_native_evidence_backfill_batch_limit",
+    "stale_paper_position_closure_enabled",
+    "stale_paper_position_closure_batch_limit",
+    "stale_paper_position_closure_grace_days",
     "gate3_record_only_intake_enabled",
     "gate3_record_only_intake_batch_limit",
     "gate3_record_only_intake_min_grade",

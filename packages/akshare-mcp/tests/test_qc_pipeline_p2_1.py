@@ -33,6 +33,39 @@ def test_derive_labels_from_runner_outputs():
     assert labels["monotonicity"] == 0.9
 
 
+def test_derive_labels_from_actual_tool_shapes():
+    labels = qc.derive_qc_labels(
+        oos={
+            "validation_report": {
+                "walk_forward": {"oos_rank_ic_ir": 0.51, "oos_positive_ratio": 0.61},
+                "bootstrap_ci": {"ci_lower": 0.03},
+                "rating": {"grade": "B"},
+                "multiple_testing": {"deflated_sharpe": {"dsr": 0.7}, "pbo": {"pbo": 0.2}},
+            }
+        },
+        layered={
+            "group_returns": [
+                {"group": 1, "avg_return": -0.01},
+                {"group": 2, "avg_return": 0.01},
+                {"group": 3, "avg_return": 0.03},
+            ],
+            "period_long_short_mean": 0.04,
+        },
+        robustness={
+            "multi_window_ic": {"stability": 0.8},
+            "param_sensitivity": {"stability": 0.9},
+        },
+    )
+
+    assert labels["oos_pass"] is True
+    assert labels["rank_ic_ir"] == 0.51
+    assert labels["bootstrap_ci_lower"] == 0.03
+    assert labels["monotonicity"] == 1.0
+    assert labels["param_sensitivity"] == 0.1
+    assert labels["dsr"] == 0.7
+    assert labels["pbo"] == 0.2
+
+
 def test_decide_shelf_promote_strong_factor():
     labels = {
         "oos_pass": True, "rank_ic_ir": 0.6, "bootstrap_ci_lower": 0.05,
@@ -63,6 +96,26 @@ def test_decide_shelf_quarantine_borderline():
     decision = qc.decide_shelf(labels, profile="strict")  # live 档 pbo_max=0.35
     assert decision["decision"] == "quarantine"
     assert decision["reasons"] == ["pbo_above_max"]
+
+
+def test_decide_shelf_does_not_penalize_unavailable_optional_labels():
+    labels = {
+        "oos_pass": True,
+        "rank_ic_ir": 0.6,
+        "bootstrap_ci_lower": 0.05,
+        "layered_available": False,
+        "robustness_available": False,
+        "multiple_testing_available": False,
+        "monotonicity": 0.0,
+        "param_sensitivity": 0.0,
+        "dsr": 0.0,
+        "pbo": 0.0,
+    }
+
+    decision = qc.decide_shelf(labels, profile="strict")
+
+    assert decision["decision"] == "promote"
+    assert decision["reasons"] == []
 
 
 def test_run_factor_qc_with_injected_runners():

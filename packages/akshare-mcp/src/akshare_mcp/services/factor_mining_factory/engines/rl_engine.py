@@ -360,6 +360,7 @@ class RLAlphaGenEngine:
                 factor_family=self._infer_family(expression),
                 inputs=self._extract_fields(expression),
                 expression_dsl=expression,
+                generation_engine=self.engine_id,
                 risk_exposure_hint={"style": ["rl_search"], "risk": ["overfit"]},
             )
             import inspect

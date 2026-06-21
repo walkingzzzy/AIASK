@@ -12,6 +12,16 @@ def _stronger_control_mode(*modes: Any) -> str:
     return strongest
 
 
+def _promotion_review_score_blocks_budget(
+    *,
+    status: str,
+    recommendation: str,
+) -> bool:
+    if status == "watch" or recommendation == "observe":
+        return False
+    return True
+
+
 def _classify_dual_axis_budget_action(metrics: dict[str, Any]) -> dict[str, Any]:
     execution_conversion_efficiency_available = bool(
         metrics.get("execution_conversion_efficiency_available")
@@ -412,15 +422,19 @@ def _derive_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[st
         ):
             cooldown_active = True
             reasons.append(f"{scope_name}_promotion_review_watch")
-        if promotion_review_score <= 0.2:
-            freeze_active = True
-            reasons.append(f"{scope_name}_promotion_review_score_freeze")
-        elif promotion_review_score <= 0.35:
-            suppressed = True
-            reasons.append(f"{scope_name}_promotion_review_score_suppress")
-        elif promotion_review_score < 0.5:
-            cooldown_active = True
-            reasons.append(f"{scope_name}_promotion_review_score_cooldown")
+        if _promotion_review_score_blocks_budget(
+            status=promotion_review_status,
+            recommendation=promotion_review_recommendation,
+        ):
+            if promotion_review_score <= 0.2:
+                freeze_active = True
+                reasons.append(f"{scope_name}_promotion_review_score_freeze")
+            elif promotion_review_score <= 0.35:
+                suppressed = True
+                reasons.append(f"{scope_name}_promotion_review_score_suppress")
+            elif promotion_review_score < 0.5:
+                cooldown_active = True
+                reasons.append(f"{scope_name}_promotion_review_score_cooldown")
 
     return _finalize_scope_control(
         scope_name=scope_name,

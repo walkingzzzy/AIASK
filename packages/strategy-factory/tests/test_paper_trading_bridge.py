@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 
 class _FakePaperDb:
@@ -14,6 +15,7 @@ class _FakePaperDb:
             }
         }
         self.orders: list[dict] = []
+        self.signals: list[dict] = []
         self._next_order_id = 1
 
     async def fetchrow(self, query: str, *args):
@@ -69,6 +71,19 @@ class _FakePaperDb:
         return None
 
     async def execute(self, query: str, *args):
+        if "INSERT OR REPLACE INTO strategy_signals" in query:
+            strategy_id, signal_date, code, signal, score, signal_metadata = args[:6]
+            self.signals.append(
+                {
+                    "strategy_id": strategy_id,
+                    "signal_date": signal_date,
+                    "code": code,
+                    "signal": signal,
+                    "score": score,
+                    "signal_metadata": signal_metadata,
+                }
+            )
+            return None
         return None
 
 
@@ -165,3 +180,46 @@ def test_bridge_buy_shares_scale_to_latest_price_no_insufficient_cash() -> None:
     assert mid["shares"] == 600
     assert nop["placed"] is False
     assert nop["reason"] == "no_price"
+
+
+def test_bridge_signal_metadata_uses_latest_bar_date(monkeypatch) -> None:
+    from aiask_quant_core.backtest import StrategyRegistry
+    from strategy_factory.application.research.paper_trading_bridge import PaperTradingBridge
+
+    class _RuntimeStrategy:
+        def generate_signals(self, closes, volumes):
+            return [0, 0, 1]
+
+    monkeypatch.setattr(
+        StrategyRegistry,
+        "create_runtime_strategy",
+        lambda *_args, **_kwargs: (_RuntimeStrategy(), {}),
+    )
+
+    db = _FakePaperDb()
+    bridge = PaperTradingBridge(db)
+
+    async def _run():
+        return await bridge.run_daily_signals(
+            {
+                "id": "strategy-1",
+                "strategy_type": "momentum",
+                "params": {"target_symbols": ["600519"]},
+            },
+            [
+                {"date": "2026-06-03", "close": 10.0, "volume": 1000},
+                {"date": "2026-06-04", "close": 10.5, "volume": 1200},
+                {"date": "2026-06-05", "close": 12.0, "volume": 1500},
+            ],
+            signal_date="2026-06-18",
+        )
+
+    result = asyncio.run(_run())
+
+    assert result["success"] is True
+    assert db.signals
+    metadata = json.loads(db.signals[0]["signal_metadata"])
+    assert db.signals[0]["signal_date"] == "2026-06-18"
+    assert metadata["latest_bar_date"] == "2026-06-05"
+    assert metadata["latest_nonzero_signal_date"] == "2026-06-05"
+    assert metadata["action_source"] == "paper_trading_bridge"

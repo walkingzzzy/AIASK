@@ -68,7 +68,11 @@ class SignalGenerator:
             )
 
             signals_generated = int(sync_result.get("signals_generated") or 0)
-            orders_created = int(sync_result.get("orders_created") or 0)
+            orders_created = int(
+                sync_result.get("orders_created")
+                or sync_result.get("created_count")
+                or 0
+            )
             errors = list(sync_result.get("errors") or [])
 
             result = {

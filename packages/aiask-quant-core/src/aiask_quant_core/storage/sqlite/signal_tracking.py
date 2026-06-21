@@ -19,6 +19,24 @@ HORIZON_OVERLAP_FACTORS = {
     10: 5.0,
     20: 8.0,
 }
+_PREDICTIVE_SIGNAL_WHERE = """
+AND LOWER(
+    COALESCE(
+        NULLIF(ss.event_action, ''),
+        CASE
+            WHEN json_valid(ss.signal_metadata)
+            THEN NULLIF(json_extract(ss.signal_metadata, '$.event_action'), '')
+            ELSE NULL
+        END,
+        CASE
+            WHEN json_valid(ss.signal_metadata)
+            THEN NULLIF(json_extract(ss.signal_metadata, '$.latest_event_action'), '')
+            ELSE NULL
+        END,
+        ''
+    )
+) NOT IN ('exit', 'close', 'reduce', 'take_profit', 'stop_loss', 'time_stop_exit', 'risk_exit', 'sell_exit')
+"""
 
 
 def _clamp_probability(value: Optional[float]) -> Optional[float]:
@@ -583,7 +601,7 @@ class SignalTrackingMixin:
         async with self.acquire() as conn:
             total_row = await conn.fetchrow(
                 """SELECT COUNT(*) AS total_signals, MAX(signal_date) AS latest_signal_date
-                   FROM strategy_signals
+                   FROM strategy_signals ss
                    WHERE strategy_id = $1""",
                 strategy_id,
             )
@@ -591,31 +609,35 @@ class SignalTrackingMixin:
             window_cutoff = _resolve_recent_cutoff(latest_signal_date, requested_lookback_days)
 
             raw_signal_count_query = (
-                """SELECT COUNT(*) AS total_signals
-                   FROM strategy_signals
-                   WHERE strategy_id = $1"""
+                f"""SELECT COUNT(*) AS total_signals
+                   FROM strategy_signals ss
+                   WHERE strategy_id = $1
+                   {_PREDICTIVE_SIGNAL_WHERE}"""
                 if window_cutoff is None
                 else
-                """SELECT COUNT(*) AS total_signals
+                f"""SELECT COUNT(*) AS total_signals
                    FROM strategy_signals
-                   WHERE strategy_id = $1 AND signal_date >= $2"""
+                   WHERE strategy_id = $1 AND signal_date >= $2
+                   {_PREDICTIVE_SIGNAL_WHERE}"""
             )
             raw_signal_count_params = (strategy_id,) if window_cutoff is None else (strategy_id, window_cutoff)
             raw_count_row = await conn.fetchrow(raw_signal_count_query, *raw_signal_count_params)
 
             rows_query = (
-                """SELECT ss.id AS signal_id, ss.signal_date, ss.signal, sfr.forward_days, sfr.actual_return
+                f"""SELECT ss.id AS signal_id, ss.signal_date, ss.signal, sfr.forward_days, sfr.actual_return
                    FROM strategy_signals ss
                    JOIN signal_forward_returns sfr ON sfr.signal_id = ss.id
                    WHERE ss.strategy_id = $1
+                   {_PREDICTIVE_SIGNAL_WHERE}
                    ORDER BY ss.signal_date, sfr.forward_days"""
                 if window_cutoff is None
                 else
-                """SELECT ss.id AS signal_id, ss.signal_date, ss.signal, sfr.forward_days, sfr.actual_return
+                f"""SELECT ss.id AS signal_id, ss.signal_date, ss.signal, sfr.forward_days, sfr.actual_return
                    FROM strategy_signals ss
                    JOIN signal_forward_returns sfr ON sfr.signal_id = ss.id
                    WHERE ss.strategy_id = $1
                      AND ss.signal_date >= $2
+                   {_PREDICTIVE_SIGNAL_WHERE}
                    ORDER BY ss.signal_date, sfr.forward_days"""
             )
             rows_params = (strategy_id,) if window_cutoff is None else (strategy_id, window_cutoff)

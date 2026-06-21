@@ -30,6 +30,51 @@ def _client(tmp_path, monkeypatch) -> TestClient:
     return TestClient(create_app(runtime=_runtime(tmp_path)))
 
 
+def test_jobs_state_changes_require_control_token_in_fastapi_app(tmp_path, monkeypatch) -> None:
+    client = _client(tmp_path, monkeypatch)
+    payload = {"name": "smoke", "prompt": "hello job", "interval_seconds": 3600}
+
+    denied = client.post("/v1/jobs", json=payload)
+    assert denied.status_code == 401
+
+    created = client.post("/v1/jobs", headers={"Authorization": "Bearer secret"}, json=payload)
+    assert created.status_code == 200
+    job_id = created.json()["job_id"]
+
+    listed = client.get("/v1/jobs")
+    assert listed.status_code == 200
+    assert job_id in json.dumps(listed.json())
+
+    patch_denied = client.patch(f"/v1/jobs/{job_id}", json={"enabled": False})
+    assert patch_denied.status_code == 401
+
+    patched = client.patch(
+        f"/v1/jobs/{job_id}",
+        headers={"Authorization": "Bearer secret"},
+        json={"enabled": True},
+    )
+    assert patched.status_code == 200
+    assert patched.json()["enabled"] is True
+
+    run_denied = client.post(f"/v1/jobs/{job_id}/run", json={})
+    assert run_denied.status_code == 401
+
+    run = client.post(f"/v1/jobs/{job_id}/run", headers={"Authorization": "Bearer secret"}, json={})
+    assert run.status_code == 200
+    assert run.json()["success"] is True
+
+    runs = client.get(f"/v1/jobs/{job_id}/runs?limit=20")
+    assert runs.status_code == 200
+    assert runs.json()["job_id"] == job_id
+
+    delete_denied = client.delete(f"/v1/jobs/{job_id}")
+    assert delete_denied.status_code == 401
+
+    deleted = client.delete(f"/v1/jobs/{job_id}", headers={"Authorization": "Bearer secret"})
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+
+
 def test_desktop_settings_status_redacts_secret_state_and_reports_profile(tmp_path, monkeypatch) -> None:
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret-value")
     monkeypatch.setenv("OPENAI_BASE_URL", "https://models.example.test/v1")

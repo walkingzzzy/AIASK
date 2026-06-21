@@ -9,6 +9,7 @@ from fastapi import APIRouter, HTTPException, Request
 def create_jobs_router(
     *,
     require_api: Callable[[Request], None],
+    require_control: Callable[[Request], None],
     job_store: Any,
     scheduler: Any,
 ) -> APIRouter:
@@ -26,7 +27,7 @@ def create_jobs_router(
 
     @router.post("/v1/jobs")
     async def job_create(request: Request) -> dict[str, Any]:
-        require_api(request)
+        require_control(request)
         payload = await request.json()
         try:
             job = job_store.create(
@@ -44,7 +45,7 @@ def create_jobs_router(
 
     @router.patch("/v1/jobs/{job_id}")
     async def job_update(request: Request, job_id: str) -> dict[str, Any]:
-        require_api(request)
+        require_control(request)
         payload = await request.json()
         job = job_store.update(job_id, **dict(payload or {}))
         if not job:
@@ -53,12 +54,12 @@ def create_jobs_router(
 
     @router.delete("/v1/jobs/{job_id}")
     async def job_delete(request: Request, job_id: str) -> dict[str, Any]:
-        require_api(request)
+        require_control(request)
         return {"id": job_id, "object": "job.deleted", "deleted": job_store.delete(job_id)}
 
     @router.post("/v1/jobs/{job_id}/run")
     async def job_run(request: Request, job_id: str) -> dict[str, Any]:
-        require_api(request)
+        require_control(request)
         result = await scheduler.run_job(job_id)
         if not result.get("success"):
             raise HTTPException(404, detail=result.get("error"))

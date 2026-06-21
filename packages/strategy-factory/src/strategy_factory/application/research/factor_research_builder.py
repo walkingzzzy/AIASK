@@ -122,6 +122,49 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
             return []
 
     @classmethod
+    def _qc_shelf_decision_blocks(cls, validation_summary: dict[str, Any]) -> bool:
+        shelf_decision = dict(validation_summary.get("qc_shelf_decision") or {})
+        decision = str(shelf_decision.get("decision") or "").strip().lower()
+        if decision not in {"retire", "quarantine", "reject"}:
+            return False
+        if bool(validation_summary.get("qc_autoshelf_applied")):
+            return True
+        labels = validation_summary.get("qc_labels")
+        if not isinstance(labels, dict):
+            return True
+        availability_keys = {
+            "oos_available",
+            "layered_available",
+            "robustness_available",
+            "multiple_testing_available",
+        }
+        if any(key in labels for key in availability_keys):
+            return any(bool(labels.get(key)) for key in availability_keys)
+        numeric_keys = (
+            "rank_ic_ir",
+            "bootstrap_ci_lower",
+            "monotonicity",
+            "long_short_return",
+            "window_stability",
+            "param_sensitivity",
+            "dsr",
+            "pbo",
+        )
+        all_zero = True
+        for key in numeric_keys:
+            try:
+                if abs(float(labels.get(key) or 0.0)) > 1e-12:
+                    all_zero = False
+                    break
+            except (TypeError, ValueError):
+                pass
+        unknown_oos = (
+            not bool(labels.get("oos_pass"))
+            and str(labels.get("oos_grade") or "").strip().lower() in {"", "unknown"}
+        )
+        return not (all_zero and unknown_oos)
+
+    @classmethod
     def _is_eligible_active_pool_factor(cls, item: dict[str, Any]) -> bool:
         payload = dict(item or {})
         if str(payload.get("status") or "").strip().lower() != "active":
@@ -130,6 +173,19 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
             return False
         validation_summary = dict(payload.get("validation_summary") or {})
         quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+        if cls._qc_shelf_decision_blocks(validation_summary):
+            return False
+        shelf_decision = dict(validation_summary.get("qc_shelf_decision") or {})
+        shelf_action = str(shelf_decision.get("decision") or "").strip().lower()
+        if quality_status != "promoted" and shelf_action in {"retire", "quarantine", "reject"}:
+            return False
+        current_ic = payload.get("current_ic")
+        if current_ic is not None:
+            try:
+                if float(current_ic) < 0.0:
+                    return False
+            except (TypeError, ValueError):
+                pass
         if quality_status == "quarantine":
             return False
         if quality_status == "promoted":
@@ -141,6 +197,36 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
             or ""
         ).strip().upper()
         return grade in {"A", "B"}
+
+    @classmethod
+    def _active_pool_factor_sort_key(cls, item: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
+        payload = dict(item or {})
+        validation_summary = dict(payload.get("validation_summary") or {})
+        rating = dict(validation_summary.get("rating") or {})
+        metrics = dict(validation_summary.get("metrics") or {})
+        grade = str(
+            payload.get("admission_grade")
+            or validation_summary.get("grade")
+            or rating.get("grade")
+            or ""
+        ).strip().upper()
+        grade_score = {"SS": 4.0, "S": 3.5, "A": 3.0, "B": 2.0}.get(grade, 0.0)
+        return (
+            cls._safe_float(rating.get("total_score")),
+            cls._safe_float(metrics.get("rank_ic_ir")),
+            cls._safe_float(metrics.get("rank_ic_mean")),
+            cls._safe_float(payload.get("current_ic")),
+            cls._safe_float(payload.get("fitness")),
+            grade_score,
+        )
+
+    @classmethod
+    def _rank_active_pool_factors(cls, factors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return sorted(
+            [dict(item or {}) for item in list(factors or []) if isinstance(item, dict)],
+            key=cls._active_pool_factor_sort_key,
+            reverse=True,
+        )
 
     @classmethod
     async def _load_factor_history_meta(
@@ -414,19 +500,32 @@ class FactorResearchBuilder(FactorResearchBuilderSupportMixin):
         # ── Factor Mining Factory Pool 集成 ──────────────────────────
         factory_pool_factors = await cls._load_factory_pool_factors()
         if factory_pool_factors:
-            eligible_factory_pool_factors = [
-                dict(item or {})
-                for item in list(factory_pool_factors or [])
-                if cls._is_eligible_active_pool_factor(item)
-            ]
+            eligible_factory_pool_factors = cls._rank_active_pool_factors(
+                [
+                    dict(item or {})
+                    for item in list(factory_pool_factors or [])
+                    if cls._is_eligible_active_pool_factor(item)
+                ]
+            )
             # 将工厂池中的活跃因子合并到 governed_top_candidates
             for pool_factor in factory_pool_factors:
                 factor_name = pool_factor.get("name", "")
                 if factor_name and factor_name not in names:
                     names.append(factor_name)
-            runtime_context["factory_pool_factors"] = factory_pool_factors
+            runtime_context["factory_pool_factors_raw_count"] = len(factory_pool_factors)
+            runtime_context["factory_pool_factors_filtered_count"] = max(
+                len(factory_pool_factors) - len(eligible_factory_pool_factors),
+                0,
+            )
+            runtime_context["factory_pool_factors"] = eligible_factory_pool_factors
             runtime_context["factory_pool_size"] = len(factory_pool_factors)
-            if not governed_top_candidates:
+            runtime_context["factory_pool_eligible_size"] = len(eligible_factory_pool_factors)
+            governed_strict_count = int(
+                runtime_context.get("governed_candidate_pool_strict_count")
+                or dict(runtime_context.get("active_candidate_pool") or {}).get("strict_count")
+                or 0
+            )
+            if not governed_top_candidates or governed_strict_count <= 0:
                 governed_top_candidates = apply_active_factor_pool_fallback(
                     cls,
                     runtime_context,

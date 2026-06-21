@@ -23,6 +23,53 @@
         ).strip().lower() or "unknown"
 
     @staticmethod
+    def _candidate_contract_value(candidate: dict[str, Any], key: str, default: Any = None) -> Any:
+        payload = dict(candidate or {})
+        params = dict(payload.get("params") or {})
+        if key in payload:
+            return payload.get(key)
+        if key in params:
+            return params.get(key)
+        return default
+
+    @classmethod
+    def _is_formal_runtime_ready_candidate(cls, candidate: dict[str, Any]) -> bool:
+        readiness_tier = str(
+            cls._candidate_contract_value(candidate, "execution_readiness_tier") or ""
+        ).strip().lower()
+        trade_contract_status = str(
+            cls._candidate_contract_value(candidate, "trade_prediction_contract_status") or ""
+        ).strip().lower()
+        semantic_runtime_match = cls._candidate_contract_value(
+            candidate,
+            "semantic_runtime_match",
+        )
+        proxy_runtime_used = bool(
+            cls._candidate_contract_value(candidate, "proxy_runtime_used")
+        )
+        diagnostic_only = bool(
+            cls._candidate_contract_value(candidate, "diagnostic_only")
+        )
+        observation_gap = bool(
+            cls._candidate_contract_value(
+                candidate,
+                "trade_prediction_contract_observation_gap",
+            )
+        )
+        execution_semantic_gap = bool(
+            cls._candidate_contract_value(candidate, "execution_semantic_gap")
+        )
+        return (
+            readiness_tier == "formal_runtime_ready"
+            and trade_contract_status == "ready"
+            and semantic_runtime_match is True
+            and not proxy_runtime_used
+            and not diagnostic_only
+            and not observation_gap
+            and not execution_semantic_gap
+        )
+
+    @staticmethod
     def _task_feedback_override(candidate: dict[str, Any]) -> dict[str, Any]:
         research_task = dict((candidate or {}).get("research_task") or {})
         if not research_task:

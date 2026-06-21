@@ -33,6 +33,54 @@ from _quality_session_report import (
     _sort_strategy_samples,
 )
 
+
+def _entry_mode_id(entry: dict[str, Any]) -> str:
+    mode_config = dict(entry.get("mode_config") or {})
+    return str(
+        entry.get("quality_mode")
+        or entry.get("mode")
+        or mode_config.get("mode_id")
+        or "default"
+    ).strip() or "default"
+
+
+def _entry_mode_label(entry: dict[str, Any]) -> str:
+    mode_config = dict(entry.get("mode_config") or {})
+    mode_id = _entry_mode_id(entry)
+    return str(
+        entry.get("quality_mode_label")
+        or mode_config.get("label")
+        or mode_id.replace("_", "-")
+    ).strip() or mode_id
+
+
+def _session_mode_rows(session: dict[str, Any], entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in list(session.get("quality_modes") or []):
+        payload = dict(item or {})
+        mode_id = str(payload.get("mode_id") or "").strip()
+        if mode_id:
+            rows.append(payload)
+    seen = {str(item.get("mode_id") or "").strip() for item in rows}
+    for entry in entries:
+        mode_id = _entry_mode_id(entry)
+        if mode_id in seen:
+            continue
+        mode_config = dict(entry.get("mode_config") or {})
+        rows.append(
+            {
+                "mode_id": mode_id,
+                "label": _entry_mode_label(entry),
+                "execution_mode": mode_config.get("execution_mode")
+                or dict(entry.get("quality_snapshot") or {}).get("execution_mode"),
+                "observe_first_enabled": mode_config.get("observe_first_enabled"),
+                "wide_intake_observe_enabled": mode_config.get("wide_intake_observe_enabled"),
+            }
+        )
+        seen.add(mode_id)
+    return rows
+
+
 def _sample_strategy_table(strategies: list[dict[str, Any]]) -> list[str]:
     if not strategies:
         return ["无关联策略快照。"]
@@ -41,6 +89,11 @@ def _sample_strategy_table(strategies: list[dict[str, Any]]) -> list[str]:
         "| --- | --- | --- | ---: | --- | ---: | --- | --- |",
     ]
     for item in strategies:
+        audit_gate = str(item.get("execution_audit_gate_status") or "").strip()
+        audit_status = str(item.get("audit_status") or "").strip()
+        audit_display = audit_gate or audit_status or "-"
+        if audit_gate and audit_status and audit_status not in {"ok", "passed"} and audit_status != audit_gate:
+            audit_display = f"{audit_gate}/{audit_status}"
         lines.append(
             "| {strategy_id} | {family} | {grade} | {score} | {review} | {coverage} | {audit} | {status} |".format(
                 strategy_id=str(item.get("strategy_id") or "-"),
@@ -61,7 +114,7 @@ def _sample_strategy_table(strategies: list[dict[str, Any]]) -> list[str]:
                     if item.get("signal_coverage_ratio") is None
                     else f"{_safe_float(item.get('signal_coverage_ratio')):.2f}"
                 ),
-                audit=str(item.get("audit_status") or "-"),
+                audit=audit_display,
                 status=str(item.get("status_after_review") or "-"),
             )
         )
@@ -160,7 +213,11 @@ def _strict_ready_example_payload(
         "quality_report_planned_submission_lane": item.get("quality_report_planned_submission_lane"),
         "quality_report_incubation_budget_track": item.get("quality_report_incubation_budget_track"),
         "quality_report_formal_track_requested": item.get("quality_report_formal_track_requested"),
+        "quality_report_formal_track_auto_corrected": item.get("quality_report_formal_track_auto_corrected"),
         "quality_report_formal_track_eligible": item.get("quality_report_formal_track_eligible"),
+        "quality_report_formal_auto_correction_source_track": item.get(
+            "quality_report_formal_auto_correction_source_track"
+        ),
         "quality_report_submission_action_trigger": item.get("quality_report_submission_action_trigger"),
         "quality_report_runtime_bootstrap_reason": item.get("quality_report_runtime_bootstrap_reason"),
         "persisted_observe_first_intake": item.get("persisted_observe_first_intake"),
@@ -275,6 +332,7 @@ def _render_entry(entry: dict[str, Any], *, fallback_execution_mode: str | None 
     paper_intake = dict(incubation_intake.get("paper_observation_intake") or {})
     incubation_verification = dict(incubation_result.get("verification") or {})
     incubation_pipeline = dict(incubation_result.get("pipeline") or {})
+    incubation_acceptance = dict(incubation_result.get("execution_audit_acceptance") or {})
     incubation_report = dict(incubation_result.get("report") or {})
     paper_backlog = dict(incubation_result.get("paper_observation_backlog") or {})
     sampled_strategies = list(quality.get("sampled_strategies") or [])
@@ -291,6 +349,7 @@ def _render_entry(entry: dict[str, Any], *, fallback_execution_mode: str | None 
         f"- 工厂状态: `{str(factory_data.get('status') or factory_result.get('status') or 'unknown')}`",
         f"- run_id: `{detail.get('run_id') or factory_data.get('run_id') or '-'}`",
         f"- execution_mode: `{resolved_execution_mode}`",
+        f"- quality_mode: `{_entry_mode_label(entry)}` (`{_entry_mode_id(entry)}`)",
         (
             "- 工厂核心漏斗: "
             f"spawned={_safe_int(detail.get('candidates_spawned'))}, "
@@ -370,6 +429,14 @@ def _render_entry(entry: dict[str, Any], *, fallback_execution_mode: str | None 
                     f"overall_hit_rate={_pct(incubation_report.get('overall_hit_rate'))}, "
                     f"overall_skill_lcb={incubation_report.get('overall_skill_lcb', '-')}"
                 ),
+                (
+                    "- execution audit acceptance: "
+                    f"status={incubation_acceptance.get('status') or '-'}, "
+                    f"evaluated={_safe_int(incubation_acceptance.get('evaluated'))}, "
+                    f"saved_signal_evidence={_safe_int(incubation_acceptance.get('saved_signal_evidence_count'))}, "
+                    f"hard_gate_passed={_safe_int(incubation_acceptance.get('hard_gate_passed_count'))}, "
+                    f"gate_status_counts={json.dumps(incubation_acceptance.get('gate_status_counts') or {}, ensure_ascii=False)}"
+                ),
             ]
         )
 
@@ -417,6 +484,9 @@ def _build_aggregate_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
     issue_counter: Counter[str] = Counter()
     gate_reason_counter: Counter[str] = Counter()
     blocker_reason_counter: Counter[str] = Counter()
+    lane_counter: Counter[str] = Counter()
+    execution_mode_counter: Counter[str] = Counter()
+    quality_mode_counter: Counter[str] = Counter()
     submitted_total = 0
     gate_input_total = 0
     gate_pass_total = 0
@@ -437,12 +507,17 @@ def _build_aggregate_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
         blocker_summary = dict(quality.get("blocker_summary") or {})
         incubation_result = dict((entry.get("incubation_result") or {}).get("result") or {})
         paper_intake = dict(dict(incubation_result.get("intake") or {}).get("paper_observation_intake") or {})
+        quality_mode_counter[_entry_mode_id(entry)] += 1
+        execution_mode = str(detail.get("execution_mode") or dict(entry.get("mode_config") or {}).get("execution_mode") or "").strip()
+        if execution_mode:
+            execution_mode_counter[execution_mode] += 1
         issue_counter.update(list(quality.get("issue_flags") or []))
         spawned_total += _safe_int(detail.get("candidates_spawned"))
         submitted_total += _safe_int(detail.get("submitted"))
         gate_input_total += _safe_int(summary.get("gate_3_input"))
         gate_pass_total += _safe_int(summary.get("gate_3_passed"))
         lane_counts = dict(summary.get("submission_lane_counts") or {})
+        lane_counter.update({str(key): _safe_int(value) for key, value in lane_counts.items()})
         if _safe_int(detail.get("submitted")) > 0 and _safe_int(lane_counts.get("observe_incubation")) >= _safe_int(detail.get("submitted")):
             observe_only_rounds += 1
             if _safe_int(summary.get("gate_3_passed")) > 0:
@@ -492,6 +567,9 @@ def _build_aggregate_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "issue_counts": issue_counter,
         "gate_reason_counts": gate_reason_counter,
         "blocker_reason_counts": blocker_reason_counter,
+        "submission_lane_counts": lane_counter,
+        "execution_mode_counts": execution_mode_counter,
+        "quality_mode_counts": quality_mode_counter,
         "spawned_total": spawned_total,
         "submitted_total": submitted_total,
         "gate_input_total": gate_input_total,
@@ -505,6 +583,121 @@ def _build_aggregate_summary(entries: list[dict[str, Any]]) -> dict[str, Any]:
         "last_strict_ready_formal_missing_example": last_strict_ready_formal_missing_example,
         "last_strict_ready_observe_override_example": last_strict_ready_observe_override_example,
     }
+
+
+def _json_inline(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def _boolish(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = str(value or "").strip().lower()
+    if token in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    if token in {"0", "false", "no", "off", "disabled"}:
+        return False
+    return bool(value)
+
+
+def _top_counter_text(counter: Counter[str], *, limit: int = 3) -> str:
+    if not counter:
+        return "-"
+    return ", ".join(f"{name} x{count}" for name, count in counter.most_common(limit))
+
+
+def _mode_round_cell(entry: dict[str, Any] | None) -> str:
+    if not entry:
+        return "-"
+    quality = dict(entry.get("quality_snapshot") or {})
+    detail = dict(quality.get("detail") or {})
+    summary = dict(detail.get("summary") or {})
+    factory_result = dict(entry.get("factory_result") or {})
+    factory_data = dict(factory_result.get("data") or {})
+    status = str(factory_data.get("status") or detail.get("status") or factory_result.get("status") or "-")
+    run_id = str(detail.get("run_id") or factory_data.get("run_id") or "-")
+    submitted = _safe_int(detail.get("submitted") or summary.get("submitted"))
+    gate_passed = _safe_int(summary.get("gate_3_passed"))
+    gate_input = _safe_int(summary.get("gate_3_input"))
+    lanes = _json_inline(summary.get("submission_lane_counts") or {})
+    return f"`{run_id}`<br>{status}<br>submitted={submitted}; G3={gate_passed}/{gate_input}<br>{lanes}"
+
+
+def _render_mode_comparison(entries: list[dict[str, Any]], session: dict[str, Any]) -> list[str]:
+    mode_rows = _session_mode_rows(session, entries)
+    if not mode_rows:
+        return []
+
+    lines = [
+        "",
+        "## Mode comparison",
+        "",
+        "| mode | rounds | execution_mode | observe_first | wide_intake | spawned | submitted | Gate 3 | formal_lane | observe_lane | observe_only_rounds | top_flags |",
+        "| --- | ---: | --- | --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
+    ]
+    entries_by_mode = {
+        str(row.get("mode_id") or "").strip(): [
+            entry for entry in entries if _entry_mode_id(entry) == str(row.get("mode_id") or "").strip()
+        ]
+        for row in mode_rows
+    }
+    for row in mode_rows:
+        mode_id = str(row.get("mode_id") or "").strip()
+        mode_entries = entries_by_mode.get(mode_id, [])
+        aggregate = _build_aggregate_summary(mode_entries)
+        lane_counts: Counter[str] = aggregate["submission_lane_counts"]
+        execution_modes: Counter[str] = aggregate["execution_mode_counts"]
+        issue_counts: Counter[str] = aggregate["issue_counts"]
+        execution_mode = (
+            str(row.get("execution_mode") or "").strip()
+            or _top_counter_text(execution_modes, limit=2)
+        )
+        lines.append(
+            "| {label} | {rounds} | `{execution_mode}` | {observe_first} | {wide_intake} | {spawned} | {submitted} | {gate_pass}/{gate_input} | {formal} | {observe} | {observe_only} | {flags} |".format(
+                label=f"`{str(row.get('label') or mode_id)}`",
+                rounds=len(mode_entries),
+                execution_mode=execution_mode or "-",
+                observe_first=str(_boolish(row.get("observe_first_enabled"))).lower(),
+                wide_intake=str(_boolish(row.get("wide_intake_observe_enabled"))).lower(),
+                spawned=_safe_int(aggregate.get("spawned_total")),
+                submitted=_safe_int(aggregate.get("submitted_total")),
+                gate_pass=_safe_int(aggregate.get("gate_pass_total")),
+                gate_input=_safe_int(aggregate.get("gate_input_total")),
+                formal=_safe_int(lane_counts.get("formal_incubation")),
+                observe=_safe_int(lane_counts.get("observe_incubation")),
+                observe_only=_safe_int(aggregate.get("observe_only_rounds")),
+                flags=_top_counter_text(issue_counts),
+            )
+        )
+
+    if len(mode_rows) > 1 and entries:
+        lines.extend(
+            [
+                "",
+                "### Round matrix",
+                "",
+                "| round | " + " | ".join(str(row.get("label") or row.get("mode_id") or "-") for row in mode_rows) + " |",
+                "| ---: | " + " | ".join("---" for _ in mode_rows) + " |",
+            ]
+        )
+        round_numbers = sorted({_safe_int(entry.get("round")) for entry in entries if _safe_int(entry.get("round")) > 0})
+        for round_no in round_numbers:
+            row_entries = [
+                next(
+                    (
+                        entry
+                        for entry in entries
+                        if _safe_int(entry.get("round")) == round_no
+                        and _entry_mode_id(entry) == str(row.get("mode_id") or "").strip()
+                    ),
+                    None,
+                )
+                for row in mode_rows
+            ]
+            lines.append(
+                f"| {round_no} | " + " | ".join(_mode_round_cell(entry) for entry in row_entries) + " |"
+            )
+    return lines
 
 
 def _build_priority_findings(
@@ -575,6 +768,7 @@ def _build_priority_findings(
         issue_counts.get("strict_ready_zero_despite_raw_b", 0) > 0
         or issue_counts.get("no_forward_signal_coverage_yet", 0) > 0
         or issue_counts.get("execution_audit_needs_attention", 0) > 0
+        or issue_counts.get("execution_audit_bootstrap_pending", 0) > 0
     ):
         findings.append(
             {
@@ -585,7 +779,8 @@ def _build_priority_findings(
                 "evidence": (
                     f"strict_ready_zero={issue_counts.get('strict_ready_zero_despite_raw_b', 0)} 轮, "
                     f"zero_forward_coverage={issue_counts.get('no_forward_signal_coverage_yet', 0)} 轮, "
-                    f"audit_needs_attention={issue_counts.get('execution_audit_needs_attention', 0)} 轮; "
+                    f"audit_needs_attention={issue_counts.get('execution_audit_needs_attention', 0)} 轮, "
+                    f"audit_bootstrap_pending={issue_counts.get('execution_audit_bootstrap_pending', 0)} 轮; "
                     f"最新轮 raw_b_or_above={latest_raw_b_or_above}, strict_ready={latest_strict_ready}, submitted={latest_submitted}"
                 ),
             }
@@ -813,6 +1008,8 @@ def _render_report(state: dict[str, Any]) -> str:
     gate_reason_counts: Counter[str] = aggregate["gate_reason_counts"]
     blocker_reason_counts: Counter[str] = aggregate["blocker_reason_counts"]
     session = dict(state.get("session") or {})
+    mode_rows = _session_mode_rows(session, entries)
+    runtime_controls = dict(session.get("runtime_controls") or {})
     last_entry = entries[-1] if entries else {}
     last_quality = dict((last_entry or {}).get("quality_snapshot") or {})
     last_detail = dict(last_quality.get("detail") or {})
@@ -835,7 +1032,9 @@ def _render_report(state: dict[str, Any]) -> str:
         f"- updated_at: `{state.get('updated_at')}`",
         f"- duration_hours: `{session.get('hours')}`",
         f"- pause_sec_between_rounds: `{session.get('pause_sec')}`",
+        f"- quality_modes: `{', '.join(str(row.get('label') or row.get('mode_id') or '-') for row in mode_rows) or session.get('quality_session_mode') or '-'}`",
         f"- execution_mode: `{session.get('execution_mode')}`",
+        f"- runtime_controls: `{_json_inline(runtime_controls)}`",
         f"- target_codes: `{', '.join(session.get('codes') or []) or 'default_universe'}`",
         f"- python: `{session.get('python_executable')}`",
         f"- sqlite: `{session.get('sqlite_path')}`",
@@ -854,9 +1053,9 @@ def _render_report(state: dict[str, Any]) -> str:
         f"| observe 被 intake 识别轮数 | {aggregate['paper_intake_rounds']} |",
         f"| paper observation recognized 合计 | {aggregate['paper_recognized_total']} |",
         "",
-        "## 优先级判断",
-        "",
     ]
+    lines.extend(_render_mode_comparison(entries, session))
+    lines.extend(["", "## 优先级判断", ""])
 
     if priority_findings:
         for item in priority_findings:

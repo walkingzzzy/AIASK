@@ -328,18 +328,21 @@ async def list_feedback_source_strategies(
         "observe_incubation",
         "live_ready_review",
     }
-    statuses = ("incubating", "listed", "submitted")
-    per_status_limit = max(10, int(math.ceil(limit / max(len(statuses), 1))))
+    status_limits = {
+        "incubating": max(10, int(math.ceil(limit * 0.75))),
+        "listed": max(10, int(math.ceil(limit * 0.10))),
+        "submitted": max(10, int(math.ceil(limit * 0.15))),
+    }
     seen: set[str] = set()
     items: List[dict[str, Any]] = []
-    for status in statuses:
+    for status, status_limit in status_limits.items():
         try:
             rows = await _call_optional_async(
                 db,
                 "list_strategies",
                 status,
                 None,
-                per_status_limit,
+                status_limit,
                 0,
                 default=[],
             )
@@ -348,7 +351,7 @@ async def list_feedback_source_strategies(
                 db,
                 "list_strategies",
                 status,
-                per_status_limit,
+                status_limit,
                 default=[],
             )
         for row in list(rows or []):
@@ -428,6 +431,9 @@ def resolve_promotion_review_outcome(
 def fallback_feedback_evidence_overview(
     builder_cls,
     signal_stats: dict[str, Any] | None = None,
+    *,
+    strategy_id: str | None = None,
+    quality_report: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dict(signal_stats or {})
     observed_forward_days: list[int] = []
@@ -474,7 +480,8 @@ def fallback_feedback_evidence_overview(
         ),
         "stability_gap": _resolve_metric("stability_gap", fallback=0.0),
     }
-    return {
+    result = {
+        "strategy_id": strategy_id,
         "total_signals": total_signals,
         "minimum_signal_count": minimum_signal_count,
         "observed_forward_days": observed_forward_days,
@@ -488,6 +495,68 @@ def fallback_feedback_evidence_overview(
         "blockers": [],
         "risk_flags": [],
     }
+    _apply_quality_report_to_feedback_overview(result, quality_report)
+    return result
+
+
+async def load_feedback_quality_report(db, strategy_id: str) -> dict[str, Any]:
+    latest = await _call_optional_async(
+        db,
+        "get_latest_strategy_quality_report",
+        strategy_id,
+        default=None,
+    )
+    if latest:
+        return dict(latest or {})
+    rows = await _call_optional_async(
+        db,
+        "list_strategy_quality_reports",
+        strategy_id,
+        limit=1,
+        default=[],
+    )
+    first = list(rows or [])[:1]
+    return dict(first[0] or {}) if first else {}
+
+
+def _quality_payload_value(quality_report: dict[str, Any] | None, key: str) -> Any:
+    report = dict(quality_report or {})
+    summary = dict(report.get("summary") or {})
+    quality_gate = dict(summary.get("quality_gate") or report.get("quality_gate") or {})
+    for payload in (summary, quality_gate, report):
+        if key in payload and payload.get(key) is not None:
+            return payload.get(key)
+    return None
+
+
+def _apply_quality_report_to_feedback_overview(
+    overview: dict[str, Any],
+    quality_report: dict[str, Any] | None,
+) -> None:
+    report = dict(quality_report or {})
+    if not report:
+        return
+    for key in (
+        "validation_grade",
+        "raw_validation_grade",
+        "effective_validation_grade",
+        "validation_total_score",
+        "raw_validation_total_score",
+        "strict_incubation_ready",
+        "strict_incubation_blocked",
+        "live_candidate_ready",
+        "admission_stage",
+        "incubation_pass_mode",
+    ):
+        value = _quality_payload_value(report, key)
+        if value is not None:
+            overview[key] = value
+    if overview.get("raw_validation_grade") is None and overview.get("validation_grade") is not None:
+        overview["raw_validation_grade"] = overview.get("validation_grade")
+    if overview.get("raw_validation_total_score") is None and overview.get("validation_total_score") is not None:
+        overview["raw_validation_total_score"] = overview.get("validation_total_score")
+    if "passed" in report:
+        overview["quality_report_passed"] = bool(report.get("passed"))
 
 
 async def load_feedback_evidence_overview(
@@ -517,7 +586,13 @@ async def load_feedback_evidence_overview(
         strategy_id,
         default={},
     )
-    return fallback_feedback_evidence_overview(builder_cls, signal_stats)
+    quality_report = await load_feedback_quality_report(db, strategy_id)
+    return fallback_feedback_evidence_overview(
+        builder_cls,
+        signal_stats,
+        strategy_id=strategy_id,
+        quality_report=quality_report,
+    )
 
 
 def accumulate_feedback_bucket(

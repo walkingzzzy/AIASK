@@ -39,8 +39,9 @@ class StrategyLLMConfig:
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
     initial_compact_level: int = 0
-    recent_timeout_minimal_streak: int = 1
-    recent_timeout_cooldown_sec: float = 600.0
+    # 与 public/runtime 口径对齐:单次抖动不应把整轮 LLM 锁死。
+    recent_timeout_minimal_streak: int = 3
+    recent_timeout_cooldown_sec: float = 120.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -50,8 +51,8 @@ class StrategyLLMConfig:
         enabled = str(os.getenv("STRATEGY_LLM_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"}
         timeout_sec = float(os.getenv("STRATEGY_LLM_TIMEOUT_SEC", "30") or 30)
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
-        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
-        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "3") or 3)))
+        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "120") or 120))
         return cls(
             enabled=enabled,
             provider=str(os.getenv("STRATEGY_LLM_PROVIDER", "openai_compatible") or "openai_compatible"),
@@ -359,6 +360,7 @@ class _StrategyLLMProviderPromptMixin:
                 context_rule = ''.join([target_context_only_rule, explicit_same_theme_rule, context_rule])
             event_rule = '如果 research_task 提供 event_id/theme_code/direction/evidence_summary，必须优先围绕该事件主题、方向和证据构建候选。'
             system_prompt = ''.join([
+                'CRITICAL OUTPUT SHAPE: return exactly one JSON object with only two top-level keys: analysis and candidates. Do not put analysis subfields at the root. Do not return markdown.',
                 '你是量化策略研究员。必须输出严格 JSON，不要输出解释文本。',
                 f'先基于输入的市场研究上下文给出结构化 analysis，并先形成 hypothesis_artifact，再 lower 为可执行的{candidate_domain_label}策略 DSL 候选。',
                 (
@@ -389,7 +391,7 @@ class _StrategyLLMProviderPromptMixin:
                     analysis_length_rule,
                     candidate_priority_rule,
                     f"analysis 必须包含: {', '.join(analysis_fields)}。",
-                    '根对象只允许包含 analysis 与 candidates。',
+                    '根对象只允许包含 analysis 与 candidates；market_regime/style_bias/hypothesis/evidence/risk_focus/selection_notes/universe_view/selection_plan/trade_plan 都必须放在 analysis 对象内部，不能出现在根对象。',
                 '每个 candidate 必须包含: name, description, rationale, strategy_type, generator_mode, hypothesis, hypothesis_artifact, holding_horizon, evidence_chain, prediction_contract, trade_plan, risk_rules, position_sizing, execution_notes, rebalance_rule, portfolio_spec, execution_assumptions, validation_profile, target_symbols, stock_pool, selection_logic, dsl, tags。',
                 '生成顺序固定为 evidence_chain -> prediction_contract -> trade_plan -> dsl，不允许只给 trade_plan 或 DSL 而省略前两层合同。',
                 'evidence_chain.evidences[] 至少包含 evidence_id,source_type,direction,summary；prediction_contract.claims[] 至少包含 claim_id,evidence_ids,expected_move,failure_condition；若 claim 出现相反方向证据，必须包含 conflict_resolution_rule。',
@@ -408,6 +410,33 @@ class _StrategyLLMProviderPromptMixin:
             output_contract = {
                 'root': 'json_object',
                 'required': ['analysis', 'candidates'],
+                'root_schema': {
+                    'analysis': {field: 'string|array|object' for field in analysis_fields},
+                    'candidates': ['candidate_object'],
+                },
+                'invalid_root_examples': [
+                    {
+                        'market_regime': 'wrong: belongs under analysis',
+                        'hypothesis': 'wrong: belongs under analysis or candidate',
+                        'trade_plan': 'wrong: belongs under candidate or analysis, never root',
+                    },
+                ],
+                'valid_root_example': {
+                    'analysis': {
+                        'market_regime': 'short regime summary',
+                        'hypothesis': 'short portfolio-level hypothesis',
+                        'selection_plan': ['short plan item'],
+                    },
+                    'candidates': [
+                        {
+                            'name': 'candidate name',
+                            'strategy_type': 'ma_cross',
+                            'generator_mode': 'llm_defined',
+                            'target_symbols': ['600000'],
+                            'dsl': {'version': '1.0', 'timeframe': 'daily', 'entry': {}, 'exit': {}, 'metadata': {}},
+                        },
+                    ],
+                },
                 'analysis_fields': analysis_fields,
                 'required_candidate_fields': ['name', 'strategy_type', 'generator_mode', 'hypothesis', 'hypothesis_artifact', 'holding_horizon', 'evidence_chain', 'prediction_contract', 'trade_prediction_contract', 'trade_plan', 'risk_rules', 'position_sizing', 'execution_notes', 'rebalance_rule', 'portfolio_spec', 'execution_assumptions', 'validation_profile', 'target_symbols', 'stock_pool', 'dsl'],
                 'trade_prediction_contract_required_fields': ['stock_code', 'prediction_as_of', 'target_trading_date', 'direction', 'confidence', 'horizon', 'evidence_refs'],

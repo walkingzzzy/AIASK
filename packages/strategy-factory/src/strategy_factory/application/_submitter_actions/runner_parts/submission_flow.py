@@ -427,6 +427,235 @@
                 ),
             }
 
+        @classmethod
+        def _factor_pool_summary_float(cls, *values: Any) -> Optional[float]:
+            for value in values:
+                if value in (None, "", [], {}):
+                    continue
+                try:
+                    numeric = float(value)
+                except (TypeError, ValueError):
+                    continue
+                if numeric == numeric and numeric not in (float("inf"), float("-inf")):
+                    return float(numeric)
+            return None
+
+        @classmethod
+        def _factor_pool_summary_blocks_submission(cls, summary: dict[str, Any]) -> bool:
+            shelf_decision = dict(summary.get("qc_shelf_decision") or {})
+            decision = str(shelf_decision.get("decision") or "").strip().lower()
+            if decision not in {"retire", "quarantine", "reject"}:
+                return False
+            if bool(summary.get("qc_autoshelf_applied")):
+                return True
+            labels = summary.get("qc_labels")
+            if not isinstance(labels, dict):
+                return True
+            availability_keys = {
+                "oos_available",
+                "layered_available",
+                "robustness_available",
+                "multiple_testing_available",
+            }
+            if any(key in labels for key in availability_keys):
+                return any(bool(labels.get(key)) for key in availability_keys)
+            numeric_keys = (
+                "rank_ic_ir",
+                "bootstrap_ci_lower",
+                "monotonicity",
+                "long_short_return",
+                "window_stability",
+                "param_sensitivity",
+                "dsr",
+                "pbo",
+            )
+            all_zero = True
+            for key in numeric_keys:
+                value = cls._factor_pool_summary_float(labels.get(key))
+                if value is not None and abs(value) > 1e-12:
+                    all_zero = False
+                    break
+            unknown_oos = (
+                not bool(labels.get("oos_pass"))
+                and str(labels.get("oos_grade") or "").strip().lower() in {"", "unknown"}
+            )
+            return not (all_zero and unknown_oos)
+
+        @classmethod
+        def _factor_pool_validation_report_from_params(
+            cls,
+            params: dict[str, Any],
+            candidate: dict[str, Any],
+            base_report: Optional[dict[str, Any]],
+        ) -> Optional[dict[str, Any]]:
+            summary = dict((params or {}).get("factor_pool_validation_summary") or {})
+            if not summary or cls._factor_pool_summary_blocks_submission(summary):
+                return base_report
+
+            metrics = dict(summary.get("metrics") or {})
+            evidence = dict(summary.get("evidence_summary") or {})
+            quick = dict(summary.get("quick_evidence") or {})
+            quick_evidence = dict(quick.get("evidence_summary") or {})
+            rating = dict(summary.get("rating") or {})
+            quality_evidence = dict(rating.get("quality_evidence") or {})
+            quality_summary = dict(quality_evidence.get("summary") or {})
+            governance = dict(rating.get("governance") or {})
+            governance_raw = dict(governance.get("raw_metrics") or {})
+            persisted = dict(summary.get("persisted_outputs") or {})
+            avg_stability_ratio = cls._factor_pool_summary_float(governance_raw.get("avg_stability_ratio"))
+            avg_degradation = cls._factor_pool_summary_float(governance_raw.get("avg_degradation"))
+
+            quality_status = str(summary.get("quality_status") or "").strip().lower()
+            recommendation = str(rating.get("recommendation") or "").strip().lower()
+            if quality_status not in {"promoted", "active"} and recommendation != "promote":
+                return base_report
+
+            rank_ic_mean = cls._factor_pool_summary_float(
+                metrics.get("rank_ic_mean"),
+                evidence.get("rank_ic_mean"),
+                quality_summary.get("rank_ic_mean"),
+                quick.get("rank_ic_mean"),
+                quick_evidence.get("rank_ic_mean"),
+            )
+            rank_ic_ir = cls._factor_pool_summary_float(
+                metrics.get("rank_ic_ir"),
+                evidence.get("rank_ic_ir"),
+                quality_summary.get("rank_ic_ir"),
+                quick.get("rank_ic_ir"),
+                quick_evidence.get("rank_ic_ir"),
+            )
+            rank_ic_std = cls._factor_pool_summary_float(metrics.get("rank_ic_std"))
+            sample_dates = cls._factor_pool_summary_float(
+                metrics.get("sample_dates"),
+                evidence.get("sample_dates"),
+                quality_summary.get("sample_dates"),
+                quick.get("sample_dates"),
+                quick_evidence.get("sample_dates"),
+            )
+            bootstrap_ci_lower = cls._factor_pool_summary_float(
+                metrics.get("bootstrap_ci_lower"),
+                metrics.get("ci_lower"),
+                evidence.get("bootstrap_ci_lower"),
+                quality_summary.get("bootstrap_ci_lower"),
+            )
+            if (
+                bootstrap_ci_lower is None
+                and rank_ic_mean is not None
+                and rank_ic_std is not None
+                and sample_dates is not None
+                and sample_dates > 1
+            ):
+                bootstrap_ci_lower = rank_ic_mean - 1.96 * (rank_ic_std / (sample_dates ** 0.5))
+
+            if (
+                rank_ic_ir is None
+                or rank_ic_mean is None
+                or bootstrap_ci_lower is None
+                or rank_ic_ir < 0.3
+                or rank_ic_mean < 0.02
+                or bootstrap_ci_lower < 0.0
+            ):
+                return base_report
+
+            factor_meta = dict(candidate.get("factor_pool_metadata") or {})
+            factor_name = str(
+                (params or {}).get("factor_name")
+                or factor_meta.get("factor_name")
+                or (params or {}).get("factor_pool_factor_id")
+                or factor_meta.get("factor_id")
+                or candidate.get("strategy_type")
+                or "active_factor_pool"
+            ).strip()
+            report = dict(base_report or {})
+            report["strategy_validation_report"] = dict(base_report or {})
+            report["factor_name"] = factor_name
+            report["n_periods"] = int(sample_dates or 0)
+            report["n_stocks"] = int(
+                cls._factor_pool_summary_float(
+                    evidence.get("avg_cross_section_n"),
+                    quality_summary.get("avg_cross_section_n"),
+                    quick.get("avg_cross_section_n"),
+                    quick_evidence.get("avg_cross_section_n"),
+                )
+                or 0
+            )
+            report["walk_forward"] = {
+                **dict(report.get("walk_forward") or {}),
+                "method": "active_factor_pool_governed_oos",
+                "oos_rank_ic_mean": round(float(rank_ic_mean), 6),
+                "oos_rank_ic_ir": round(float(rank_ic_ir), 6),
+            }
+            report["purged_kfold"] = {
+                **dict(report.get("purged_kfold") or {}),
+                "method": "active_factor_pool_governed_cross_section",
+                "oos_rank_ic_mean": round(float(rank_ic_mean), 6),
+                "oos_rank_ic_ir": round(float(rank_ic_ir), 6),
+            }
+            report["bootstrap_ci"] = {
+                **dict(report.get("bootstrap_ci") or {}),
+                "ci_lower": round(float(bootstrap_ci_lower), 6),
+                "ic_mean": round(float(rank_ic_mean), 6),
+                "sample_size": int(sample_dates or 0),
+                "source": "active_factor_pool_validation_summary",
+            }
+            report["multiple_testing"] = {
+                **dict(report.get("multiple_testing") or {}),
+                "deflated_sharpe": {
+                    "available": governance_raw.get("deflated_sharpe") is not None,
+                    "dsr": cls._factor_pool_summary_float(governance_raw.get("deflated_sharpe")),
+                },
+                "pbo": {
+                    "available": governance_raw.get("pbo") is not None,
+                    "pbo": cls._factor_pool_summary_float(governance_raw.get("pbo")),
+                },
+                "white_reality_check": {
+                    "available": governance_raw.get("white_reality_check_p_value") is not None,
+                    "p_value": cls._factor_pool_summary_float(governance_raw.get("white_reality_check_p_value")),
+                },
+                "hansen_spa": {
+                    "available": governance_raw.get("hansen_spa_p_value") is not None,
+                    "p_value": cls._factor_pool_summary_float(governance_raw.get("hansen_spa_p_value")),
+                },
+            }
+            report["rating"] = rating or dict(report.get("rating") or {})
+            statistical_metrics = {
+                **dict(report.get("statistical_metrics") or {}),
+                "wf_ic_ir": {"value": round(float(rank_ic_ir), 6), "source": "active_factor_pool_validation_summary"},
+                "pkf_ic": {"value": round(float(rank_ic_mean), 6), "source": "active_factor_pool_validation_summary"},
+                "bootstrap_ci_lower": {
+                    "value": round(float(bootstrap_ci_lower), 6),
+                    "source": "active_factor_pool_validation_summary",
+                    "derived": bool(rank_ic_std is not None),
+                },
+            }
+            if avg_stability_ratio is not None:
+                statistical_metrics["param_sensitivity"] = {
+                    "value": round(max(0.0, min(1.0, 1.0 - float(avg_stability_ratio))), 6),
+                    "source": "active_factor_pool_governance.avg_stability_ratio",
+                    "derived": True,
+                }
+            if avg_degradation is not None:
+                statistical_metrics["period_robustness"] = {
+                    "value": {
+                        "first_half_ic": round(float(rank_ic_mean), 6),
+                        "second_half_ic": round(float(rank_ic_mean) - abs(float(avg_degradation)), 6),
+                    },
+                    "source": "active_factor_pool_governance.avg_degradation",
+                    "derived": True,
+                }
+            report["statistical_metrics"] = statistical_metrics
+            report["active_factor_pool_validation"] = {
+                "source": "factor_pool_validation_summary",
+                "quality_status": quality_status,
+                "quality_score": summary.get("quality_score"),
+                "sample_dates": sample_dates,
+                "ic_history_rows": persisted.get("ic_history_rows_total") or persisted.get("ic_history_rows"),
+                "source_candidate_artifact_id": (params or {}).get("source_candidate_artifact_id"),
+                "source_validation_artifact_id": (params or {}).get("source_validation_artifact_id"),
+            }
+            report["validation_report_source"] = "active_factor_pool_validation_summary"
+            return report
+
         async def _evaluate_reports(self, candidate: dict, db) -> tuple[Optional[dict], Optional[dict]]:
             """先计算验证/风险报告，避免在 Gate-3 前产生持久化副作用。优化：并发执行。"""
             import asyncio as _asyncio
@@ -455,6 +684,11 @@
                     return None
 
             validation_report, risk_report = await _asyncio.gather(_run_validation(), _run_risk())
+            validation_report = self._factor_pool_validation_report_from_params(
+                report_params,
+                candidate,
+                validation_report,
+            )
             try:
                 from strategy_factory.application.research.statistical_robustness import (
                     enrich_validation_report_with_robustness_derivations,

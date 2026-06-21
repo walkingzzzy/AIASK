@@ -11,6 +11,13 @@ operator habits, but delegate to run_three_factories.py, which starts only:
 - Market Event Ingest
 
 Run SignalTracker separately through run_signal_tracker.py when it is needed.
+Recommended uv invocation:
+
+    uv run --project packages/akshare-mcp python scripts/factories/run_signal_tracker.py --once
+
+The SignalTracker wrapper also preflights runtime modules and re-execs through
+uv with editable local packages when a selected interpreter is missing deps
+such as numpy.
 """
 
 from __future__ import annotations

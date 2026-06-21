@@ -210,9 +210,12 @@
             factor_research = {}
             try:
                 factor_gateway = scheduler._get_factor_research_gateway()
+                factor_refresh_self_heal = str(
+                    os.getenv("STRATEGY_FACTORY_FACTOR_REFRESH_SELF_HEAL", "0") or "0"
+                ).strip().lower() in {"1", "true", "yes", "on"}
                 factor_research_snapshot = {
                     **snapshot,
-                    "_factor_refresh_self_heal": False,
+                    "_factor_refresh_self_heal": factor_refresh_self_heal,
                 }
                 factor_research = await self._build_factor_research_artifact(
                     factor_gateway,

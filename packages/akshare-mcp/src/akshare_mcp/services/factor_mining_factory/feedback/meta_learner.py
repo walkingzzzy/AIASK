@@ -56,12 +56,12 @@ class FactorMetaLearner:
                 if engine not in self._engine_stats:
                     self._engine_stats[engine] = {"generated": 0, "validated": 0}
                 self._engine_stats[engine]["generated"] += 1
-                success = self._candidate_succeeded(candidate)
+                outcome = self._candidate_outcome(candidate)
                 pattern_key = self._pattern_key(candidate)
-                if success:
+                if outcome is True:
                     self._engine_stats[engine]["validated"] += 1
                     self._success_patterns[pattern_key] += 1
-                else:
+                elif outcome is False:
                     self._failure_patterns[pattern_key] += 1
 
         # 保留最近 100 条记录
@@ -145,17 +145,44 @@ class FactorMetaLearner:
             or getattr(candidate, "family", "")
             or "custom"
         )
-        engine = str(getattr(candidate, "generation_engine", "") or "unknown")
-        return f"{engine}:{family}"
+        return family
 
     @staticmethod
     def _candidate_succeeded(candidate: Any) -> bool:
+        outcome = FactorMetaLearner._candidate_outcome(candidate)
+        return bool(outcome)
+
+    @staticmethod
+    def _candidate_outcome(candidate: Any) -> bool | None:
+        """Return conclusive strict outcome; quick-only evidence is not success."""
+
+        trace = dict(getattr(candidate, "generation_trace", None) or {})
+        strict_attempted = bool(trace.get("strict_validation_attempted"))
+        result = getattr(candidate, "validation_result", None)
+        if isinstance(result, dict) and result:
+            try:
+                from ..quality import evaluate_validation_evidence
+
+                evidence_passed = bool(evaluate_validation_evidence(result).get("passed"))
+            except Exception:
+                evidence = dict(result.get("quality_evidence") or {})
+                evidence_passed = bool(evidence.get("passed"))
+            rating = dict(result.get("rating") or {})
+            governance = dict(rating.get("governance") or {})
+            grade = str(rating.get("grade") or "")
+            return bool(
+                result.get("success")
+                and evidence_passed
+                and grade in {"A", "B"}
+                and not bool(governance.get("admission_blocked"))
+            )
+
+        if strict_attempted:
+            return False
+
         quick = dict(getattr(candidate, "quick_evidence", None) or {})
         if quick:
-            return bool(quick.get("passed"))
-        result = getattr(candidate, "validation_result", None)
-        if isinstance(result, dict):
-            evidence = dict(result.get("quality_evidence") or {})
-            if evidence:
-                return bool(evidence.get("passed"))
-        return float(getattr(candidate, "fitness", 0.0) or 0.0) > 1.0
+            if quick.get("passed") is False:
+                return False
+            return None
+        return None

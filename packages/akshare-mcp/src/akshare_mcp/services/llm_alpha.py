@@ -344,15 +344,102 @@ class LLMAlphaMiner:
                     "_engine": "fallback_proxy",
                 })
 
-        # 简单优先级：趋势明显先看 momentum/trend；高波动先看 volatility/reversal
-        trend_priority = abs(period_return) >= 0.1
-        vol_priority = volatility >= 0.03
-        if trend_priority:
-            pool.sort(key=lambda x: 0 if x["category"] in {"momentum", "trend"} else 1)
-        if vol_priority:
-            pool.sort(key=lambda x: 0 if x["category"] in {"volatility", "reversal", "risk_adjusted"} else 1)
+        # 真实 IC 重排:对自生成的因子公式算历史 IC,按 |IC| 降序优先高预测力因子。
+        # 公式均为本函数自产模板(非外部输入),用受限命名空间 eval;任一失败诚实降级到启发式排序。
+        pool = self._rank_pool_by_real_ic(
+            pool,
+            market_data=df,
+            close_col=close_col,
+            period_return=period_return,
+            volatility=volatility,
+        )
 
         return pool
+
+    def _rank_pool_by_real_ic(
+        self,
+        pool: List[Dict[str, Any]],
+        *,
+        market_data: pd.DataFrame,
+        close_col: Optional[str],
+        period_return: float,
+        volatility: float,
+        forward_days: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """用真实历史 IC 对本地因子池重排。
+
+        每个因子公式在受限命名空间下求值为因子序列,与 forward_days 日前向收益对齐,
+        调用已有 evaluate_factor 得到真实 IC。按 |IC| 降序排,取不到 IC 的因子(如文本信号
+        公式无法单表达式求值)保持原相对序并排在已评分因子之后。整体失败时退回原启发式排序。
+        """
+        def _heuristic_sort(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+            ordered = list(items)
+            if abs(period_return) >= 0.1:
+                ordered.sort(key=lambda x: 0 if x.get("category") in {"momentum", "trend"} else 1)
+            if volatility >= 0.03:
+                ordered.sort(key=lambda x: 0 if x.get("category") in {"volatility", "reversal", "risk_adjusted"} else 1)
+            return ordered
+
+        if not pool or close_col is None or market_data is None or market_data.empty:
+            return _heuristic_sort(pool)
+
+        try:
+            namespace = {
+                str(col): market_data[col]
+                for col in market_data.columns
+                if pd.api.types.is_numeric_dtype(market_data[col])
+            }
+            if close_col not in namespace:
+                return _heuristic_sort(pool)
+            forward_returns = market_data[close_col].pct_change(forward_days).shift(-forward_days)
+            scored: List[tuple[float, int, Dict[str, Any]]] = []
+            unscored: List[tuple[int, Dict[str, Any]]] = []
+            for idx, candidate in enumerate(pool):
+                formula = str(candidate.get("formula") or "")
+                ic_abs = self._safe_formula_ic(formula, namespace, forward_returns)
+                if ic_abs is None:
+                    unscored.append((idx, candidate))
+                else:
+                    candidate["_real_ic_abs"] = round(float(ic_abs), 6)
+                    scored.append((ic_abs, idx, candidate))
+            if not scored:
+                return _heuristic_sort(pool)
+            # |IC| 降序;同分按原序稳定
+            scored.sort(key=lambda t: (-t[0], t[1]))
+            ranked = [c for _, _, c in scored] + [c for _, c in unscored]
+            return ranked
+        except Exception as exc:  # noqa: BLE001 - 评分失败不得拖垮生成,诚实退回启发式
+            logger.debug("local factor IC ranking failed, fallback to heuristic: %s", exc)
+            return _heuristic_sort(pool)
+
+    def _safe_formula_ic(
+        self,
+        formula: str,
+        namespace: Dict[str, Any],
+        forward_returns: pd.Series,
+    ) -> Optional[float]:
+        """对单条因子公式求值并返回 |IC|;无法求值/样本不足时返回 None。"""
+        formula = formula.strip()
+        # 仅支持单一 pandas 表达式;含赋值/分号的(如文本信号公式)跳过
+        if not formula or ";" in formula or "=" in formula.replace("==", "").replace(">=", "").replace("<=", "").replace("!=", ""):
+            return None
+        try:
+            factor_series = eval(formula, {"__builtins__": {}}, dict(namespace))  # noqa: S307 - 公式为本模块自产模板
+        except Exception:
+            return None
+        if not isinstance(factor_series, pd.Series):
+            return None
+        metrics = self.evaluate_factor(factor_series, forward_returns)
+        ic = metrics.get("ic")
+        if ic is None:
+            return None
+        try:
+            ic_val = float(ic)
+        except (TypeError, ValueError):
+            return None
+        if ic_val != ic_val:  # NaN
+            return None
+        return abs(ic_val)
 
     def generate_factor_candidates(
         self,
@@ -403,6 +490,10 @@ class LLMAlphaMiner:
             text_signal = item.get("_text_signal")
             if text_signal:
                 candidate["text_signal"] = text_signal
+            # B2: 透传真实 IC,供下游候选排序(B1)按预测力优先
+            real_ic = item.get("_real_ic_abs")
+            if real_ic is not None:
+                candidate["real_ic_abs"] = real_ic
             candidates.append(candidate)
 
         self.factor_candidates.extend(candidates)

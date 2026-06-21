@@ -57,8 +57,9 @@ class StrategyLLMConfig:
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
     initial_compact_level: int = 0
-    recent_timeout_minimal_streak: int = 1
-    recent_timeout_cooldown_sec: float = 600.0
+    # 与 public/runtime 口径对齐:单次抖动不应把整轮 LLM 锁死。
+    recent_timeout_minimal_streak: int = 3
+    recent_timeout_cooldown_sec: float = 120.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -68,8 +69,8 @@ class StrategyLLMConfig:
         enabled = str(os.getenv("STRATEGY_LLM_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"}
         timeout_sec = float(os.getenv("STRATEGY_LLM_TIMEOUT_SEC", "30") or 30)
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
-        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
-        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "3") or 3)))
+        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "120") or 120))
         return cls(
             enabled=enabled,
             provider=str(os.getenv("STRATEGY_LLM_PROVIDER", "openai_compatible") or "openai_compatible"),

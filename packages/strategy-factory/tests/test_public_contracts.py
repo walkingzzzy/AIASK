@@ -159,6 +159,28 @@ def test_stage_result_dto_round_trip() -> None:
     assert dto.to_dict()["warning_count"] == 2
 
 
+def test_factory_run_summary_dto_exposes_formal_runtime_ready_budget_counts() -> None:
+    from strategy_factory.api.dto import FactoryRunSummaryDTO
+
+    dto = FactoryRunSummaryDTO.from_dict(
+        {
+            "run_id": "run-formal-budget",
+            "trace_id": "trace-formal-budget",
+            "status": "partial",
+            "started_at": "2026-06-18T09:00:00+08:00",
+            "summary": {
+                "incubation_budget_formal_runtime_ready_candidate_count": 3,
+                "incubation_budget_formal_runtime_ready_selected_count": 1,
+            },
+        }
+    )
+
+    payload = dto.to_dict()
+
+    assert payload["incubation_budget_formal_runtime_ready_candidate_count"] == 3
+    assert payload["incubation_budget_formal_runtime_ready_selected_count"] == 1
+
+
 def test_factory_status_dto_preserves_strict_incubation_blocker_summary() -> None:
     from strategy_factory.api.dto import FactoryStatusDTO
 
@@ -171,6 +193,8 @@ def test_factory_status_dto_preserves_strict_incubation_blocker_summary() -> Non
                 "summary": {
                     "strict_incubation_ready_count": 0,
                     "raw_b_or_above_count": 3,
+                    "incubation_budget_formal_runtime_ready_candidate_count": 4,
+                    "incubation_budget_formal_runtime_ready_selected_count": 2,
                 },
             },
             "strict_incubation_blocker_summary": {
@@ -187,6 +211,8 @@ def test_factory_status_dto_preserves_strict_incubation_blocker_summary() -> Non
 
     payload = dto.to_dict()
 
+    assert payload["last_incubation_budget_formal_runtime_ready_candidate_count"] == 4
+    assert payload["last_incubation_budget_formal_runtime_ready_selected_count"] == 2
     assert payload["strict_incubation_blocker_summary"]["status"] == "blocked"
     assert payload["strict_incubation_blocker_summary"]["top_blockers"][0]["reason_code"] == (
         "diagnostic_only_not_allowed_for_incubation"

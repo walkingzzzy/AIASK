@@ -97,6 +97,69 @@ def normalize_feedback_input_contract(
             default=0.0,
         )
     )
+    raw_validation_a_rate = (
+        safe_float(summary_payload.get("raw_validation_a_rate"))
+        if "raw_validation_a_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="raw_validation_a_rate",
+            default=0.0,
+        )
+    )
+    raw_validation_b_rate = (
+        safe_float(summary_payload.get("raw_validation_b_rate"))
+        if "raw_validation_b_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="raw_validation_b_rate",
+            default=0.0,
+        )
+    )
+    raw_validation_c_rate = (
+        safe_float(summary_payload.get("raw_validation_c_rate"))
+        if "raw_validation_c_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="raw_validation_c_rate",
+            default=0.0,
+        )
+    )
+    raw_validation_d_rate = (
+        safe_float(summary_payload.get("raw_validation_d_rate"))
+        if "raw_validation_d_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="raw_validation_d_rate",
+            default=0.0,
+        )
+    )
+    raw_validation_total_score_mean = (
+        safe_float(summary_payload.get("raw_validation_total_score_mean"))
+        if "raw_validation_total_score_mean" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="raw_validation_total_score_mean",
+            default=0.0,
+        )
+    )
+    strict_incubation_ready_rate = (
+        safe_float(summary_payload.get("strict_incubation_ready_rate"))
+        if "strict_incubation_ready_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="strict_incubation_ready_rate",
+            default=0.0,
+        )
+    )
+    live_candidate_ready_rate = (
+        safe_float(summary_payload.get("live_candidate_ready_rate"))
+        if "live_candidate_ready_rate" in summary_payload
+        else _average_feedback_metric(
+            feedback_root,
+            metric_name="live_candidate_ready_rate",
+            default=0.0,
+        )
+    )
     legacy_control_mode_counts = (
         _merge_feedback_count_maps(summary_payload.get("legacy_control_mode_counts"))
         if "legacy_control_mode_counts" in summary_payload
@@ -226,6 +289,13 @@ def normalize_feedback_input_contract(
         "execution_conversion_efficiency_observed_count": (
             execution_conversion_efficiency_observed_count
         ),
+        "raw_validation_a_rate": round(raw_validation_a_rate, 4),
+        "raw_validation_b_rate": round(raw_validation_b_rate, 4),
+        "raw_validation_c_rate": round(raw_validation_c_rate, 4),
+        "raw_validation_d_rate": round(raw_validation_d_rate, 4),
+        "raw_validation_total_score_mean": round(raw_validation_total_score_mean, 4),
+        "strict_incubation_ready_rate": round(strict_incubation_ready_rate, 4),
+        "live_candidate_ready_rate": round(live_candidate_ready_rate, 4),
         "legacy_control_mode_counts": legacy_control_mode_counts,
         "skill_control_mode_counts": skill_control_mode_counts,
         "budget_action_counts": dict(dual_axis_summary.get("budget_action_counts") or {}),

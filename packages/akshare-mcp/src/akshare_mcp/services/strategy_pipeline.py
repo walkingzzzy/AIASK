@@ -52,6 +52,23 @@ from .pipeline_support import (
 from .pipeline_stages import _PipelineStageMixin
 
 
+def _is_real_llm_error_fallback(stage_result: Any) -> bool:
+    """判定一个 fallback 是否源于"真实 LLM 错误"(timeout/connectivity/parse/overload 等),
+    用于 skip_llm 熔断计数。
+
+    P0-B:原 skip_llm 由 `used_fallback` 计数触发,但 used_fallback 混杂了:
+      - prefer_fallback / provider 未启用 / skip_llm 透传 → 非错误性 fallback(llm_attempted=False)
+      - P0-A 之前的合法空数组误判(现已修:合法空 used_fallback=False)
+    只有"尝试过 LLM 且带真实错误类型"才算真错。非错误 fallback 不应点燃熔断,
+    否则 LLM 正常工作却被误判放弃(病灶 B)。
+    """
+    if not getattr(stage_result, "used_fallback", False):
+        return False
+    if not getattr(stage_result, "llm_attempted", False):
+        return False
+    return bool(getattr(stage_result, "llm_error_type", None))
+
+
 class MultiStageStrategyPipeline(_PipelineStageMixin):
     """链式执行 5 个 Stage 的编排器。"""
 
@@ -117,7 +134,7 @@ class MultiStageStrategyPipeline(_PipelineStageMixin):
             if sr.error and not sr.output:
                 fatal_error = f"stage {sid} failed: {sr.error}"
                 break
-            if not skip_llm and sr.used_fallback:
+            if not skip_llm and _is_real_llm_error_fallback(sr):
                 parallel_llm_failures += 1
                 _limit = PIPELINE_STAGE_TIMEOUTS.get(sid, PIPELINE_STAGE_TIMEOUT_SEC)
                 if sr.elapsed_sec >= _limit * 0.8:
@@ -156,7 +173,7 @@ class MultiStageStrategyPipeline(_PipelineStageMixin):
             result.stages[stage_id] = stage_result
 
             if not skip_llm:
-                if stage_result.used_fallback:
+                if _is_real_llm_error_fallback(stage_result):
                     if not stage_def.prefer_fallback:
                         consecutive_llm_failures += 1
                     _stage_limit = PIPELINE_STAGE_TIMEOUTS.get(stage_id, PIPELINE_STAGE_TIMEOUT_SEC)

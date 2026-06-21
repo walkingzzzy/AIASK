@@ -258,6 +258,7 @@ class ActiveFactorPool:
             "existing_quality_score": existing_quality,
             "incremental_quality_score": incremental_quality_score,
         }
+        retired_records: list[dict[str, Any]] = []
         if max_corr > self.ORTHOGONALITY_THRESHOLD:
             if incremental_quality_score < 10.0:
                 replacement_decision["action"] = "reject"
@@ -273,13 +274,17 @@ class ActiveFactorPool:
             replacement_decision["action"] = "replace"
             replacement_decision["reason"] = "candidate_quality_materially_better"
             if similarity.get("factor_id"):
-                self._retire(str(similarity.get("factor_id")), reason="quality_replacement")
+                retired = self._retire(str(similarity.get("factor_id")), reason="quality_replacement")
+                if retired:
+                    retired_records.append(retired)
 
         # 2. 池容量检查
         if self.size >= self.MAX_POOL_SIZE:
             weakest = self._find_weakest()
             if weakest and candidate.fitness > weakest.get("fitness", 0):
-                self._retire(weakest["factor_id"], reason="replaced")
+                retired = self._retire(weakest["factor_id"], reason="replaced")
+                if retired:
+                    retired_records.append(retired)
             else:
                 return {"admitted": False, "reason": "pool_full"}
 
@@ -360,6 +365,7 @@ class ActiveFactorPool:
             "quarantined": True,
             "factor_id": factor_id,
             "record": record,
+            "retired_records": retired_records,
         }
 
     @staticmethod
@@ -523,11 +529,18 @@ class ActiveFactorPool:
             return None
         return min(self._factors.values(), key=lambda x: x.get("fitness", 0))
 
-    def _retire(self, factor_id: str, reason: str = "manual"):
+    def _retire(self, factor_id: str, reason: str = "manual") -> dict[str, Any] | None:
         """退役因子。"""
-        if factor_id in self._factors:
-            self._factors[factor_id]["status"] = "retired"
-            self._factors[factor_id]["retired_at"] = datetime.now(timezone.utc).isoformat()
-            self._factors[factor_id]["retired_reason"] = reason
-            del self._factors[factor_id]
-            logger.info("ActiveFactorPool: retired %s reason=%s", factor_id, reason)
+        if factor_id not in self._factors:
+            return None
+        record = dict(self._factors[factor_id])
+        record["status"] = "retired"
+        record["retired_at"] = datetime.now(timezone.utc).isoformat()
+        record["retired_reason"] = reason
+        validation_summary = dict(record.get("validation_summary") or {})
+        validation_summary["quality_status"] = "retired"
+        validation_summary["retired_reason"] = reason
+        record["validation_summary"] = validation_summary
+        del self._factors[factor_id]
+        logger.info("ActiveFactorPool: retired %s reason=%s", factor_id, reason)
+        return record

@@ -84,6 +84,13 @@ def _heavy_strategy_params() -> dict:
         "runtime_family_data_source": "price_proxy_runtime",
         "execution_readiness_tier": "observe_diagnostic_only",
         "trade_prediction_contract_status": "ready",
+        "candidate_provenance": {
+            "source_candidate_artifact_id": "factor-1",
+            "source_validation_artifact_id": "factor-1",
+            "candidate_family": "liquidity",
+            "generator_mode": "factor_pool",
+            "alpha_source": "factor_mining_active_pool",
+        },
         "resolved_candidate_envelope": {
             "records": [{"symbol": f"{i:06d}", "features": list(range(60))} for i in range(700)]
         },
@@ -246,12 +253,16 @@ def test_strategy_factory_primary_bloat_paths_are_capped(tmp_path, monkeypatch):
             assert params["final_status"] == "submitted"
             assert params["planned_final_status"] == "incubating"
             assert params["observe_first_intake"] is True
+            assert params["candidate_provenance"]["source_candidate_artifact_id"] == "factor-1"
+            assert params["candidate_provenance"]["candidate_family"] == "liquidity"
+            assert params["candidate_provenance"]["generator_mode"] == "factor_pool"
             assert params["incubation_budget"]["track"] == "observe_incubation"
             assert params["incubation_budget"]["rank"] == 7
             assert params["incubation_budget"]["priority_score"] == 91.5
             assert params["incubation_budget"]["exploration_candidate"] is True
             assert params["_storage_audit"]["payload_hash"]
             assert "incubation_budget" not in params["_storage_audit"].get("dropped_large_nodes", {})
+            assert "candidate_provenance" not in params["_storage_audit"].get("dropped_large_nodes", {})
             assert set(params["_storage_audit"]["dropped_large_nodes"]) >= {
                 "resolved_candidate_envelope",
                 "candidate_contract_snapshot",

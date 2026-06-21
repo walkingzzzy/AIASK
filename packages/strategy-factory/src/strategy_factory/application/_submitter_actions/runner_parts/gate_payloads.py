@@ -42,6 +42,13 @@
                 planned_budget = dict((incubation_budget_plan.get("plans") or {}).get(marker) or {})
                 merged_budget = {**planned_budget, **existing_budget}
                 planned_track = str(planned_budget.get("track") or "").strip().lower()
+                if planned_track in {
+                    "formal_incubation",
+                    "observe_incubation",
+                    "deferred_budget_queue",
+                    "deferred_submission",
+                }:
+                    merged_budget["track"] = planned_track
                 observe_first_requested = bool(candidate.get("observe_first_intake")) or bool(
                     dict(candidate.get("params") or {}).get("observe_first_intake")
                 )
@@ -49,11 +56,15 @@
                     # Observe-first candidates still carry a micro observe placeholder from the
                     # candidate pipeline, but the budget planner may explicitly reserve a formal
                     # slot for a strict-ready sample. Preserve that formal plan here so the
-                    # downstream admission authority can actually request formal incubation.
+                    # downstream admission authority can actually request formal incubation. The
+                    # planner can also defer a feedback-controlled candidate; do not let the
+                    # observe-first placeholder re-open that lane.
                     if planned_track == "formal_incubation":
                         merged_budget["track"] = "formal_incubation"
                         if planned_budget.get("budget_tier") not in (None, "", [], {}):
                             merged_budget["budget_tier"] = planned_budget.get("budget_tier")
+                    elif planned_track in {"deferred_budget_queue", "deferred_submission"}:
+                        merged_budget["track"] = planned_track
                     else:
                         merged_budget["track"] = "observe_incubation"
                         merged_budget.setdefault("budget_tier", "micro")
@@ -135,6 +146,37 @@
                 if list(summary.get("pre_observe_hard_reject_reasons") or []):
                     pre_observe_hard_reject_count += 1
                 submitted_items.append(summary)
+
+            planned_track_counts = dict(incubation_budget_summary.get("track_counts") or {})
+            effective_track_counts = {
+                "formal_incubation": int(submission_lane_counts.get("formal_incubation") or 0),
+                "observe_incubation": int(submission_lane_counts.get("observe_incubation") or 0)
+                + int(submission_lane_counts.get("diagnostic_observation") or 0),
+                "deferred_budget_queue": int(submission_lane_counts.get("deferred_submission") or 0),
+            }
+            concrete_final_track_total = sum(int(value or 0) for value in effective_track_counts.values())
+            final_lane_counts = dict(submission_lane_counts)
+            if final_lane_counts:
+                reconciled_budget_summary = {
+                    **incubation_budget_summary,
+                    "planned_track_counts": planned_track_counts,
+                    "final_lane_counts": final_lane_counts,
+                    "effective_track_counts": effective_track_counts,
+                    "track_counts_reconciled": bool(concrete_final_track_total > 0),
+                    "auto_promoted_formal_count": max(
+                        0,
+                        int(effective_track_counts.get("formal_incubation") or 0)
+                        - int(planned_track_counts.get("formal_incubation") or 0),
+                    ),
+                    "auto_promoted_observe_count": max(
+                        0,
+                        int(effective_track_counts.get("observe_incubation") or 0)
+                        - int(planned_track_counts.get("observe_incubation") or 0),
+                    ),
+                }
+                if concrete_final_track_total > 0:
+                    reconciled_budget_summary["track_counts"] = effective_track_counts
+                incubation_budget_summary = reconciled_budget_summary
 
             observe_admitted_count = int(submission_lane_counts.get("observe_incubation") or 0) + int(
                 submission_lane_counts.get("diagnostic_observation") or 0

@@ -99,6 +99,125 @@ def _signal_stats_cache_signature(signal_stats: dict | None) -> dict[str, Any]:
     return signature
 
 
+async def _execution_state_cache_signature(db, strategy_id: str) -> dict[str, Any]:
+    signature: dict[str, Any] = {
+        "account_id": None,
+        "order_count": 0,
+        "filled_order_count": 0,
+        "pending_order_count": 0,
+        "trade_count": 0,
+        "nav_row_count": 0,
+        "latest_order_updated_at": None,
+        "latest_order_filled_at": None,
+        "latest_trade_time": None,
+        "latest_trade_created_at": None,
+        "latest_nav_date": None,
+        "latest_nav_created_at": None,
+    }
+    account = None
+    if hasattr(db, "get_paper_account_by_strategy"):
+        try:
+            account = await db.get_paper_account_by_strategy(strategy_id)
+        except Exception:
+            account = None
+    if not account and hasattr(db, "acquire"):
+        try:
+            async with db.acquire() as conn:
+                row = await conn.fetchrow(
+                    "SELECT * FROM paper_accounts WHERE strategy_id = $1 ORDER BY created_at LIMIT 1",
+                    strategy_id,
+                )
+            account = dict(row) if row else None
+        except Exception:
+            account = None
+    account_id = _string((account or {}).get("id") or (account or {}).get("account_id"))
+    signature["account_id"] = account_id or None
+    if not account_id:
+        return signature
+
+    if hasattr(db, "acquire"):
+        try:
+            async with db.acquire() as conn:
+                order_row = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) AS order_count,
+                        COALESCE(SUM(CASE WHEN status = 'filled' THEN 1 ELSE 0 END), 0) AS filled_order_count,
+                        COALESCE(SUM(CASE WHEN status IN ('pending', 'submitted') THEN 1 ELSE 0 END), 0) AS pending_order_count,
+                        MAX(updated_at) AS latest_order_updated_at,
+                        MAX(filled_at) AS latest_order_filled_at
+                    FROM paper_orders
+                    WHERE account_id = $1
+                    """,
+                    account_id,
+                )
+                trade_row = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) AS trade_count,
+                        MAX(trade_time) AS latest_trade_time,
+                        MAX(created_at) AS latest_trade_created_at
+                    FROM paper_trades
+                    WHERE account_id = $1
+                    """,
+                    account_id,
+                )
+                nav_row = await conn.fetchrow(
+                    """
+                    SELECT
+                        COUNT(*) AS nav_row_count,
+                        MAX(nav_date) AS latest_nav_date,
+                        MAX(created_at) AS latest_nav_created_at
+                    FROM paper_nav
+                    WHERE account_id = $1
+                    """,
+                    account_id,
+                )
+            rows = [dict(order_row or {}), dict(trade_row or {}), dict(nav_row or {})]
+            merged: dict[str, Any] = {}
+            for row in rows:
+                merged.update(row)
+            for key in (
+                "order_count",
+                "filled_order_count",
+                "pending_order_count",
+                "trade_count",
+                "nav_row_count",
+            ):
+                signature[key] = _safe_int(merged.get(key))
+            for key in (
+                "latest_order_updated_at",
+                "latest_order_filled_at",
+                "latest_trade_time",
+                "latest_trade_created_at",
+                "latest_nav_date",
+                "latest_nav_created_at",
+            ):
+                signature[key] = _string(merged.get(key)) or None
+            return signature
+        except Exception:
+            pass
+
+    if hasattr(db, "get_paper_order_summary"):
+        try:
+            order_summary = dict(await db.get_paper_order_summary(account_id) or {})
+            signature["order_count"] = _safe_int(order_summary.get("total_orders"))
+            signature["filled_order_count"] = _safe_int(order_summary.get("filled_orders"))
+            signature["trade_count"] = _safe_int(order_summary.get("total_trades"))
+        except Exception:
+            pass
+    if hasattr(db, "get_paper_nav_rows"):
+        try:
+            nav_rows = [dict(row or {}) for row in list(await db.get_paper_nav_rows(account_id, limit=1) or [])]
+            signature["nav_row_count"] = 1 if nav_rows else 0
+            if nav_rows:
+                signature["latest_nav_date"] = _string(nav_rows[0].get("nav_date")) or None
+                signature["latest_nav_created_at"] = _string(nav_rows[0].get("created_at")) or None
+        except Exception:
+            pass
+    return signature
+
+
 def _signature_text(value: Any) -> str:
     try:
         return json.dumps(value or {}, ensure_ascii=False, sort_keys=True, default=str)
@@ -129,6 +248,7 @@ async def build_incubation_overview(
             execution_audit_snapshot = None
     signal_stats = await db.get_signal_stats(strategy_id)
     signal_stats_signature = _signal_stats_cache_signature(signal_stats)
+    execution_state_signature = await _execution_state_cache_signature(db, strategy_id)
     if not force_recompute:
         get_latest_closure_snapshot = getattr(db, "get_latest_strategy_closure_snapshot", None)
         if callable(get_latest_closure_snapshot):
@@ -150,6 +270,8 @@ async def build_incubation_overview(
                 == _string((execution_audit_snapshot or {}).get("snapshot_id"))
                 and _signature_text(cached_metadata.get("signal_stats_signature"))
                 == _signature_text(signal_stats_signature)
+                and _signature_text(cached_metadata.get("execution_state_signature"))
+                == _signature_text(execution_state_signature)
             ):
                 cached_payload["as_of"] = _string(cached_payload.get("as_of")) or _string((cached_snapshot or {}).get("as_of")) or date.today().isoformat()
                 cached_payload["recomputed"] = False
@@ -970,4 +1092,5 @@ async def build_incubation_overview(
         execution_audit_snapshot=execution_audit_snapshot,
         quality_report_updated_at=quality_report_updated_at,
         signal_stats_signature=signal_stats_signature,
+        execution_state_signature=execution_state_signature,
     )

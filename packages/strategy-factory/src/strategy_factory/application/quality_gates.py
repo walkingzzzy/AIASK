@@ -7,6 +7,7 @@ Gate-3: 提交门禁 — 质量报告 + 风险报告 + 去重（委托 submissio
 """
 
 from .precompile_contract import validate_precompile_candidate_contract
+from .trade_prediction_contract import attach_trade_prediction_context
 from strategy_factory._fragment_loader import exec_fragments as _exec_fragments
 
 # PR-E (Phase 3, 2026-05-24): canonical target symbol limit resolver. The

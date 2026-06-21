@@ -98,7 +98,20 @@ def _fallback_execution_audit_gate(
     summary = dict(audit_summary or {})
     resolved_bootstrap_floor = max(1, _safe_int(bootstrap_trade_floor, 2))
     resolved_production_floor = max(_safe_int(production_trade_floor, 20), resolved_bootstrap_floor)
-    realized_trade_count = _safe_int(summary.get("realized_trade_count"))
+    realized_trade_count = _safe_int(
+        summary.get("real_paper_round_trip_count")
+        or summary.get("real_paper_round_trips")
+        or summary.get("realized_trade_count")
+    )
+    bootstrap_round_trip_count = _safe_int(
+        summary.get("bootstrap_round_trip_count")
+        or summary.get("bootstrap_round_trips")
+    )
+    closed_round_trip_count = _safe_int(
+        summary.get("closed_round_trip_count")
+        or summary.get("total_realized_trade_count")
+        or realized_trade_count + bootstrap_round_trip_count
+    )
     mapped_position_count = _safe_int(summary.get("mapped_position_count"))
     incomplete_position_count = _safe_int(summary.get("incomplete_position_count"))
     order_count = _safe_int(summary.get("order_count"))
@@ -122,6 +135,9 @@ def _fallback_execution_audit_gate(
     execution_conversion_efficiency = _safe_float(summary.get("execution_conversion_efficiency"))
     metrics = {
         "realized_trade_count": realized_trade_count,
+        "real_paper_round_trips": realized_trade_count,
+        "bootstrap_round_trips": bootstrap_round_trip_count,
+        "closed_round_trips": closed_round_trip_count,
         "trade_expectancy": trade_expectancy,
         "pnl_conversion_efficiency": pnl_conversion_efficiency,
         "execution_conversion_efficiency": execution_conversion_efficiency,

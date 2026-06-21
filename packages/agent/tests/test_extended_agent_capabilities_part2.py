@@ -8,6 +8,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 import pytest
@@ -29,6 +30,18 @@ def _request(method: str, url: str, payload: dict[str, Any] | None = None, heade
     with urlopen(req, timeout=5) as response:
         body = response.read().decode("utf-8")
         return response.status, dict(response.headers), body
+
+
+def _request_maybe_error(
+    method: str,
+    url: str,
+    payload: dict[str, Any] | None = None,
+    headers: dict[str, str] | None = None,
+):
+    try:
+        return _request(method, url, payload, headers)
+    except HTTPError as exc:
+        return exc.code, dict(exc.headers), exc.read().decode("utf-8")
 
 
 class FlakyModel:
@@ -665,9 +678,10 @@ def test_provider_tools_report_unconfigured_without_credentials(tmp_path, monkey
     asyncio.run(scenario())
 
 
-def test_http_sse_run_events_toolsets_and_jobs(tmp_path) -> None:
+def test_http_sse_run_events_toolsets_and_jobs(tmp_path, monkeypatch) -> None:
     from aiask_agent.server import build_server
 
+    monkeypatch.setenv("AIASK_AGENT_CONTROL_TOKEN", "secret")
     store = AgentSessionStore(tmp_path / "state.sqlite3")
     runtime = AgentRuntime(
         model_client=MockModelClient(),
@@ -701,16 +715,71 @@ def test_http_sse_run_events_toolsets_and_jobs(tmp_path) -> None:
         assert headers["Content-Type"].startswith("text/event-stream")
         assert "run.completed" in events_body
 
+        status, _, denied_body = _request_maybe_error(
+            "POST",
+            f"{base_url}/v1/jobs",
+            {"name": "blocked", "prompt": "hello job", "interval_seconds": 3600},
+        )
+        assert status == 401
+        assert "control" in denied_body.lower()
+
         status, _, job_body = _request(
             "POST",
             f"{base_url}/v1/jobs",
             {"name": "smoke", "prompt": "hello job", "interval_seconds": 3600},
+            headers={"Authorization": "Bearer secret"},
         )
         assert status == 201
         job_id = json.loads(job_body)["job_id"]
         status, _, list_body = _request("GET", f"{base_url}/v1/jobs")
         assert status == 200
         assert job_id in list_body
+
+        status, _, patch_denied_body = _request_maybe_error(
+            "PATCH",
+            f"{base_url}/v1/jobs/{job_id}",
+            {"enabled": False},
+        )
+        assert status == 401
+        assert "control" in patch_denied_body.lower()
+
+        status, _, patch_body = _request(
+            "PATCH",
+            f"{base_url}/v1/jobs/{job_id}",
+            {"enabled": True},
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert status == 200
+        assert json.loads(patch_body)["enabled"] is True
+
+        status, _, run_denied_body = _request_maybe_error("POST", f"{base_url}/v1/jobs/{job_id}/run", {})
+        assert status == 401
+        assert "control" in run_denied_body.lower()
+
+        status, _, run_body = _request(
+            "POST",
+            f"{base_url}/v1/jobs/{job_id}/run",
+            {},
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert status == 200
+        assert json.loads(run_body)["success"] is True
+
+        status, _, runs_body = _request("GET", f"{base_url}/v1/jobs/{job_id}/runs?limit=20")
+        assert status == 200
+        assert json.loads(runs_body)["job_id"] == job_id
+
+        status, _, delete_denied_body = _request_maybe_error("DELETE", f"{base_url}/v1/jobs/{job_id}")
+        assert status == 401
+        assert "control" in delete_denied_body.lower()
+
+        status, _, delete_body = _request(
+            "DELETE",
+            f"{base_url}/v1/jobs/{job_id}",
+            headers={"Authorization": "Bearer secret"},
+        )
+        assert status == 200
+        assert json.loads(delete_body)["deleted"] is True
     finally:
         server.shutdown()
         server.server_close()

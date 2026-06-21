@@ -45,6 +45,85 @@ def test_decay_monitor_measures_ic_history_and_updates_pool():
     assert report["measurements"][0]["rolling_ic_20d"] == 0.07
 
 
+def test_factor_pool_gateway_default_filters_retired_and_quarantine_quality():
+    from akshare_mcp.services.factor_mining_factory.api import FactorPoolGateway
+
+    class Pool:
+        async def get_active_factors(self, **kwargs):
+            return [
+                {
+                    "factor_id": "promoted-1",
+                    "name": "promoted",
+                    "family": "momentum",
+                    "expression_dsl": "rank(close)",
+                    "status": "active",
+                    "validation_summary": {"quality_status": "promoted"},
+                },
+                {
+                    "factor_id": "retire-1",
+                    "name": "retire",
+                    "family": "momentum",
+                    "expression_dsl": "rank(volume)",
+                    "status": "active",
+                    "validation_summary": {
+                        "quality_status": "promoted",
+                        "qc_shelf_decision": {"decision": "retire"},
+                    },
+                },
+                {
+                    "factor_id": "stale-advisory-1",
+                    "name": "stale_advisory",
+                    "family": "momentum",
+                    "expression_dsl": "rank(open)",
+                    "status": "active",
+                    "validation_summary": {
+                        "quality_status": "promoted",
+                        "qc_shelf_decision": {"decision": "retire"},
+                        "qc_labels": {
+                            "rank_ic_ir": 0.0,
+                            "bootstrap_ci_lower": 0.0,
+                            "oos_pass": False,
+                            "oos_grade": "unknown",
+                            "monotonicity": 0.0,
+                            "long_short_return": 0.0,
+                            "window_stability": 0.0,
+                            "param_sensitivity": 0.0,
+                            "dsr": 0.0,
+                            "pbo": 0.0,
+                        },
+                    },
+                },
+                {
+                    "factor_id": "quarantine-1",
+                    "name": "quarantine",
+                    "family": "momentum",
+                    "expression_dsl": "rank(amount)",
+                    "status": "active",
+                    "validation_summary": {"quality_status": "quarantine"},
+                },
+            ]
+
+    class Factory:
+        def __init__(self):
+            self._active_pool = Pool()
+
+        def _ensure_initialized(self):
+            return None
+
+        async def _get_db(self):
+            raise RuntimeError("force in-memory pool fallback")
+
+        async def _ensure_persistent_pool(self, db):
+            return None
+
+    gateway = FactorPoolGateway()
+    gateway._factory = Factory()
+
+    factors = asyncio.run(gateway.get_active_factors(limit=10))
+
+    assert [item["factor_id"] for item in factors] == ["promoted-1", "stale-advisory-1"]
+
+
 def test_active_pool_rejects_too_simple_expression_and_records_admission_ic():
     from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
     from akshare_mcp.services.factor_mining_factory.pool.active_pool import ActiveFactorPool
@@ -424,6 +503,7 @@ def test_factor_pool_status_includes_quality_health_summary():
         {
             "factor_id": "active-1",
             "status": "active",
+            "expression_dsl": "rank(ts_mean(close, 20))",
             "generation_engine": "gp_classic",
             "fitness": 88.0,
             "validation_summary": {
@@ -433,6 +513,42 @@ def test_factor_pool_status_includes_quality_health_summary():
                     "ic_history_rows": 60,
                     "rank_ic_ir": 0.4,
                 },
+            },
+        },
+        {
+            "factor_id": "active-retire-1",
+            "status": "active",
+            "expression_dsl": "rank(ts_mean(volume, 20))",
+            "generation_engine": "gp_classic",
+            "fitness": 77.0,
+            "validation_summary": {
+                "quality_status": "promoted",
+                "qc_shelf_decision": {"decision": "retire"},
+                "evidence_summary": {"ic_history_rows": 60, "rank_ic_ir": 0.1},
+            },
+        },
+        {
+            "factor_id": "active-stale-advisory-1",
+            "status": "active",
+            "expression_dsl": "rank(ts_mean(open, 20))",
+            "generation_engine": "gp_classic",
+            "fitness": 79.0,
+            "validation_summary": {
+                "quality_status": "promoted",
+                "qc_shelf_decision": {"decision": "retire"},
+                "qc_labels": {
+                    "rank_ic_ir": 0.0,
+                    "bootstrap_ci_lower": 0.0,
+                    "oos_pass": False,
+                    "oos_grade": "unknown",
+                    "monotonicity": 0.0,
+                    "long_short_return": 0.0,
+                    "window_stability": 0.0,
+                    "param_sensitivity": 0.0,
+                    "dsr": 0.0,
+                    "pbo": 0.0,
+                },
+                "evidence_summary": {"ic_history_rows": 60, "rank_ic_ir": 0.2},
             },
         },
         {
@@ -449,10 +565,14 @@ def test_factor_pool_status_includes_quality_health_summary():
 
     summary = FactorPoolGateway._summarize_pool_health(rows)
 
-    assert summary["active_promoted_count"] == 1
+    assert summary["active_promoted_count"] == 3
+    assert summary["active_status_count"] == 3
+    assert summary["research_consumable_count"] == 2
+    assert summary["active_retire_recommended_count"] == 1
+    assert summary["active_unconsumable_reason_counts"] == {"qc_retire": 1}
     assert summary["quarantine_count"] == 1
     assert summary["evidence_insufficient_count"] == 1
-    assert summary["recent_60d_icir"] == 0.4
+    assert summary["recent_60d_icir"] == 0.233333
 
 
 def test_engine_scheduler_downweights_low_quality_rl_and_mcts():
@@ -480,6 +600,59 @@ def test_engine_scheduler_downweights_low_quality_rl_and_mcts():
     budgets = scheduler._allocate_budgets(Context(), None, 30)
 
     assert budgets["rl_alphagen"].candidate_count <= 3
+
+
+def test_engine_scheduler_runs_cpu_bound_engines_off_event_loop_thread():
+    import threading
+
+    from akshare_mcp.services.factor_mining_factory.engines.base import (
+        EngineStatus,
+        FactorCandidate,
+        SearchBudget,
+    )
+    from akshare_mcp.services.factor_mining_factory.engines.engine_scheduler import (
+        EngineScheduler,
+    )
+
+    class RecordingCpuEngine:
+        engine_id = "gp_classic"
+        engine_type = "test_cpu"
+
+        def __init__(self):
+            self.thread_ids: list[int] = []
+
+        async def generate(self, context, budget: SearchBudget):
+            self.thread_ids.append(threading.get_ident())
+            return [
+                FactorCandidate(
+                    name="threaded-factor",
+                    hypothesis="h",
+                    expression_dsl="ts_mean(close, 20)",
+                    generation_engine=self.engine_id,
+                )
+            ]
+
+        def get_status(self):
+            return EngineStatus(engine_id=self.engine_id, engine_type=self.engine_type)
+
+    class Context:
+        active_pool_size = 5
+        pool_decay_rate = 0.0
+
+    engine = RecordingCpuEngine()
+    scheduler = EngineScheduler()
+    scheduler.register_engine(engine)
+
+    async def _run():
+        loop_thread_id = threading.get_ident()
+        candidates = await scheduler.search(context=Context(), engines=["gp_classic"], candidate_count=3)
+        return loop_thread_id, candidates
+
+    loop_thread_id, candidates = asyncio.run(_run())
+
+    assert [candidate.generation_engine for candidate in candidates] == ["gp_classic"]
+    assert len(engine.thread_ids) == 1
+    assert engine.thread_ids[0] != loop_thread_id
 
 
 def test_rl_reward_requires_quick_ic_evidence():

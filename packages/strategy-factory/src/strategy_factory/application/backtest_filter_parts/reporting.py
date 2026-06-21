@@ -456,6 +456,15 @@
         has_explicit_research_task = _has_explicit_research_task(candidate)
 
         if not has_explicit_research_task:
+            if validation_focus == "broad_generalization":
+                evaluated_codes = list(dict.fromkeys([*target_codes, *representative_stocks]))
+                return (
+                    evaluated_codes,
+                    target_codes,
+                    representative_codes,
+                    "target_plus_representative",
+                    validation_focus,
+                )
             if target_codes:
                 return list(target_codes), target_codes, representative_codes, "candidate_target_symbols", "candidate_target_only"
             return list(representative_stocks), target_codes, representative_codes, "representative_only", "target_plus_representative"

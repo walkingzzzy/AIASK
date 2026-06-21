@@ -137,6 +137,8 @@ def _encode_record(record: dict[str, Any]) -> tuple[Any, ...]:
         record.get("hypothesis"),
         record.get("fitness", 0.0),
         record.get("last_evaluated_at"),
+        record.get("retired_at"),
+        record.get("retired_reason"),
         datetime.now(timezone.utc).isoformat(),
     )
 
@@ -150,9 +152,10 @@ async def save_factor_to_pool(db: Any, record: dict[str, Any]) -> dict[str, Any]
              admission_date, admission_ic, admission_grade, current_ic,
              decay_rate, orthogonal_ratio, pool_weight, generation_engine,
              generation_trace, validation_summary, hypothesis, fitness,
-             last_evaluated_at, updated_at)
+             last_evaluated_at, retired_at, retired_reason, updated_at)
         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                $11, $12, $13, $14, $15, $16, $17, $18, $19, $20,
+                $21, $22)
     """
     sql_qmark = """
         INSERT OR REPLACE INTO factor_pool_active
@@ -160,8 +163,8 @@ async def save_factor_to_pool(db: Any, record: dict[str, Any]) -> dict[str, Any]
              admission_date, admission_ic, admission_grade, current_ic,
              decay_rate, orthogonal_ratio, pool_weight, generation_engine,
              generation_trace, validation_summary, hypothesis, fitness,
-             last_evaluated_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             last_evaluated_at, retired_at, retired_reason, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """
     try:
         if hasattr(db, "acquire"):

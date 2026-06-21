@@ -108,12 +108,16 @@ def build_factor_research_summary(
             "active_factor_pool_fallback"
             if governed_top_candidates and governed_candidate_pool_mode == "active_factor_pool_fallback"
             else (
-                "governed_candidate_pool"
-                if governed_top_candidates
+                "factor_mining_active_pool"
+                if governed_top_candidates and governed_candidate_pool_mode == "factor_mining_active_pool"
                 else (
-                    "governed_pool_missing_after_scheduler_success"
-                    if governed_pool_missing_after_scheduler_success
-                    else "seed_fallback"
+                    "governed_candidate_pool"
+                    if governed_top_candidates
+                    else (
+                        "governed_pool_missing_after_scheduler_success"
+                        if governed_pool_missing_after_scheduler_success
+                        else "seed_fallback"
+                    )
                 )
             )
         ),

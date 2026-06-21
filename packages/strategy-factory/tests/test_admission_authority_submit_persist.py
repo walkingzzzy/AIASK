@@ -87,6 +87,443 @@ async def test_submit_preserves_planned_formal_budget_for_observe_first_candidat
 
 
 @pytest.mark.asyncio
+async def test_submit_real_budgeter_prioritizes_formal_ready_observe_first_candidate(monkeypatch) -> None:
+    from strategy_factory.application import incubation_budgeter as budgeter_module
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.setattr(budgeter_module, "FACTORY_INCUBATION_FORMAL_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_module, "FACTORY_INCUBATION_OBSERVE_SLOT_COUNT", 1)
+    monkeypatch.setattr(budgeter_module, "FACTORY_INCUBATION_EXPLORATION_RATIO", 0.0)
+
+    captured_candidates: list[dict[str, Any]] = []
+
+    async def _submit_one(self, candidate: dict[str, Any], snapshot: dict[str, Any], db: Any, *, read_only: bool = False):
+        captured_candidates.append(dict(candidate))
+        track = str(dict(candidate.get("incubation_budget") or {}).get("track") or "observe_incubation")
+        return {
+            "created_total": True,
+            "created_strategy_pool": track == "formal_incubation",
+            "submitted": track != "formal_incubation",
+            "passed": True,
+            "gate_3": {"passed": True, "provisional_pass": False},
+            "summary": {
+                "strategy_id": candidate.get("id"),
+                "submission_lane": track,
+                "submission_action_type": "incubation" if track == "formal_incubation" else "paper",
+                "admission_decision": "accept" if track == "formal_incubation" else "observe_only",
+                "strict_incubation_ready": track == "formal_incubation",
+            },
+        }
+
+    monkeypatch.setattr(StrategySubmitter, "_submit_one", _submit_one)
+
+    high_score_observe_only = _runtime_ready_candidate("submit-budget-high-score", observe_first=True)
+    high_score_observe_only.update(
+        {
+            "strategy_type": "ma_cross",
+            "backtest_metrics": {
+                "sharpe_ratio": 2.8,
+                "total_return": 0.45,
+                "max_drawdown": 0.04,
+            },
+        }
+    )
+    high_score_observe_only["params"]["candidate_validation_score"] = 92.0
+
+    lower_score_formal_ready = _runtime_ready_candidate("submit-budget-formal-ready", observe_first=True)
+    lower_score_formal_ready.update(
+        {
+            "strategy_type": "multi_factor",
+            "backtest_metrics": {
+                "sharpe_ratio": 0.7,
+                "total_return": 0.08,
+                "max_drawdown": 0.04,
+            },
+        }
+    )
+    lower_score_formal_ready["params"].update(
+        {
+            "candidate_validation_score": 45.0,
+            "execution_readiness_tier": "formal_runtime_ready",
+            "trade_prediction_contract_status": "ready",
+            "trade_prediction_contract_observation_gap": False,
+            "semantic_runtime_match": True,
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+            "execution_semantic_gap": False,
+        }
+    )
+
+    result = await StrategySubmitter().submit(
+        [high_score_observe_only, lower_score_formal_ready],
+        {"date": "2026-06-17", "factory_run_id": "run-real-budget-formal-ready"},
+        object(),
+    )
+
+    captured_by_id = {item["id"]: item for item in captured_candidates}
+    assert captured_by_id["submit-budget-formal-ready"]["incubation_budget"]["track"] == "formal_incubation"
+    assert captured_by_id["submit-budget-high-score"]["incubation_budget"]["track"] == "observe_incubation"
+    assert result["formal_incubation_count"] == 1
+    assert result["observe_incubation_count"] == 1
+    assert result["incubation_budget_summary"]["formal_runtime_ready_candidate_count"] == 1
+    assert result["incubation_budget_summary"]["formal_runtime_ready_selected_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_reconciles_budget_summary_with_final_formal_lane(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    captured_candidates: list[dict[str, Any]] = []
+
+    def _fake_budget_plan(candidates: list[dict[str, Any]], _snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "plans": {
+                int(id(candidates[0])): {
+                    "track": "deferred_budget_queue",
+                    "rank": 1,
+                    "priority_score": 40.0,
+                }
+            },
+            "summary": {
+                "track_counts": {
+                    "formal_incubation": 0,
+                    "observe_incubation": 0,
+                    "deferred_budget_queue": 1,
+                }
+            },
+        }
+
+    async def _submit_one(self, candidate: dict[str, Any], snapshot: dict[str, Any], db: Any, *, read_only: bool = False):
+        captured_candidates.append(dict(candidate))
+        return {
+            "created_total": True,
+            "created_strategy_pool": True,
+            "submitted": False,
+            "passed": True,
+            "gate_3": {"passed": True, "provisional_pass": False},
+            "summary": {
+                "strategy_id": candidate.get("id"),
+                "submission_lane": "formal_incubation",
+                "submission_action_type": "incubation",
+                "admission_decision": "accept",
+                "strict_incubation_ready": True,
+            },
+        }
+
+    monkeypatch.setattr(
+        submitter_runner.IncubationBudgeter,
+        "plan",
+        staticmethod(_fake_budget_plan),
+    )
+    monkeypatch.setattr(StrategySubmitter, "_submit_one", _submit_one)
+
+    candidate = _runtime_ready_candidate("submit-budget-reconcile", observe_first=False)
+    result = await StrategySubmitter().submit(
+        [candidate],
+        {"date": "2026-06-18", "factory_run_id": "run-budget-reconcile"},
+        object(),
+    )
+
+    summary = result["incubation_budget_summary"]
+    assert captured_candidates[0]["incubation_budget"]["track"] == "deferred_budget_queue"
+    assert summary["planned_track_counts"]["deferred_budget_queue"] == 1
+    assert summary["final_lane_counts"]["formal_incubation"] == 1
+    assert summary["effective_track_counts"]["formal_incubation"] == 1
+    assert summary["track_counts"]["formal_incubation"] == 1
+    assert summary["track_counts_reconciled"] is True
+    assert summary["auto_promoted_formal_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_preserves_deferred_budget_for_observe_first_candidate(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    captured_candidates: list[dict[str, Any]] = []
+
+    def _fake_budget_plan(candidates: list[dict[str, Any]], _snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "plans": {
+                int(id(candidates[0])): {
+                    "track": "deferred_budget_queue",
+                    "rank": 1,
+                    "priority_score": 12.0,
+                    "feedback_control_mode": "suppress",
+                    "feedback_suppressed": True,
+                }
+            },
+            "summary": {
+                "track_counts": {
+                    "formal_incubation": 0,
+                    "observe_incubation": 0,
+                    "deferred_budget_queue": 1,
+                }
+            },
+        }
+
+    async def _submit_one(self, candidate: dict[str, Any], snapshot: dict[str, Any], db: Any, *, read_only: bool = False):
+        captured_candidates.append(dict(candidate))
+        return {
+            "created_total": True,
+            "created_strategy_pool": False,
+            "submitted": False,
+            "passed": False,
+            "gate_3": {"passed": False, "reason_codes": ["feedback_suppressed"]},
+            "summary": {
+                "strategy_id": candidate.get("id"),
+                "submission_lane": "deferred_budget_queue",
+                "submission_action_type": "deferred",
+                "admission_decision": "defer",
+            },
+        }
+
+    monkeypatch.setattr(
+        submitter_runner.IncubationBudgeter,
+        "plan",
+        staticmethod(_fake_budget_plan),
+    )
+    monkeypatch.setattr(StrategySubmitter, "_submit_one", _submit_one)
+
+    candidate = _runtime_ready_candidate("submit-budget-deferred-observe-first", observe_first=True)
+    result = await StrategySubmitter().submit(
+        [candidate],
+        {"date": "2026-06-19", "factory_run_id": "run-deferred-observe-first"},
+        object(),
+    )
+
+    assert captured_candidates[0]["incubation_budget"]["track"] == "deferred_budget_queue"
+    assert captured_candidates[0]["incubation_budget"].get("observe_first_intake") is True
+    assert result["incubation_budget_summary"]["planned_track_counts"]["deferred_budget_queue"] == 1
+    assert result["incubation_budget_summary"]["track_counts"]["deferred_budget_queue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_planned_deferred_overrides_existing_observe_budget(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    captured_candidates: list[dict[str, Any]] = []
+
+    def _fake_budget_plan(candidates: list[dict[str, Any]], _snapshot: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "plans": {
+                int(id(candidates[0])): {
+                    "track": "deferred_budget_queue",
+                    "rank": 1,
+                    "priority_score": 8.0,
+                    "feedback_skill_control_mode": "freeze",
+                    "feedback_skill_suppressed": True,
+                }
+            },
+            "summary": {
+                "track_counts": {
+                    "formal_incubation": 0,
+                    "observe_incubation": 0,
+                    "deferred_budget_queue": 1,
+                }
+            },
+        }
+
+    async def _submit_one(self, candidate: dict[str, Any], snapshot: dict[str, Any], db: Any, *, read_only: bool = False):
+        captured_candidates.append(dict(candidate))
+        return {
+            "created_total": True,
+            "created_strategy_pool": False,
+            "submitted": False,
+            "passed": False,
+            "gate_3": {"passed": False, "reason_codes": ["feedback_skill_suppressed"]},
+            "summary": {
+                "strategy_id": candidate.get("id"),
+                "submission_lane": "deferred_budget_queue",
+                "submission_action_type": "deferred",
+                "admission_decision": "defer",
+            },
+        }
+
+    monkeypatch.setattr(
+        submitter_runner.IncubationBudgeter,
+        "plan",
+        staticmethod(_fake_budget_plan),
+    )
+    monkeypatch.setattr(StrategySubmitter, "_submit_one", _submit_one)
+
+    candidate = _runtime_ready_candidate("submit-budget-existing-observe", observe_first=False)
+    candidate["incubation_budget"] = {"track": "observe_incubation", "budget_tier": "micro"}
+    result = await StrategySubmitter().submit(
+        [candidate],
+        {"date": "2026-06-19", "factory_run_id": "run-existing-observe-deferred"},
+        object(),
+    )
+
+    merged_budget = dict(captured_candidates[0]["incubation_budget"])
+    assert merged_budget["track"] == "deferred_budget_queue"
+    assert merged_budget["budget_tier"] == "micro"
+    assert result["incubation_budget_summary"]["planned_track_counts"]["deferred_budget_queue"] == 1
+    assert result["incubation_budget_summary"]["track_counts"]["deferred_budget_queue"] == 1
+
+
+@pytest.mark.asyncio
+async def test_submit_one_auto_promotes_deferred_strict_ready_candidate_to_formal(monkeypatch) -> None:
+    from strategy_factory.application._submitter_actions import runner as submitter_runner
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    monkeypatch.delenv("STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED", raising=False)
+
+    async def _gate3_strict_ready(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {
+            "passed": True,
+            "passed_strict": True,
+            "provisional_pass": False,
+            "validation_grade": "A",
+            "research_candidate_ready": True,
+            "incubation_candidate_ready": True,
+            "live_candidate_ready": False,
+            "strict_incubation_ready": True,
+            "incubation_pass_mode": "strict",
+            "semantic_runtime_match": True,
+            "runtime_family_data_source": "market_data_runtime",
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+            "execution_readiness_tier": "formal_runtime_ready",
+            "trade_prediction_contract_status": "ready",
+            "trade_prediction_contract_observation_gap": False,
+            "admission_block_reasons": [],
+            "hard_fail_reasons": [],
+        }
+
+    class _Gateway:
+        async def run_validation_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+        async def run_risk_report(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+            return {}
+
+    class _DB:
+        def __init__(self) -> None:
+            self.strategies: list[dict[str, Any]] = []
+            self.status_updates: list[tuple[str, str]] = []
+            self.quality_reports: list[tuple[str, str, dict[str, Any]]] = []
+
+        async def save_strategy(self, payload: dict[str, Any]) -> dict[str, Any]:
+            self.strategies.append(dict(payload))
+            return dict(payload)
+
+        async def save_strategy_metrics(
+            self,
+            strategy_id: str,
+            period: str,
+            payload: dict[str, Any],
+        ) -> dict[str, Any]:
+            return {"strategy_id": strategy_id, "period": period, **dict(payload)}
+
+        async def save_strategy_quality_report(
+            self,
+            strategy_id: str,
+            report_type: str,
+            quality_report: dict[str, Any],
+        ) -> dict[str, Any]:
+            self.quality_reports.append((strategy_id, report_type, dict(quality_report)))
+            return {"strategy_id": strategy_id, "report_type": report_type}
+
+    class _IncubationGateway:
+        async def ensure_account(self, _db: Any, strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "account": {
+                    "id": f"inc-{strategy['id']}",
+                    "status": "active",
+                    "stage": "incubating",
+                },
+                "binding": {"account_id": f"inc-{strategy['id']}"},
+            }
+
+        async def run_pipeline(self, _db: Any, strategy: dict[str, Any], **_kwargs: Any) -> dict[str, Any]:
+            return {
+                "task_run_id": f"task-{strategy['id']}",
+                "status": "completed",
+                "snapshot": {
+                    "pipeline_stage": "formal_incubation",
+                    "pipeline_status": "active",
+                    "readiness_score": 0.72,
+                },
+            }
+
+    async def _status_update(db: _DB, strategy_id: str, status: str, **_kwargs: Any) -> dict[str, Any]:
+        db.status_updates.append((strategy_id, status))
+        return {"strategy_id": strategy_id, "status": status}
+
+    async def _vector_profile(_db: Any, strategy: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": f"vec-{strategy['id']}",
+            "backend": "test",
+            "metadata": {"audit": {"backend_used": "test"}},
+        }
+
+    monkeypatch.setattr(submitter_runner, "_local_run_submission_quality_gate", _gate3_strict_ready)
+    monkeypatch.setattr(submitter_runner, "_local_update_strategy_status", _status_update)
+    monkeypatch.setattr(
+        "strategy_factory.application.services.lifecycle_coordinator.build_strategy_vector_profile",
+        _vector_profile,
+    )
+
+    submitter = StrategySubmitter(
+        validation_gateway=_Gateway(),
+        risk_gateway=_Gateway(),
+        incubation_gateway=_IncubationGateway(),
+    )
+    candidate = {
+        "id": "submit-one-deferred-strict-ready",
+        "name": "deferred strict ready candidate",
+        "strategy_type": "momentum",
+        "target_symbols": ["600000"],
+        "incubation_budget": {"track": "deferred_budget_queue"},
+        "params": {
+            "target_symbols": ["600000"],
+            **_ready_trade_prediction_fields("submit-one-deferred-strict-ready"),
+            "holding_horizon": {"horizon": "next_day"},
+            "trade_plan": {"holding_horizon": "next_day", "entry_bias": "trend_follow_long"},
+            "risk_rules": {"stop_loss_pct": 0.08, "max_holding_days": 5},
+            "execution_assumptions": {"order_style": "paper"},
+            "prediction_contract": {
+                "claims": [
+                    {
+                        "claim_id": "claim-1",
+                        "target_trading_date": "2026-06-08",
+                        "horizon": "next_day",
+                        "evidence_ids": ["ev-1"],
+                    }
+                ]
+            },
+            "evidence_chain": {
+                "evidences": [{"evidence_id": "ev-1", "source": "market_data_runtime"}]
+            },
+        },
+        "dedup_result": {"duplicate": False, "refresh_existing": False},
+        "backtest_metrics": {"trade_count": 12, "trades_count": 12, "max_drawdown": 0.08},
+        "backtest_outcome": {"passed": True, "reason_code": "passed"},
+    }
+
+    db = _DB()
+    result = await submitter._submit_one(
+        candidate,
+        {"date": "2026-06-05", "factory_run_id": "run-deferred-strict-ready"},
+        db,
+    )
+
+    stored_params = dict(db.strategies[-1]["params"] or {})
+    assert result["summary"]["submission_lane"] == "formal_incubation"
+    assert result["summary"]["final_status"] == "incubating"
+    assert result["summary"]["formal_track_requested"] is True
+    assert result["summary"]["formal_track_eligible"] is True
+    assert result["summary"]["admission_decision"] == "accept"
+    assert stored_params["incubation_budget"]["track"] == "formal_incubation"
+    assert stored_params["incubation_budget"]["auto_promoted_from_track"] == "deferred_budget_queue"
+    assert stored_params["formal_track_requested"] is True
+    assert stored_params["incubation_budget_track"] == "formal_incubation"
+    assert db.status_updates[-1][1] == "incubating"
+
+
+@pytest.mark.asyncio
 async def test_default_observe_handoff_creates_paper_account_and_quality_summary(monkeypatch) -> None:
     from strategy_factory.application._submitter_actions import runner as submitter_runner
     from strategy_factory.application.submitter import StrategySubmitter

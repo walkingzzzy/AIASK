@@ -30,9 +30,22 @@
         existing_keys = {(row.get('code'), row.get('direction')) for row in existing_orders}
         created = []
         skipped = 0
+        skip_reason_counts: dict[str, int] = {}
         blocked_by_execution_guard = 0
+        capital_scaled_for_min_lot = False
+        capital_scale_events: list[dict] = []
+        min_lot_capital_scale_enabled = str(
+            os.getenv("INCUBATION_PAPER_MIN_LOT_CAPITAL_SCALE_ENABLED", "1")
+        ).strip().lower() in {"1", "true", "yes", "on"}
 
-        current_capital = float(account.get('current_capital') or account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL)
+        def _skip(reason: str) -> None:
+            nonlocal skipped
+            skipped += 1
+            token = str(reason or "unknown").strip() or "unknown"
+            skip_reason_counts[token] = int(skip_reason_counts.get(token) or 0) + 1
+
+        initial_capital = float(account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL)
+        current_capital = float(account.get('current_capital') or initial_capital or DEFAULT_INCUBATION_CAPITAL)
         total_value = float(account.get('total_value') or current_capital or DEFAULT_INCUBATION_CAPITAL)
         base_budget_pct = max(0.01, _safe_float(position_policy.get("base_budget_pct"), 0.12))
         max_position_pct = max(0.02, _safe_float(position_policy.get("max_position_pct"), 0.25))
@@ -74,6 +87,57 @@
                 open_trade_positions[code] = item
             elif status == "closed":
                 latest_closed_by_code[code] = item
+
+        paper_order_history: list[dict] = []
+        if list_orders_method is not None:
+            try:
+                paper_order_history = list(await list_orders_method(strategy['id'], None, limit=1) or [])
+            except TypeError:
+                try:
+                    paper_order_history = list(await list_orders_method(strategy['id'], None) or [])
+                except TypeError:
+                    paper_order_history = []
+        else:
+            acquire = _get_db_acquire(db)
+            if acquire is not None:
+                async with acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT * FROM paper_orders WHERE strategy_id=$1 LIMIT 1",
+                        strategy['id'],
+                    )
+                paper_order_history = [dict(row) for row in rows]
+
+        paper_trade_history: list[dict] = []
+        list_trade_history_method = _get_async_db_method(db, "list_strategy_paper_trades")
+        if list_trade_history_method is not None:
+            try:
+                paper_trade_history = list(
+                    await list_trade_history_method(strategy['id'], account_id=account_id, limit=1) or []
+                )
+            except TypeError:
+                try:
+                    paper_trade_history = list(await list_trade_history_method(strategy['id'], account_id, 1) or [])
+                except TypeError:
+                    try:
+                        paper_trade_history = list(await list_trade_history_method(strategy['id']) or [])
+                    except TypeError:
+                        paper_trade_history = []
+        else:
+            acquire = _get_db_acquire(db)
+            if acquire is not None:
+                async with acquire() as conn:
+                    rows = await conn.fetch(
+                        "SELECT * FROM paper_trades WHERE strategy_id=$1 LIMIT 1",
+                        strategy['id'],
+                    )
+                paper_trade_history = [dict(row) for row in rows]
+
+        account_has_paper_history = bool(
+            paper_order_history
+            or paper_trade_history
+            or positions
+            or trade_positions
+        )
 
         active_position_codes = set(positions.keys()) | set(open_trade_positions.keys())
         current_open_slots = len(active_position_codes)
@@ -151,6 +215,78 @@
                 return False
             reference = datetime.combine(signal_date, datetime.min.time(), tzinfo=timezone.utc)
             return (reference - closed_at).days < cooldown_days
+
+        async def _maybe_scale_empty_account_for_min_lot(
+            *,
+            code: str,
+            price: float,
+            min_lot_cost: float,
+            max_affordable_budget: float,
+        ) -> bool:
+            nonlocal account, initial_capital, current_capital, total_value, capital_scaled_for_min_lot
+            if min_lot_cost <= 0 or max_position_pct <= 0:
+                return False
+            if min_lot_cost <= max_affordable_budget:
+                return False
+            if not min_lot_capital_scale_enabled:
+                return False
+            if account_has_paper_history or created:
+                return False
+
+            previous_capital = {
+                "initial_capital": round(float(initial_capital), 4),
+                "current_capital": round(float(current_capital), 4),
+                "total_value": round(float(total_value), 4),
+            }
+            required_total_for_position_cap = float(min_lot_cost) / max(float(max_position_pct), 1e-6)
+            required_cash_for_order = float(min_lot_cost) * 1.002
+            scaled_capital = round(
+                max(
+                    DEFAULT_INCUBATION_CAPITAL,
+                    float(initial_capital),
+                    float(current_capital),
+                    float(total_value),
+                    required_total_for_position_cap,
+                    required_cash_for_order,
+                ),
+                4,
+            )
+            if scaled_capital <= max(float(initial_capital), float(current_capital), float(total_value)) + 0.01:
+                return False
+
+            updated_account = dict(account or {})
+            updated_account["initial_capital"] = scaled_capital
+            updated_account["current_capital"] = scaled_capital
+            updated_account["total_value"] = scaled_capital
+            account = await self._save_strategy_account(db, updated_account)
+            initial_capital = float(account.get("initial_capital") or scaled_capital)
+            current_capital = float(account.get("current_capital") or scaled_capital)
+            total_value = float(account.get("total_value") or scaled_capital)
+            capital_scaled_for_min_lot = True
+            event_payload = {
+                "account_id": account_id,
+                "signal_date": str(signal_date),
+                "code": code,
+                "price": round(float(price), 4),
+                "min_lot_cost": round(float(min_lot_cost), 4),
+                "max_position_pct": round(float(max_position_pct), 6),
+                "previous_capital": previous_capital,
+                "scaled_capital": {
+                    "initial_capital": round(float(initial_capital), 4),
+                    "current_capital": round(float(current_capital), 4),
+                    "total_value": round(float(total_value), 4),
+                },
+                "reason": "empty_paper_account_min_lot_affordability",
+            }
+            capital_scale_events.append(event_payload)
+            await self._record_domain_event(
+                db,
+                strategy['id'],
+                'incubation.paper_account_capital_scaled',
+                event_payload,
+                correlation_id=str(signal_date),
+            )
+            return True
 
         async def _maybe_seed_position(
             *,
@@ -230,7 +366,7 @@
                 reason=reason,
             )
             if saved_order is None:
-                skipped += 1
+                _skip("order_persist_failed")
                 continue
             created.append(saved_order)
             await _persist_runtime_signal_evidence(
@@ -266,24 +402,24 @@
                     entry_is_observe_paper = True
                 else:
                     blocked_by_execution_guard += 1
-                    skipped += 1
+                    _skip("execution_guard_blocked")
                     continue
             if (code, direction) in existing_keys:
-                skipped += 1
+                _skip("duplicate_order")
                 continue
             price = await self._price_on_or_before(db, code, signal_date)
             if price is None or price <= 0:
-                skipped += 1
+                _skip("price_missing")
                 continue
             if direction == 'buy':
                 if code in active_position_codes:
-                    skipped += 1
+                    _skip("active_position_exists")
                     continue
                 if _cooldown_active(code):
-                    skipped += 1
+                    _skip("cooldown_active")
                     continue
                 if current_open_slots >= max_concurrent_positions:
-                    skipped += 1
+                    _skip("max_concurrent_positions_reached")
                     continue
                 budget_per_trade = max(
                     min(current_capital * base_budget_pct, total_value * max_position_pct),
@@ -297,14 +433,34 @@
                 if budget_per_trade < min_lot_cost <= max_affordable_budget:
                     budget_per_trade = min_lot_cost
                 shares = int(budget_per_trade / price / 100) * 100
+                if shares < 100 and min_lot_cost > max_affordable_budget:
+                    scaled = await _maybe_scale_empty_account_for_min_lot(
+                        code=code,
+                        price=price,
+                        min_lot_cost=min_lot_cost,
+                        max_affordable_budget=max_affordable_budget,
+                    )
+                    if scaled:
+                        budget_per_trade = max(
+                            min(current_capital * base_budget_pct, total_value * max_position_pct),
+                            5000.0,
+                        )
+                        max_affordable_budget = max(
+                            0.0,
+                            min(float(current_capital), float(total_value) * max_position_pct),
+                        )
+                        if budget_per_trade < min_lot_cost <= max_affordable_budget:
+                            budget_per_trade = min_lot_cost
+                        shares = int(budget_per_trade / price / 100) * 100
                 if shares < 100:
-                    skipped += 1
+                    reason = "min_lot_unaffordable" if min_lot_cost > max_affordable_budget else "shares_lt_100"
+                    _skip(reason)
                     continue
             else:
                 position = dict(positions.get(code) or {})
                 shares = int(position.get('quantity') or 0)
                 if shares <= 0:
-                    skipped += 1
+                    _skip("sell_without_position")
                     continue
             signal_id = _build_signal_id(strategy['id'], dict(signal or {}), signal_date, code, direction)
             bound_position = open_trade_positions.get(code) if direction == 'sell' else None
@@ -321,7 +477,7 @@
                 position_id=position_id,
             )
             if saved_order is None:
-                skipped += 1
+                _skip("order_persist_failed")
                 continue
             created.append(saved_order)
             await _maybe_seed_position(
@@ -355,8 +511,11 @@
                     'signal_date': str(signal_date),
                     'created_count': len(created),
                     'skipped_count': skipped,
+                    'skip_reason_counts': dict(skip_reason_counts),
                     'blocked_by_execution_guard': blocked_by_execution_guard,
                     'execution_guard': execution_guard,
+                    'capital_scaled_for_min_lot': capital_scaled_for_min_lot,
+                    'capital_scale_events': list(capital_scale_events),
                     'codes': [item.get('code') for item in created if item.get('code')],
                 },
                 correlation_id=str(signal_date),
@@ -367,8 +526,11 @@
             'account_id': account_id,
             'created_count': len(created),
             'skipped_count': skipped,
+            'skip_reason_counts': dict(skip_reason_counts),
             'blocked_by_execution_guard': blocked_by_execution_guard,
             'execution_guard': execution_guard,
+            'capital_scaled_for_min_lot': capital_scaled_for_min_lot,
+            'capital_scale_events': list(capital_scale_events),
             'orders': created,
         }
 
@@ -380,6 +542,7 @@
         *,
         reason: str = 'replay_window_end_forced_exit',
         source: str = 'history_replay',
+        codes=None,
     ) -> dict:
         ensure = await self.ensure_account(db, strategy)
         account = ensure['account']
@@ -404,6 +567,42 @@
             for item in await self._list_positions(db, account_id)
             if int(item.get('quantity') or 0) > 0
         }
+        allowed_codes = {
+            str(code or '').strip()
+            for code in list(codes or [])
+            if str(code or '').strip()
+        }
+        reconciled_before_close = False
+        if allowed_codes and not allowed_codes.issubset(set(positions.keys())):
+            try:
+                from akshare_mcp.tools.managers._paper_trading_manager_support import (
+                    _reconcile_account_state,
+                )
+                reconcile = await _reconcile_account_state(
+                    db,
+                    account_id,
+                    refresh_prices=False,
+                    force=True,
+                )
+                reconciled_before_close = bool((reconcile or {}).get('reconciled'))
+                positions = {
+                    str(item.get('stock_code') or '').strip(): dict(item)
+                    for item in await self._list_positions(db, account_id)
+                    if int(item.get('quantity') or 0) > 0
+                }
+            except Exception as exc:
+                logger.debug(
+                    "StrategyIncubationService: reconcile before force close failed for %s/%s: %s",
+                    strategy.get('id'),
+                    account_id,
+                    exc,
+                )
+        if allowed_codes:
+            positions = {
+                code: position
+                for code, position in positions.items()
+                if code in allowed_codes
+            }
         list_trade_positions = _get_async_db_method(db, "list_strategy_trade_positions")
         trade_positions = (
             await list_trade_positions(strategy_id=strategy['id'], account_id=account_id, limit=200)
@@ -538,6 +737,8 @@
                     'created_count': len(created),
                     'skipped_count': skipped,
                     'reason': reason,
+                    'requested_codes': sorted(allowed_codes),
+                    'reconciled_before_close': reconciled_before_close,
                     'codes': [item.get('code') for item in created if item.get('code')],
                 },
                 correlation_id=f"{signal_date}:force_close",
@@ -549,6 +750,8 @@
             'account_id': account_id,
             'created_count': len(created),
             'skipped_count': skipped,
+            'requested_codes': sorted(allowed_codes),
+            'reconciled_before_close': reconciled_before_close,
             'orders': created,
             'reason': reason,
         }

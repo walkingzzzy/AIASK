@@ -61,7 +61,13 @@ def _compact_active_pool_factor_candidate(
     payload = dict(factor or {})
     name = str(payload.get("name") or payload.get("factor_name") or payload.get("factor_id") or "").strip()
     family = str(payload.get("family") or name).strip().lower()
-    if not name or not family:
+    factor_dsl = str(
+        payload.get("expression_dsl")
+        or payload.get("factor_dsl")
+        or payload.get("dsl")
+        or ""
+    ).strip()
+    if not name or not family or not factor_dsl:
         return None
     validation_summary = dict(payload.get("validation_summary") or {})
     evidence_summary = dict(
@@ -71,6 +77,11 @@ def _compact_active_pool_factor_candidate(
         or {}
     )
     quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+    pool_entry_mode = (
+        "factor_mining_active_pool"
+        if quality_status == "promoted"
+        else "active_factor_pool_fallback"
+    )
     quality_score = builder_cls._safe_float(
         validation_summary.get("quality_score"),
         builder_cls._safe_float(payload.get("fitness")),
@@ -87,8 +98,12 @@ def _compact_active_pool_factor_candidate(
         "artifact_id": factor_id,
         "name": name,
         "family": family,
+        "factor_id": factor_id,
+        "factor_pool_factor_id": factor_id,
+        "expression_dsl": factor_dsl,
+        "factor_dsl": factor_dsl,
         "registry_stage": "governed",
-        "pool_entry_mode": "active_factor_pool_fallback",
+        "pool_entry_mode": pool_entry_mode,
         "source": "factor_mining_active_pool",
         "source_validation_artifact_id": (
             str(validation_summary.get("artifact_id") or validation_summary.get("validation_artifact_id") or factor_id).strip()
@@ -100,6 +115,8 @@ def _compact_active_pool_factor_candidate(
         "total_score": total_score,
         "factor_pool": {
             "factor_id": factor_id,
+            "factor_name": name,
+            "expression_dsl": factor_dsl,
             "status": payload.get("status"),
             "quality_status": quality_status or None,
             "fitness": payload.get("fitness"),
@@ -127,8 +144,16 @@ def apply_active_factor_pool_fallback(
     snapshot_date: date | None,
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    if list(runtime_context.get("governed_top_candidates") or []):
-        return list(runtime_context.get("governed_top_candidates") or [])
+    existing_candidates = list(runtime_context.get("governed_top_candidates") or [])
+    active_candidate_pool = dict(runtime_context.get("active_candidate_pool") or {})
+    strict_count = int(
+        runtime_context.get("governed_candidate_pool_strict_count")
+        or active_candidate_pool.get("strict_count")
+        or 0
+    )
+    if existing_candidates and strict_count > 0:
+        return existing_candidates
+
     candidates: list[dict[str, Any]] = []
     seen: set[str] = set()
     for factor in list(factory_pool_factors or []):
@@ -150,7 +175,7 @@ def apply_active_factor_pool_fallback(
         if len(candidates) >= max(1, int(limit or 20)):
             break
     if not candidates:
-        return []
+        return existing_candidates
 
     family_counts: dict[str, int] = {}
     for item in candidates:
@@ -166,11 +191,18 @@ def apply_active_factor_pool_fallback(
         value = item.get("latest_validation_at")
         if value and (latest_at is None or str(value) > str(latest_at)):
             latest_at = value
+    pool_mode = (
+        "factor_mining_active_pool"
+        if all(
+            str(dict(item.get("factor_pool") or {}).get("quality_status") or "").strip().lower() == "promoted"
+            for item in candidates
+        )
+        else "active_factor_pool_fallback"
+    )
 
-    active_candidate_pool = dict(runtime_context.get("active_candidate_pool") or {})
     active_candidate_pool.update(
         {
-            "active_pool_mode": "active_factor_pool_fallback",
+            "active_pool_mode": pool_mode,
             "count": len(candidates),
             "source_count": max(int(active_candidate_pool.get("source_count") or 0), len(candidates)),
             "strict_count": len(candidates),
@@ -183,7 +215,7 @@ def apply_active_factor_pool_fallback(
     )
     runtime_context["active_candidate_pool"] = active_candidate_pool
     runtime_context["governed_top_candidates"] = candidates
-    runtime_context["governed_candidate_pool_mode"] = "active_factor_pool_fallback"
+    runtime_context["governed_candidate_pool_mode"] = pool_mode
     runtime_context["governed_candidate_pool_provisional"] = False
     runtime_context["governed_candidate_pool_strict_count"] = len(candidates)
     runtime_context["governed_candidate_pool_provisional_count"] = 0
@@ -201,8 +233,9 @@ def apply_active_factor_pool_fallback(
         builder_cls._parse_date(latest_at),
         reference_date=snapshot_date,
     )
-    runtime_context["active_factor_pool_fallback"] = True
-    runtime_context["active_factor_pool_fallback_count"] = len(candidates)
+    runtime_context["active_factor_pool_fallback"] = pool_mode == "active_factor_pool_fallback"
+    runtime_context["active_factor_pool_fallback_count"] = len(candidates) if pool_mode == "active_factor_pool_fallback" else 0
+    runtime_context["factor_mining_active_pool_count"] = len(candidates) if pool_mode == "factor_mining_active_pool" else 0
     return candidates
 
 
@@ -573,9 +606,9 @@ def build_ranked_factor_context(
     positive_rising_factors = [name for name in positive_rising_factors if name]
 
     governed_active_factors = [
-        str(item.get("family") or "").strip()
+        str(item.get("name") or item.get("factor_name") or item.get("family") or "").strip()
         for item in governed_top_candidates
-        if str(item.get("family") or "").strip()
+        if str(item.get("name") or item.get("factor_name") or item.get("family") or "").strip()
     ]
     governed_active_factors = list(dict.fromkeys(governed_active_factors))
 

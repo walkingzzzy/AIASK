@@ -6,7 +6,9 @@ is upstream of this component and may only populate the DB through sync tasks.
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
@@ -14,6 +16,21 @@ from uuid import uuid4
 from .quality import compute_quality_score, evaluate_validation_evidence
 
 logger = logging.getLogger(__name__)
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(str(os.getenv(name, str(default))).strip())
+    except Exception:
+        return int(default)
+
+
+def _strict_validation_candidate_limit() -> int:
+    return max(0, _env_int("FACTOR_MINING_STRICT_VALIDATION_CANDIDATE_LIMIT", 0))
+
+
+def _quick_evidence_max_evaluations() -> int:
+    return max(1, _env_int("FACTOR_MINING_QUICK_EVIDENCE_MAX_EVALUATIONS", 4))
 
 
 class FactorMiningFactory:
@@ -113,9 +130,7 @@ class FactorMiningFactory:
                 }
                 await self._persist_mining_run(db, report)
                 return report
-            quick_evaluator = self._build_quick_evidence_evaluator(db, context)
-            setattr(context, "quick_evidence_evaluator", quick_evaluator.evaluate)
-            setattr(context, "quick_ic_evaluator", quick_evaluator.ic_value)
+            quick_ic_evaluator = self._install_quick_evidence_evaluators(db, context)
             raw_candidates = await self._engine_scheduler.search(
                 context=context,
                 engines=engines,
@@ -127,7 +142,7 @@ class FactorMiningFactory:
                 candidates=raw_candidates,
                 context=context,
                 generations=evolution_generations,
-                ic_evaluator=quick_evaluator.ic_value,
+                ic_evaluator=quick_ic_evaluator,
             )
             logger.info("FactorMiningFactory: evolved candidates=%d", len(evolved))
 
@@ -174,6 +189,15 @@ class FactorMiningFactory:
             except Exception as exc:  # noqa: BLE001 - 复评失败不得拖垮挖掘周期
                 logger.warning("FactorMiningFactory: quarantine reappraisal failed: %s", exc)
                 reappraisal = {"error": f"{type(exc).__name__}: {exc}"}
+            reappraisal_promoted_count = int(reappraisal.get("promoted") or 0)
+            cycle_active_promoted_count = int(quality_summary.get("active_promoted_count") or 0)
+            total_active_promoted_count = cycle_active_promoted_count + max(0, reappraisal_promoted_count)
+            quality_summary["reappraisal_promoted_count"] = max(0, reappraisal_promoted_count)
+            quality_summary["active_promoted_count"] = total_active_promoted_count
+            quality_funnel = dict(quality_summary.get("quality_funnel") or {})
+            quality_funnel["promoted"] = total_active_promoted_count
+            quality_funnel["reappraisal_promoted"] = max(0, reappraisal_promoted_count)
+            quality_summary["quality_funnel"] = quality_funnel
 
             self._last_run_at = datetime.now(timezone.utc)
             self._run_count += 1
@@ -188,7 +212,9 @@ class FactorMiningFactory:
                 "validated_count": len(validated),
                 "admitted_count": len(admitted),
                 "quarantine_count": quality_summary.get("quarantine_count", 0),
-                "active_promoted_count": quality_summary.get("active_promoted_count", 0),
+                "active_promoted_count": total_active_promoted_count,
+                "cycle_active_promoted_count": cycle_active_promoted_count,
+                "reappraisal_promoted_count": max(0, reappraisal_promoted_count),
                 "pool_size": self._active_pool.size,
                 "engines_used": self._engine_scheduler.last_engines_used,
                 "validation_universe_health": getattr(context, "validation_universe_health", {}),
@@ -344,8 +370,15 @@ class FactorMiningFactory:
         memory = {}
         if self._meta_learner is not None and hasattr(self._meta_learner, "get_pattern_memory"):
             memory = self._meta_learner.get_pattern_memory()
-        context.failed_pattern_memory = list(memory.get("failed_pattern_memory") or [])
-        context.successful_pattern_memory = list(memory.get("successful_pattern_memory") or [])
+        persistent_memory = await self._load_persistent_pattern_memory(db)
+        context.failed_pattern_memory = self._merge_pattern_memory(
+            list(memory.get("failed_pattern_memory") or []),
+            list(persistent_memory.get("failed_pattern_memory") or []),
+        )
+        context.successful_pattern_memory = self._merge_pattern_memory(
+            list(memory.get("successful_pattern_memory") or []),
+            list(persistent_memory.get("successful_pattern_memory") or []),
+        )
         try:
             from .blueprints import AlphaBlueprintLibrary
 
@@ -357,7 +390,143 @@ class FactorMiningFactory:
             pass
         return context
 
-    def _build_quick_evidence_evaluator(self, db, context):
+    async def _load_persistent_pattern_memory(self, db, *, limit: int = 50) -> dict[str, list[dict[str, Any]]]:
+        """Load compact strict-validation pattern memory from recent persisted runs."""
+
+        rows: list[dict[str, Any]] = []
+        try:
+            if hasattr(db, "acquire"):
+                async with db.acquire() as conn:
+                    fetched = await conn.fetch(
+                        """
+                        SELECT report
+                        FROM factor_mining_runs
+                        WHERE report IS NOT NULL
+                        ORDER BY id DESC
+                        LIMIT $1
+                        """,
+                        int(limit),
+                    )
+                rows = [dict(row) for row in fetched or []]
+            else:
+                raw_conn = getattr(db, "conn", None) or getattr(db, "connection", None)
+                if raw_conn is not None:
+                    cursor = raw_conn.execute(
+                        """
+                        SELECT report
+                        FROM factor_mining_runs
+                        WHERE report IS NOT NULL
+                        ORDER BY id DESC
+                        LIMIT ?
+                        """,
+                        (int(limit),),
+                    )
+                    columns = [desc[0] for desc in cursor.description]
+                    rows = [dict(zip(columns, row)) for row in cursor.fetchall()]
+        except Exception as exc:
+            logger.debug("FactorMiningFactory: load persistent pattern memory failed: %s", exc)
+            rows = []
+
+        success_counts: dict[str, int] = {}
+        failure_counts: dict[str, int] = {}
+        for row in rows:
+            try:
+                report = json.loads(str(row.get("report") or "{}"))
+            except Exception:
+                continue
+            quality_summary = dict(report.get("quality_summary") or {})
+            for item in list(quality_summary.get("strict_candidate_results") or []):
+                if not isinstance(item, dict):
+                    continue
+                pattern = self._strict_memory_pattern(item)
+                if not pattern:
+                    continue
+                outcome = self._strict_memory_outcome(item)
+                if outcome is True:
+                    success_counts[pattern] = success_counts.get(pattern, 0) + 1
+                elif outcome is False:
+                    failure_counts[pattern] = failure_counts.get(pattern, 0) + 1
+            for item in list(quality_summary.get("quick_candidate_results") or []):
+                if not isinstance(item, dict) or item.get("passed") is not False:
+                    continue
+                pattern = self._strict_memory_pattern(item)
+                if pattern:
+                    failure_counts[pattern] = failure_counts.get(pattern, 0) + 1
+
+        return {
+            "successful_pattern_memory": self._counter_rows(success_counts),
+            "failed_pattern_memory": self._counter_rows(failure_counts),
+        }
+
+    @staticmethod
+    def _strict_memory_pattern(item: dict[str, Any]) -> str:
+        trace = dict(item.get("generation_trace") or {})
+        for value in (
+            item.get("blueprint_id"),
+            trace.get("blueprint_id"),
+        ):
+            text = str(value or "").strip()
+            if text:
+                return text
+        engine = str(item.get("generation_engine") or trace.get("engine_id") or "unknown").strip() or "unknown"
+        family = str(item.get("family") or trace.get("factor_family") or "").strip()
+        return family or engine
+
+    @staticmethod
+    def _strict_memory_outcome(item: dict[str, Any]) -> bool | None:
+        decision = dict(item.get("admission_decision") or {})
+        blockers = [str(value) for value in list(decision.get("blockers") or []) if str(value)]
+        if bool(decision.get("admitted")) or bool(decision.get("strict_gate_passed")):
+            return True
+        if blockers or decision.get("evidence_reasons"):
+            return False
+
+        result = dict(item.get("validation_result") or {})
+        if not result:
+            return None
+        rating = dict(result.get("rating") or {})
+        governance = dict(rating.get("governance") or {})
+        grade = str(decision.get("rating_grade") or rating.get("grade") or "")
+        if grade in {"A", "B"} and not bool(governance.get("admission_blocked")):
+            return True
+        if grade or governance.get("admission_blocked"):
+            return False
+        return None
+
+    @staticmethod
+    def _merge_pattern_memory(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        counts: dict[str, int] = {}
+        for group in groups:
+            for row in group or []:
+                if not isinstance(row, dict):
+                    continue
+                pattern = str(row.get("pattern") or "").strip()
+                if not pattern:
+                    continue
+                try:
+                    count = int(row.get("count") or 1)
+                except Exception:
+                    count = 1
+                counts[pattern] = counts.get(pattern, 0) + max(1, count)
+        return FactorMiningFactory._counter_rows(counts)
+
+    @staticmethod
+    def _counter_rows(counts: dict[str, int]) -> list[dict[str, Any]]:
+        return [
+            {"pattern": pattern, "count": int(count)}
+            for pattern, count in sorted(
+                counts.items(),
+                key=lambda item: (-int(item[1]), str(item[0])),
+            )[:20]
+        ]
+
+    def _build_quick_evidence_evaluator(
+        self,
+        db,
+        context,
+        *,
+        max_evaluations: int | None = None,
+    ):
         from .quick_evidence import QuickEvidenceEvaluator
 
         return QuickEvidenceEvaluator(
@@ -365,8 +534,64 @@ class FactorMiningFactory:
             codes=getattr(context, "validation_codes", None) or [],
             horizon_days=10,
             max_codes=120,
-            max_evaluations=32,
+            max_evaluations=(
+                _quick_evidence_max_evaluations()
+                if max_evaluations is None
+                else max_evaluations
+            ),
         )
+
+    def _install_quick_evidence_evaluators(
+        self,
+        db,
+        context,
+        *,
+        max_evaluations: int | None = None,
+    ):
+        evaluators: dict[str, Any] = {}
+
+        def _evaluator_for(candidate: Any):
+            engine = self._quick_evidence_engine_key(candidate)
+            evaluator = evaluators.get(engine)
+            if evaluator is None:
+                evaluator = self._build_quick_evidence_evaluator(
+                    db,
+                    context,
+                    max_evaluations=max_evaluations,
+                )
+                evaluators[engine] = evaluator
+            return evaluator
+
+        async def evaluate(candidate: Any) -> dict[str, Any]:
+            return await _evaluator_for(candidate).evaluate(candidate)
+
+        async def ic_value(candidate: Any) -> float:
+            return await _evaluator_for(candidate).ic_value(candidate)
+
+        setattr(context, "quick_evidence_evaluator", evaluate)
+        setattr(context, "quick_ic_evaluator", ic_value)
+        setattr(context, "quick_evidence_evaluators", evaluators)
+        return ic_value
+
+    @staticmethod
+    def _quick_evidence_engine_key(candidate: Any) -> str:
+        if isinstance(candidate, dict):
+            direct = candidate.get("generation_engine")
+            trace = dict(candidate.get("generation_trace") or {})
+        else:
+            direct = getattr(candidate, "generation_engine", "")
+            trace = dict(getattr(candidate, "generation_trace", None) or {})
+        for value in (
+            direct,
+            trace.get("engine_id"),
+            trace.get("generation_engine"),
+            trace.get("engine"),
+            trace.get("source_engine"),
+        ):
+            key = str(value or "").strip()
+            if key:
+                return key
+        return "unknown"
 
     async def _quick_filter_candidates(self, candidates: list, context) -> list:
         evaluator = getattr(context, "quick_evidence_evaluator", None)
@@ -401,9 +626,16 @@ class FactorMiningFactory:
 
         validated = []
         validation_codes = context.validation_codes
-        for candidate in candidates:
+        candidate_list = self._rank_strict_validation_candidates(list(candidates or []))
+        validation_limit = _strict_validation_candidate_limit()
+        if validation_limit > 0:
+            candidate_list = candidate_list[:validation_limit]
+        for rank, candidate in enumerate(candidate_list, start=1):
             generation_trace = dict(getattr(candidate, "generation_trace", None) or {})
             generation_trace["strict_validation_attempted"] = True
+            generation_trace["strict_validation_priority_rank"] = rank
+            if validation_limit > 0:
+                generation_trace["strict_validation_candidate_limit"] = validation_limit
             candidate.generation_trace = generation_trace
             try:
                 result = await validate_factor_candidate_pipeline(
@@ -454,6 +686,48 @@ class FactorMiningFactory:
                 }
                 logger.debug("Validation failed for %s: %s", candidate.name, exc)
         return validated
+
+    @staticmethod
+    def _rank_strict_validation_candidates(candidates: list[Any]) -> list[Any]:
+        """Validate the strongest quick-evidence candidates first in bounded sessions."""
+
+        def _float(value: Any) -> float:
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _score(candidate: Any) -> tuple[float, float, float, float, float, float]:
+            quick = dict(getattr(candidate, "quick_evidence", None) or {})
+            summary = dict(quick.get("evidence_summary") or {})
+            quality_score = _float(quick.get("quality_score"))
+            rank_ic = max(
+                abs(_float(quick.get("rank_ic_mean"))),
+                abs(_float(summary.get("rank_ic_mean"))),
+            )
+            rank_ir = max(
+                _float(quick.get("rank_ic_ir")),
+                _float(summary.get("rank_ic_ir")),
+            )
+            positive_ratio = max(
+                _float(quick.get("positive_ratio")),
+                _float(summary.get("positive_ratio")),
+            )
+            sample_dates = max(
+                _float(quick.get("sample_dates")),
+                _float(summary.get("sample_dates")),
+            )
+            fitness = _float(getattr(candidate, "fitness", 0.0))
+            return (
+                quality_score,
+                rank_ic,
+                rank_ir,
+                positive_ratio,
+                sample_dates,
+                fitness,
+            )
+
+        return sorted(candidates, key=_score, reverse=True)
 
     @staticmethod
     def _has_admissible_ic_evidence(result: dict[str, Any]) -> bool:
@@ -546,6 +820,7 @@ class FactorMiningFactory:
             validated,
             admitted,
         )
+        quick_candidate_results = self._quick_candidate_results(evolved)
         for candidate in raw or []:
             engine = str(getattr(candidate, "generation_engine", "") or "unknown")
             by_engine.setdefault(engine, {"raw": 0, "quick_passed": 0, "validated": 0, "accepted": 0})
@@ -617,6 +892,7 @@ class FactorMiningFactory:
             "by_engine": by_engine,
             "by_blueprint": by_blueprint,
             "strict_candidate_results": strict_candidate_results,
+            "quick_candidate_results": quick_candidate_results,
             "validation_universe_health": getattr(context, "validation_universe_health", {}),
         }
 
@@ -645,6 +921,41 @@ class FactorMiningFactory:
                 )
             )
         return rows
+
+    def _quick_candidate_results(self, evolved: list[Any], *, limit: int = 12) -> list[dict[str, Any]]:
+        """Compact quick-stage diagnostics for generated candidates."""
+
+        rows: list[dict[str, Any]] = []
+        for candidate in evolved or []:
+            quick = dict(getattr(candidate, "quick_evidence", None) or {})
+            if not quick:
+                continue
+            rows.append(
+                {
+                    "name": str(getattr(candidate, "name", "") or ""),
+                    "generation_engine": str(getattr(candidate, "generation_engine", "") or ""),
+                    "blueprint_id": str(getattr(candidate, "blueprint_id", "") or ""),
+                    "family": str(
+                        getattr(candidate, "factor_family", "")
+                        or getattr(candidate, "family", "")
+                        or ""
+                    ),
+                    "expression_dsl": str(getattr(candidate, "expression_dsl", "") or ""),
+                    "passed": bool(quick.get("passed")),
+                    "fail_reasons": list(quick.get("fail_reasons") or []),
+                    "quality_score": quick.get("quality_score"),
+                    "evidence_summary": dict(quick.get("evidence_summary") or {}),
+                }
+            )
+
+        def _score(row: dict[str, Any]) -> tuple[int, float]:
+            try:
+                score = float(row.get("quality_score") or 0.0)
+            except Exception:
+                score = 0.0
+            return (1 if row.get("passed") else 0, score)
+
+        return sorted(rows, key=_score, reverse=True)[: max(1, int(limit))]
 
     def _strict_candidate_result_payload(
         self,
@@ -713,6 +1024,9 @@ class FactorMiningFactory:
             record = item.get("record") if isinstance(item, dict) else None
             if isinstance(record, dict):
                 await save_factor_to_pool(db, record)
+            for retired in list(item.get("retired_records") or []) if isinstance(item, dict) else []:
+                if isinstance(retired, dict) and retired.get("factor_id"):
+                    await save_factor_to_pool(db, retired)
 
     async def _persist_mining_run(self, db, report: dict[str, Any]) -> None:
         from .pool.storage import save_mining_run

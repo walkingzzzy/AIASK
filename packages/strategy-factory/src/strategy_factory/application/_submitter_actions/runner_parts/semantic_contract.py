@@ -162,6 +162,26 @@
             if _semantic_contract_feature_enabled():
                 gate = _apply_semantic_contract_gate(gate, semantic_audit)
             candidate = self._apply_gate_runtime_context(candidate, gate)
+            incubation_budget = dict(candidate.get("incubation_budget") or {})
+            incubation_budget_track = str(incubation_budget.get("track") or "").strip().lower()
+            if self._should_bootstrap_observe_candidate(
+                gate,
+                incubation_budget_track=incubation_budget_track,
+            ):
+                incubation_budget = {
+                    **incubation_budget,
+                    "track": "formal_incubation",
+                    "auto_promoted_from_track": incubation_budget_track or "deferred_budget_queue",
+                    "auto_promote_reason": "strict_incubation_ready_deferred_formal",
+                }
+                incubation_budget.setdefault("budget_tier", "standard")
+                candidate_params = dict(candidate.get("params") or {})
+                candidate_params["incubation_budget"] = dict(incubation_budget)
+                candidate = {
+                    **dict(candidate or {}),
+                    "incubation_budget": incubation_budget,
+                    "params": candidate_params,
+                }
             candidate_provenance = self._candidate_provenance(candidate, existing_strategy)
             strategy_profile = dict(candidate_provenance.get("strategy_profile") or {})
             incubation_budget = dict(candidate.get("incubation_budget") or {})

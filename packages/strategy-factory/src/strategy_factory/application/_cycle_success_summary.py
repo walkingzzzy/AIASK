@@ -789,6 +789,16 @@ def build_success_run_summary(
         "incubation_budget_family_counts": dict(
             (submit_result.get("incubation_budget_summary") or {}).get("family_counts") or {}
         ),
+        "incubation_budget_formal_runtime_ready_candidate_count": _safe_int(
+            (submit_result.get("incubation_budget_summary") or {}).get(
+                "formal_runtime_ready_candidate_count"
+            )
+        ),
+        "incubation_budget_formal_runtime_ready_selected_count": _safe_int(
+            (submit_result.get("incubation_budget_summary") or {}).get(
+                "formal_runtime_ready_selected_count"
+            )
+        ),
         **submission_audit_summary,
         **backtest_audit_summary,
         **vector_summary,

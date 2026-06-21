@@ -369,16 +369,50 @@ class ResearchPlaneRunner:
     def _candidate_target_symbols(candidate: dict[str, Any]) -> list[str]:
         """返回 candidate 所有声明的目标代码，覆盖 research_task / params / 顶层三处。"""
         seen: list[str] = []
+        params = dict(candidate.get("params") or {})
+        params_research_task = dict(params.get("research_task") or {})
         for bucket in (
             (candidate.get("research_task") or {}).get("target_symbols"),
             candidate.get("target_symbols"),
-            (candidate.get("params") or {}).get("target_symbols"),
+            params.get("target_symbols"),
+            params_research_task.get("target_symbols"),
         ):
             for code in list(bucket or []):
                 token = str(code or "").strip()
                 if token and token not in seen:
                     seen.append(token)
         return seen
+
+    @staticmethod
+    def _is_governed_factor_pool_candidate(candidate: dict[str, Any]) -> bool:
+        payload = dict(candidate or {})
+        params = dict(payload.get("params") or {})
+        provenance = dict(
+            payload.get("candidate_provenance")
+            or params.get("candidate_provenance")
+            or {}
+        )
+        generation_source = str(
+            dict(payload.get("generation_reason") or {}).get("source") or ""
+        ).strip().lower()
+        generator_mode = str(
+            payload.get("generator_mode")
+            or payload.get("generator_type")
+            or params.get("generator_mode")
+            or params.get("generator_type")
+            or provenance.get("generator_mode")
+            or provenance.get("generator_type")
+            or ""
+        ).strip().lower()
+        return bool(
+            generation_source == "factor_pool"
+            or generator_mode == "factor_pool"
+            or str(
+                payload.get("factor_pool_factor_id")
+                or params.get("factor_pool_factor_id")
+                or ""
+            ).strip()
+        )
 
     @staticmethod
     def _topn_target_codes(full_market_topn: dict[str, Any], *, limit: int = 24) -> list[str]:
@@ -459,11 +493,15 @@ class ResearchPlaneRunner:
         injected_symbol_count = 0
         for index, candidate in enumerate(list(candidates or [])):
             item = dict(candidate or {})
+            is_factor_pool_candidate = cls._is_governed_factor_pool_candidate(item)
             if cls._candidate_target_symbols(item):
                 output.append(item)
                 continue
 
-            budget = 1 if len(topn_codes) <= 1 else min(3, len(topn_codes))
+            if is_factor_pool_candidate:
+                budget = 1 if len(topn_codes) <= 1 else min(12, len(topn_codes))
+            else:
+                budget = 1 if len(topn_codes) <= 1 else min(3, len(topn_codes))
             start = (index * budget) % len(topn_codes)
             selected = list(dict.fromkeys(topn_codes[(start + offset) % len(topn_codes)] for offset in range(budget)))
             if not selected:
@@ -559,16 +597,37 @@ class ResearchPlaneRunner:
                 "target_pool_source": "full_market_topn",
                 "target_symbols": list(selected),
                 "stock_pool": stock_pool,
-                "target_symbol_policy": "strict_intersection",
-                "universe_expansion_policy": "forbid",
-                "validation_focus": str(research_task.get("validation_focus") or "candidate_target_only").strip()
-                or "candidate_target_only",
+                "target_symbol_policy": "prefer_intersection" if is_factor_pool_candidate else "strict_intersection",
+                "universe_expansion_policy": (
+                    "allow_market_fallback" if is_factor_pool_candidate else "forbid"
+                ),
+                "validation_focus": (
+                    "broad_generalization"
+                    if is_factor_pool_candidate
+                    else (
+                        str(research_task.get("validation_focus") or "candidate_target_only").strip()
+                        or "candidate_target_only"
+                    )
+                ),
                 "candidate_family": candidate_family,
                 "preferred_strategy_types": list(research_task.get("preferred_strategy_types") or [strategy_type]),
                 "allowed_strategy_types": list(research_task.get("allowed_strategy_types") or [strategy_type]),
                 "gate_1_representative_count": min(3, len(selected)),
                 "as_of_date": as_of,
             }
+            validation_profile = dict(
+                item.get("validation_profile")
+                or params.get("validation_profile")
+                or {}
+            )
+            if is_factor_pool_candidate:
+                validation_profile = {
+                    **validation_profile,
+                    "profile": "factor_rank_validation",
+                    "validation_focus": "broad_generalization",
+                    "primary_validation_layer": "combined",
+                    "factor_pool_candidate": True,
+                }
             params.update(
                 {
                     "research_task": research_task,
@@ -576,6 +635,7 @@ class ResearchPlaneRunner:
                     "target_symbols": list(selected),
                     "stock_pool": stock_pool,
                     "target_pool_source": "full_market_topn",
+                    "validation_profile": validation_profile,
                     "evidence_chain": evidence_chain,
                     "prediction_contract": prediction_contract,
                     "confidence_contract": confidence_contract,
@@ -594,6 +654,7 @@ class ResearchPlaneRunner:
                     "target_symbols": list(selected),
                     "stock_pool": stock_pool,
                     "target_pool_source": "full_market_topn",
+                    "validation_profile": validation_profile,
                     "evidence_chain": evidence_chain,
                     "prediction_contract": prediction_contract,
                     "confidence_contract": confidence_contract,

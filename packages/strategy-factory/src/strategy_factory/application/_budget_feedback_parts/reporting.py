@@ -1,5 +1,15 @@
 
 
+def _promotion_review_score_blocks_budget(
+    *,
+    status: str,
+    recommendation: str,
+) -> bool:
+    if status == "watch" or recommendation == "observe":
+        return False
+    return True
+
+
 def _derive_skill_scope_control(bucket: dict[str, Any], *, scope_name: str) -> dict[str, Any]:
     payload = dict(bucket or {})
     if not payload:
@@ -206,15 +216,19 @@ def _derive_skill_scope_control(bucket: dict[str, Any], *, scope_name: str) -> d
         ):
             cooldown_active = True
             reasons.append(f"{scope_name}_promotion_review_watch")
-        if promotion_review_score <= 0.2:
-            freeze_active = True
-            reasons.append(f"{scope_name}_promotion_review_score_freeze")
-        elif promotion_review_score <= 0.35:
-            suppressed = True
-            reasons.append(f"{scope_name}_promotion_review_score_suppress")
-        elif promotion_review_score < 0.5:
-            cooldown_active = True
-            reasons.append(f"{scope_name}_promotion_review_score_cooldown")
+        if _promotion_review_score_blocks_budget(
+            status=promotion_review_status,
+            recommendation=promotion_review_recommendation,
+        ):
+            if promotion_review_score <= 0.2:
+                freeze_active = True
+                reasons.append(f"{scope_name}_promotion_review_score_freeze")
+            elif promotion_review_score <= 0.35:
+                suppressed = True
+                reasons.append(f"{scope_name}_promotion_review_score_suppress")
+            elif promotion_review_score < 0.5:
+                cooldown_active = True
+                reasons.append(f"{scope_name}_promotion_review_score_cooldown")
 
     return _finalize_scope_control(
         scope_name=scope_name,

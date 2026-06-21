@@ -79,6 +79,26 @@ class SubmissionAdmissionAuthority:
             or candidate_budget.get("observe_first_intake")
         )
         explicit_formal_track_requested = str(incubation_budget_track or "").strip().lower() == "formal_incubation"
+        candidate_budget_track = str(candidate_budget.get("track") or "").strip().lower()
+        requested_track = str(incubation_budget_track or "").strip().lower()
+        deferred_budget_requested = requested_track in {
+            "deferred_budget_queue",
+            "deferred_submission",
+        }
+        formal_auto_correction_source_track = candidate_budget_track or requested_track
+        formal_auto_correction_allowed = bool(
+            observe_first_intake_requested
+            or formal_auto_correction_source_track
+            in {
+                "observe_incubation",
+                "deferred_budget_queue",
+                "deferred_submission",
+            }
+        )
+        explicit_formal_budget_requested = bool(
+            explicit_formal_track_requested
+            and candidate_budget_track == "formal_incubation"
+        )
         readiness_tier = (
             str(runtime_bootstrap.get("execution_readiness_tier") or "").strip().lower() or "unknown"
         )
@@ -94,7 +114,7 @@ class SubmissionAdmissionAuthority:
         )
         formal_track_auto_corrected = bool(
             not explicit_formal_track_requested
-            and observe_first_intake_requested
+            and formal_auto_correction_allowed
             and bool(normalized_gate.get("passed"))
             and strict_formal_ready
             and not bool(normalized_gate.get("live_candidate_ready"))
@@ -103,6 +123,8 @@ class SubmissionAdmissionAuthority:
         formal_track_requested = bool(explicit_formal_track_requested or formal_track_auto_corrected)
         formal_track_blockers: list[str] = []
         if formal_track_requested:
+            if not bool(normalized_gate.get("passed")):
+                formal_track_blockers.append("quality_gate_pass_required_for_formal_track")
             if not bool(runtime_bootstrap.get("runtime_bootstrap_eligible")):
                 formal_track_blockers.append(
                     str(runtime_bootstrap.get("runtime_bootstrap_reason") or "runtime_bootstrap_not_eligible")
@@ -124,7 +146,6 @@ class SubmissionAdmissionAuthority:
                 formal_track_blockers.append("strict_incubation_pass_required_for_formal_track")
         formal_track_blockers = _canonical_formal_blockers(formal_track_blockers)
         formal_track_eligible = bool(formal_track_requested and not formal_track_blockers)
-        requested_track = str(incubation_budget_track or "").strip().lower()
         if refresh_existing:
             action_type = "refresh_existing"
             submission_lane = "refresh_existing"
@@ -152,7 +173,23 @@ class SubmissionAdmissionAuthority:
             fallback_conditions = ["restore_required_research_protocol_fields_before_submission_replay"]
             next_step = "research"
             completed = True
-        elif not bool(normalized_gate.get("passed")) and bool(runtime_bootstrap.get("wide_intake_admitted")):
+        elif deferred_budget_requested and not formal_track_auto_corrected:
+            action_type = "research_only"
+            submission_lane = "deferred_submission"
+            final_status = "submitted" if bool(normalized_gate.get("research_candidate_ready") or normalized_gate.get("passed")) else "rejected"
+            trigger = "budget_deferred_research_only"
+            gaps = list(dict.fromkeys([*admission_block_reasons, trigger]))
+            fallback_conditions = [
+                "re_enter_budget_selection_after_feedback_controls_clear",
+                "promote_to_formal_if_strict_runtime_ready",
+            ]
+            next_step = "incubation"
+            completed = True
+        elif (
+            not bool(normalized_gate.get("passed"))
+            and bool(runtime_bootstrap.get("wide_intake_admitted"))
+            and not explicit_formal_budget_requested
+        ):
             # === INVERT-DESIGN P1 改动A: Layer 1 宽进准入 ===
             # Gate-3 未通过,但结构合法且 wide_intake toggle 开启 → 进零资本 observe 观察,
             # 而非直接 rejected。让 ForwardVerifier 用向前真实数据测量它,而不是回测前置拍死。
@@ -218,6 +255,8 @@ class SubmissionAdmissionAuthority:
             final_status = "incubating"
             trigger = (
                 "strict_incubation_ready_and_observe_first_formal_correction"
+                if formal_track_auto_corrected and observe_first_intake_requested
+                else "strict_incubation_ready_and_runtime_formal_correction"
                 if formal_track_auto_corrected
                 else "strict_incubation_ready_and_budget_formal"
             )
@@ -228,7 +267,16 @@ class SubmissionAdmissionAuthority:
             ]
             next_step = "paper"
             completed = False
-        elif runtime_bootstrap.get("runtime_bootstrap_eligible"):
+        elif (
+            bool(runtime_bootstrap.get("runtime_bootstrap_eligible"))
+            and not explicit_formal_budget_requested
+            and (
+                not formal_track_requested
+                or bool(runtime_bootstrap.get("wide_intake_admitted"))
+                or str(runtime_bootstrap.get("runtime_bootstrap_reason") or "").strip().lower()
+                == "d_grade_observe_only_micro_budget"
+            )
+        ):
             action_type = "paper"
             submission_lane = "observe_incubation"
             final_status = "submitted"
@@ -311,6 +359,7 @@ class SubmissionAdmissionAuthority:
             "formal_track_eligible": formal_track_eligible,
             "formal_track_blockers": list(formal_track_blockers),
             "observe_first_intake_requested": observe_first_intake_requested,
+            "formal_auto_correction_source_track": formal_auto_correction_source_track,
             "admission_decision_contract_version": ADMISSION_DECISION_CONTRACT_VERSION,
             "admission_decision": admission_decision,
             **runtime_bootstrap,
@@ -333,6 +382,7 @@ class SubmissionAdmissionAuthority:
             "formal_track_eligible": formal_track_eligible,
             "formal_track_blockers": list(formal_track_blockers),
             "observe_first_intake_requested": observe_first_intake_requested,
+            "formal_auto_correction_source_track": formal_auto_correction_source_track,
             "admission_decision_contract_version": ADMISSION_DECISION_CONTRACT_VERSION,
             "admission_decision": admission_decision,
             **runtime_bootstrap,

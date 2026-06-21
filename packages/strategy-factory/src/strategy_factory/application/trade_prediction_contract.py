@@ -57,6 +57,15 @@ _REQUIRED_FIELDS = (
     "contract_source",
 )
 
+_PREDICTION_AS_OF_KEYS = (
+    "prediction_as_of",
+    "as_of",
+    "as_of_date",
+    "snapshot_date",
+    "started_at",
+    "created_at",
+)
+
 
 def _as_dict(value: Any) -> dict[str, Any]:
     return dict(value) if isinstance(value, Mapping) else {}
@@ -92,6 +101,61 @@ def _candidate_value(candidate: Mapping[str, Any], key: str) -> Any:
     if params.get(key) not in _EMPTY_VALUES:
         return params.get(key)
     return None
+
+
+def _explicit_contract_value(candidate: Mapping[str, Any], key: str) -> Any:
+    params = _as_dict(candidate.get("params"))
+    for value in (candidate.get("trade_prediction_contract"), params.get("trade_prediction_contract")):
+        contract = _as_dict(value)
+        if contract.get(key) not in _EMPTY_VALUES:
+            return contract.get(key)
+    return None
+
+
+def _prediction_context_as_of(candidate: Mapping[str, Any], snapshot: Optional[Mapping[str, Any]]) -> Any:
+    params = _as_dict(candidate.get("params"))
+    research_task = _as_dict(_candidate_value(candidate, "research_task"))
+    for key in _PREDICTION_AS_OF_KEYS:
+        value = _first_non_empty(
+            candidate.get(key),
+            params.get(key),
+            _explicit_contract_value(candidate, key),
+            research_task.get(key),
+        )
+        if value not in _EMPTY_VALUES:
+            return value
+    snap = _as_dict(snapshot)
+    for key in (*_PREDICTION_AS_OF_KEYS, "date"):
+        value = snap.get(key)
+        if value not in _EMPTY_VALUES:
+            return value
+    return None
+
+
+def attach_trade_prediction_context(
+    candidate: Mapping[str, Any],
+    *,
+    snapshot: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Attach the cycle prediction timestamp used by contract derivation."""
+
+    payload = dict(candidate or {})
+    as_of = _prediction_context_as_of(payload, snapshot)
+    if as_of in _EMPTY_VALUES:
+        return payload
+    params = _as_dict(payload.get("params"))
+    if params.get("prediction_as_of") in _EMPTY_VALUES:
+        params["prediction_as_of"] = as_of
+    snap = _as_dict(snapshot)
+    snapshot_date = _first_non_empty(snap.get("date"), snap.get("snapshot_date"), params.get("snapshot_date"))
+    if snapshot_date not in _EMPTY_VALUES and params.get("snapshot_date") in _EMPTY_VALUES:
+        params["snapshot_date"] = snapshot_date
+    payload["params"] = params
+    if payload.get("prediction_as_of") in _EMPTY_VALUES:
+        payload["prediction_as_of"] = as_of
+    if snapshot_date not in _EMPTY_VALUES and payload.get("snapshot_date") in _EMPTY_VALUES:
+        payload["snapshot_date"] = snapshot_date
+    return payload
 
 
 def _coerce_iso_ts(value: Any) -> Optional[str]:
@@ -813,6 +877,7 @@ def apply_trade_prediction_contract(candidate: Mapping[str, Any]) -> dict[str, A
 
 
 __all__ = [
+    "attach_trade_prediction_context",
     "DERIVED_FROM_LEGACY_CONTRACT",
     "EXPLICIT_CONTRACT",
     "TRADE_PREDICTION_CONTRACT_READY",

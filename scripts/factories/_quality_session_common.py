@@ -100,3 +100,14 @@ _LEGACY_BUDGET_MISMATCH_FLAGS = {
 _LEGACY_BUDGET_MISMATCH_NOTE_FRAGMENTS = (
     "incubation budget summary shows candidates staying in deferred_budget_queue with no formal/observe budget assignment",
 )
+
+_RECOMPUTED_AUDIT_FLAGS = {
+    "execution_audit_needs_attention",
+    "execution_audit_bootstrap_pending",
+}
+
+_RECOMPUTED_AUDIT_NOTE_FRAGMENTS = (
+    "execution audit verification still reports needs_attention on sampled strategies",
+    "execution audit verification still reports missing or needs_attention on sampled strategies",
+    "execution audit has native evidence but is still bootstrap_pending because realized trade samples are insufficient",
+)

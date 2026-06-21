@@ -465,7 +465,11 @@ def _extract_candidate_origin_target_codes(payload: Optional[dict], limit: int =
     dsl = dict(params.get("dsl") or {})
     dsl_metadata = dict(dsl.get("metadata") or {})
     generation_reason = dict(item.get("generation_reason") or {})
-    candidate_provenance = dict(item.get("candidate_provenance") or {})
+    candidate_provenance = dict(
+        item.get("candidate_provenance")
+        or params.get("candidate_provenance")
+        or {}
+    )
     item_event_context = dict(item.get("event_context") or {})
     return _normalize_target_codes([
         item.get("target_symbols"),

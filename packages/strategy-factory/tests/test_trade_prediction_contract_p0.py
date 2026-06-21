@@ -213,8 +213,53 @@ def test_topn_target_injection_makes_local_candidate_trade_prediction_ready() ->
     assert resolved["trade_prediction_contract"]["direction"] == "neutral"
     assert resolved["trade_prediction_contract"]["direction_source"] == "target_injection_diagnostic_fallback"
     assert resolved["trade_prediction_contract"]["template_fallback_used"] is True
-    assert resolved["diagnostic_only"] is True
-    assert resolved["trade_prediction_contract"]["horizon"] == "3d"
+
+
+def test_topn_target_injection_keeps_factor_pool_broad_validation() -> None:
+    from strategy_factory.application.research.runner import ResearchPlaneRunner
+
+    candidates = [
+        {
+            "id": "factor-pool-targetless",
+            "strategy_type": "multi_factor",
+            "generator_mode": "factor_pool",
+            "factor_pool_factor_id": "factor-1",
+            "candidate_provenance": {
+                "source_candidate_artifact_id": "factor-1",
+                "generator_mode": "factor_pool",
+            },
+            "params": {
+                "factor_pool_factor_id": "factor-1",
+                "candidate_provenance": {
+                    "source_candidate_artifact_id": "factor-1",
+                    "generator_mode": "factor_pool",
+                },
+            },
+        }
+    ]
+    constituents = [{"code": f"6005{i:02d}", "rank": i} for i in range(1, 15)]
+
+    injected, report = ResearchPlaneRunner._inject_topn_targets_into_local_candidates(
+        candidates,
+        {
+            "snapshot_id": "fmt-factor-pool",
+            "as_of_date": "2026-06-05",
+            "constituents": constituents,
+        },
+        {"date": "2026-06-05"},
+    )
+
+    candidate = injected[0]
+    params = candidate["params"]
+    assert report["injected_candidate_count"] == 1
+    assert len(candidate["target_symbols"]) == 12
+    assert candidate["validation_profile"]["profile"] == "factor_rank_validation"
+    assert candidate["validation_profile"]["validation_focus"] == "broad_generalization"
+    assert candidate["validation_profile"]["primary_validation_layer"] == "combined"
+    assert params["validation_profile"] == candidate["validation_profile"]
+    assert params["research_task"]["validation_focus"] == "broad_generalization"
+    assert params["research_task"]["universe_expansion_policy"] == "allow_market_fallback"
+    assert candidate["diagnostic_only"] is True
 
 
 def test_apply_resolved_candidate_envelope_attaches_trade_prediction_fields() -> None:

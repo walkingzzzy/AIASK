@@ -105,6 +105,10 @@ def test_success_summary_lifts_submission_lane_counts() -> None:
             "gate_3_input": 4,
             "gate_3_passed": 0,
             "gate_3_failed": 4,
+            "incubation_budget_summary": {
+                "formal_runtime_ready_candidate_count": 2,
+                "formal_runtime_ready_selected_count": 1,
+            },
             "strategies": [
                 {"submission_lane": "observe_incubation"},
                 {"submission_lane": "observe_incubation"},
@@ -138,6 +142,8 @@ def test_success_summary_lifts_submission_lane_counts() -> None:
     assert summary["live_ready_review_count"] == 1
     assert summary["research_only_count"] == 1
     assert summary["submission_lane_counts"]["observe_incubation"] == 2
+    assert summary["incubation_budget_formal_runtime_ready_candidate_count"] == 2
+    assert summary["incubation_budget_formal_runtime_ready_selected_count"] == 1
 
 
 def test_task_artifact_persists_router_telemetry() -> None:

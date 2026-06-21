@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections import Counter
+import os as _os
 import time
 from datetime import datetime
 from typing import Any
@@ -71,10 +72,11 @@ async def _run_strategy_factory_once(
     execution_mode: str,
     universe_limit: int = 0,
 ) -> dict[str, Any]:
-    # universe_limit>0 时走 dispatch 默认 universe 模式(覆盖全市场子集),
-    # 否则用显式 codes(单/少标的)。dispatch 模式让候选覆盖多标的,
-    # 信号方向多样化,observe 诊断交易得以启动。
-    use_dispatch = int(universe_limit or 0) > 0 and not codes
+    # P2-2: universe_limit>0 即走 dispatch 默认 universe 模式(覆盖全市场前 N 只)。
+    # 原逻辑 `universe_limit>0 AND not codes` 因 --codes 默认非空(["601288"])恒 False,
+    # 使 --universe-limit 被静默架空、永远只跑单标的。现在传了 universe_limit 即视为
+    # 明确要全市场扫描(优先级高于 codes 默认值);不传 universe_limit 时才用显式 codes。
+    use_dispatch = int(universe_limit or 0) > 0
     if use_dispatch:
         runner = factory_mod.StrategyFactoryRunner(
             interval_sec=300,
@@ -139,21 +141,137 @@ async def _run_factor_mining_once(
     # 第 1 轮跑一次(建立基线),之后每 every_n 轮跑一次;其余轮跳过。
     if round_no != 1 and (round_no % every_n) != 0:
         return {"skipped": True, "reason": f"factor_mining_every_{every_n}_rounds", "round": round_no}
+    raw_engines = str(_os.getenv("STRATEGY_QUALITY_FACTOR_MINING_ENGINES", "rule_seed") or "").strip()
+    engines = [item.strip() for item in raw_engines.replace(";", ",").split(",") if item.strip()]
+    try:
+        candidate_count = int(str(_os.getenv("STRATEGY_QUALITY_FACTOR_MINING_CANDIDATE_COUNT", "4")).strip())
+    except Exception:
+        candidate_count = 4
+    try:
+        evolution_generations = int(str(_os.getenv("STRATEGY_QUALITY_FACTOR_MINING_EVOLUTION_GENERATIONS", "1")).strip())
+    except Exception:
+        evolution_generations = 1
+    candidate_count = max(1, min(candidate_count, 30))
+    evolution_generations = max(0, min(evolution_generations, 5))
     started_at = _iso_now()
+    def _clear_factor_research_cache() -> bool:
+        try:
+            from strategy_factory.application.research.factor_research import FactorResearchBuilder
+
+            clear = getattr(FactorResearchBuilder, "_cache_clear", None)
+            if callable(clear):
+                clear()
+                return True
+        except Exception as exc:  # noqa: BLE001 - cache invalidation must not fail the round
+            LOGGER.debug("Factor research cache clear failed: %s", exc)
+        return False
+
+    def _compact_strict_candidate_results(rows: Any, *, limit: int = 5) -> list[dict[str, Any]]:
+        compact: list[dict[str, Any]] = []
+        for row in list(rows or [])[: max(0, limit)]:
+            if not isinstance(row, dict):
+                continue
+            quick = dict(row.get("quick_evidence") or {})
+            decision = dict(row.get("admission_decision") or {})
+            trace = dict(row.get("generation_trace") or {})
+            compact.append(
+                {
+                    "name": row.get("name"),
+                    "generation_engine": row.get("generation_engine"),
+                    "family": row.get("family"),
+                    "expression_dsl": row.get("expression_dsl"),
+                    "fitness": row.get("fitness"),
+                    "quick_quality_score": quick.get("quality_score"),
+                    "quick_rank_ic_mean": quick.get("rank_ic_mean"),
+                    "strict_priority_rank": trace.get("strict_validation_priority_rank"),
+                    "strict_gate_passed": bool(decision.get("strict_gate_passed")),
+                    "admitted": bool(decision.get("admitted")),
+                    "evidence_reasons": list(decision.get("evidence_reasons") or []),
+                    "evidence_summary": dict(decision.get("evidence_summary") or {}),
+                    "rating_grade": decision.get("rating_grade"),
+                    "blockers": list(decision.get("blockers") or []),
+                }
+            )
+        return compact
+
+    async def _run_post_mining_maintenance(factory) -> dict[str, Any] | None:
+        enabled_raw = str(_os.getenv("STRATEGY_QUALITY_FACTOR_MAINTENANCE_AFTER_MINING", "1") or "1").strip().lower()
+        if enabled_raw not in {"1", "true", "yes", "on"}:
+            return None
+        try:
+            timeout_sec = float(str(_os.getenv("STRATEGY_QUALITY_FACTOR_MAINTENANCE_TIMEOUT_SEC", "60") or "60").strip())
+        except Exception:
+            timeout_sec = 60.0
+        timeout_sec = max(5.0, min(timeout_sec, 180.0))
+        import asyncio as _asyncio
+
+        try:
+            maintenance = await _asyncio.wait_for(factory.run_maintenance(), timeout=timeout_sec)
+        except _asyncio.TimeoutError:
+            return {"success": False, "timeout": True, "timeout_sec": timeout_sec}
+        except Exception as exc:  # noqa: BLE001 - maintenance is additive evidence, not a round blocker
+            LOGGER.warning("Factor mining maintenance after quality round failed: %s", exc)
+            return {"success": False, "error": f"{type(exc).__name__}: {exc}"}
+        promotion_report = dict((maintenance or {}).get("promotion_report") or {})
+        qc_report = dict((maintenance or {}).get("qc_pipeline_report") or {})
+        return {
+            "success": True,
+            "timeout": False,
+            "timeout_sec": timeout_sec,
+            "promoted_count": int(
+                promotion_report.get("promoted_count")
+                or len(list(promotion_report.get("promoted") or []))
+                or 0
+            ),
+            "checked_count": int(promotion_report.get("checked") or 0),
+            "qc_enabled": bool(qc_report.get("enabled")),
+            "qc_skipped": bool(qc_report.get("skipped")),
+            "qc_processed": int(qc_report.get("processed") or 0),
+            "pool_size": int((maintenance or {}).get("pool_size") or 0),
+        }
+
     try:
         from strategy_factory.runtime.factor_mining import get_factor_mining_factory
 
         factory = get_factor_mining_factory()
-        result = await factory.run_mining_cycle(trigger="quality_session")
+        result = await factory.run_mining_cycle(
+            trigger="quality_session",
+            engines=engines or None,
+            candidate_count=candidate_count,
+            evolution_generations=evolution_generations,
+        )
+        maintenance_result = await _run_post_mining_maintenance(factory)
+        cache_cleared = _clear_factor_research_cache()
+        quality_summary = dict((result or {}).get("quality_summary") or {})
+        quarantine_reappraisal = dict((result or {}).get("quarantine_reappraisal") or {})
+        strict_candidate_results = _compact_strict_candidate_results(
+            quality_summary.get("strict_candidate_results")
+        )
         return {
             "started_at": started_at,
             "completed_at": _iso_now(),
             "result": {
                 "success": bool((result or {}).get("success")),
+                "requested_engines": list(engines or []),
+                "requested_candidate_count": candidate_count,
+                "requested_evolution_generations": evolution_generations,
+                "run_id": (result or {}).get("run_id"),
                 "raw_candidate_count": int((result or {}).get("raw_candidate_count") or 0),
                 "evolved_count": int((result or {}).get("evolved_count") or 0),
                 "validated_count": int((result or {}).get("validated_count") or 0),
                 "admitted_count": int((result or {}).get("admitted_count") or 0),
+                "active_promoted_count": int((result or {}).get("active_promoted_count") or 0),
+                "cycle_active_promoted_count": int((result or {}).get("cycle_active_promoted_count") or 0),
+                "reappraisal_promoted_count": int((result or {}).get("reappraisal_promoted_count") or 0),
+                "quarantine_reappraisal": {
+                    "scanned": int(quarantine_reappraisal.get("scanned") or 0),
+                    "promoted": int(quarantine_reappraisal.get("promoted") or 0),
+                    "kept_quarantine": int(quarantine_reappraisal.get("kept_quarantine") or 0),
+                },
+                "maintenance": maintenance_result,
+                "factor_research_cache_cleared": cache_cleared,
+                "quality_reject_reasons": dict(quality_summary.get("reject_reasons") or {}),
+                "strict_candidate_results": strict_candidate_results,
                 "pool_size": int((result or {}).get("pool_size") or 0),
                 "engines_used": list((result or {}).get("engines_used") or []),
                 "error": (result or {}).get("error"),
@@ -209,7 +327,14 @@ async def _run_signal_tracker_once(enabled: bool) -> dict[str, Any] | None:
             "result": {
                 "signals_generated": int((result or {}).get("signals_generated") or 0),
                 "incubation_orders": int((result or {}).get("incubation_orders") or 0),
+                "incubation_orders_filled": int((result or {}).get("incubation_orders_filled") or 0),
                 "forward_returns_computed": int((result or {}).get("forward_returns_computed") or 0),
+                "timeout": bool((result or {}).get("timeout")),
+                "phase_timeout_count": int((result or {}).get("phase_timeout_count") or 0),
+                "phase_timeouts": list((result or {}).get("phase_timeouts") or []),
+                "phase_error_count": int((result or {}).get("phase_error_count") or 0),
+                "runtime_universe": dict((result or {}).get("runtime_universe") or {}),
+                "phase_results": dict((result or {}).get("phase_results") or {}),
                 "errors": list((result or {}).get("errors") or [])[:8],
             },
         }
@@ -329,7 +454,11 @@ async def _enrich_strategy_snapshot_with_persistence(
         "quality_report_incubation_budget_track": quality_summary.get("incubation_budget_track"),
         "quality_report_final_status": quality_summary.get("final_status"),
         "quality_report_formal_track_requested": quality_summary.get("formal_track_requested"),
+        "quality_report_formal_track_auto_corrected": quality_summary.get("formal_track_auto_corrected"),
         "quality_report_formal_track_eligible": quality_summary.get("formal_track_eligible"),
+        "quality_report_formal_auto_correction_source_track": quality_summary.get(
+            "formal_auto_correction_source_track"
+        ),
         "quality_report_submission_action_type": quality_summary.get("submission_action_type"),
         "quality_report_submission_action_trigger": quality_summary.get("submission_action_trigger"),
         "quality_report_runtime_bootstrap_reason": quality_summary.get("runtime_bootstrap_reason"),

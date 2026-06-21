@@ -64,6 +64,13 @@ def _passes_strict(summary: dict[str, float], thresholds: dict[str, float]) -> t
     return (not reasons), reasons
 
 
+def _is_reappraisal_candidate(row: dict[str, Any]) -> bool:
+    status = str(row.get("status") or "").strip().lower()
+    validation_summary = dict(row.get("validation_summary") or {})
+    quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+    return status == "quarantine" or (status == "active" and quality_status == "quarantine")
+
+
 async def reappraise_quarantine_factors(
     db: Any,
     *,
@@ -78,7 +85,15 @@ async def reappraise_quarantine_factors(
     from .pool.storage import load_factor_pool_from_db, save_factor_to_pool
 
     th = {**QUALITY_THRESHOLDS, **dict(thresholds or {})}
-    rows = await load_factor_pool_from_db(db, statuses=("quarantine",), limit=limit)
+    rows = [
+        row
+        for row in await load_factor_pool_from_db(
+            db,
+            statuses=("active", "quarantine"),
+            limit=limit,
+        )
+        if _is_reappraisal_candidate(dict(row or {}))
+    ]
     scanned = 0
     promoted = 0
     kept = 0
@@ -109,6 +124,16 @@ async def reappraise_quarantine_factors(
             if not dry_run:
                 record = dict(row)
                 record["status"] = "active"
+                # P2-1: 同时把 validation_summary.quality_status 写成 promoted。
+                # 原 bug:只翻 status=active 不动 quality_status(仍 quarantine)→ 消费侧
+                # (active_pool.get_active_factors / factor_research_builder)要求 quality_status≠quarantine,
+                # 导致 reappraise 转正的因子永远取不到(半转正僵态,因子实质无法进策略)。
+                validation_summary = dict(record.get("validation_summary") or {})
+                validation_summary["quality_status"] = "promoted"
+                validation_summary["promoted_via"] = "quarantine_reappraisal"
+                validation_summary["promotion_block_reasons"] = []
+                record["validation_summary"] = validation_summary
+                record["quality_status"] = "promoted"
                 record["current_ic"] = round(summary["rank_ic_mean"], 6)
                 record.setdefault("admission_ic", round(summary["rank_ic_mean"], 6))
                 record.setdefault("admission_grade", "B")

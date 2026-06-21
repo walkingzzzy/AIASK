@@ -50,6 +50,31 @@ def test_positive_factor_ic_resolves_up_with_calibrated_confidence() -> None:
     assert resolved["template_dominance_score"] == 0.0
 
 
+def test_market_evidence_exit_claim_is_not_direction_contradiction() -> None:
+    from strategy_factory.application.semantic_contract import audit_candidate_semantic_contract
+
+    candidate = {
+        "id": "factor-up",
+        "strategy_type": "multi_factor",
+        "source": "factor_ic",
+        "target_symbols": ["600000"],
+        "params": {
+            "factor_name": "quality_growth",
+            "factor_ic": 0.082,
+            "factor_ic_trend": "rising",
+            "prediction_as_of": "2026-06-05",
+        },
+    }
+
+    resolved = apply_evidence_first_candidate(candidate, snapshot={"date": "2026-06-05"})
+    audit = audit_candidate_semantic_contract(resolved)
+
+    assert resolved["prediction_contract"]["claims"][1]["claim_id"] == "claim_exit"
+    assert resolved["prediction_contract"]["claims"][1]["expected_move"] == "risk_or_time_stop"
+    assert audit["contradiction_count"] == 0
+    assert "semantic_contract_contradiction_detected" not in audit["hard_fail_reasons"]
+
+
 def test_negative_factor_ic_resolves_down() -> None:
     candidate = {
         "id": "factor-down",

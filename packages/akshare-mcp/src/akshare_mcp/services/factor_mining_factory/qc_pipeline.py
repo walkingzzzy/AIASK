@@ -77,6 +77,109 @@ def _f(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _mapping(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, Mapping) else {}
+
+
+def _first_float(*values: Any, default: float = 0.0) -> float:
+    for value in values:
+        if value is None:
+            continue
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            continue
+    return float(default)
+
+
+def _extract_oos_labels(oos: Mapping[str, Any]) -> dict[str, Any]:
+    report = _mapping(oos.get("validation_report")) or _mapping(oos.get("factor_validation_report"))
+    walk_forward = _mapping(report.get("walk_forward"))
+    purged_kfold = _mapping(report.get("purged_kfold"))
+    bootstrap = _mapping(oos.get("bootstrap_ci")) or _mapping(report.get("bootstrap_ci"))
+    metrics = _mapping(oos.get("metrics"))
+    rating = _mapping(oos.get("rating")) or _mapping(report.get("rating"))
+    rank_ic_ir = _first_float(
+        metrics.get("rank_ic_ir"),
+        metrics.get("walk_forward_ic_ir"),
+        walk_forward.get("oos_rank_ic_ir"),
+        purged_kfold.get("oos_rank_ic_ir"),
+    )
+    bootstrap_ci_lower = _first_float(
+        bootstrap.get("lower"),
+        bootstrap.get("ci_lower"),
+        metrics.get("bootstrap_ci_lower"),
+    )
+    oos_grade = str(rating.get("grade") or oos.get("grade") or "").strip().lower()
+    oos_pass = (
+        bool(oos.get("passed"))
+        or oos_grade in {"a", "b", "good", "strong"}
+        or (
+            bool(walk_forward)
+            and _first_float(walk_forward.get("oos_rank_ic_ir")) > 0.0
+            and _first_float(walk_forward.get("oos_positive_ratio"), default=0.5) >= 0.5
+        )
+    )
+    return {
+        "available": bool(oos),
+        "rank_ic_ir": rank_ic_ir,
+        "bootstrap_ci_lower": bootstrap_ci_lower,
+        "oos_pass": oos_pass,
+        "oos_grade": oos_grade or "unknown",
+    }
+
+
+def _extract_layered_labels(layered: Mapping[str, Any]) -> dict[str, Any]:
+    group_returns = layered.get("group_returns")
+    monotonicity = layered.get("monotonicity")
+    if monotonicity is None and isinstance(group_returns, list) and len(group_returns) >= 2:
+        values = [_first_float(_mapping(item).get("avg_return")) for item in group_returns]
+        increasing = sum(1 for left, right in zip(values, values[1:]) if right >= left)
+        monotonicity = increasing / max(1, len(values) - 1)
+    return {
+        "available": bool(layered),
+        "monotonicity": _first_float(monotonicity),
+        "long_short_return": _first_float(
+            layered.get("long_short_return"),
+            layered.get("period_long_short_mean"),
+        ),
+    }
+
+
+def _extract_robustness_labels(robustness: Mapping[str, Any]) -> dict[str, Any]:
+    param = _mapping(robustness.get("param_sensitivity"))
+    sensitivity = robustness.get("param_sensitivity_max")
+    if sensitivity is None:
+        sensitivity = robustness.get("param_sensitivity_value")
+    if sensitivity is None and param:
+        sensitivity = 1.0 - _first_float(param.get("stability"), default=1.0)
+    return {
+        "available": bool(robustness),
+        "window_stability": _first_float(
+            robustness.get("window_stability"),
+            _mapping(robustness.get("multi_window_ic")).get("stability"),
+        ),
+        "param_sensitivity": _first_float(sensitivity),
+    }
+
+
+def _extract_multiple_testing_labels(
+    multiple_testing: Mapping[str, Any],
+    *,
+    oos: Mapping[str, Any],
+) -> dict[str, Any]:
+    report = _mapping(oos.get("validation_report")) or _mapping(oos.get("factor_validation_report"))
+    mt = _mapping(multiple_testing) or _mapping(report.get("multiple_testing"))
+    dsr_payload = _mapping(mt.get("deflated_sharpe"))
+    pbo_payload = mt.get("pbo")
+    pbo_value = _mapping(pbo_payload).get("pbo") if isinstance(pbo_payload, Mapping) else pbo_payload
+    return {
+        "available": bool(mt),
+        "dsr": _first_float(dsr_payload.get("dsr"), mt.get("dsr")),
+        "pbo": _first_float(pbo_value),
+    }
+
+
 def derive_qc_labels(
     *,
     oos: Optional[Mapping[str, Any]] = None,
@@ -92,6 +195,27 @@ def derive_qc_labels(
     layered = dict(layered or {})
     robustness = dict(robustness or {})
     mt = dict(multiple_testing or {})
+    oos_labels = _extract_oos_labels(oos)
+    layered_labels = _extract_layered_labels(layered)
+    robustness_labels = _extract_robustness_labels(robustness)
+    mt_labels = _extract_multiple_testing_labels(mt, oos=oos)
+
+    return {
+        "rank_ic_ir": round(oos_labels["rank_ic_ir"], 6),
+        "bootstrap_ci_lower": round(oos_labels["bootstrap_ci_lower"], 6),
+        "oos_pass": bool(oos_labels["oos_pass"]),
+        "oos_grade": oos_labels["oos_grade"],
+        "oos_available": bool(oos_labels["available"]),
+        "monotonicity": round(layered_labels["monotonicity"], 6),
+        "long_short_return": round(layered_labels["long_short_return"], 6),
+        "layered_available": bool(layered_labels["available"]),
+        "window_stability": round(robustness_labels["window_stability"], 6),
+        "param_sensitivity": round(robustness_labels["param_sensitivity"], 6),
+        "robustness_available": bool(robustness_labels["available"]),
+        "dsr": round(mt_labels["dsr"], 6),
+        "pbo": round(mt_labels["pbo"], 6),
+        "multiple_testing_available": bool(mt_labels["available"]),
+    }
 
     # OOS（walk-forward + purged-kfold + bootstrap）
     metrics = dict(oos.get("metrics") or {})
@@ -139,19 +263,29 @@ def decide_shelf(labels: Mapping[str, Any], *, profile: Optional[str] = None) ->
     thr = _resolve_qc_thresholds(profile)
 
     reasons: list[str] = []
+    robustness_available = bool(labels.get("robustness_available")) or (
+        "robustness_available" not in labels and "param_sensitivity" in labels
+    )
+    multiple_testing_available = bool(labels.get("multiple_testing_available")) or (
+        "multiple_testing_available" not in labels
+        and ("dsr" in labels or "pbo" in labels)
+    )
+    layered_available = bool(labels.get("layered_available")) or (
+        "layered_available" not in labels and "monotonicity" in labels
+    )
     if not labels.get("oos_pass"):
         reasons.append("oos_not_passed")
     if _f(labels.get("rank_ic_ir")) < _f(thr.get("walk_forward_ic_ir_min"), 0.0):
         reasons.append("rank_ic_ir_below_min")
     if _f(labels.get("bootstrap_ci_lower")) < _f(thr.get("bootstrap_ci_lower_min"), -1e9):
         reasons.append("bootstrap_ci_lower_below_min")
-    if _f(labels.get("param_sensitivity")) > _f(thr.get("param_sensitivity_max"), 1e9):
+    if robustness_available and _f(labels.get("param_sensitivity")) > _f(thr.get("param_sensitivity_max"), 1e9):
         reasons.append("param_sensitivity_above_max")
-    if _f(labels.get("dsr")) < _f(thr.get("deflated_sharpe_ratio_min"), -1e9):
+    if multiple_testing_available and _f(labels.get("dsr")) < _f(thr.get("deflated_sharpe_ratio_min"), -1e9):
         reasons.append("dsr_below_min")
-    if _f(labels.get("pbo")) > _f(thr.get("pbo_max"), 1e9):
+    if multiple_testing_available and _f(labels.get("pbo")) > _f(thr.get("pbo_max"), 1e9):
         reasons.append("pbo_above_max")
-    if _f(labels.get("monotonicity")) < 0.5:
+    if layered_available and _f(labels.get("monotonicity")) < 0.5:
         reasons.append("monotonicity_weak")
 
     if not reasons:

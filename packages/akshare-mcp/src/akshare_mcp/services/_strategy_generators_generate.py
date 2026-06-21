@@ -22,7 +22,10 @@ def _get_strategy_factory_imports():
         extract_event_context as _extract_event_context,
         preferred_strategy_types_for_factor,
     )
-    from strategy_factory.api.semantic_contract import validate_precompile_candidate_contract
+    from strategy_factory.api.semantic_contract import (
+        resolve_candidate_validation_profile,
+        validate_precompile_candidate_contract,
+    )
     from strategy_factory.api.semantic_contract import apply_target_symbol_policy, normalize_research_task_contract
     return {
         "CATEGORY_MINIMUMS": CATEGORY_MINIMUMS,
@@ -34,6 +37,7 @@ def _get_strategy_factory_imports():
         "preferred_strategy_types_for_factor": preferred_strategy_types_for_factor,
         "apply_target_symbol_policy": apply_target_symbol_policy,
         "normalize_research_task_contract": normalize_research_task_contract,
+        "resolve_candidate_validation_profile": resolve_candidate_validation_profile,
         "validate_precompile_candidate_contract": validate_precompile_candidate_contract,
     }
 
@@ -63,6 +67,7 @@ def __getattr__(name):
         "preferred_strategy_types_for_factor": "preferred_strategy_types_for_factor",
         "apply_target_symbol_policy": "apply_target_symbol_policy",
         "normalize_research_task_contract": "normalize_research_task_contract",
+        "resolve_candidate_validation_profile": "resolve_candidate_validation_profile",
         "validate_precompile_candidate_contract": "validate_precompile_candidate_contract",
     }
     if name in _map:
@@ -77,6 +82,7 @@ _extract_event_context = _sf()["extract_event_context"]
 preferred_strategy_types_for_factor = _sf()["preferred_strategy_types_for_factor"]
 apply_target_symbol_policy = _sf()["apply_target_symbol_policy"]
 normalize_research_task_contract = _sf()["normalize_research_task_contract"]
+resolve_candidate_validation_profile = _sf()["resolve_candidate_validation_profile"]
 validate_precompile_candidate_contract = _sf()["validate_precompile_candidate_contract"]
 
 from .llm_alpha import LLMAlphaMiner
@@ -630,10 +636,17 @@ def _apply_snapshot_pool_contract(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_snapshot_pipeline_candidate(candidate: dict[str, Any]) -> Optional[dict[str, Any]]:
+    """规整 snapshot pipeline 候选。返回 None 表示被清零。
+
+    P0-C 可观测性:被清零时把原因写入 candidate["_generator_normalize_reject_reason"],
+    供上游 _pipeline_candidate_to_spec 冒泡到 last_report(对齐 precompile reject 留底模式),
+    消除"候选静默清零无痕迹"盲区。
+    """
     payload = deepcopy(candidate or {})
     contract = _snapshot_pipeline_contract(payload.get("research_task"))
     payload = _apply_snapshot_pool_contract(payload)
     if not payload:
+        candidate["_generator_normalize_reject_reason"] = "snapshot_pool_contract_empty"
         return None
     if not contract.get("conservative_snapshot_task"):
         return payload
@@ -641,8 +654,12 @@ def _normalize_snapshot_pipeline_candidate(candidate: dict[str, Any]) -> Optiona
     strategy_type = str(payload.get("strategy_type") or "").strip().lower()
     allowed_strategy_types = set(contract.get("allowed_strategy_types") or [])
     if allowed_strategy_types and strategy_type and strategy_type not in allowed_strategy_types:
+        candidate["_generator_normalize_reject_reason"] = (
+            f"strategy_type_not_in_conservative_allowlist:{strategy_type or 'unknown'}"
+        )
         return None
     if strategy_type == "momentum":
+        candidate["_generator_normalize_reject_reason"] = "momentum_dropped_in_conservative_snapshot_task"
         return None
     if strategy_type != "ma_cross":
         return payload

@@ -41,13 +41,16 @@ class StrategyLLMConfig:
     stage_retry_count: int = 1
     stage_retry_backoff_sec: float = 1.5
     initial_compact_level: int = 0
-    recent_timeout_minimal_streak: int = 1
-    recent_timeout_cooldown_sec: float = 600.0
-    recent_connectivity_minimal_streak: int = 1
-    recent_connectivity_cooldown_sec: float = 600.0
-    recent_overload_minimal_streak: int = 1
-    recent_overload_cooldown_sec: float = 90.0
-    compatibility_cooldown_sec: float = 300.0
+    # 冷却默认值温和化:单次抖动不锁死整轮(streak=3 连续3次才冷却, cooldown=120s 数轮恢复)。
+    # 旧默认 streak=1/cooldown=600 会让一次 ReadTimeout 锁 10 分钟,级联 pipeline 全 stage skip。
+    recent_timeout_minimal_streak: int = 3
+    recent_timeout_cooldown_sec: float = 120.0
+    recent_connectivity_minimal_streak: int = 3
+    recent_connectivity_cooldown_sec: float = 120.0
+    recent_overload_minimal_streak: int = 3
+    recent_overload_cooldown_sec: float = 120.0
+    compatibility_minimal_streak: int = 3
+    compatibility_cooldown_sec: float = 120.0
     max_concurrency: int = 3
     strict: bool = False
 
@@ -57,8 +60,10 @@ class StrategyLLMConfig:
         enabled = str(os.getenv("STRATEGY_LLM_ENABLED", "")).strip().lower() in {"1", "true", "yes", "on"}
         timeout_sec = float(os.getenv("STRATEGY_LLM_TIMEOUT_SEC", "30") or 30)
         initial_compact_level = max(0, min(2, int(os.getenv("STRATEGY_LLM_INITIAL_COMPACT_LEVEL", "0") or 0)))
-        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "1") or 1)))
-        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "600") or 600))
+        # 默认值偏温和:单次外部超时不应锁死 LLM 整轮。streak=3 要求连续3次超时才进冷却,
+        # cooldown=120s 让冷却在数轮内自然恢复,避免一次抖动级联成长时间 cooldown_skip 全退本地 fallback。
+        recent_timeout_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "3") or 3)))
+        recent_timeout_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "120") or 120))
         recent_connectivity_minimal_streak = max(
             1,
             min(
@@ -82,8 +87,8 @@ class StrategyLLMConfig:
                 or recent_timeout_cooldown_sec
             ),
         )
-        recent_overload_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_MINIMAL_STREAK", "1") or 1)))
-        recent_overload_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_COOLDOWN_SEC", "90") or 90))
+        recent_overload_minimal_streak = max(1, min(8, int(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_MINIMAL_STREAK", "3") or 3)))
+        recent_overload_cooldown_sec = max(0.0, float(os.getenv("STRATEGY_LLM_RECENT_OVERLOAD_COOLDOWN_SEC", "120") or 120))
         return cls(
             enabled=enabled,
             provider=str(os.getenv("STRATEGY_LLM_PROVIDER", "openai_compatible") or "openai_compatible"),
@@ -116,7 +121,8 @@ class StrategyLLMConfig:
             recent_connectivity_cooldown_sec=recent_connectivity_cooldown_sec,
             recent_overload_minimal_streak=recent_overload_minimal_streak,
             recent_overload_cooldown_sec=recent_overload_cooldown_sec,
-            compatibility_cooldown_sec=max(0.0, float(os.getenv("STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC", "300") or 300)),
+            compatibility_cooldown_sec=max(0.0, float(os.getenv("STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC", "120") or 120)),
+            compatibility_minimal_streak=max(1, min(8, int(os.getenv("STRATEGY_LLM_COMPATIBILITY_MINIMAL_STREAK", "3") or 3))),
             max_concurrency=max(1, min(16, int(os.getenv("STRATEGY_LLM_MAX_CONCURRENCY", "3") or 3))),
             strict=str(os.getenv("STRATEGY_LLM_STRICT_MODE", "")).strip().lower() in {"1", "true", "yes", "on"},
         )

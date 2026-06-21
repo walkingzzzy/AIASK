@@ -30,6 +30,64 @@ class FactorPoolGateway:
             self._factory = get_factor_mining_factory()
         return self._factory
 
+    @staticmethod
+    def _qc_shelf_decision_blocks(validation_summary: dict[str, Any]) -> bool:
+        shelf_decision = dict(validation_summary.get("qc_shelf_decision") or {})
+        decision = str(shelf_decision.get("decision") or "").strip().lower()
+        if decision not in {"retire", "quarantine", "reject"}:
+            return False
+        if bool(validation_summary.get("qc_autoshelf_applied")):
+            return True
+        labels = validation_summary.get("qc_labels")
+        if not isinstance(labels, dict):
+            return True
+        availability_keys = {
+            "oos_available",
+            "layered_available",
+            "robustness_available",
+            "multiple_testing_available",
+        }
+        if any(key in labels for key in availability_keys):
+            return any(bool(labels.get(key)) for key in availability_keys)
+        numeric_keys = (
+            "rank_ic_ir",
+            "bootstrap_ci_lower",
+            "monotonicity",
+            "long_short_return",
+            "window_stability",
+            "param_sensitivity",
+            "dsr",
+            "pbo",
+        )
+        all_zero = True
+        for key in numeric_keys:
+            try:
+                if abs(float(labels.get(key) or 0.0)) > 1e-12:
+                    all_zero = False
+                    break
+            except (TypeError, ValueError):
+                pass
+        unknown_oos = (
+            not bool(labels.get("oos_pass"))
+            and str(labels.get("oos_grade") or "").strip().lower() in {"", "unknown"}
+        )
+        return not (all_zero and unknown_oos)
+
+    @staticmethod
+    def _is_research_consumable_factor(row: dict[str, Any]) -> bool:
+        payload = dict(row or {})
+        if str(payload.get("status") or "").strip().lower() != "active":
+            return False
+        if not str(payload.get("expression_dsl") or "").strip():
+            return False
+        validation_summary = dict(payload.get("validation_summary") or {})
+        quality_status = str(validation_summary.get("quality_status") or "").strip().lower()
+        if quality_status != "promoted":
+            return False
+        if FactorPoolGateway._qc_shelf_decision_blocks(validation_summary):
+            return False
+        return True
+
     async def get_active_factors(
         self,
         *,
@@ -58,13 +116,30 @@ class FactorPoolGateway:
                         if row.get("family") in set(families)
                     ]
                 return rows[:limit]
+            rows = await factory._active_pool.get_active_factors(
+                families=families,
+                min_grade=min_grade,
+                limit=max(int(limit or 50) * 4, int(limit or 50)),
+            )
+            filtered_rows = [
+                dict(row or {})
+                for row in list(rows or [])
+                if self._is_research_consumable_factor(dict(row or {}))
+            ]
+            return filtered_rows[:limit]
         except Exception as exc:
             logger.debug("FactorPoolGateway: persistent pool load failed: %s", exc)
-        return await factory._active_pool.get_active_factors(
+        factors = await factory._active_pool.get_active_factors(
             families=families,
             min_grade=min_grade,
-            limit=limit,
+            limit=max(int(limit or 50) * 4, int(limit or 50)),
         )
+        filtered = [
+            dict(row or {})
+            for row in list(factors or [])
+            if self._is_research_consumable_factor(dict(row or {}))
+        ]
+        return filtered[:limit]
 
     async def get_factor_weights(
         self,
@@ -120,6 +195,10 @@ class FactorPoolGateway:
         active_count = 0
         quarantine_count = 0
         retired_count = 0
+        active_status_count = 0
+        research_consumable_count = 0
+        active_retire_recommended_count = 0
+        active_unconsumable_reason_counts: dict[str, int] = {}
         evidence_insufficient = 0
         ic_lengths: list[int] = []
         active_icirs: list[float] = []
@@ -128,6 +207,10 @@ class FactorPoolGateway:
             status = str(row.get("status") or "")
             validation_summary = dict(row.get("validation_summary") or {})
             quality_status = str(validation_summary.get("quality_status") or "")
+            shelf_decision = str(
+                dict(validation_summary.get("qc_shelf_decision") or {}).get("decision") or ""
+            ).strip().lower()
+            qc_blocks_research = FactorPoolGateway._qc_shelf_decision_blocks(validation_summary)
             evidence = dict(validation_summary.get("evidence_summary") or {})
             persisted = dict(validation_summary.get("persisted_outputs") or {})
             ic_rows = max(
@@ -138,6 +221,29 @@ class FactorPoolGateway:
                 ic_lengths.append(ic_rows)
                 if ic_rows < int(QUALITY_THRESHOLDS["min_ic_history_rows"]):
                     evidence_insufficient += 1
+            if status == "active":
+                active_status_count += 1
+                expression_ready = bool(str(row.get("expression_dsl") or "").strip())
+                if (
+                    quality_status == "promoted"
+                    and expression_ready
+                    and not qc_blocks_research
+                ):
+                    research_consumable_count += 1
+                else:
+                    if not expression_ready:
+                        reason = "missing_expression_dsl"
+                    elif qc_blocks_research:
+                        reason = f"qc_{shelf_decision}"
+                    elif quality_status:
+                        reason = f"quality_{quality_status}"
+                    else:
+                        reason = "missing_quality_status"
+                    active_unconsumable_reason_counts[reason] = (
+                        active_unconsumable_reason_counts.get(reason, 0) + 1
+                    )
+                if shelf_decision == "retire" and qc_blocks_research:
+                    active_retire_recommended_count += 1
             if status == "active" and quality_status == "promoted":
                 active_count += 1
                 active_icirs.append(safe_float(evidence.get("rank_ic_ir")))
@@ -204,10 +310,16 @@ class FactorPoolGateway:
 
         return {
             "active_promoted_count": active_count,
+            "active_status_count": active_status_count,
+            "research_consumable_count": research_consumable_count,
+            "active_retire_recommended_count": active_retire_recommended_count,
+            "active_unconsumable_reason_counts": active_unconsumable_reason_counts,
             "quarantine_count": quarantine_count,
             "retired_count": retired_count,
             "quality_funnel": {
                 "active_promoted": active_count,
+                "research_consumable": research_consumable_count,
+                "active_retire_recommended": active_retire_recommended_count,
                 "quarantine": quarantine_count,
                 "retired": retired_count,
                 "evidence_insufficient": evidence_insufficient,

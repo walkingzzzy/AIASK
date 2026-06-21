@@ -185,7 +185,9 @@ class MatchingEngine:
         should_fill = False
         fill_price = current_price
 
-        if order_type == 'limit':
+        if order_type == 'marketable_limit':
+            should_fill = True
+        elif order_type == 'limit':
             if direction == 'buy' and limit_price and current_price <= limit_price:
                 should_fill = True
                 fill_price = min(current_price, limit_price)

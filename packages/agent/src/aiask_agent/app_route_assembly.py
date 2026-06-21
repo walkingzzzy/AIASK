@@ -281,6 +281,7 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
     app.include_router(
         create_jobs_router(
             require_api=routes.require_api,
+            require_control=routes.require_control,
             job_store=routes.runtime.job_store,
             scheduler=routes.runtime.scheduler,
         )

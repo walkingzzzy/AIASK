@@ -202,6 +202,13 @@ class PaperTradingBridge:
         closes = np.array([float(k.get("close") or 0) for k in klines], dtype=float)
         volumes = np.array([float(k.get("volume") or 0) for k in klines], dtype=float)
         signals = inst.generate_signals(closes, volumes)
+        latest_bar = dict(klines[-1] or {}) if klines else {}
+        latest_bar_date = str(
+            latest_bar.get("date")
+            or latest_bar.get("trade_date")
+            or latest_bar.get("datetime")
+            or signal_date
+        ).strip()
 
         # 取最后一根 bar 的信号
         latest_signal = int(signals[-1]) if len(signals) > 0 else 0
@@ -217,16 +224,24 @@ class PaperTradingBridge:
 
         # 保存信号到 strategy_signals 表
         try:
+            signal_metadata = {
+                "latest_bar_date": latest_bar_date,
+                "latest_signal_index": max(0, len(signals) - 1),
+                "latest_nonzero_signal_date": latest_bar_date if latest_signal != 0 else None,
+                "latest_nonzero_signal": latest_signal if latest_signal != 0 else None,
+                "action_source": "paper_trading_bridge",
+            }
             await self._execute(
                 """INSERT OR REPLACE INTO strategy_signals
-                   (strategy_id, signal_date, code, signal, score, action_source)
-                   VALUES ($1, $2, $3, $4, $5, 'paper_trading_bridge')
+                   (strategy_id, signal_date, code, signal, score, action_source, signal_metadata)
+                   VALUES ($1, $2, $3, $4, $5, 'paper_trading_bridge', $6)
                 """,
                 strategy_id,
                 signal_date,
                 target_code,
                 latest_signal,
                 float(signals[-1]),
+                __import__("json").dumps(signal_metadata),
             )
         except Exception as exc:
             logger.debug("PaperTradingBridge: save signal note: %s", exc)

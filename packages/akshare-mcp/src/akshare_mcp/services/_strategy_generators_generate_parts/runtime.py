@@ -44,6 +44,7 @@
             _pipeline_fallback_reason: Optional[str] = None
             skip_monolithic_external_provider = False
             monolithic_external_provider_skip_reason: Optional[str] = None
+            monolithic_after_pipeline_empty = False
             suppress_post_pipeline_fallback = False
             post_pipeline_suppression_reason: Optional[str] = None
             pipeline_run_timeout_sec: Optional[float] = None
@@ -133,18 +134,54 @@
                     pipeline_stage_reasons = dict(pipeline_report.get('pipeline_stage_fallback_reasons') or {})
                     invalid_stage_ids = list(pipeline_report.get('pipeline_invalid_output_stage_ids') or [])
                     provider_output_format_failed = _pipeline_report_has_provider_output_format_failure(pipeline_report)
-                    empty_reason = (
-                        'invalid_output:' + ','.join(invalid_stage_ids)
-                        if invalid_stage_ids
-                        else 'no_executable_specs'
-                    )
+                    pipeline_candidate_funnel = dict(pipeline_report.get('pipeline_candidate_funnel') or {})
+                    pipeline_candidate_total = int(pipeline_candidate_funnel.get('candidate_total') or 0)
+                    pipeline_normalize_rejected = int(pipeline_candidate_funnel.get('normalize_rejected') or 0)
+                    pipeline_precompile_rejected = int(pipeline_candidate_funnel.get('precompile_rejected') or 0)
+                    pipeline_other_dropped = int(pipeline_candidate_funnel.get('other_dropped') or 0)
+                    if invalid_stage_ids:
+                        empty_reason = 'invalid_output:' + ','.join(invalid_stage_ids)
+                    elif pipeline_candidate_total > 0 and pipeline_normalize_rejected >= pipeline_candidate_total:
+                        empty_reason = 'normalize_rejected'
+                    elif pipeline_candidate_total > 0 and pipeline_precompile_rejected >= pipeline_candidate_total:
+                        empty_reason = 'precompile_rejected'
+                    elif pipeline_candidate_total > 0 and (pipeline_normalize_rejected or pipeline_precompile_rejected):
+                        empty_reason = 'candidate_contract_rejected'
+                    elif pipeline_candidate_total > 0 and pipeline_other_dropped >= pipeline_candidate_total:
+                        empty_reason = 'candidate_dropped'
+                    else:
+                        empty_reason = 'no_executable_specs'
                     _pipeline_fallback_reason = f'returned_empty:{empty_reason}'
                     allow_empty_monolithic_fallback = str(
                         os.getenv('STRATEGY_FACTORY_ALLOW_PIPELINE_EMPTY_MONOLITHIC_FALLBACK', '0') or '0'
                     ).strip().lower() in {'1', 'true', 'yes', 'on'}
                     skip_empty_monolithic_fallback = str(
-                        os.getenv('STRATEGY_FACTORY_PIPELINE_EMPTY_SKIP_MONOLITHIC_FALLBACK', '1') or '1'
+                        os.getenv('STRATEGY_FACTORY_PIPELINE_EMPTY_SKIP_MONOLITHIC_FALLBACK', '0') or '0'
                     ).strip().lower() in {'1', 'true', 'yes', 'on'}
+                    pipeline_external_provider = dict(pipeline_report.get('external_provider') or {})
+                    provider_failure_tokens = {
+                        str(item or '').strip().lower()
+                        for item in [
+                            *list(pipeline_fallback_counts.keys()),
+                            *list(pipeline_stage_reasons.values()),
+                            pipeline_external_provider.get('status'),
+                            pipeline_external_provider.get('last_error_type'),
+                        ]
+                        if str(item or '').strip()
+                    }
+                    pipeline_empty_after_provider_failure = any(
+                        token in {
+                            'failed',
+                            'cooldown_skip',
+                            'provider_cooldown_skip',
+                            'rate_limited',
+                            'overloaded',
+                        }
+                        or 'timeout' in token
+                        or token.startswith('http')
+                        or token.endswith('error')
+                        for token in provider_failure_tokens
+                    )
                     if provider_output_format_failed:
                         suppress_post_pipeline_fallback = True
                         post_pipeline_suppression_reason = 'provider_output_format_failure'
@@ -155,6 +192,30 @@
                             pipeline_stage_reasons,
                             pipeline_fallback_counts,
                         )
+                    elif pipeline_empty_after_provider_failure:
+                        skip_monolithic_external_provider = True
+                        monolithic_external_provider_skip_reason = 'staged_pipeline_empty_after_provider_failure'
+                        logger.warning(
+                            'Pipeline staged mode returned no specs after provider runtime failures; '
+                            'skipping monolithic external provider and continuing with local fallback. '
+                            'reason=%s stage_reasons=%s fallback_counts=%s provider_tokens=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                            sorted(provider_failure_tokens),
+                        )
+                    elif allow_empty_monolithic_fallback:
+                        # P1-D: ALLOW=1 是运维主动覆盖,优先级高于默认的 SKIP。
+                        # 原顺序 SKIP(默认1) 先于 ALLOW 判定 → ALLOW=1 被架空("配了不生效"陷阱)。
+                        # 现在显式 ALLOW=1 → 走 monolithic 重试(除非 provider 输出格式硬失败)。
+                        logger.info(
+                            'Pipeline staged mode returned no specs; ALLOW override → falling back to monolithic. '
+                            'reason=%s stage_reasons=%s fallback_counts=%s',
+                            empty_reason,
+                            pipeline_stage_reasons,
+                            pipeline_fallback_counts,
+                        )
+                        monolithic_after_pipeline_empty = True
                     elif skip_empty_monolithic_fallback:
                         skip_monolithic_external_provider = True
                         monolithic_external_provider_skip_reason = 'staged_pipeline_empty'
@@ -165,19 +226,12 @@
                             pipeline_stage_reasons,
                             pipeline_fallback_counts,
                         )
-                    elif not allow_empty_monolithic_fallback:
+                    else:
+                        # 既不 ALLOW 也不 SKIP → 默认抑制 monolithic/local(保守)
                         suppress_post_pipeline_fallback = True
                         post_pipeline_suppression_reason = 'staged_pipeline_empty'
                         logger.warning(
                             'Pipeline staged mode returned no specs; suppressing monolithic/local fallback. '
-                            'reason=%s stage_reasons=%s fallback_counts=%s',
-                            empty_reason,
-                            pipeline_stage_reasons,
-                            pipeline_fallback_counts,
-                        )
-                    else:
-                        logger.info(
-                            'Pipeline staged mode returned no specs, falling back to monolithic; '
                             'reason=%s stage_reasons=%s fallback_counts=%s',
                             empty_reason,
                             pipeline_stage_reasons,
@@ -256,11 +310,24 @@
                 'pipeline_staged_invalid_output_stage_ids': list(
                     pipeline_report.get('pipeline_invalid_output_stage_ids') or []
                 ),
+                'pipeline_staged_candidate_funnel': dict(pipeline_report.get('pipeline_candidate_funnel') or {}),
+                'pipeline_staged_normalize_rejections': list(
+                    pipeline_report.get('pipeline_normalize_rejections') or []
+                ),
+                'pipeline_staged_precompile_rejections': list(
+                    pipeline_report.get('pipeline_precompile_rejections') or []
+                ),
                 'pipeline_staged_provenance': pipeline_report.get('pipeline_provenance'),
                 'pipeline_staged_error': pipeline_report.get('pipeline_error'),
                 'post_pipeline_fallback_suppressed': bool(suppress_post_pipeline_fallback),
                 'post_pipeline_suppression_reason': post_pipeline_suppression_reason,
             }
+            if report.get('pipeline_staged_candidate_funnel'):
+                report['external_provider']['pipeline_candidate_funnel'] = dict(
+                    report.get('pipeline_staged_candidate_funnel') or {}
+                )
+            if _pipeline_fallback_reason:
+                report['external_provider']['pipeline_empty_detail'] = _pipeline_fallback_reason
             external_specs: list[StrategySpec] = []
             fallback_external_specs: list[StrategySpec] = []
             if suppress_post_pipeline_fallback:
@@ -298,6 +365,13 @@
                         'staged pipeline returned no executable specs; monolithic external provider skipped '
                         'and local fallback allowed for this task'
                     )
+                elif monolithic_external_provider_skip_reason == 'staged_pipeline_empty_after_provider_failure':
+                    report['external_provider']['status'] = 'skipped_after_pipeline_provider_failure'
+                    report['external_provider']['last_error_type'] = 'PipelineProviderFailure'
+                    report['external_provider']['last_error'] = (
+                        'staged pipeline returned no executable specs after provider runtime failures; '
+                        'monolithic external provider skipped and local fallback allowed for this task'
+                    )
                 else:
                     report['external_provider']['status'] = 'skipped_after_pipeline_timeout'
                     report['external_provider']['last_error_type'] = 'PipelineTimeout'
@@ -306,6 +380,10 @@
                 report['external_provider']['monolithic_external_provider_skip_reason'] = (
                     monolithic_external_provider_skip_reason or 'pipeline_timeout'
                 )
+                if _pipeline_fallback_reason:
+                    report['external_provider']['monolithic_external_provider_skip_detail'] = (
+                        _pipeline_fallback_reason
+                    )
             elif frame is not None and not frame.empty and self.external_provider.is_enabled():
                 base_request_limit = max(2, min(int(limit or 3), 3))
                 request_limits = [base_request_limit for _ in range(max(1, min(int(LLM_FAN_OUT_COUNT or 1), 4)))]
@@ -313,7 +391,7 @@
                 last_exc: Optional[Exception] = None
                 successful_request_without_specs = False
                 external_started_at = time.perf_counter()
-                request_results = await asyncio.gather(*[
+                request_coros = [
                     self._run_external_provider_request(
                         snapshot=snapshot,
                         frame=frame,
@@ -326,7 +404,49 @@
                         request_index=request_index,
                     )
                     for request_index, request_limit in enumerate(request_limits, 1)
-                ])
+                ]
+                request_results = []
+                monolithic_timeout_sec: Optional[float] = None
+                if monolithic_after_pipeline_empty:
+                    try:
+                        monolithic_timeout_sec = float(
+                            os.getenv(
+                                'STRATEGY_FACTORY_PIPELINE_EMPTY_MONOLITHIC_TIMEOUT_SEC',
+                                '20',
+                            )
+                            or '20'
+                        )
+                    except Exception:
+                        monolithic_timeout_sec = 20.0
+                    monolithic_timeout_sec = max(0.01, min(float(monolithic_timeout_sec), 120.0))
+                    report['external_provider']['monolithic_external_provider_timeout_sec'] = monolithic_timeout_sec
+                try:
+                    if monolithic_timeout_sec is not None:
+                        request_results = await asyncio.wait_for(
+                            asyncio.gather(*request_coros),
+                            timeout=monolithic_timeout_sec,
+                        )
+                    else:
+                        request_results = await asyncio.gather(*request_coros)
+                except asyncio.TimeoutError:
+                    elapsed = round(time.perf_counter() - external_started_at, 4)
+                    report['external_provider']['status'] = 'skipped_after_pipeline_empty_monolithic_timeout'
+                    report['external_provider']['last_error_type'] = 'MonolithicFallbackTimeout'
+                    report['external_provider']['last_error'] = (
+                        'monolithic external provider timed out after staged pipeline returned no executable specs; '
+                        'continuing with local fallback'
+                    )
+                    report['external_provider']['elapsed_seconds'] = elapsed
+                    report['external_provider']['monolithic_external_provider_timed_out'] = True
+                    report['external_provider']['monolithic_external_provider_skip_reason'] = (
+                        'staged_pipeline_empty_monolithic_timeout'
+                    )
+                    logger.warning(
+                        'Monolithic external provider timed out after staged pipeline empty specs; '
+                        'continuing with local fallback. timeout_sec=%.2f elapsed=%.2f',
+                        float(monolithic_timeout_sec or 0.0),
+                        elapsed,
+                    )
                 aggregated_viable_specs: list[StrategySpec] = []
                 aggregated_all_specs: list[StrategySpec] = []
                 for result in sorted(request_results, key=lambda item: int(item.get('request_index') or 0)):
@@ -430,10 +550,17 @@
                 if targeted_research and str((research_task or {}).get('task_source') or '').strip().lower() == 'event_driven':
                     local_limit = 1
                 raw = self.miner.generate_factor_candidates(frame, news_data=None, num_candidates=max(local_limit, 3))
-                raw = sorted(
-                    raw,
-                    key=lambda item: self._local_category_rank(str((item or {}).get('category') or 'custom').strip().lower(), research_task=research_task),
-                )
+                # B1: 优先按真实 IC 预测力排序(降序),同分/缺 IC 时退回 category 偏好排序。
+                # real_ic_abs 由 llm_alpha 因子池真实 IC 评分透传(B2);取不到时为 0,自然落到 category 序。
+                def _local_sort_key(item: dict[str, Any]) -> tuple[float, tuple[int, int]]:
+                    category = str((item or {}).get('category') or 'custom').strip().lower()
+                    try:
+                        ic = float((item or {}).get('real_ic_abs') or 0.0)
+                    except (TypeError, ValueError):
+                        ic = 0.0
+                    return (-ic, self._local_category_rank(category, research_task=research_task))
+
+                raw = sorted(raw, key=_local_sort_key)
                 for candidate in raw:
                     spec = self._local_candidate_to_spec(candidate, research_task=research_task)
                     if spec is not None:

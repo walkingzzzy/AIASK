@@ -6,6 +6,9 @@ from types import SimpleNamespace
 import pytest
 
 
+ROOT = Path(__file__).resolve().parents[3]
+
+
 def test_missing_runtime_modules_reports_unavailable_specs(monkeypatch):
     from strategy_factory import runtime_bootstrap as rb
 
@@ -70,3 +73,16 @@ def test_ensure_factory_runtime_reexecs_with_uv_when_modules_missing(monkeypatch
     assert captured["cwd"] == str(Path("C:/repo").resolve())
     assert captured["env"][rb.BOOTSTRAP_ENV_KEY] == "1"
     assert captured["command"][:4] == ["uv", "run", "--python", "3.12"]
+
+
+def test_signal_tracker_launchers_preflight_runtime_before_akshare_imports():
+    launchers = [
+        ROOT / "scripts" / "factories" / "run_signal_tracker.py",
+        ROOT / "packages" / "akshare-mcp" / "scripts" / "run_signal_tracker.py",
+    ]
+
+    for path in launchers:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+        assert "from strategy_factory.runtime_bootstrap import ensure_factory_runtime" in text
+        assert "ensure_factory_runtime(" in text
+        assert text.index("ensure_factory_runtime(") < text.index("from akshare_mcp")

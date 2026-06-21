@@ -162,7 +162,8 @@ class EvolutionaryOptimizer:
         if len(filtered) < len(population) * 0.5:
             remaining = [c for c in population if c not in filtered]
             remaining.sort(key=lambda x: -x.fitness)
-            filtered.extend(remaining[:len(population) // 4])
+            fallback_count = max(1, len(population) // 4) if population else 0
+            filtered.extend(remaining[:fallback_count])
 
         return filtered
 

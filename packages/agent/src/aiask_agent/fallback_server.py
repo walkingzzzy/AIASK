@@ -1197,6 +1197,16 @@ def build_server(
 
         def do_DELETE(self) -> None:
             path = urlparse(self.path).path
+            if path.startswith("/v1/jobs/"):
+                ok, reason = self._control_authorized()
+                if not ok:
+                    status = 503 if reason == "control token is not configured" else 401
+                    self._send_error_json(status, reason or "unauthorized", code="control_unauthorized")
+                    return
+                job_id = path.rsplit("/", 1)[-1].strip()
+                deleted = runtime.job_store.delete(job_id)
+                self._send_json(200, {"id": job_id, "object": "job.deleted", "deleted": deleted})
+                return
             if not self._api_authorized():
                 self._send_error_json(401, "unauthorized", code="unauthorized")
                 return
@@ -1204,11 +1214,6 @@ def build_server(
                 response_id = path.rsplit("/", 1)[-1].strip()
                 deleted = runtime.session_store.delete_response(response_id)
                 self._send_json(200, {"id": response_id, "object": "response.deleted", "deleted": deleted})
-                return
-            if path.startswith("/v1/jobs/"):
-                job_id = path.rsplit("/", 1)[-1].strip()
-                deleted = runtime.job_store.delete(job_id)
-                self._send_json(200, {"id": job_id, "object": "job.deleted", "deleted": deleted})
                 return
             self._send_error_json(404, "not found", code="not_found")
 
@@ -1230,16 +1235,21 @@ def build_server(
                 except ValueError as exc:
                     self._send_error_json(400, str(exc), code="invalid_request")
                 return
-            if not self._api_authorized():
-                self._send_error_json(401, "unauthorized", code="unauthorized")
-                return
             if path.startswith("/v1/jobs/"):
+                ok, reason = self._control_authorized()
+                if not ok:
+                    status = 503 if reason == "control token is not configured" else 401
+                    self._send_error_json(status, reason or "unauthorized", code="control_unauthorized")
+                    return
                 job_id = path.rsplit("/", 1)[-1].strip()
                 job = runtime.job_store.update(job_id, **payload)
                 if not job:
                     self._send_error_json(404, f"job not found: {job_id}", code="not_found")
                     return
                 self._send_json(200, {"object": "job", **job})
+                return
+            if not self._api_authorized():
+                self._send_error_json(401, "unauthorized", code="unauthorized")
                 return
             if path == "/v1/desktop/users/local-profile":
                 profile = save_local_profile(payload)
@@ -1569,8 +1579,10 @@ def build_server(
                 return
 
             if path == "/v1/jobs":
-                if not self._api_authorized():
-                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                ok, reason = self._control_authorized()
+                if not ok:
+                    status = 503 if reason == "control token is not configured" else 401
+                    self._send_error_json(status, reason or "unauthorized", code="control_unauthorized")
                     return
                 try:
                     job = runtime.job_store.create(
@@ -1622,8 +1634,10 @@ def build_server(
                 return
 
             if path.startswith("/v1/jobs/") and path.endswith("/run"):
-                if not self._api_authorized():
-                    self._send_error_json(401, "unauthorized", code="unauthorized")
+                ok, reason = self._control_authorized()
+                if not ok:
+                    status = 503 if reason == "control token is not configured" else 401
+                    self._send_error_json(status, reason or "unauthorized", code="control_unauthorized")
                     return
                 job_id = path.strip("/").split("/")[2]
                 result = asyncio.run(runtime.scheduler.run_job(job_id))

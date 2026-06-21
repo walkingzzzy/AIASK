@@ -37,7 +37,8 @@ def test_admission_authority_marks_provisional_pass() -> None:
     )
 
     assert result["admission_decision"] == "provisional"
-    assert result["submission_lane"] == "observe_incubation"
+    assert result["submission_lane"] == "deferred_submission"
+    assert result["submission_action_type"] == "research_only"
     assert result["final_status"] == "submitted"
 
 

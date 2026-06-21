@@ -21,6 +21,28 @@
         ).strip().lower()
         return registry_stage not in {"champion", "challenger", "governed"}
 
+    @staticmethod
+    def _is_selectable_entry(entry: dict[str, Any]) -> bool:
+        if str(entry.get("feedback_control_mode") or "normal").strip().lower() != "normal":
+            return False
+        if str(entry.get("feedback_skill_control_mode") or "normal").strip().lower() != "normal":
+            return False
+        for flag in (
+            "feedback_cooldown_active",
+            "feedback_suppressed",
+            "feedback_family_freeze_active",
+            "feedback_target_pool_freeze_active",
+            "feedback_generator_mode_freeze_active",
+            "feedback_skill_cooldown_active",
+            "feedback_skill_suppressed",
+            "feedback_skill_family_freeze_active",
+            "feedback_skill_target_pool_freeze_active",
+            "feedback_skill_generator_mode_freeze_active",
+        ):
+            if bool(entry.get(flag)):
+                return False
+        return True
+
     @classmethod
     def plan(
         cls,
@@ -321,7 +343,12 @@
         selectable_entries = [
             entry
             for entry in sorted_entries
-            if str(entry.get("feedback_control_mode") or "normal").strip().lower() == "normal"
+            if cls._is_selectable_entry(entry)
+        ]
+        formal_ready_entries = [
+            entry
+            for entry in selectable_entries
+            if cls._is_formal_runtime_ready_candidate(dict(entry.get("candidate") or {}))
         ]
         exploration_reserved_slots = (
             min(total_budget, max(1, int(math.ceil(total_budget * FACTORY_INCUBATION_EXPLORATION_RATIO))))
@@ -335,14 +362,31 @@
         selected_observe: list[dict[str, Any]] = []
         family_track_counts: dict[str, dict[str, int]] = {}
         selected_markers: set[int] = set()
+        formal_runtime_ready_selected_count = 0
+
+        def _formal_priority_key(entry: dict[str, Any]) -> tuple[int, float, str, int]:
+            candidate = dict(entry.get("candidate") or {})
+            return (
+                0 if cls._is_formal_runtime_ready_candidate(candidate) else 1,
+                -float(entry.get("priority_score") or 0.0),
+                str(entry.get("family") or ""),
+                int(entry.get("marker") or 0),
+            )
 
         def _select_with_cap(
             target: list[dict[str, Any]],
             *,
             limit: int,
             family_cap: int,
+            prioritize_formal_ready: bool = False,
         ) -> None:
-            for entry in selectable_entries:
+            nonlocal formal_runtime_ready_selected_count
+            ranked_entries = (
+                sorted(selectable_entries, key=_formal_priority_key)
+                if prioritize_formal_ready
+                else selectable_entries
+            )
+            for entry in ranked_entries:
                 if len(target) >= limit:
                     break
                 marker = int(entry["marker"])
@@ -355,7 +399,11 @@
                 target.append(entry)
                 selected_markers.add(marker)
                 track_family_counts["selected"] = int(track_family_counts.get("selected") or 0) + 1
-            for entry in selectable_entries:
+                if prioritize_formal_ready and cls._is_formal_runtime_ready_candidate(
+                    dict(entry.get("candidate") or {})
+                ):
+                    formal_runtime_ready_selected_count += 1
+            for entry in ranked_entries:
                 if len(target) >= limit:
                     break
                 marker = int(entry["marker"])
@@ -366,8 +414,17 @@
                 target.append(entry)
                 selected_markers.add(marker)
                 track_family_counts["selected"] = int(track_family_counts.get("selected") or 0) + 1
+                if prioritize_formal_ready and cls._is_formal_runtime_ready_candidate(
+                    dict(entry.get("candidate") or {})
+                ):
+                    formal_runtime_ready_selected_count += 1
 
-        _select_with_cap(selected_formal, limit=formal_slots, family_cap=formal_family_cap)
+        _select_with_cap(
+            selected_formal,
+            limit=formal_slots,
+            family_cap=formal_family_cap,
+            prioritize_formal_ready=True,
+        )
         _select_with_cap(selected_observe, limit=observe_slots, family_cap=observe_family_cap)
 
         selected_combined = [*selected_formal, *selected_observe]
@@ -675,6 +732,8 @@
                 "exploration_reserved_slots": exploration_reserved_slots,
                 "exploration_selected_count": selected_exploration_count,
                 "track_counts": track_counts,
+                "formal_runtime_ready_candidate_count": len(formal_ready_entries),
+                "formal_runtime_ready_selected_count": formal_runtime_ready_selected_count,
                 "family_counts": dict(sorted(family_counts.items(), key=lambda item: (-item[1], item[0]))),
                 "dominant_families": [family for family, _score in dominant_family_pairs[:3]],
                 "feedback_available": bool(budget_feedback_root),

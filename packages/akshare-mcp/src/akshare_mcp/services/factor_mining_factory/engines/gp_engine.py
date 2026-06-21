@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import random
 from datetime import datetime, timezone
@@ -208,6 +209,10 @@ class GeneticProgrammingEngine:
                 sorted_pop = sorted(zip(population, fitness), key=lambda x: -x[1])
                 elites = [tree for tree, _ in sorted_pop[:elite_count]]
                 population = elites + offspring[:self.population_size - elite_count]
+
+                # P1-F: 每代让出 event loop,使并行的 llm_primary httpx 回调有调度窗口。
+                # GP 进化主循环纯 CPU 同步、整段无 await,会独占 event loop 阻塞 LLM 引擎。
+                await asyncio.sleep(0)
 
             # 3. 提取 top-K 候选
             final_fitness = self._evaluate_fitness(population)

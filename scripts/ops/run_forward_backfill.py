@@ -5,7 +5,16 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPO / "packages" / "aiask-quant-core" / "src"))
+sys.path.insert(0, str(REPO / "packages" / "strategy-factory" / "src"))
 sys.path.insert(0, str(REPO / "packages" / "akshare-mcp" / "src"))
+
+from strategy_factory.runtime_bootstrap import ensure_factory_runtime
+
+ensure_factory_runtime(
+    project_root=REPO,
+    script_path=Path(__file__).resolve(),
+    argv=sys.argv[1:],
+)
 
 from akshare_mcp.env_loader import load_mcp_env
 load_mcp_env(override=False)

@@ -146,6 +146,7 @@
 
         type_counts: Dict[str, int] = {}
         type_labels: Dict[str, str] = {}
+        type_has_governed_signal: Dict[str, bool] = {}
         for item in candidates:
             strategy_type = str(item.get("strategy_type") or "").strip()
             if not strategy_type:
@@ -153,6 +154,13 @@
             normalized = strategy_type.lower()
             type_counts[normalized] = type_counts.get(normalized, 0) + 1
             type_labels.setdefault(normalized, strategy_type)
+            generation_source = str(dict(item.get("generation_reason") or {}).get("source") or "").strip().lower()
+            if (
+                generation_source == "factor_pool"
+                or str(item.get("factor_pool_factor_id") or "").strip()
+                or str(item.get("source_candidate_artifact_id") or "").strip()
+            ):
+                type_has_governed_signal[normalized] = True
 
         allowed_by_type: Dict[str, int] = {}
         factor_by_type: Dict[str, float] = {}
@@ -166,6 +174,12 @@
                 allowed_by_type[normalized] = 0
             else:
                 allowed_by_type[normalized] = max(0, int(round(count * factor)))
+            if (
+                allowed_by_type.get(normalized, 0) <= 0
+                and factor > 0
+                and bool(type_has_governed_signal.get(normalized))
+            ):
+                allowed_by_type[normalized] = 1
 
         kept: List[dict] = []
         kept_counts: Dict[str, int] = {}

@@ -176,6 +176,87 @@ class _BootstrapMarketDataDb:
         ]
 
 
+class _BootstrapImportDb:
+    def __init__(self):
+        self.orders: list[dict] = []
+        self.trades: list[dict] = []
+        self.fills: list[dict] = []
+        self.events: list[dict] = []
+
+    async def get_strategy(self, strategy_id: str):
+        assert strategy_id == "strategy-bootstrap"
+        return {
+            "id": strategy_id,
+            "strategy_type": "momentum",
+            "params": {"target_symbols": ["000001"]},
+        }
+
+    async def list_strategy_trade_positions(self, *, strategy_id: str, status: str, limit: int):
+        assert strategy_id == "strategy-bootstrap"
+        assert status == "closed"
+        return [{"position_id": f"existing-{idx}"} for idx in range(3)]
+
+    async def save_paper_order(self, payload: dict):
+        row = {"id": f"order-{len(self.orders) + 1}", **dict(payload)}
+        self.orders.append(row)
+        return row
+
+    async def save_paper_trade(self, payload: dict):
+        row = dict(payload)
+        self.trades.append(row)
+        return row
+
+    async def save_strategy_signal_evidence(self, payload: dict):
+        return dict(payload)
+
+    async def save_strategy_trade_position_fill(self, payload: dict):
+        self.fills.append(dict(payload))
+        return dict(payload)
+
+    async def refresh_strategy_trade_position(self, position_id: str):
+        return {"position_id": position_id}
+
+    async def save_strategy_domain_event(self, payload: dict):
+        self.events.append(dict(payload))
+        return dict(payload)
+
+
+class _BootstrapImportIncubationService:
+    async def ensure_account(self, db, strategy: dict, stage: str):
+        return {"account": {"id": "paper-account"}}
+
+    async def record_metrics(self, db, strategy: dict, as_of_date: date):
+        return {"strategy_id": strategy["id"], "as_of_date": as_of_date}
+
+
+def _bootstrap_round_trip_trades(count: int) -> list[dict]:
+    trades: list[dict] = []
+    for idx in range(count):
+        day = idx + 1
+        code = f"00000{idx}"
+        trades.append(
+            {
+                "id": f"buy-{idx}",
+                "code": code,
+                "signal": 1,
+                "time": f"2026-01-{day:02d}",
+                "price": 10.0 + idx,
+                "shares": 100,
+            }
+        )
+        trades.append(
+            {
+                "id": f"sell-{idx}",
+                "code": code,
+                "signal": -1,
+                "time": f"2026-02-{day:02d}",
+                "price": 12.0 + idx,
+                "shares": 100,
+            }
+        )
+    return trades
+
+
 def test_build_bootstrap_lineage_fallback_generates_deterministic_native_tokens():
     fallback = _build_bootstrap_lineage_fallback(
         {
@@ -271,3 +352,35 @@ def test_load_market_data_falls_back_to_runtime_position_codes_when_targets_miss
 
     assert sorted(market_data.keys()) == ["000063", "000333"]
     assert db.requested_codes == ["000333", "000063"]
+
+
+def test_bootstrap_import_continues_after_existing_position_skips():
+    service = StrategyAcceptanceRemediationService()
+    service.incubation_service = _BootstrapImportIncubationService()
+    db = _BootstrapImportDb()
+    exists_calls = {"count": 0}
+
+    async def _get_or_create_bootstrap_backtest(db, strategy: dict, history_limit: int):
+        return "backtest-existing-skip", _bootstrap_round_trip_trades(6)
+
+    async def _position_exists(db, position_id: str):
+        exists_calls["count"] += 1
+        return exists_calls["count"] <= 3
+
+    service._get_or_create_bootstrap_backtest = _get_or_create_bootstrap_backtest
+    service._position_exists = _position_exists
+
+    result = asyncio.run(
+        service.bootstrap_import_strategy(
+            db,
+            "strategy-bootstrap",
+            target_trade_count=5,
+        )
+    )
+
+    assert result["existing_realized_trade_count"] == 3
+    assert result["skipped_existing_positions"] == 3
+    assert result["imported_round_trips"] == 2
+    assert len(db.orders) == 4
+    assert len(db.trades) == 4
+    assert len(db.fills) == 4

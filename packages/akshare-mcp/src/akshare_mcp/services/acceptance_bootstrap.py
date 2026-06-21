@@ -325,15 +325,25 @@ class _BootstrapMixin:
             history_limit=history_limit,
         )
         round_trips = _group_backtest_round_trips(trades)
+        candidate_limit = min(
+            len(round_trips),
+            max(
+                shortfall,
+                bootstrap_floor + existing_realized + 25,
+                shortfall * 4,
+                50,
+            ),
+        )
         selected_round_trips, selection_report = _select_bootstrap_round_trips(
             round_trips,
-            shortfall,
+            candidate_limit,
         )
         ensure = await self.incubation_service.ensure_account(db, strategy, stage="warmup")
         account = dict(ensure.get("account") or {})
         account_id = str(account.get("id") or "").strip()
         imported = 0
         imported_codes: list[str] = []
+        skipped_existing_positions = 0
         latest_trade_date: Optional[date] = None
 
         for selection in selected_round_trips:
@@ -350,6 +360,7 @@ class _BootstrapMixin:
             )
             position_id = f"btpos_{uuid5(NAMESPACE_URL, round_seed).hex[:20]}"
             if await self._position_exists(db, position_id):
+                skipped_existing_positions += 1
                 continue
             entry_signal_id = f"btsig_{uuid5(NAMESPACE_URL, round_seed + ':entry').hex[:20]}"
             exit_signal_id = f"btsig_{uuid5(NAMESPACE_URL, round_seed + ':exit').hex[:20]}"
@@ -522,6 +533,7 @@ class _BootstrapMixin:
                         "existing_realized_trade_count": existing_realized,
                         "imported_round_trips": imported,
                         "imported_codes": imported_codes,
+                        "skipped_existing_positions": skipped_existing_positions,
                         "bootstrap_source": "backtest_to_incubation_v1",
                         "bootstrap_selection": selection_report,
                         "cleanup": cleanup_summary,
@@ -535,6 +547,7 @@ class _BootstrapMixin:
             "existing_realized_trade_count": existing_realized,
             "imported_round_trips": imported,
             "imported_codes": imported_codes,
+            "skipped_existing_positions": skipped_existing_positions,
             "selection": selection_report,
             "cleanup": cleanup_summary,
         }

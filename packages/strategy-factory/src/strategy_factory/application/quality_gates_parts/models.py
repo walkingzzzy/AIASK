@@ -16,6 +16,10 @@ async def run_gated_submission_pipeline(
     backtest_filter = backtest_filter or factory_pkg.BacktestFilter()
     deduplicator = deduplicator or factory_pkg.Deduplicator()
     submitter = submitter or factory_pkg.StrategySubmitter()
+    candidates = [
+        attach_trade_prediction_context(candidate, snapshot=snapshot)
+        for candidate in list(candidates or [])
+    ]
 
     gate_runner = gated_runner or getattr(factory_pkg, "run_gated_filter", run_gated_filter)
 

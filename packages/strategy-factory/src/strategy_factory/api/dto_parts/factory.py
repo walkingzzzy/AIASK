@@ -58,6 +58,8 @@ class FactoryRunSummaryDTO:
     raw_validation_b_rate: float = 0.0
     raw_validation_c_rate: float = 0.0
     raw_validation_d_rate: float = 0.0
+    incubation_budget_formal_runtime_ready_candidate_count: int = 0
+    incubation_budget_formal_runtime_ready_selected_count: int = 0
     strict_incubation_ready_count: int = 0
     strict_incubation_ready_rate: float = 0.0
     live_candidate_ready_count: int = 0
@@ -344,6 +346,24 @@ class FactoryRunSummaryDTO:
                 or submission_artifact.get("raw_validation_d_rate")
                 or 0.0
             ),
+            incubation_budget_formal_runtime_ready_candidate_count=int(
+                summary.get("incubation_budget_formal_runtime_ready_candidate_count")
+                or d.get("incubation_budget_formal_runtime_ready_candidate_count")
+                or submission_artifact.get("formal_runtime_ready_candidate_count")
+                or dict(submission_artifact.get("incubation_budget_summary") or {}).get(
+                    "formal_runtime_ready_candidate_count"
+                )
+                or 0
+            ),
+            incubation_budget_formal_runtime_ready_selected_count=int(
+                summary.get("incubation_budget_formal_runtime_ready_selected_count")
+                or d.get("incubation_budget_formal_runtime_ready_selected_count")
+                or submission_artifact.get("formal_runtime_ready_selected_count")
+                or dict(submission_artifact.get("incubation_budget_summary") or {}).get(
+                    "formal_runtime_ready_selected_count"
+                )
+                or 0
+            ),
             strict_incubation_ready_count=int(
                 summary.get("strict_incubation_ready_count")
                 or d.get("strict_incubation_ready_count")
@@ -545,6 +565,12 @@ class FactoryRunSummaryDTO:
             "raw_validation_b_rate": self.raw_validation_b_rate,
             "raw_validation_c_rate": self.raw_validation_c_rate,
             "raw_validation_d_rate": self.raw_validation_d_rate,
+            "incubation_budget_formal_runtime_ready_candidate_count": (
+                self.incubation_budget_formal_runtime_ready_candidate_count
+            ),
+            "incubation_budget_formal_runtime_ready_selected_count": (
+                self.incubation_budget_formal_runtime_ready_selected_count
+            ),
             "strict_incubation_ready_count": self.strict_incubation_ready_count,
             "strict_incubation_ready_rate": self.strict_incubation_ready_rate,
             "live_candidate_ready_count": self.live_candidate_ready_count,

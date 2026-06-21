@@ -128,7 +128,7 @@ def test_paper_intake_can_be_disabled_via_env(monkeypatch):
 
 
 def test_paper_intake_batch_limit_default():
-    assert toggles.paper_intake_batch_limit() == 50
+    assert toggles.paper_intake_batch_limit() == 500
 
 
 @pytest.mark.parametrize(
@@ -138,9 +138,10 @@ def test_paper_intake_batch_limit_default():
         ("100", 100),
         ("0", 1),  # 下限 1
         ("-5", 1),
-        ("999", 500),  # 上限 500
-        ("garbage", 50),  # 解析失败回退默认值
-        ("", 50),
+        ("999", 999),
+        ("5000", 3000),  # 上限 3000
+        ("garbage", 500),  # 解析失败回退默认值
+        ("", 500),
     ],
 )
 def test_paper_intake_batch_limit_bounds(monkeypatch, value, expected):

@@ -275,11 +275,13 @@
 
             specs: list[StrategySpec] = []
             pipeline_precompile_rejections: list[dict[str, Any]] = []
+            pipeline_normalize_rejections: list[dict[str, Any]] = []
             normalized_research_task = (
                 normalize_research_task_contract(research_task)
                 if isinstance(research_task, dict) and research_task
                 else {}
             )
+            pipeline_candidate_total = len(pipeline_result.candidates[:limit])
             for candidate in pipeline_result.candidates[:limit]:
                 candidate_payload = dict(candidate or {})
                 if normalized_research_task and not candidate_payload.get("research_task"):
@@ -295,6 +297,29 @@
                             "reject_reasons": list(candidate_payload.get("_generator_precompile_reject_reasons") or []),
                         }
                     )
+                elif candidate_payload.get("_generator_normalize_reject_reason"):
+                    # P0-C: normalize 清零(原静默盲区)现可归因
+                    pipeline_normalize_rejections.append(
+                        {
+                            "name": str(candidate_payload.get("name") or ""),
+                            "strategy_type": str(candidate_payload.get("strategy_type") or ""),
+                            "reject_reason": str(candidate_payload.get("_generator_normalize_reject_reason") or ""),
+                        }
+                    )
+            # P0-C: candidate→spec 漏斗计数,让 specs=[] 时能区分"被 normalize 清零/被 precompile 拒/其他"
+            pipeline_candidate_funnel = {
+                "candidate_total": pipeline_candidate_total,
+                "spec_selected": len(specs),
+                "normalize_rejected": len(pipeline_normalize_rejections),
+                "precompile_rejected": len(pipeline_precompile_rejections),
+                "other_dropped": max(
+                    0,
+                    pipeline_candidate_total
+                    - len(specs)
+                    - len(pipeline_normalize_rejections)
+                    - len(pipeline_precompile_rejections),
+                ),
+            }
 
             stage_requests: list[dict[str, Any]] = []
             llm_attempt_count = 0
@@ -403,6 +428,9 @@
                 'selected_generators': {'pipeline_staged': len(specs)},
                 'pipeline_precompile_rejected_count': len(pipeline_precompile_rejections),
                 'pipeline_precompile_rejections': pipeline_precompile_rejections[:8],
+                'pipeline_normalize_rejected_count': len(pipeline_normalize_rejections),
+                'pipeline_normalize_rejections': pipeline_normalize_rejections[:8],
+                'pipeline_candidate_funnel': pipeline_candidate_funnel,
                 'external_provider': {
                     'enabled': True,
                     'provider': getattr(self.external_provider.config, 'provider', None),

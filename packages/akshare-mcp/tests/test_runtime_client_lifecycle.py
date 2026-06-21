@@ -1,12 +1,18 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 from datetime import datetime, timedelta, time
 
 import httpx
 
 from akshare_mcp.services.financial_semantic_service import FinancialSemanticConfig, FinancialSemanticService
-from akshare_mcp.services.factor_llm_provider import FactorLLMConfig, FactorLLMProvider
+from akshare_mcp.services.factor_llm_provider import (
+    FactorLLMConfig,
+    FactorLLMProvider,
+    FactorLLMProviderCompatibilityError,
+    FactorLLMRequestError,
+)
 from akshare_mcp.services.text_embedding import StrategyTextEmbeddingConfig, StrategyTextEmbeddingService
 from akshare_mcp.services._vector_platform_backend import _StrategyVectorPlatformBackendMixin
 
@@ -82,6 +88,72 @@ def test_factor_llm_provider_builds_http_client_lazily() -> None:
             assert status["rebuild_recommended"] is False
             await provider._ensure_client()
             assert isinstance(provider._client, httpx.AsyncClient)
+        finally:
+            await provider.close()
+
+    asyncio.run(_run())
+
+
+def test_factor_llm_compatibility_cooldown_requires_minimal_streak(monkeypatch) -> None:
+    provider = FactorLLMProvider(
+        FactorLLMConfig(
+            enabled=True,
+            base_url="https://factor.example.test/v1",
+            api_key="test-key",
+            model="test-factor",
+            retry_count=0,
+            compatibility_minimal_streak=3,
+            compatibility_cooldown_sec=60.0,
+            smoke_check_enabled=False,
+        )
+    )
+    prompt = SimpleNamespace(system_prompt="system", user_prompt="user")
+    real_requests = 0
+
+    async def fake_request_and_parse_payload(**kwargs):
+        nonlocal real_requests
+        real_requests += 1
+        raise FactorLLMProviderCompatibilityError(
+            "generate_candidates: response missing extractable content",
+            metrics={
+                "status": "compatibility_failed",
+                "empty_200_response": False,
+            },
+        )
+
+    monkeypatch.setattr(provider, "_request_and_parse_payload", fake_request_and_parse_payload)
+
+    async def _expect_request_failure() -> None:
+        try:
+            await provider.generate_candidates(prompt, candidate_count=1)
+        except FactorLLMRequestError as exc:
+            assert exc.metrics["status"] == "compatibility_failed"
+        else:
+            raise AssertionError("compatibility failure should surface as FactorLLMRequestError")
+
+    async def _run() -> None:
+        try:
+            await _expect_request_failure()
+            assert real_requests == 1
+            assert provider.status()["compatibility_cooldown_active"] is False
+
+            await _expect_request_failure()
+            assert real_requests == 2
+            assert provider.status()["compatibility_cooldown_active"] is False
+
+            await _expect_request_failure()
+            assert real_requests == 3
+            health = provider.status()
+            assert health["compatibility_cooldown_active"] is True
+            assert health["health_status"] == "blocked"
+
+            try:
+                await provider.generate_candidates(prompt, candidate_count=1)
+            except FactorLLMRequestError as exc:
+                assert exc.metrics["status"] == "compatibility_skip"
+            else:
+                raise AssertionError("active compatibility cooldown should skip new requests")
+            assert real_requests == 3
         finally:
             await provider.close()
 

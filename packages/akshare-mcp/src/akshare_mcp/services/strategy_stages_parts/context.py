@@ -231,6 +231,25 @@ def _try_find_list(output: dict[str, Any], primary_key: str, alt_keys: tuple[str
     return None
 
 
+def _is_valid_empty_list_result(
+    output: dict[str, Any], primary_key: str, alt_keys: tuple[str, ...] = ()
+) -> bool:
+    """判定 output 是否"显式给出了合法的空列表"——LLM 的合法保守输出。
+
+    P0-A:契约(runtime.py)授权 LLM "Use [] only when the input has no usable signal"。
+    `_try_find_list` 把空列表判为 falsy 返回 None,validator 又 `if not X: return False`,
+    导致 LLM 合法返回 `{"events":[]}` 被误判失败 → 触发 fallback(病灶 A)。
+    本函数区分"键存在但为合法空 list"(valid-empty,应放行)与"键缺失/类型错"(真失败)。
+    要求:相关 key 之一显式存在且值为 list 类型(空也算),且 output 不含可被包装的单对象信号。
+    """
+    if not isinstance(output, dict):
+        return False
+    for key in (primary_key, *alt_keys):
+        if key in output and isinstance(output.get(key), list):
+            return True
+    return False
+
+
 def _lazy_match_sector_to_theme(sector_name: str) -> str:
     """根据主题库 alias 把板块名匹配到 theme_code。
 
@@ -361,6 +380,9 @@ def _coerce_string_items(
 def _validate_event_recognition(output: dict[str, Any]) -> bool:
     events = _try_find_list(output, "events", ("event_list", "market_events", "results"))
     if not events:
+        if _is_valid_empty_list_result(output, "events", ("event_list", "market_events", "results")):
+            output["events"] = []  # P0-A: LLM 合法返回空,放行而非 fallback
+            return True
         logger.debug("event_recognition validation failed: no 'events' list, keys=%s", list(output.keys()))
         return False
     # 兼容降级：模型偶尔会输出字符串数组，将其规则化为最小合法对象
@@ -388,6 +410,9 @@ def _validate_event_recognition(output: dict[str, Any]) -> bool:
 def _validate_theme_propagation(output: dict[str, Any]) -> bool:
     themes = _try_find_list(output, "themes", ("theme_list", "propagation", "propagation_result", "results"))
     if not themes:
+        if _is_valid_empty_list_result(output, "themes", ("theme_list", "propagation", "propagation_result", "results")):
+            output["themes"] = []  # P0-A: LLM 合法返回空,放行而非 fallback
+            return True
         logger.debug("theme_propagation validation failed: no 'themes' list, keys=%s", list(output.keys()))
         return False
     # 兼容降级：字符串数组形态
@@ -414,6 +439,9 @@ def _validate_theme_propagation(output: dict[str, Any]) -> bool:
 def _validate_exposure_mapping(output: dict[str, Any]) -> bool:
     exposures = _try_find_list(output, "exposures", ("exposure_list", "mappings", "exposure_mapping", "results"))
     if not exposures:
+        if _is_valid_empty_list_result(output, "exposures", ("exposure_list", "mappings", "exposure_mapping", "results")):
+            output["exposures"] = []  # P0-A: LLM 合法返回空,放行而非 fallback
+            return True
         logger.debug("exposure_mapping validation failed: no 'exposures' list, keys=%s", list(output.keys()))
         return False
     # 兼容降级：字符串数组形态（股票代码列表 / 行业名称列表）
@@ -477,6 +505,9 @@ def _validate_exposure_mapping(output: dict[str, Any]) -> bool:
 def _validate_market_confirmation(output: dict[str, Any]) -> bool:
     confirmations = _try_find_list(output, "confirmations", ("confirmation_list", "confirmed_stocks", "results"))
     if not confirmations:
+        if _is_valid_empty_list_result(output, "confirmations", ("confirmation_list", "confirmed_stocks", "results")):
+            output["confirmations"] = []  # P0-A: 熊市"全部未确认"是最常见合法输出,放行而非 fallback
+            return True
         logger.debug("market_confirmation validation failed: no 'confirmations' list, keys=%s", list(output.keys()))
         return False
     output["confirmations"] = confirmations
@@ -498,6 +529,12 @@ def _validate_market_confirmation(output: dict[str, Any]) -> bool:
 def _validate_strategy_generation(output: dict[str, Any]) -> bool:
     candidates = _try_find_list(output, "candidates", ("strategies", "strategy_list", "results"))
     if not candidates:
+        if _is_valid_empty_list_result(output, "candidates", ("strategies", "strategy_list", "results")):
+            # P0-A: LLM 合法判定"本轮无可生成策略"≠LLM 失败。放行为合法空,
+            # 让其计入 valid_empty 而非 used_fallback(避免污染 skip_llm 熔断/cooldown);
+            # 空 specs 的后续兜底由 staged-empty 路径治理,不靠把本 stage 判失败触发。
+            output["candidates"] = []
+            return True
         logger.debug("strategy_generation validation failed: no 'candidates' list, keys=%s", list(output.keys()))
         return False
     output["candidates"] = candidates

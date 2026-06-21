@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -47,8 +48,23 @@ class RuleSeedEngine:
 
             # 2. 从本地规则生成（组合变体）
             variant_candidates = self._generate_variants(budget.candidate_count - len(candidates))
-            variant_candidates = self._generate_variants(budget.candidate_count - len(candidates))
             candidates.extend(variant_candidates)
+            if getattr(context, "quick_evidence_evaluator", None) is not None:
+                candidates.extend(self._targeted_low_volatility_variants())
+                candidates.extend(
+                    self._from_seed_library_excluding(
+                        max(int(budget.candidate_count or 0) * 4, 12),
+                        context,
+                    )
+                )
+                candidates.extend(self._directional_inversions(candidates))
+            candidates = self._filter_failed_patterns(candidates, context)
+            if not candidates:
+                candidates = self._from_seed_library_excluding(
+                    budget.candidate_count,
+                    context,
+                )
+            candidates = self._rank_candidates(candidates)
 
             self._success_count += 1
             self._last_run_at = datetime.now(timezone.utc).isoformat()
@@ -100,6 +116,34 @@ class RuleSeedEngine:
 
         return candidates
 
+    def _from_seed_library_excluding(self, count: int, context: Any) -> list[FactorCandidate]:
+        failed = self._failed_patterns(context)
+        if not failed:
+            return self._from_seed_library(count)
+
+        from ...factor_candidate_seed import _EXPRESSION_BY_FACTOR
+
+        candidates: list[FactorCandidate] = []
+        for name, (expr, inputs) in list(_EXPRESSION_BY_FACTOR.items()):
+            candidate = FactorCandidate(
+                name=f"seed_{name}",
+                hypothesis=f"Seed factor from established library: {name}",
+                family=name.split("_")[0] if "_" in name else name,
+                inputs=inputs,
+                expression_dsl=expr,
+                expected_holding_period=10,
+                complexity_hint="low",
+                novelty_rationale="Established factor from seed library",
+                generation_engine=self.engine_id,
+                generation_trace={"mode": "seed_library_memory_fallback", "seed_name": name},
+            )
+            if self._candidate_pattern_keys(candidate).intersection(failed):
+                continue
+            candidates.append(candidate)
+            if len(candidates) >= max(0, int(count)):
+                break
+        return candidates
+
     def _generate_variants(self, count: int) -> list[FactorCandidate]:
         """生成种子因子的组合变体。"""
         import random
@@ -145,6 +189,230 @@ class RuleSeedEngine:
             ))
 
         return candidates
+
+    def _targeted_low_volatility_variants(self) -> list[FactorCandidate]:
+        """Add deterministic variants around the strongest recent near-miss family."""
+
+        templates = [
+            (
+                "atr_range_inverse_mean_3",
+                "-ts_mean((high - low) / close, 3)",
+                ["high", "low", "close"],
+                "Very short-window low intraday range continuation variant",
+            ),
+            (
+                "atr_range_inverse_mean_5",
+                "-ts_mean((high - low) / close, 5)",
+                ["high", "low", "close"],
+                "Short-window low intraday range continuation variant",
+            ),
+            (
+                "atr_range_inverse_mean_10",
+                "-ts_mean((high - low) / close, 10)",
+                ["high", "low", "close"],
+                "Medium-window low intraday range continuation variant",
+            ),
+            (
+                "atr_range_inverse_zscore_10",
+                "-zscore((high - low) / close, 10)",
+                ["high", "low", "close"],
+                "Cross-time standardized low range variant",
+            ),
+            (
+                "atr_range_inverse_zscore_20",
+                "-zscore((high - low) / close, 20)",
+                ["high", "low", "close"],
+                "Stable standardized low range variant",
+            ),
+            (
+                "atr_range_inverse_rank_20",
+                "-ts_rank((high - low) / close, 20)",
+                ["high", "low", "close"],
+                "Time-series rank low range variant",
+            ),
+            (
+                "realized_vol_inverse_std_10",
+                "-ts_std(returns_1d, 10)",
+                ["returns_1d"],
+                "Short-window realized low volatility variant",
+            ),
+        ]
+        candidates: list[FactorCandidate] = []
+        for name, expr, inputs, hypothesis in templates:
+            candidates.append(
+                FactorCandidate(
+                    name=f"rule_{name}",
+                    hypothesis=hypothesis,
+                    economic_hypothesis=hypothesis,
+                    family="volatility",
+                    factor_family="volatility",
+                    inputs=list(inputs),
+                    expression_dsl=expr,
+                    expected_holding_period=10,
+                    expected_horizon=10,
+                    expected_regime=["low_volatility", "range_compression"],
+                    complexity_hint="low",
+                    novelty_rationale=(
+                        "Deterministic local variant around ATR inverse quick-evidence near misses."
+                    ),
+                    generation_engine=self.engine_id,
+                    generation_trace={
+                        "mode": "targeted_low_volatility_variant",
+                        "source": "quick_failure_memory",
+                        "parent": "seed_atr_14_inverse",
+                    },
+                )
+            )
+        return candidates
+
+    def _directional_inversions(
+        self,
+        candidates: list[FactorCandidate],
+        *,
+        limit: int = 24,
+    ) -> list[FactorCandidate]:
+        inverted: list[FactorCandidate] = []
+        for candidate in candidates:
+            expr = str(candidate.expression_dsl or "").strip()
+            if not expr or expr.startswith("-("):
+                continue
+            trace = dict(candidate.generation_trace or {})
+            parent = str(candidate.name or "").strip() or "candidate"
+            inverted.append(
+                FactorCandidate(
+                    name=f"{parent}_inverse",
+                    hypothesis=f"Directional inversion of {parent}",
+                    economic_hypothesis=(
+                        getattr(candidate, "economic_hypothesis", "")
+                        or candidate.hypothesis
+                    ),
+                    family=candidate.family,
+                    factor_family=getattr(candidate, "factor_family", "") or candidate.family,
+                    inputs=list(candidate.inputs or []),
+                    expression_dsl=f"-({expr})",
+                    expected_holding_period=candidate.expected_holding_period,
+                    expected_horizon=getattr(candidate, "expected_horizon", candidate.expected_holding_period),
+                    expected_regime=list(candidate.expected_regime or []),
+                    complexity_hint=candidate.complexity_hint,
+                    novelty_rationale=f"Test opposite IC direction for {parent}",
+                    generation_engine=self.engine_id,
+                    blueprint_id=getattr(candidate, "blueprint_id", ""),
+                    risk_exposure_hint=dict(getattr(candidate, "risk_exposure_hint", None) or {}),
+                    generation_trace={
+                        **trace,
+                        "mode": "directional_inversion",
+                        "parent": parent,
+                    },
+                )
+            )
+            if len(inverted) >= max(1, int(limit)):
+                break
+        return inverted
+
+    def _filter_failed_patterns(
+        self,
+        candidates: list[FactorCandidate],
+        context: Any,
+    ) -> list[FactorCandidate]:
+        failed = self._failed_patterns(context)
+        if not failed:
+            return candidates
+        kept: list[FactorCandidate] = []
+        for candidate in candidates:
+            if self._candidate_pattern_keys(candidate).intersection(failed):
+                continue
+            kept.append(candidate)
+        return kept
+
+    def _rank_candidates(self, candidates: list[FactorCandidate]) -> list[FactorCandidate]:
+        unique = self._dedupe(candidates)
+
+        def _float(value: Any) -> float:
+            try:
+                return float(value or 0.0)
+            except Exception:
+                return 0.0
+
+        def _family_rank(candidate: FactorCandidate) -> int:
+            family = str(
+                getattr(candidate, "factor_family", "")
+                or getattr(candidate, "family", "")
+                or ""
+            ).strip().lower()
+            seed_name = str((candidate.generation_trace or {}).get("seed_name") or "").strip().lower()
+            order = {
+                "reversal": 0,
+                "sentiment": 1,
+                "event": 2,
+                "risk_adjusted": 3,
+                "trend": 4,
+                "volume": 5,
+                "volatility": 6,
+                "liquidity": 7,
+                "momentum": 8,
+                "custom": 9,
+            }
+            if seed_name in {"reversal", "sentiment_score", "atr_14", "atr_20", "downside_vol"}:
+                return 0
+            return order.get(family, 6)
+
+        def _score(candidate: FactorCandidate) -> tuple[int, float, float, int, int, float, float]:
+            quick = dict(candidate.quick_evidence or {})
+            summary = dict(quick.get("evidence_summary") or {})
+            trace = dict(candidate.generation_trace or {})
+            return (
+                1 if quick.get("passed") else 0,
+                _float(quick.get("quality_score")),
+                abs(_float(summary.get("rank_ic_mean") or quick.get("rank_ic_mean"))),
+                1 if trace.get("mode") == "targeted_low_volatility_variant" else 0,
+                1 if trace.get("mode") == "directional_inversion" else 0,
+                _float(candidate.fitness),
+                -float(_family_rank(candidate)),
+            )
+
+        return sorted(unique, key=_score, reverse=True)
+
+    @staticmethod
+    def _failed_patterns(context: Any) -> set[str]:
+        try:
+            min_count = max(1, int(str(os.getenv("FACTOR_MINING_PATTERN_FILTER_MIN_COUNT", "3")).strip()))
+        except Exception:
+            min_count = 3
+        failed: set[str] = set()
+        for row in list(getattr(context, "failed_pattern_memory", []) or []):
+            if not isinstance(row, dict):
+                continue
+            pattern = str(row.get("pattern") or "").strip()
+            if not pattern:
+                continue
+            try:
+                count = int(row.get("count") or 1)
+            except Exception:
+                count = 1
+            if count >= min_count:
+                failed.add(pattern)
+        return failed
+
+    @staticmethod
+    def _candidate_pattern_keys(candidate: FactorCandidate) -> set[str]:
+        trace = dict(getattr(candidate, "generation_trace", None) or {})
+        if trace.get("mode") == "targeted_low_volatility_variant":
+            keys = {
+                str(getattr(candidate, "name", "") or "").strip(),
+                str(trace.get("mode") or "").strip(),
+                str(trace.get("parent") or "").strip(),
+            }
+            return {key for key in keys if key}
+        keys = {
+            str(getattr(candidate, "blueprint_id", "") or "").strip(),
+            str(getattr(candidate, "factor_family", "") or "").strip(),
+            str(getattr(candidate, "family", "") or "").strip(),
+            str(trace.get("seed_name") or "").strip(),
+            str(trace.get("parent_a") or "").strip(),
+            str(trace.get("parent_b") or "").strip(),
+            str(trace.get("blueprint_id") or "").strip(),
+        }
+        return {key for key in keys if key}
 
     @staticmethod
     def _dedupe(candidates: list[FactorCandidate]) -> list[FactorCandidate]:

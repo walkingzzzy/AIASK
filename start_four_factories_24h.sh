@@ -17,8 +17,10 @@ set -e  # 遇到错误立即退出
 PROJECT_DIR="C:/Users/walking/Desktop/aiask"
 cd "$PROJECT_DIR" || exit 1
 
-# Python解释器
-PYTHON_EXE="packages/akshare-mcp/.venv/Scripts/python.exe"
+# Python command. Prefer an explicit override, then the package venv, then the
+# akshare-mcp uv project so runtime deps such as numpy are available.
+PYTHON_CMD=()
+PYTHON_DISPLAY=""
 
 # 运行参数
 HOURS=24              # 运行时长（小时）
@@ -93,11 +95,24 @@ check_existing_processes() {
 
 # 验证Python环境
 verify_python() {
-    if [ ! -f "$PYTHON_EXE" ]; then
-        log_error "Python解释器不存在: $PYTHON_EXE"
+    if [ -n "${AIASK_FACTORY_PYTHON:-}" ]; then
+        PYTHON_CMD=("$AIASK_FACTORY_PYTHON")
+    elif [ -f "packages/akshare-mcp/.venv/Scripts/python.exe" ]; then
+        PYTHON_CMD=("packages/akshare-mcp/.venv/Scripts/python.exe")
+    elif command -v uv >/dev/null 2>&1; then
+        PYTHON_CMD=(uv run --project packages/akshare-mcp python)
+    elif [ -f "F:/Python311/python.exe" ]; then
+        PYTHON_CMD=("F:/Python311/python.exe")
+    else
+        log_error "No Python runtime found. Set AIASK_FACTORY_PYTHON or install uv."
         exit 1
     fi
-    log_info "Python环境: $PYTHON_EXE"
+    PYTHON_DISPLAY="${PYTHON_CMD[*]}"
+    log_info "Python runtime: $PYTHON_DISPLAY"
+    if ! "${PYTHON_CMD[@]}" -c "import sys; print(sys.executable)" >/dev/null 2>&1; then
+        log_error "Python runtime failed preflight: $PYTHON_DISPLAY"
+        exit 1
+    fi
 }
 
 # 验证脚本存在
@@ -131,16 +146,16 @@ start_factory() {
     log_info "  日志文件: $FACTORY_LOG"
 
     # 构建命令
-    local cmd="$PYTHON_EXE scripts/factories/run_strategy_factory_quality_session.py"
-    cmd="$cmd --hours $HOURS"
-    cmd="$cmd --pause-sec $PAUSE_SEC"
-    cmd="$cmd --universe-limit $UNIVERSE_LIMIT"
-    cmd="$cmd --session-id $SESSION_ID"
-    [ "$WITH_INCUBATION" = true ] && cmd="$cmd --with-incubation"
+    local cmd=("${PYTHON_CMD[@]}" scripts/factories/run_strategy_factory_quality_session.py)
+    cmd+=(--hours "$HOURS")
+    cmd+=(--pause-sec "$PAUSE_SEC")
+    cmd+=(--universe-limit "$UNIVERSE_LIMIT")
+    cmd+=(--session-id "$SESSION_ID")
+    [ "$WITH_INCUBATION" = true ] && cmd+=(--with-incubation)
 
     # 启动
-    log_info "执行命令: $cmd"
-    nohup $cmd > "$FACTORY_LOG" 2>&1 &
+    log_info "执行命令: ${cmd[*]}"
+    nohup "${cmd[@]}" > "$FACTORY_LOG" 2>&1 &
 
     local pid=$!
     echo $pid > "$FACTORY_PID_FILE"
@@ -174,7 +189,7 @@ start_monitor() {
     export PYTHONIOENCODING=utf-8
 
     # 启动
-    nohup F:/Python311/python.exe -u scripts/monitoring/monitor_strategy_factory_rounds.py \
+    nohup "${PYTHON_CMD[@]}" -u scripts/monitoring/monitor_strategy_factory_rounds.py \
         >> "$MONITOR_LOG" 2>&1 &
 
     local pid=$!

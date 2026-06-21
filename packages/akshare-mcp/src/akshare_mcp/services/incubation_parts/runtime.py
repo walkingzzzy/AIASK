@@ -164,6 +164,7 @@
         rejected_orders = 0
         nav_snapshots = 0
         metrics_recorded = 0
+        skip_reason_counts: dict[str, int] = {}
         items = []
         for strategy in strategies:
             try:
@@ -177,10 +178,15 @@
                 rejected_orders += int(settle_result.get('rejected_count') or 0)
                 nav_snapshots += 1 if settle_result.get('nav_snapshot') else 0
                 metrics_recorded += 1 if metric else 0
+                for reason, count in dict(sync_result.get('skip_reason_counts') or {}).items():
+                    token = str(reason or 'unknown').strip() or 'unknown'
+                    skip_reason_counts[token] = int(skip_reason_counts.get(token) or 0) + int(count or 0)
                 items.append({
                     'strategy_id': strategy.get('id'),
                     'account_id': (ensure.get('account') or {}).get('id'),
                     'orders_created': sync_result.get('created_count', 0),
+                    'orders_skipped': sync_result.get('skipped_count', 0),
+                    'skip_reason_counts': dict(sync_result.get('skip_reason_counts') or {}),
                     'orders_filled': settle_result.get('filled_count', 0),
                     'rejected_orders': settle_result.get('rejected_count', 0),
                     'nav': (settle_result.get('nav_snapshot') or {}).get('total_value'),
@@ -195,6 +201,7 @@
             'orders_created': orders_created,
             'orders_filled': orders_filled,
             'rejected_orders': rejected_orders,
+            'skip_reason_counts': dict(skip_reason_counts),
             'nav_snapshots': nav_snapshots,
             'metrics_recorded': metrics_recorded,
             'items': items,
@@ -433,6 +440,25 @@
         orders_filled = 0
         rejected_orders = 0
         metrics_recorded = 0
+        acceptance_status_counts: dict[str, int] = {}
+        execution_audit_gate_status_counts: dict[str, int] = {}
+        execution_hard_gate_passed_count = 0
+        acceptance_overall_ready_count = 0
+        acceptance_sample_gap_count = 0
+        acceptance_realized_trade_count_total = 0
+
+        def _count(target: dict[str, int], value: object, *, default: str = "missing") -> None:
+            key = str(value or "").strip() or default
+            target[key] = target.get(key, 0) + 1
+
+        def _acceptance_has_sample_gap(payload: dict) -> bool:
+            if "sample_gap" in {str(item or "").strip() for item in list(payload.get("gap_categories") or [])}:
+                return True
+            for detail in list(payload.get("blocker_details") or []):
+                if isinstance(detail, dict) and str(detail.get("category") or "").strip() == "sample_gap":
+                    return True
+            return False
+
         for strategy in list(strategies or []):
             try:
                 result = await self.replay_strategy_history(
@@ -468,6 +494,24 @@
             orders_filled += int(result.get('orders_filled') or 0)
             rejected_orders += int(result.get('rejected_orders') or 0)
             metrics_recorded += int(result.get('metrics_recorded') or 0)
+            acceptance = result.get('acceptance')
+            if isinstance(acceptance, dict):
+                _count(acceptance_status_counts, acceptance.get('status'))
+                trade_audit_summary = dict(acceptance.get('trade_audit_summary') or {})
+                gate_status = (
+                    str(acceptance.get('execution_audit_gate_status') or '').strip()
+                    or str(trade_audit_summary.get('execution_audit_gate_status') or '').strip()
+                    or 'missing'
+                )
+                _count(execution_audit_gate_status_counts, gate_status)
+                acceptance_matrix = dict(acceptance.get('acceptance_matrix') or {})
+                if bool(acceptance_matrix.get('overall_ready')) or str(acceptance.get('status') or '') == 'ready':
+                    acceptance_overall_ready_count += 1
+                if bool(acceptance.get('execution_hard_gate_passed')):
+                    execution_hard_gate_passed_count += 1
+                if _acceptance_has_sample_gap(acceptance):
+                    acceptance_sample_gap_count += 1
+                acceptance_realized_trade_count_total += int(trade_audit_summary.get('realized_trade_count') or 0)
         return {
             'count': len(list(strategies or [])),
             'replayed_days': replayed_days,
@@ -476,5 +520,11 @@
             'orders_filled': orders_filled,
             'rejected_orders': rejected_orders,
             'metrics_recorded': metrics_recorded,
+            'acceptance_status_counts': acceptance_status_counts,
+            'execution_audit_gate_status_counts': execution_audit_gate_status_counts,
+            'execution_hard_gate_passed_count': execution_hard_gate_passed_count,
+            'acceptance_overall_ready_count': acceptance_overall_ready_count,
+            'acceptance_sample_gap_count': acceptance_sample_gap_count,
+            'acceptance_realized_trade_count_total': acceptance_realized_trade_count_total,
             'items': items,
         }

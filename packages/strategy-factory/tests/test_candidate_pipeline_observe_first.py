@@ -118,9 +118,11 @@ class FakePkg:
 
     def __init__(self) -> None:
         self.gated_filter_calls = 0
+        self.gated_candidates: list[dict] = []
 
     async def run_gated_filter(self, candidates, db, backtest_filter, *, kline_cache=None):
         self.gated_filter_calls += 1
+        self.gated_candidates = [dict(item or {}) for item in list(candidates or [])]
         return {
             "passed": [dict(candidates[0])],
             "gate_report": {
@@ -217,3 +219,53 @@ def test_stock_first_execution_mode_enables_observe_first_without_env(monkeypatc
     assert result.quality_gate_report["observe_first"]["execution_mode"] == "stock_first_observe_primary"
     assert pkg.gated_filter_calls == 0
     assert len(scheduler.submitter.seen) == 2
+
+
+def test_candidate_pipeline_attaches_snapshot_prediction_context_before_gate(monkeypatch) -> None:
+    from strategy_factory.application.candidate_contract import apply_resolved_candidate_envelope
+    from strategy_factory.application.trade_prediction_contract import TRADE_PREDICTION_CONTRACT_READY
+
+    monkeypatch.setenv("STRATEGY_FACTORY_OBSERVE_FIRST_ENABLED", "0")
+    scheduler = FakeScheduler()
+    candidates = [
+        {
+            "id": "runtime-candidate",
+            "strategy_type": "momentum",
+            "target_symbols": ["600000"],
+            "params": {
+                "prediction_contract": {
+                    "claims": [
+                        {
+                            "claim_id": "claim-1",
+                            "direction": "bullish",
+                            "confidence": 0.68,
+                            "horizon": "next_day",
+                            "evidence_ids": ["ev-1"],
+                        }
+                    ]
+                },
+                "evidence_chain": {
+                    "evidences": [{"evidence_id": "ev-1", "source": "market_data_runtime"}]
+                },
+            },
+        }
+    ]
+
+    pkg = FakePkg()
+    asyncio.run(
+        CandidatePipeline(pkg, scheduler).run(
+            candidates,
+            {"date": "2026-06-05"},
+            FakeDb(),
+            execution_mode="legacy_primary",
+        )
+    )
+
+    gated_candidate = pkg.gated_candidates[0]
+    assert gated_candidate["prediction_as_of"] == "2026-06-05"
+    assert gated_candidate["params"]["prediction_as_of"] == "2026-06-05"
+
+    resolved = apply_resolved_candidate_envelope(gated_candidate)
+    assert resolved["trade_prediction_contract_status"] == TRADE_PREDICTION_CONTRACT_READY
+    assert resolved["trade_prediction_contract_hash"]
+    assert resolved["trade_prediction_contract"]["target_trading_date"] == "2026-06-08"

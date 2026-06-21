@@ -421,7 +421,7 @@ def _build_prediction_contract_from_pack(
                 "claim_id": "claim_exit",
                 "claim_type": "exit",
                 "summary": "Exit when evidence deteriorates, risk stop triggers, or time stop expires.",
-                "expected_move": "down" if direction == "up" else "up" if direction == "down" else "neutral",
+                "expected_move": "risk_or_time_stop",
                 "expected_horizon": max(1, horizon_days // 2),
                 "evidence_ids": evidence_ids,
                 "failure_condition": "entry thesis restored",

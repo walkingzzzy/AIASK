@@ -157,6 +157,7 @@ STRATEGY_PARAM_REF_KEYS = {
     "candidate_family_id",
     "candidate_identity_signature",
     "candidate_lineage_contract",
+    "candidate_provenance",
     "correlation_id",
     "execution_contract_hash",
     "execution_readiness_tier",

@@ -2,10 +2,16 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
+from types import SimpleNamespace
 
 import httpx
 
-from akshare_mcp.services.strategy_llm_provider import StrategyLLMConfig, StrategyLLMProvider
+from akshare_mcp.services.strategy_llm_provider import (
+    StrategyLLMConfig,
+    StrategyLLMProvider,
+    StrategyLLMRequestError,
+)
 
 
 def _chat_response(content: str) -> httpx.Response:
@@ -376,6 +382,33 @@ def test_strategy_llm_bad_non_empty_json_final_failure_keeps_provider_available(
     assert provider.get_health_snapshot()["compatibility_cooldown_active"] is False
 
 
+def test_strategy_llm_missing_candidates_records_output_format_metrics() -> None:
+    provider = _provider_with_responses(
+        [
+            _chat_response('{"analysis":{"hypothesis":"schema miss"}}'),
+        ],
+        stage_retry_count=0,
+    )
+
+    async def _run() -> dict:
+        try:
+            _pin_mock_client_to_current_loop(provider)
+            try:
+                await provider.generate_candidates(limit=1, research_task={"topic": "test"})
+            except StrategyLLMRequestError as exc:
+                return dict(exc.metrics)
+            raise AssertionError("missing candidates should fail the provider contract")
+        finally:
+            await provider.close()
+
+    metrics = asyncio.run(_run())
+    assert metrics["output_format_failed"] is True
+    assert metrics["validation_failure_reason"] == "missing_candidates"
+    assert metrics["output_keys"] == ["analysis"]
+    assert metrics["attempts"][0]["output_format_failed"] is True
+    assert provider.get_health_snapshot()["compatibility_cooldown_active"] is False
+
+
 def test_strategy_llm_stage_prompt_is_self_describing() -> None:
     captured: dict[str, str] = {}
 
@@ -404,6 +437,43 @@ def test_strategy_llm_stage_prompt_is_self_describing() -> None:
     assert "The required top-level key is: confirmations" in user_prompt
     assert "Return only one valid JSON object" in user_prompt
     assert '"headline":"test headline"' in user_prompt
+
+
+def test_strategy_llm_candidate_prompt_pins_root_shape() -> None:
+    system_prompt, user_prompt = StrategyLLMProvider._build_prompt(
+        snapshot={"date": "2026-06-19"},
+        market_summary={"rows": 10},
+        research_context={"active_factors": ["momentum"]},
+        parent_strategies=[],
+        history_summary=[],
+        limit=1,
+    )
+
+    assert "only two top-level keys: analysis and candidates" in system_prompt
+    assert "Do not put analysis subfields at the root" in system_prompt
+    payload = json.loads(user_prompt)
+    contract = payload["output_contract"]
+    assert contract["required"] == ["analysis", "candidates"]
+    assert "invalid_root_examples" in contract
+    assert "valid_root_example" in contract
+
+
+def test_strategy_llm_candidate_token_budget_allows_full_contract() -> None:
+    provider = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://llm.example.test/v1",
+            api_key="test-key",
+            model="test-model",
+            max_tokens=8000,
+        )
+    )
+    try:
+        assert provider._max_tokens_for_attempt(1, 0) >= 3000
+        assert provider._max_tokens_for_attempt(2, 0) > provider._max_tokens_for_attempt(1, 0)
+        assert provider._max_tokens_for_attempt(10, 0) <= 8000
+    finally:
+        asyncio.run(provider.close())
 
 
 def test_strategy_llm_replays_event_stream_response_after_non_json_body() -> None:
@@ -444,3 +514,132 @@ def test_strategy_llm_should_retry_with_event_stream_content_type() -> None:
     compat_exc.metrics = {"response_content_type": "text/event-stream; charset=utf-8"}
     assert provider._should_retry_with_stream(compat_exc) is True
     assert provider._should_retry_with_stream(exc) is False
+
+
+def test_recent_timeout_cooldown_defaults_are_lenient(monkeypatch) -> None:
+    """单次超时不应锁死 LLM 整轮:默认 streak>=3 且冷却窗口短(<=120s)。"""
+    for key in (
+        "STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK",
+        "STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC",
+        "STRATEGY_LLM_RECENT_CONNECTIVITY_MINIMAL_STREAK",
+        "STRATEGY_LLM_RECENT_CONNECTIVITY_COOLDOWN_SEC",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    config = StrategyLLMConfig.from_env()
+    assert config.recent_timeout_minimal_streak == 3
+    assert config.recent_timeout_cooldown_sec == 120.0
+    # connectivity 默认继承 timeout 默认值
+    assert config.recent_connectivity_minimal_streak == 3
+    assert config.recent_connectivity_cooldown_sec == 120.0
+
+
+def test_recent_timeout_cooldown_env_override(monkeypatch) -> None:
+    monkeypatch.setenv("STRATEGY_LLM_RECENT_TIMEOUT_MINIMAL_STREAK", "5")
+    monkeypatch.setenv("STRATEGY_LLM_RECENT_TIMEOUT_COOLDOWN_SEC", "45")
+    config = StrategyLLMConfig.from_env()
+    assert config.recent_timeout_minimal_streak == 5
+    assert config.recent_timeout_cooldown_sec == 45.0
+
+
+def test_stage_timeout_cooldown_skips_following_stage_request() -> None:
+    calls: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        raise httpx.ReadTimeout("stage read timed out", request=request)
+
+    provider = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://llm.example.test/v1",
+            api_key="test-key",
+            model="test-model",
+            stage_retry_count=0,
+            stage_retry_backoff_sec=0.0,
+            recent_timeout_minimal_streak=1,
+            recent_timeout_cooldown_sec=60.0,
+            max_concurrency=1,
+        )
+    )
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def _run() -> tuple[dict, dict]:
+        try:
+            _pin_mock_client_to_current_loop(provider)
+            try:
+                await provider.call_stage(
+                    stage_id="theme_propagation",
+                    input_data={"topic": "timeout"},
+                    system_prompt="Return JSON.",
+                    timeout_sec=0.01,
+                )
+            except StrategyLLMRequestError as exc:
+                first = dict(exc.metrics)
+            else:  # pragma: no cover - defensive
+                raise AssertionError("first stage call should fail")
+
+            try:
+                await provider.call_stage(
+                    stage_id="exposure_mapping",
+                    input_data={"topic": "skip"},
+                    system_prompt="Return JSON.",
+                    timeout_sec=0.01,
+                )
+            except StrategyLLMRequestError as exc:
+                second = dict(exc.metrics)
+            else:  # pragma: no cover - defensive
+                raise AssertionError("second stage call should be skipped")
+            return first, second
+        finally:
+            await provider.close()
+
+    first, second = asyncio.run(_run())
+
+    assert len(calls) == 1
+    assert first["status"] == "failed"
+    assert first["last_error_type"] == "ReadTimeout"
+    assert first["recent_timeout_streak"] == 1
+    assert second["status"] == "cooldown_skip"
+    assert second["cooldown_reason"] == "recent_timeout"
+    assert second["last_error_type"] == "RecentTimeoutCooldown"
+
+
+def test_runtime_cooldown_fallbacks_are_lenient_for_partial_config() -> None:
+    provider = StrategyLLMProvider(
+        StrategyLLMConfig(
+            enabled=True,
+            base_url="https://llm.example.test/v1",
+            api_key="test-key",
+            model="test-model",
+        )
+    )
+    try:
+        provider.config = SimpleNamespace(
+            initial_compact_level=0,
+            recent_timeout_minimal_streak=3,
+            recent_timeout_cooldown_sec=120.0,
+        )
+
+        provider._record_request_failure(httpx.ConnectError("connect failed"))
+        assert 0 < provider._recent_connectivity_cooldown_until - time.monotonic() <= 120.0
+        assert provider._active_connectivity_failure() is None
+
+        response = httpx.Response(429, headers={})
+        request_error = httpx.HTTPStatusError(
+            "429 Too Many Requests",
+            request=httpx.Request("POST", "https://llm.example.test/v1/chat/completions"),
+            response=response,
+        )
+        provider._record_request_failure(request_error)
+        assert 0 < provider._recent_overload_cooldown_until - time.monotonic() <= 120.0
+        _level, reason = provider._recent_failure_degrade_state()
+        assert reason is None
+
+        compat_exc = type("CompatExc", (Exception,), {})("bad provider shape")
+        compat_exc.metrics = {"last_error_type": "ProviderCompatibilityError"}
+        provider._record_compatibility_failure(compat_exc)
+        provider._record_compatibility_failure(compat_exc)
+        provider._record_compatibility_failure(compat_exc)
+        assert 0 < provider._compatibility_cooldown_until - time.monotonic() <= 120.0
+    finally:
+        asyncio.run(provider.close())

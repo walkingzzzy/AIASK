@@ -40,11 +40,23 @@ def _ensure_src_path() -> None:
     repo_root = here.parents[3]
     for src in (
         repo_root / "packages" / "aiask-quant-core" / "src",
+        repo_root / "packages" / "strategy-factory" / "src",
         repo_root / "packages" / "akshare-mcp" / "src",
     ):
         path = str(src)
         if src.exists() and path not in sys.path:
             sys.path.insert(0, path)
+
+
+_ensure_src_path()
+
+from strategy_factory.runtime_bootstrap import ensure_factory_runtime  # noqa: E402
+
+ensure_factory_runtime(
+    project_root=Path(__file__).resolve().parents[3],
+    script_path=Path(__file__).resolve(),
+    argv=sys.argv[1:],
+)
 
 
 def _setup_logging(verbose: bool) -> None:

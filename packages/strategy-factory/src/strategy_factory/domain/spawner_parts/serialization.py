@@ -23,6 +23,103 @@
             return False
         return True
 
+    @classmethod
+    def _factor_pool_strategy_type_options(cls, factor: dict) -> List[str]:
+        payload = dict(factor or {})
+        validation_summary = dict(payload.get("validation_summary") or {})
+        options: List[str] = []
+
+        def add_many(values) -> None:
+            if isinstance(values, str):
+                values = [values]
+            for value in list(values or []):
+                strategy_type = str(value or "").strip()
+                if strategy_type in CATEGORY_MINIMUMS and strategy_type not in options:
+                    options.append(strategy_type)
+
+        add_many(payload.get("preferred_strategy_types"))
+        add_many(validation_summary.get("preferred_strategy_types"))
+        for key in (
+            payload.get("family"),
+            payload.get("name"),
+            payload.get("factor_name"),
+            payload.get("factor_id"),
+        ):
+            add_many(preferred_strategy_types_for_factor(str(key or ""), default=[]))
+        if not options:
+            options.append("multi_factor")
+        return options
+
+    def _select_factor_pool_strategy_type(
+        self,
+        factor: dict,
+        snapshot: dict,
+        generated_counts: Dict[str, int],
+    ) -> str:
+        options = self._factor_pool_strategy_type_options(factor)
+        total_generated = sum(int(value or 0) for value in generated_counts.values())
+        trend_generated = sum(
+            int(generated_counts.get(strategy_type) or 0)
+            for strategy_type in self._TREND_CLUSTER_TYPES
+        )
+        ranked: List[tuple[float, int, str]] = []
+        for index, strategy_type in enumerate(options):
+            feedback_factor = self._family_negative_feedback_factor(strategy_type, snapshot)
+            current_count = int(generated_counts.get(strategy_type) or 0)
+            trend_penalty = 0.0
+            if strategy_type in self._TREND_CLUSTER_TYPES:
+                projected_total = total_generated + 1
+                projected_trend = trend_generated + 1
+                if projected_total > 0 and projected_trend / projected_total > 0.5:
+                    trend_penalty = 2.0
+            profile = self._POOL_PROFILE_BY_TYPE.get(strategy_type, "unknown")
+            profile_count = sum(
+                int(count or 0)
+                for existing_type, count in generated_counts.items()
+                if self._POOL_PROFILE_BY_TYPE.get(existing_type, "unknown") == profile
+            )
+            score = (
+                max(0.0, float(feedback_factor or 0.0)) * 10.0
+                - current_count * 1.5
+                - profile_count * 0.5
+                - trend_penalty
+                - index * 0.05
+            )
+            ranked.append((score, -index, strategy_type))
+        ranked.sort(reverse=True)
+        return ranked[0][2] if ranked else "multi_factor"
+
+    @staticmethod
+    def _compact_factor_pool_validation_summary(factor: dict) -> dict:
+        validation_summary = dict((factor or {}).get("validation_summary") or {})
+        if not validation_summary:
+            return {}
+        compact = {
+            "source": "active_factor_pool",
+            "quality_status": validation_summary.get("quality_status"),
+            "quality_score": validation_summary.get("quality_score"),
+            "metrics": dict(validation_summary.get("metrics") or {}),
+            "rating": dict(validation_summary.get("rating") or {}),
+            "evidence_summary": dict(validation_summary.get("evidence_summary") or {}),
+            "quick_evidence": dict(validation_summary.get("quick_evidence") or {}),
+            "qc_labels": dict(validation_summary.get("qc_labels") or {}),
+            "qc_shelf_decision": dict(validation_summary.get("qc_shelf_decision") or {}),
+            "qc_autoshelf_applied": bool(validation_summary.get("qc_autoshelf_applied")),
+            "promotion_block_reasons": list(validation_summary.get("promotion_block_reasons") or []),
+        }
+        persisted_outputs = dict(validation_summary.get("persisted_outputs") or {})
+        if persisted_outputs:
+            compact["persisted_outputs"] = {
+                key: persisted_outputs.get(key)
+                for key in ("enabled", "ic_history_rows", "ic_history_rows_total", "factor_key")
+                if persisted_outputs.get(key) not in (None, "", [], {})
+            }
+        return {
+            key: value
+            for key, value in compact.items()
+            if value not in (None, "", [], {})
+        }
+
     def _from_factor_pool(self, snapshot: dict) -> List[dict]:
         out: List[dict] = []
         factor_research = dict(snapshot.get("factor_research") or {})
@@ -64,16 +161,36 @@
                 continue
 
             family = str(factor.get("family") or factor_name).strip().lower()
-            strategy_types = preferred_strategy_types_for_factor(
-                family or factor_name,
-                default=["multi_factor"],
+            strategy_type = self._select_factor_pool_strategy_type(
+                factor,
+                snapshot,
+                self._generated_type_counts(out),
             )
-            strategy_type = str((strategy_types or ["multi_factor"])[0] or "multi_factor")
             fitness = self._safe_float(factor.get("fitness"))
             decay_rate = self._safe_float(factor.get("decay_rate"))
             current_ic = self._safe_float(factor.get("current_ic"))
             grade = str(factor.get("admission_grade") or factor.get("grade") or "").strip()
             engine = str(factor.get("generation_engine") or "").strip()
+            validation_summary = dict(factor.get("validation_summary") or {})
+            factor_pool_validation_summary = self._compact_factor_pool_validation_summary(factor)
+            source_artifact_id = str(
+                factor.get("source_validation_artifact_id")
+                or validation_summary.get("artifact_id")
+                or validation_summary.get("validation_artifact_id")
+                or factor_id
+            ).strip()
+            candidate_provenance = {
+                "source_candidate_artifact_id": source_artifact_id,
+                "source_validation_artifact_id": source_artifact_id,
+                "candidate_family": family or strategy_type,
+                "candidate_registry_stage": str(factor.get("registry_stage") or "active_factor_pool"),
+                "generator_mode": "factor_pool",
+                "generator_type": "factor_pool",
+                "alpha_source": "factor_mining_active_pool",
+                "risk_level": str(dict(factor.get("risk_audit") or {}).get("overall_risk_level") or ""),
+                "validation_score": validation_summary.get("total_score")
+                or dict(validation_summary.get("rating") or {}).get("total_score"),
+            }
             params = {
                 "factor_dsl": factor_dsl,
                 "factor_name": factor_name,
@@ -86,14 +203,38 @@
                 "factor_pool_engine": engine,
                 "factor_pool_current_ic": current_ic,
                 "factor_pool_decay_rate": decay_rate,
+                "factor_pool_validation_summary": factor_pool_validation_summary,
                 "lookback": int(factor.get("expected_holding_period") or 60),
+                "source_candidate_artifact_id": source_artifact_id,
+                "candidate_provenance": candidate_provenance,
+                "validation_profile": {
+                    "profile": "factor_rank_validation",
+                    "validation_focus": "broad_generalization",
+                    "primary_validation_layer": "combined",
+                    "factor_pool_candidate": True,
+                },
+                "targeting_policy": {
+                    "target_symbol_policy": "prefer_intersection",
+                    "universe_expansion_policy": "allow_market_fallback",
+                    "validation_focus": "broad_generalization",
+                },
             }
             if strategy_type == "multi_factor":
                 params["factor_weights"] = {factor_name: 1.0}
             extras = {
+                "source_candidate_artifact_id": source_artifact_id,
                 "candidate_origin": "factor_pool",
                 "candidate_family": family or strategy_type,
+                "generator_mode": "factor_pool",
+                "generator_type": "factor_pool",
                 "factor_pool_factor_id": factor_id,
+                "candidate_provenance": candidate_provenance,
+                "validation_profile": {
+                    "profile": "factor_rank_validation",
+                    "validation_focus": "broad_generalization",
+                    "primary_validation_layer": "combined",
+                    "factor_pool_candidate": True,
+                },
                 "metadata": {
                     "factor_pool_factor_id": factor_id,
                     "factor_pool_factor_name": factor_name,
@@ -107,6 +248,8 @@
                     "engine": engine,
                     "current_ic": current_ic,
                     "decay_rate": decay_rate,
+                    "source_validation_artifact_id": source_artifact_id,
+                    "validation_summary": factor_pool_validation_summary,
                 },
                 "tags": ["factor_pool", "active_factor_pool"],
             }

@@ -289,6 +289,22 @@ async def build_factor_mining_prompt(
                 "zscore(momentum_20d, 20) - zscore(volatility_20d, 20)",
                 "rank(delta(close, 5)) + zscore(volume_ratio_5_20, 10)",
             ],
+            "strict_admission_policy": {
+                "minimum_evidence": {
+                    "sample_dates": 60,
+                    "avg_cross_section_n": 80,
+                    "ic_history_rows": 60,
+                    "abs_rank_ic_mean": 0.025,
+                    "rank_ic_ir": 0.25,
+                    "positive_ratio": 0.52,
+                },
+                "governance": [
+                    "design candidates to survive multiple-testing checks, not only quick IC screening",
+                    "avoid small variations of common basis factors when they are likely to show high PBO",
+                    "prefer economically distinct interactions with stable OOS behavior and low reality-check risk",
+                    "do not repeat memory_context failed patterns, especially PBO high or weak reality-check failures",
+                ],
+            },
         },
         "context_rows": request_rows,
         "output_contract": {
@@ -322,13 +338,17 @@ async def build_factor_mining_prompt(
         "expression_dsl runs on a single-stock daily time-series frame, so do not write cross-sectional rank/zscore semantics. "
         "Use only fields listed in field_hints. Never reference any key nested under non_dsl_context inside inputs or expression_dsl. "
         "If memory_context is provided, learn from past successes, avoid repeating failures, "
-        "and avoid generating duplicates of highly similar historical candidates."
+        "and avoid generating duplicates of highly similar historical candidates. "
+        "The formal gate requires strict cross-section IC evidence plus low multiple-testing risk; "
+        "quick IC alone is not enough."
     )
     user_prompt = (
         "Research context:\n"
         f"{json.dumps(request_payload, ensure_ascii=False, indent=2, default=str)}\n\n"
         "Generate the best candidate factors for near-term research iteration. "
         "Prefer candidates that are testable, not redundant, and grounded in the supplied fields. "
+        "Favor expressions that can plausibly pass PBO, White Reality Check, and Hansen SPA governance, "
+        "instead of close variants of common momentum, reversal, volatility, or liquidity basis factors. "
         "Before finalizing, self-check that every inputs item appears in field_hints and every expression_dsl can be executed by the stated DSL contract."
     )
     context_summary = {

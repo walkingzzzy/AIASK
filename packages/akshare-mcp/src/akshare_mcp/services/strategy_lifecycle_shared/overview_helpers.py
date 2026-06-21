@@ -137,6 +137,7 @@ async def _persist_and_finalize_overview(
     execution_audit_snapshot,
     quality_report_updated_at,
     signal_stats_signature=None,
+    execution_state_signature=None,
 ) -> dict:
     upsert_strategy_closure_snapshot = getattr(db, "upsert_strategy_closure_snapshot", None)
     if callable(upsert_strategy_closure_snapshot):
@@ -161,6 +162,7 @@ async def _persist_and_finalize_overview(
                         "strategy_status": strategy.get("status"),
                         "quality_report_updated_at": quality_report_updated_at,
                         "signal_stats_signature": signal_stats_signature or {},
+                        "execution_state_signature": execution_state_signature or {},
                         "execution_audit_snapshot_id": (execution_audit_snapshot or {}).get("snapshot_id"),
                         "pipeline_stage": result.get("pipeline_stage"),
                         "promotion_gate_status": result.get("promotion_gate_status"),

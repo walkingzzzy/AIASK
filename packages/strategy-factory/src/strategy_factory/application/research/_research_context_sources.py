@@ -27,14 +27,22 @@ async def load_factor_history_meta(
         return history_meta, None
 
     async def _load_one(factor_name: str) -> Tuple[str, dict[str, Any]]:
-        rows = await _call_optional_async(
-            db,
-            "get_factor_ic_history",
-            factor_name,
-            "20",
-            builder_cls.HISTORY_LIMIT,
-            default=[],
-        )
+        # P2-1: IC period 错配修复。因子挖掘 strict 按 horizon_days=10 写 IC
+        # (factor_validation_pipeline.py:421 period="10"),原硬编码读 "20" → 挖出因子 IC
+        # 永远查不到 → factor_ic.get(name)=0 垫底选不进策略。改为按优先级尝试多 horizon。
+        rows = []
+        for _period in ("10", "20"):
+            _candidate = await _call_optional_async(
+                db,
+                "get_factor_ic_history",
+                factor_name,
+                _period,
+                builder_cls.HISTORY_LIMIT,
+                default=[],
+            )
+            if isinstance(_candidate, list) and _candidate:
+                rows = _candidate
+                break
         if not isinstance(rows, list):
             rows = []
         meta = builder_cls._history_summary(rows)

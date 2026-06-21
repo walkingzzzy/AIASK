@@ -48,7 +48,8 @@ class FactorLLMConfig:
     max_tokens: int = 1800
     retry_count: int = 2
     retry_backoff_sec: float = 1.0
-    compatibility_cooldown_sec: float = 300.0
+    compatibility_minimal_streak: int = 3
+    compatibility_cooldown_sec: float = 120.0
     smoke_check_enabled: bool = True
     smoke_check_ttl_sec: float = 300.0
     max_concurrency: int = 3
@@ -134,7 +135,18 @@ class FactorLLMConfig:
                 _env_float(
                     "FACTOR_LLM_COMPATIBILITY_COOLDOWN_SEC",
                     fallback="STRATEGY_LLM_COMPATIBILITY_COOLDOWN_SEC",
-                    default=300.0,
+                    default=120.0,
+                ),
+            ),
+            compatibility_minimal_streak=max(
+                1,
+                min(
+                    8,
+                    _env_int(
+                        "FACTOR_LLM_COMPATIBILITY_MINIMAL_STREAK",
+                        fallback="STRATEGY_LLM_COMPATIBILITY_MINIMAL_STREAK",
+                        default=3,
+                    ),
                 ),
             ),
             smoke_check_enabled=_env_bool(
@@ -237,6 +249,24 @@ class FactorGenerationEnvelope(BaseModel):
     candidates: list[FactorCandidateModel] = Field(default_factory=list, min_length=1, max_length=32)
     analysis: dict[str, Any] = Field(default_factory=dict)
     warnings: list[str] = Field(default_factory=list, max_length=20)
+
+    @field_validator("analysis", mode="before")
+    @classmethod
+    def _normalize_analysis(cls, value: Any) -> dict[str, Any]:
+        # LLM 常把 analysis 作为整段说明文字(字符串)返回,而非结构化 dict。
+        # 旧定义强制 dict 导致整批合法候选因 1 个校验错误被全部丢弃(实测 LLM 26.7s
+        # 正常返回 6 个因子却报 FactorLLMRequestError)。这里宽容化:字符串包成
+        # {"summary": text},None→{},其它标量包成 {"summary": str(value)}。与 warnings 同策略。
+        if value is None:
+            return {}
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            text = value.strip()
+            return {"summary": text} if text else {}
+        if isinstance(value, (list, tuple, set)):
+            return {"items": [str(item) for item in value]}
+        return {"summary": str(value)}
 
     @field_validator("warnings", mode="before")
     @classmethod

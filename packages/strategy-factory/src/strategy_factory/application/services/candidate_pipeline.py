@@ -18,6 +18,7 @@ from ..compact_contracts import compact_backtest_report, compact_quality_gate_re
 from ..factory_execution import resolve_runtime_mode_flags
 from ..governance_plane_contract import build_governance_plane_artifact
 from .._runtime_toggles import observe_first_enabled as _observe_first_enabled
+from ..trade_prediction_contract import attach_trade_prediction_context
 from ...domain.candidates import CandidatePipelineReport
 
 logger = logging.getLogger(__name__)
@@ -61,6 +62,10 @@ class CandidatePipeline:
             or snapshot.get("factory_execution_mode")
             or snapshot.get("execution_mode")
         )
+        candidates = [
+            attach_trade_prediction_context(candidate, snapshot=snapshot)
+            for candidate in list(candidates or [])
+        ]
         runtime_mode_flags = resolve_runtime_mode_flags(
             resolved_execution_mode or "legacy_primary"
         )

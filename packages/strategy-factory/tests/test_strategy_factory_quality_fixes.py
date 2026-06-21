@@ -265,6 +265,133 @@ def test_compact_scalar_metrics_preserves_gate3_quality_evidence():
     assert "trades" not in compact
 
 
+def test_factor_pool_broad_validation_expands_narrow_diagnostic_targets():
+    from strategy_factory.application.backtest_filter import BacktestFilter
+
+    candidate = {
+        "strategy_type": "momentum",
+        "target_symbols": ["600519", "000001"],
+        "params": {
+            "target_symbols": ["600519", "000001"],
+            "candidate_provenance": {
+                "generator_mode": "factor_pool",
+                "source_candidate_artifact_id": "factor-strong",
+            },
+        },
+        "candidate_provenance": {
+            "generator_mode": "factor_pool",
+            "source_candidate_artifact_id": "factor-strong",
+        },
+        "validation_profile": {
+            "profile": "factor_rank_validation",
+            "validation_focus": "broad_generalization",
+            "primary_validation_layer": "combined",
+        },
+    }
+
+    evaluated_codes, target_codes, representative_codes, code_source, validation_focus = (
+        BacktestFilter._resolve_backtest_plan(candidate)
+    )
+
+    assert target_codes == ["600519", "000001"]
+    assert validation_focus == "broad_generalization"
+    assert code_source == "target_plus_representative"
+    assert len(evaluated_codes) > len(target_codes)
+    assert any(code in evaluated_codes for code in representative_codes)
+
+
+def test_factor_pool_validation_summary_becomes_gate3_statistical_report():
+    from strategy_factory.application._submitter_actions.runner import (
+        _StrategySubmitterActionsMixin,
+    )
+
+    params = {
+        "factor_name": "gp_factor_5",
+        "factor_pool_factor_id": "factor-strong",
+        "source_candidate_artifact_id": "factor-strong",
+        "source_validation_artifact_id": "factor-strong",
+        "factor_pool_validation_summary": {
+            "quality_status": "promoted",
+            "quality_score": 94.5,
+            "metrics": {
+                "sample_dates": 60,
+                "rank_ic_mean": 0.206818,
+                "rank_ic_std": 0.141591,
+                "rank_ic_ir": 1.460668,
+            },
+            "rating": {
+                "grade": "A",
+                "recommendation": "promote",
+                "total_score": 88.6079,
+                "governance": {
+                    "raw_metrics": {
+                        "avg_stability_ratio": 0.93,
+                        "avg_degradation": 0.01,
+                        "deflated_sharpe": 1.0,
+                        "pbo": 0.0,
+                        "white_reality_check_p_value": 0.0,
+                        "hansen_spa_p_value": 0.0,
+                    }
+                },
+            },
+            "evidence_summary": {"avg_cross_section_n": 299.4},
+            "persisted_outputs": {"ic_history_rows_total": 73},
+            "qc_labels": {
+                "rank_ic_ir": 0.0,
+                "bootstrap_ci_lower": 0.0,
+                "oos_pass": False,
+                "oos_grade": "unknown",
+            },
+            "qc_shelf_decision": {"decision": "retire"},
+            "qc_autoshelf_applied": False,
+        },
+    }
+
+    report = _StrategySubmitterActionsMixin._factor_pool_validation_report_from_params(
+        params,
+        {"strategy_type": "momentum", "factor_pool_metadata": {"factor_name": "gp_factor_5"}},
+        {"factor_name": "strategy:momentum"},
+    )
+
+    assert report["validation_report_source"] == "active_factor_pool_validation_summary"
+    assert report["factor_name"] == "gp_factor_5"
+    assert report["walk_forward"]["oos_rank_ic_ir"] == 1.460668
+    assert report["purged_kfold"]["oos_rank_ic_mean"] == 0.206818
+    assert report["bootstrap_ci"]["ci_lower"] > 0.0
+    assert report["statistical_metrics"]["param_sensitivity"]["value"] == 0.07
+    assert report["statistical_metrics"]["period_robustness"]["value"]["second_half_ic"] == 0.196818
+    assert report["multiple_testing"]["deflated_sharpe"]["dsr"] == 1.0
+    assert report["active_factor_pool_validation"]["ic_history_rows"] == 73
+
+
+def test_factor_pool_validation_summary_does_not_override_qc_blocked_summary():
+    from strategy_factory.application._submitter_actions.runner import (
+        _StrategySubmitterActionsMixin,
+    )
+
+    base = {"factor_name": "strategy:momentum"}
+    report = _StrategySubmitterActionsMixin._factor_pool_validation_report_from_params(
+        {
+            "factor_pool_validation_summary": {
+                "quality_status": "promoted",
+                "metrics": {
+                    "sample_dates": 60,
+                    "rank_ic_mean": 0.2,
+                    "rank_ic_std": 0.1,
+                    "rank_ic_ir": 1.0,
+                },
+                "rating": {"recommendation": "promote"},
+                "qc_labels": {"oos_available": True, "oos_pass": False},
+                "qc_shelf_decision": {"decision": "retire"},
+            }
+        },
+        {"strategy_type": "momentum"},
+        base,
+    )
+
+    assert report is base
+
+
 def test_research_task_timeout_skips_without_local_fallback(monkeypatch):
     from strategy_factory.application.factory_scheduler import StrategyFactoryScheduler
 
@@ -563,6 +690,181 @@ def test_budget_feedback_controls_gate3_failure_rate():
     assert suppressed["family_control_mode"] == "suppress"
     assert suppressed["control_mode"] == "suppress"
     assert "family_gate_failure_rate_suppress" in suppressed["control_reasons"]
+
+
+def test_budget_feedback_watch_review_score_zero_is_observe_not_freeze():
+    from strategy_factory.application._budget_feedback import resolve_feedback_metrics
+
+    metrics = resolve_feedback_metrics(
+        {
+            "momentum": {
+                "strategy_count": 1,
+                "promotion_review_count": 1,
+                "promotion_review_status": "watch",
+                "promotion_review_recommendation": "observe",
+                "promotion_review_score": 0.0,
+            }
+        },
+        family="momentum",
+    )
+
+    assert metrics["control_mode"] == "cooldown"
+    assert metrics["skill_control_mode"] == "cooldown"
+    assert "family_promotion_review_watch" in metrics["control_reasons"]
+    assert "family_promotion_review_score_freeze" not in metrics["control_reasons"]
+    assert "family_promotion_review_score_freeze" not in metrics["skill_control_reasons"]
+
+
+def test_budget_feedback_rejected_review_score_zero_still_freezes():
+    from strategy_factory.application._budget_feedback import resolve_feedback_metrics
+
+    metrics = resolve_feedback_metrics(
+        {
+            "momentum": {
+                "strategy_count": 1,
+                "promotion_review_count": 1,
+                "promotion_review_status": "rejected",
+                "promotion_review_recommendation": "deprecate",
+                "promotion_review_score": 0.0,
+            }
+        },
+        family="momentum",
+    )
+
+    assert metrics["control_mode"] == "freeze"
+    assert metrics["skill_control_mode"] == "freeze"
+    assert "family_promotion_review_rejected" in metrics["control_reasons"]
+    assert "family_promotion_review_score_freeze" in metrics["control_reasons"]
+
+
+def test_budget_feedback_summary_aggregates_validation_quality_rates():
+    from strategy_factory.application._budget_feedback import (
+        normalize_feedback_input_contract,
+    )
+
+    payload = normalize_feedback_input_contract(
+        {
+            "momentum": {
+                "strategy_count": 3,
+                "raw_validation_a_rate": 2 / 3,
+                "raw_validation_b_rate": 1 / 3,
+                "raw_validation_d_rate": 0.0,
+                "raw_validation_total_score_mean": 70.0,
+                "strict_incubation_ready_rate": 1.0,
+            },
+            "ma_cross": {
+                "strategy_count": 1,
+                "raw_validation_a_rate": 0.0,
+                "raw_validation_b_rate": 0.0,
+                "raw_validation_d_rate": 1.0,
+                "raw_validation_total_score_mean": 35.0,
+                "strict_incubation_ready_rate": 0.0,
+            },
+        },
+        summary={"strategy_count": 4},
+    )
+    summary = payload["summary"]
+
+    assert summary["raw_validation_a_rate"] == pytest.approx(0.5)
+    assert summary["raw_validation_b_rate"] == pytest.approx(0.25)
+    assert summary["raw_validation_d_rate"] == pytest.approx(0.25)
+    assert summary["raw_validation_total_score_mean"] == pytest.approx(61.25)
+    assert summary["strict_incubation_ready_rate"] == pytest.approx(0.75)
+
+
+@pytest.mark.asyncio
+async def test_budget_feedback_source_sampling_keeps_mature_incubating_tail():
+    from strategy_factory.application.research.factor_research_builder import (
+        FactorResearchBuilder,
+    )
+
+    class FakeDB:
+        async def list_strategies(self, status, strategy_type=None, limit=20, offset=0):
+            if status == "incubating":
+                return [
+                    {
+                        "id": f"incubating_{idx}",
+                        "status": "incubating",
+                        "strategy_type": "momentum",
+                    }
+                    for idx in range(int(limit or 0))
+                ]
+            if status == "listed":
+                return [
+                    {
+                        "id": f"listed_{idx}",
+                        "status": "listed",
+                        "strategy_type": "momentum",
+                    }
+                    for idx in range(int(limit or 0))
+                ]
+            if status == "submitted":
+                return [
+                    {
+                        "id": f"submitted_{idx}",
+                        "status": "submitted",
+                        "strategy_type": "momentum",
+                        "params": {
+                            "incubation_budget": {"track": "formal_incubation"}
+                        },
+                    }
+                    for idx in range(int(limit or 0))
+                ]
+            return []
+
+    rows = await FactorResearchBuilder._list_feedback_source_strategies(
+        FakeDB(),
+        limit=180,
+    )
+    ids = {str(row.get("id")) for row in rows}
+
+    assert "incubating_70" in ids
+    assert "incubating_119" in ids
+    assert "incubating_135" not in ids
+    assert any(item.startswith("listed_") for item in ids)
+    assert any(item.startswith("submitted_") for item in ids)
+
+
+@pytest.mark.asyncio
+async def test_budget_feedback_fallback_includes_quality_report_fields():
+    from strategy_factory.application.research.factor_research_builder import (
+        FactorResearchBuilder,
+    )
+    from strategy_factory.infrastructure.mcp_services import clear_runtime_services
+
+    class FakeDB:
+        async def get_signal_stats(self, strategy_id):
+            assert strategy_id == "factory_quality_a"
+            return {
+                "total_signals": 12,
+                "hit_rate": {"1": 0.6, "5": 0.62},
+                "skill_lcb": {"1": 0.04, "5": 0.05},
+            }
+
+        async def get_latest_strategy_quality_report(self, strategy_id):
+            assert strategy_id == "factory_quality_a"
+            return {
+                "passed": 1,
+                "summary": {
+                    "validation_grade": "A",
+                    "raw_validation_grade": "A",
+                    "validation_total_score": 76.5,
+                    "strict_incubation_ready": True,
+                    "live_candidate_ready": False,
+                },
+            }
+
+    clear_runtime_services()
+    overview = await FactorResearchBuilder._load_feedback_evidence_overview(
+        FakeDB(),
+        {"id": "factory_quality_a"},
+    )
+
+    assert overview["strategy_id"] == "factory_quality_a"
+    assert overview["raw_validation_grade"] == "A"
+    assert overview["validation_total_score"] == 76.5
+    assert overview["strict_incubation_ready"] is True
+    assert overview["quality_report_passed"] is True
 
 
 def test_spawner_feedback_blocks_failed_family_signal_variants():

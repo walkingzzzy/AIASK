@@ -250,14 +250,15 @@ def test_factor_research_refresh_remains_explicit_when_auto_refresh_disabled(mon
     assert artifact["freshness_repair"]["refresh_status"] == "disabled"
 
 
-def test_cycle_runner_does_not_enable_factor_self_heal_by_default():
+def test_cycle_runner_keeps_factor_self_heal_env_gated_by_default():
     root = Path(__file__).resolve().parents[3]
     parts_dir = root / "packages/strategy-factory/src/strategy_factory/application/cycle_runner_parts"
     text = "\n".join(
         p.read_text(encoding="utf-8", errors="ignore") for p in sorted(parts_dir.glob("*.py"))
     )
 
-    assert '"_factor_refresh_self_heal": False' in text
+    assert 'os.getenv("STRATEGY_FACTORY_FACTOR_REFRESH_SELF_HEAL", "0")' in text
+    assert '"_factor_refresh_self_heal": factor_refresh_self_heal' in text
 
 
 def test_scheduler_run_once_heartbeats_task_board_during_long_cycle(tmp_path, monkeypatch):

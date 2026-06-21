@@ -126,6 +126,40 @@ class SignalTracker:
             "live_ready_review",
         }
 
+    async def _load_runtime_observation_strategies(self, db, *, limit: int = 200) -> list[dict]:
+        """Load paper/observe strategies for signal generation and paper execution."""
+        candidates: list[dict] = []
+        for method_name in (
+            "list_active_paper_observation_strategies",
+            "list_paper_observation_strategies",
+        ):
+            method = getattr(db, method_name, None)
+            if not callable(method):
+                continue
+            try:
+                rows = await method(limit=limit)
+            except TypeError:
+                try:
+                    rows = await method()
+                except Exception as exc:
+                    logger.warning("SignalTracker: %s failed: %s", method_name, exc)
+                    continue
+            except Exception as exc:
+                logger.warning("SignalTracker: %s failed: %s", method_name, exc)
+                continue
+            candidates.extend(list(rows or []))
+        return self._merge_unique_strategies(candidates)
+
+    @staticmethod
+    def _phase_timeout_seconds(phase_name: str) -> float:
+        specific = f"STRATEGY_SIGNAL_TRACKER_PHASE_{phase_name.upper()}_TIMEOUT_SEC"
+        raw = os.getenv(specific) or os.getenv("STRATEGY_SIGNAL_TRACKER_PHASE_TIMEOUT_SEC") or "45"
+        try:
+            value = float(str(raw).strip())
+        except Exception:
+            value = 45.0
+        return max(5.0, min(value, 300.0))
+
     @staticmethod
     def _resolve_strategy_universe(strategy: dict, default_universe: list[str]) -> list[str]:
         payload = dict(strategy or {})
@@ -276,14 +310,68 @@ class SignalTracker:
             "skipped_runtime_controls": 0,
             "task_run_id": task_run.get('id'),
             "errors": [],
+            "phase_results": {},
         }
 
         strategies = []
         executable_strategies = []
         submitted_runtime_strategies = []
+        paper_runtime_strategies = []
 
-        # Phase A: Generate signals for listed/incubating strategies
-        try:
+        async def _run_phase(phase_name: str, phase_coro_factory):
+            before = {
+                key: int(value or 0)
+                for key, value in results.items()
+                if isinstance(value, (int, float)) and key != "task_run_id"
+            }
+            before_errors = len(results["errors"])
+            timeout_sec = self._phase_timeout_seconds(phase_name)
+            phase_started = datetime.now()
+            status = "completed"
+            error = None
+            payload: dict[str, Any] = {}
+            try:
+                raw_payload = await asyncio.wait_for(phase_coro_factory(), timeout=timeout_sec)
+                if isinstance(raw_payload, dict):
+                    payload = raw_payload
+            except asyncio.TimeoutError:
+                status = "timeout"
+                error = f"phase_{phase_name}_timeout"
+                results["errors"].append(error)
+                logger.warning("SignalTracker: Phase %s timed out after %.1fs", phase_name, timeout_sec)
+            except Exception as exc:
+                status = "error"
+                error = f"Phase {phase_name}: {exc}"
+                results["errors"].append(error)
+                logger.warning("SignalTracker: Phase %s failed: %s", phase_name, exc)
+            elapsed = (datetime.now() - phase_started).total_seconds()
+            after = {
+                key: int(value or 0)
+                for key, value in results.items()
+                if isinstance(value, (int, float)) and key != "task_run_id"
+            }
+            deltas = {
+                key: after.get(key, 0) - before.get(key, 0)
+                for key in sorted(set(before) | set(after))
+                if after.get(key, 0) - before.get(key, 0)
+            }
+            phase_result = {
+                "status": status,
+                "timeout": status == "timeout",
+                "timeout_sec": timeout_sec,
+                "elapsed_seconds": round(elapsed, 3),
+                "errors": len(results["errors"]) - before_errors,
+                "metric_deltas": deltas,
+            }
+            phase_result.update(payload)
+            if error:
+                phase_result["error"] = error
+            results["phase_results"][phase_name] = phase_result
+            return phase_result
+
+        # Phase A: Generate signals for listed/incubating/observation strategies
+        async def _phase_a():
+            nonlocal strategies, executable_strategies, submitted_runtime_strategies, paper_runtime_strategies
             active_strategies = []
             for status in ("listed", "incubating"):
                 rows = await db.list_strategies(status, limit=200)
@@ -292,13 +380,19 @@ class SignalTracker:
                 db,
                 limit=200,
             )
+            paper_runtime_strategies = await self._load_runtime_observation_strategies(
+                db,
+                limit=200,
+            )
             strategies = self._merge_unique_strategies(
                 active_strategies,
                 submitted_runtime_strategies,
+                paper_runtime_strategies,
             )
 
             from .runtime_control import get_strategy_runtime_control_service
             control_service = get_strategy_runtime_control_service()
+            processed = 0
             for s in strategies:
                 control = await db.get_strategy_runtime_control(s['id']) if hasattr(db, 'get_strategy_runtime_control') else None
                 if control_service.is_blocking_mode((control or {}).get('control_mode')):
@@ -307,6 +401,7 @@ class SignalTracker:
                 executable_strategies.append(s)
 
             for s in executable_strategies:
+                processed += 1
                 try:
                     stype = s.get("strategy_type", "")
                     instance, execution_semantic_mode = StrategyRegistry.create_runtime_strategy(
@@ -356,11 +451,19 @@ class SignalTracker:
                             results["signals_generated"] += count
                 except Exception as e:
                     results["errors"].append(f"Signal gen {s.get('id')}: {e}")
-        except Exception as e:
-            results["errors"].append(f"Phase A: {e}")
+            return {
+                "active_strategy_count": len(active_strategies),
+                "submitted_runtime_strategy_count": len(submitted_runtime_strategies),
+                "paper_runtime_strategy_count": len(paper_runtime_strategies),
+                "strategy_count": len(strategies),
+                "executable_strategy_count": len(executable_strategies),
+                "processed_strategy_count": processed,
+            }
+
+        await _run_phase("A", _phase_a)
 
         # Phase B: Compute forward returns for past signals and historical backlog
-        try:
+        async def _phase_b():
             backfill_result = await self.backfill_forward_returns(
                 db,
                 forward_days_list=FORWARD_DAYS,
@@ -369,31 +472,47 @@ class SignalTracker:
             )
             results["forward_returns_computed"] = int(backfill_result.get("computed") or 0)
             results["forward_returns_backfill"] = backfill_result
-        except Exception as e:
-            results["errors"].append(f"Phase B: {e}")
+            return {
+                "computed": int(backfill_result.get("computed") or 0),
+                "windows": list(dict(backfill_result.get("per_window") or {}).keys()),
+                "truncated": bool(backfill_result.get("truncated")),
+            }
+
+        await _run_phase("B", _phase_b)
 
         # Phase C: Sync incubation orders and metrics
-        try:
+        async def _phase_c():
             from .incubation import get_strategy_incubation_service
             incubation_result = await get_strategy_incubation_service().process_strategies(db, executable_strategies, signal_date=today)
             results["incubation_orders"] = int(incubation_result.get("orders_created") or 0)
             results["incubation_orders_filled"] = int(incubation_result.get("orders_filled") or 0)
             results["incubation_nav_snapshots"] = int(incubation_result.get("nav_snapshots") or 0)
             results["incubation_metrics"] = int(incubation_result.get("metrics_recorded") or 0)
-        except Exception as e:
-            results["errors"].append(f"Phase C: {e}")
+            return {
+                "strategy_count": len(executable_strategies),
+                "orders_created": int(incubation_result.get("orders_created") or 0),
+                "orders_filled": int(incubation_result.get("orders_filled") or 0),
+                "metrics_recorded": int(incubation_result.get("metrics_recorded") or 0),
+            }
+
+        await _run_phase("C", _phase_c)
 
         # Phase D: Runtime risk scan
-        try:
+        async def _phase_d():
             from .runtime_risk import get_strategy_runtime_risk_service
             risk_result = await get_strategy_runtime_risk_service().scan(db, strategies, enforce_actions=True)
             results["risk_events"] = int(risk_result.get("event_count") or 0)
             results["risk_actions"] = int(risk_result.get("action_count") or 0)
-        except Exception as e:
-            results["errors"].append(f"Phase D: {e}")
+            return {
+                "strategy_count": len(strategies),
+                "event_count": int(risk_result.get("event_count") or 0),
+                "action_count": int(risk_result.get("action_count") or 0),
+            }
+
+        await _run_phase("D", _phase_d)
 
         # Phase E: 孵化流水线推进与自动晋级
-        try:
+        async def _phase_e():
             from .incubation_pipeline import get_strategy_incubation_pipeline_service
             pipeline_service = get_strategy_incubation_pipeline_service()
             pipeline_result = await pipeline_service.run_batch(
@@ -419,27 +538,34 @@ class SignalTracker:
             results["incubation_pipeline_snapshots"] += submitted_pipeline_snapshots
             results["incubation_auto_promotions"] = int(pipeline_result.get("auto_promoted") or 0)
             results["submitted_runtime_pipeline_snapshots"] = submitted_pipeline_snapshots
-        except Exception as e:
-            results["errors"].append(f"Phase E: {e}")
+            return {
+                "incubating_pipeline_snapshots": int(pipeline_result.get("count") or 0),
+                "submitted_runtime_pipeline_snapshots": submitted_pipeline_snapshots,
+                "auto_promoted": int(pipeline_result.get("auto_promoted") or 0),
+            }
+
+        await _run_phase("E", _phase_e)
 
         # Phase F: Lifecycle scan
-        try:
+        async def _phase_f():
             from ..tools.managers.strategy_manager import _lifecycle_scan
             scan_result = await _lifecycle_scan(db)
             results["transitions"] = len(scan_result.get("transitions", []))
-        except Exception as e:
-            results["errors"].append(f"Phase F: {e}")
+            return {"transitions": len(scan_result.get("transitions", []))}
 
-        # Phase G: 向量索引注册表校准
-        try:
+        await _run_phase("F", _phase_f)
+
+        # Phase G: Vector registry reconciliation.
+        async def _phase_g():
             from .vector_governance import get_strategy_vector_governance_service
             vector_result = await get_strategy_vector_governance_service().reconcile_registry(db, index_name='strategy_behavior', profile_type='behavior')
             results["vector_registry_updates"] = int(vector_result.get("registry_updated") or 0)
-        except Exception as e:
-            results["errors"].append(f"Phase F: {e}")
+            return {"registry_updated": int(vector_result.get("registry_updated") or 0)}
+
+        await _run_phase("G", _phase_g)
 
         # Phase H: 事件投影快照重建
-        try:
+        async def _phase_h():
             from .domain_projection import get_strategy_domain_projection_service
             projection_result = await get_strategy_domain_projection_service().rebuild_batch(
                 db,
@@ -448,10 +574,32 @@ class SignalTracker:
                 source='signal_tracker',
             )
             results["projection_snapshots"] = int(projection_result.get("count") or 0)
-        except Exception as e:
-            results["errors"].append(f"Phase H: {e}")
+            return {"projection_snapshots": int(projection_result.get("count") or 0)}
+
+        await _run_phase("H", _phase_h)
 
         elapsed = (datetime.now() - start).total_seconds()
+        phase_timeouts = [
+            name
+            for name, payload in dict(results.get("phase_results") or {}).items()
+            if bool(dict(payload or {}).get("timeout"))
+        ]
+        phase_errors = [
+            name
+            for name, payload in dict(results.get("phase_results") or {}).items()
+            if str(dict(payload or {}).get("status") or "") == "error"
+        ]
+        results["timeout"] = bool(phase_timeouts)
+        results["phase_timeout_count"] = len(phase_timeouts)
+        results["phase_timeouts"] = phase_timeouts
+        results["phase_error_count"] = len(phase_errors)
+        results["phase_errors"] = phase_errors
+        results["runtime_universe"] = {
+            "strategies": len(strategies),
+            "executable": len(executable_strategies),
+            "submitted_runtime": len(submitted_runtime_strategies),
+            "paper_runtime": len(paper_runtime_strategies),
+        }
         self.last_run = datetime.now()
         self.last_result = {**results, "elapsed_seconds": round(elapsed, 1)}
         if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
@@ -586,7 +734,11 @@ class SignalTracker:
                 signal_date = self._resolve_signal_base_date(record)
                 if signal_date is None:
                     continue
-                base_index = index_by_date.get(signal_date)
+                base_index = self._resolve_forward_base_index(
+                    close_series,
+                    signal_date,
+                    index_by_date=index_by_date,
+                )
                 if base_index is None:
                     continue
                 future_index = base_index + int(forward_days)
@@ -682,6 +834,28 @@ class SignalTracker:
             close_by_date[trade_date] = close
         return sorted(close_by_date.items(), key=lambda item: item[0])
 
+    @staticmethod
+    def _resolve_forward_base_index(
+        close_series: List[tuple[date, float]],
+        base_date: date,
+        *,
+        index_by_date: Optional[dict[date, int]] = None,
+    ) -> Optional[int]:
+        if not close_series or base_date is None:
+            return None
+        index_map = index_by_date or {
+            trade_date: idx for idx, (trade_date, _close) in enumerate(close_series)
+        }
+        exact_index = index_map.get(base_date)
+        if exact_index is not None:
+            return exact_index
+        previous_index: Optional[int] = None
+        for idx, (trade_date, _close) in enumerate(close_series):
+            if trade_date > base_date:
+                break
+            previous_index = idx
+        return previous_index
+
     def _has_forward_coverage(
         self,
         close_series: List[tuple[date, float]],
@@ -697,7 +871,11 @@ class SignalTracker:
         horizon = max(int(forward_days or 0), 0)
         index_by_date = {trade_date: idx for idx, (trade_date, _close) in enumerate(close_series)}
         for base_date in base_dates:
-            base_index = index_by_date.get(base_date)
+            base_index = self._resolve_forward_base_index(
+                close_series,
+                base_date,
+                index_by_date=index_by_date,
+            )
             if base_index is None:
                 return False
             if horizon > 0 and base_index + horizon >= len(close_series):

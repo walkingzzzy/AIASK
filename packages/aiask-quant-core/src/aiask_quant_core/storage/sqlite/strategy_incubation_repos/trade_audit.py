@@ -337,9 +337,55 @@ class _TradeAuditMixin:
         async with self.acquire() as conn:
             row = await conn.fetchrow(
                 """
+                WITH classified_positions AS (
+                    SELECT
+                        p.*,
+                        CASE
+                            WHEN LOWER(COALESCE(entry_order.source, '')) = 'backtest_bootstrap_import'
+                              OR LOWER(COALESCE(exit_order.source, '')) = 'backtest_bootstrap_import'
+                              OR LOWER(COALESCE(entry_order.reason, '')) LIKE 'backtest_bootstrap%'
+                              OR LOWER(COALESCE(exit_order.reason, '')) LIKE 'backtest_bootstrap%'
+                              OR EXISTS (
+                                  SELECT 1
+                                  FROM strategy_trade_position_fills f
+                                  WHERE f.position_id = p.position_id
+                                    AND json_valid(COALESCE(f.payload, '{}'))
+                                    AND (
+                                        COALESCE(json_extract(f.payload, '$.source'), '') = 'backtest_bootstrap_import'
+                                        OR COALESCE(json_extract(f.payload, '$.bootstrap_source'), '') = 'backtest_to_incubation_v1'
+                                    )
+                              )
+                            THEN 1
+                            ELSE 0
+                        END AS bootstrap_round_trip
+                    FROM strategy_trade_positions p
+                    LEFT JOIN paper_orders entry_order
+                      ON CAST(entry_order.id AS TEXT) = CAST(p.entry_order_id AS TEXT)
+                    LEFT JOIN paper_orders exit_order
+                      ON CAST(exit_order.id AS TEXT) = CAST(p.exit_order_id AS TEXT)
+                    WHERE p.strategy_id = $1
+                )
                 SELECT
                     COALESCE(COUNT(*), 0) AS mapped_position_count,
-                    COALESCE(COUNT(*) FILTER (WHERE audit_eligible), 0) AS realized_trade_count,
+                    COALESCE(COUNT(*) FILTER (WHERE audit_eligible), 0) AS closed_round_trip_count,
+                    COALESCE(
+                        COUNT(*) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
+                        0
+                    ) AS realized_trade_count,
+                    COALESCE(
+                        COUNT(*) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
+                        0
+                    ) AS real_paper_round_trip_count,
+                    COALESCE(
+                        COUNT(*) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 1
+                        ),
+                        0
+                    ) AS bootstrap_round_trip_count,
                     COALESCE(
                         COUNT(*) FILTER (
                             WHERE LOWER(COALESCE(status, '')) = 'open'
@@ -347,33 +393,71 @@ class _TradeAuditMixin:
                         0
                     ) AS open_position_count,
                     COALESCE(COUNT(*) FILTER (WHERE NOT audit_eligible), 0) AS incomplete_position_count,
-                    COALESCE(AVG(realized_return) FILTER (WHERE audit_eligible), 0) AS trade_expectancy,
                     COALESCE(
-                        SUM(realized_pnl) FILTER (WHERE audit_eligible)
-                        / NULLIF(SUM(entry_amount + entry_commission) FILTER (WHERE audit_eligible), 0),
+                        AVG(realized_return) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
+                        0
+                    ) AS trade_expectancy,
+                    COALESCE(
+                        SUM(realized_pnl) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        )
+                        / NULLIF(
+                            SUM(entry_amount + entry_commission) FILTER (
+                                WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                            ),
+                            0
+                        ),
                         0
                     ) AS pnl_conversion_efficiency,
                     COALESCE(
-                        AVG(execution_conversion_efficiency) FILTER (WHERE audit_eligible),
+                        AVG(execution_conversion_efficiency) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
                         0
                     ) AS execution_conversion_efficiency,
                     COALESCE(
-                        AVG(CASE WHEN realized_pnl > 0 THEN 1.0 ELSE 0.0 END) FILTER (WHERE audit_eligible),
+                        AVG(CASE WHEN realized_pnl > 0 THEN 1.0 ELSE 0.0 END) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
                         0
                     ) AS execution_win_rate,
                     COALESCE(
-                        AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) FILTER (WHERE audit_eligible)
-                        / NULLIF(ABS(AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) FILTER (WHERE audit_eligible)), 0),
+                        AVG(CASE WHEN realized_pnl > 0 THEN realized_pnl END) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        )
+                        / NULLIF(
+                            ABS(
+                                AVG(CASE WHEN realized_pnl < 0 THEN realized_pnl END) FILTER (
+                                    WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                                )
+                            ),
+                            0
+                        ),
                         0
                     ) AS avg_win_loss_ratio,
-                    COALESCE(SUM(realized_pnl) FILTER (WHERE audit_eligible), 0) AS realized_pnl_total
-                FROM strategy_trade_positions
-                WHERE strategy_id = $1
+                    COALESCE(
+                        SUM(realized_pnl) FILTER (
+                            WHERE audit_eligible AND COALESCE(bootstrap_round_trip, 0) = 0
+                        ),
+                        0
+                    ) AS realized_pnl_total
+                FROM classified_positions
                 """,
                 strategy_id,
             )
         payload = self._normalize_trade_audit_summary_counts(dict(row or {}))
         realized_trade_count = int(payload.get("realized_trade_count") or 0)
+        closed_round_trip_count = int(
+            payload.get("closed_round_trip_count")
+            or payload.get("total_realized_trade_count")
+            or realized_trade_count
+        )
+        bootstrap_round_trip_count = int(payload.get("bootstrap_round_trip_count") or 0)
+        real_paper_round_trip_count = int(
+            payload.get("real_paper_round_trip_count") or realized_trade_count
+        )
         trade_expectancy = float(payload.get("trade_expectancy") or 0.0)
         pnl_conversion_efficiency = float(payload.get("pnl_conversion_efficiency") or 0.0)
         execution_conversion_efficiency = float(payload.get("execution_conversion_efficiency") or 0.0)
@@ -381,7 +465,10 @@ class _TradeAuditMixin:
             {
                 **payload,
                 "strategy_type": strategy_type,
-                "realized_trade_count": realized_trade_count,
+                "realized_trade_count": real_paper_round_trip_count,
+                "real_paper_round_trip_count": real_paper_round_trip_count,
+                "bootstrap_round_trip_count": bootstrap_round_trip_count,
+                "closed_round_trip_count": closed_round_trip_count,
                 "trade_expectancy": trade_expectancy,
                 "pnl_conversion_efficiency": pnl_conversion_efficiency,
                 "execution_conversion_efficiency": execution_conversion_efficiency,
@@ -400,7 +487,13 @@ class _TradeAuditMixin:
             ],
             "mapped_position_count": int(payload.get("mapped_position_count") or 0),
             "strategy_type": strategy_type,
-            "realized_trade_count": realized_trade_count,
+            "realized_trade_count": real_paper_round_trip_count,
+            "real_paper_round_trip_count": real_paper_round_trip_count,
+            "real_paper_round_trips": real_paper_round_trip_count,
+            "bootstrap_round_trip_count": bootstrap_round_trip_count,
+            "bootstrap_round_trips": bootstrap_round_trip_count,
+            "closed_round_trip_count": closed_round_trip_count,
+            "total_realized_trade_count": closed_round_trip_count,
             "incomplete_position_count": int(payload.get("incomplete_position_count") or 0),
             "raw_incomplete_position_count": int(
                 payload.get("raw_incomplete_position_count") or 0
@@ -858,6 +951,17 @@ class _TradeAuditMixin:
                 "position_count": position_count,
                 "fill_count": fill_count,
                 "position_status_counts": position_status_counts,
+                "closed_round_trip_count": int(
+                    dict(audit_summary or {}).get("closed_round_trip_count") or 0
+                ),
+                "real_paper_round_trip_count": int(
+                    dict(audit_summary or {}).get("real_paper_round_trip_count")
+                    or dict(audit_summary or {}).get("realized_trade_count")
+                    or 0
+                ),
+                "bootstrap_round_trip_count": int(
+                    dict(audit_summary or {}).get("bootstrap_round_trip_count") or 0
+                ),
                 "audit_summary": audit_summary,
             },
             "recommendations": recommendations,

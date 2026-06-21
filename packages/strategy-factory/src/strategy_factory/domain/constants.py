@@ -917,17 +917,39 @@ PIPELINE_STAGE_TIMEOUTS: Dict[str, float] = {
     "strategy_generation": _resolve_pipeline_stage_timeout("strategy_generation", 12.0),
 }
 
+def _resolve_pipeline_stage_max_tokens(stage: str, legacy_default: int) -> int:
+    """每阶段 max_tokens,支持 env 覆盖。
+
+    reasoning 类模型(如 deepseek-v4-pro)会先消耗 reasoning token 再产出 content,
+    过紧的上限会导致 content 为空 / JSON 截断。可用
+    STRATEGY_PIPELINE_STAGE_MAX_TOKENS__<STAGE> 或全局 STRATEGY_PIPELINE_STAGE_MAX_TOKENS 调高。
+    """
+    specific = os.getenv(f"STRATEGY_PIPELINE_STAGE_MAX_TOKENS__{stage.upper()}")
+    if specific is not None:
+        try:
+            return max(128, int(str(specific).strip()))
+        except (TypeError, ValueError):
+            pass
+    global_override = os.getenv("STRATEGY_PIPELINE_STAGE_MAX_TOKENS")
+    if global_override is not None:
+        try:
+            return max(128, int(str(global_override).strip()))
+        except (TypeError, ValueError):
+            pass
+    return legacy_default
+
+
 PIPELINE_STAGE_MAX_TOKENS: Dict[str, int] = {
-    "event_recognition": 400,
-    "theme_propagation": 600,
-    "exposure_mapping": 800,
-    "market_confirmation": 600,
+    "event_recognition": _resolve_pipeline_stage_max_tokens("event_recognition", 400),
+    "theme_propagation": _resolve_pipeline_stage_max_tokens("theme_propagation", 600),
+    "exposure_mapping": _resolve_pipeline_stage_max_tokens("exposure_mapping", 800),
+    "market_confirmation": _resolve_pipeline_stage_max_tokens("market_confirmation", 600),
     # 2026-05-28 (P0/C): bumped from 1200 → 4000 to accommodate
     # evidence_chain + prediction_contract + confidence_contract auto-backfill
     # which adds ~2500 chars of additional output per candidate when EVIDENCE_CONTRACT_ENABLED=1.
     # JSON truncation at 1200 tokens caused 'external llm response missing candidates'
     # ValueError storms after enabling evidence contract toggle.
-    "strategy_generation": 4000,
+    "strategy_generation": _resolve_pipeline_stage_max_tokens("strategy_generation", 4000),
 }
 
 PIPELINE_STAGE_TEMPERATURE: Dict[str, float] = {

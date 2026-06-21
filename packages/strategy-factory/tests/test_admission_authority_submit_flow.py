@@ -201,6 +201,13 @@ async def test_gate3_record_only_counts_s_grade_as_quality_record_without_lifecy
             "live_candidate_ready": False,
             "strict_incubation_ready": True,
             "incubation_pass_mode": "strict",
+            "semantic_runtime_match": True,
+            "runtime_family_data_source": "market_data_runtime",
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+            "execution_readiness_tier": "formal_runtime_ready",
+            "trade_prediction_contract_status": "ready",
+            "trade_prediction_contract_observation_gap": False,
         }
 
     class _Gateway:
@@ -304,6 +311,13 @@ async def test_submit_one_can_opt_out_of_gate3_record_only(monkeypatch) -> None:
             "live_candidate_ready": False,
             "strict_incubation_ready": True,
             "incubation_pass_mode": "strict",
+            "semantic_runtime_match": True,
+            "runtime_family_data_source": "market_data_runtime",
+            "proxy_runtime_used": False,
+            "diagnostic_only": False,
+            "execution_readiness_tier": "formal_runtime_ready",
+            "trade_prediction_contract_status": "ready",
+            "trade_prediction_contract_observation_gap": False,
         }
 
     class _Gateway:
@@ -366,9 +380,15 @@ async def test_submit_one_can_opt_out_of_gate3_record_only(monkeypatch) -> None:
 
     assert result["record_only"] is False
     assert result["created_strategy_pool"] is True
-    assert result["submitted"] is True
     assert coordinator.persisted
-    assert coordinator.handled[0]["submission_lane"] in {"formal_incubation", "observe_incubation"}
+    assert coordinator.handled
+    lane = coordinator.handled[0]["submission_lane"]
+    assert lane in {"formal_incubation", "observe_incubation"}
+    if lane == "formal_incubation":
+        assert result["submitted"] is False
+        assert result["summary"]["status"] == "incubating"
+    else:
+        assert result["submitted"] is True
 
 
 @pytest.mark.asyncio

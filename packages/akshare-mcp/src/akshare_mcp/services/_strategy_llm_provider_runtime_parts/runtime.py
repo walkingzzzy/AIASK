@@ -208,7 +208,7 @@
                         data = {wrap_key: data}
                     if not isinstance(data, dict):
                         raise ValueError(f"call_stage({stage_id}): expected JSON object, got {type(data).__name__}")
-                    self._record_request_success()
+                    self._record_stage_success()
                     return data
                 except StrategyLLMProviderCompatibilityError as exc:
                     last_exc = exc

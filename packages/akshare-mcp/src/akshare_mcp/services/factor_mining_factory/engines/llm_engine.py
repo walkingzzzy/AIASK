@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -71,16 +72,27 @@ class LLMSearchEngine:
             return []
 
         # 构建 prompt
-        codes = list(getattr(context, "codes", [])[:8]) if hasattr(context, "codes") else []
+        # prompt 规模治本:codes 默认 4(原8)、lookback 默认 120(原180)。
+        # 实测原配置真实 prompt≈9644 tokens,构建32s+LLM45s,工厂运行偶发破 180s engine budget。
+        # 减半 codes + 缩 lookback 直接砍 prompt 构建时间与 token 数。可 env 覆盖回大值。
+        def _env_int(name: str, default: int) -> int:
+            try:
+                return max(1, int(str(os.getenv(name, default)).strip()))
+            except Exception:
+                return default
+
+        max_codes = _env_int("FACTOR_LLM_PROMPT_MAX_CODES", 4)
+        lookback_bars = _env_int("FACTOR_LLM_PROMPT_LOOKBACK_BARS", 120)
+        codes = list(getattr(context, "codes", [])[:max_codes]) if hasattr(context, "codes") else []
         if not codes:
-            codes = list(getattr(context, "validation_codes", [])[:8])
+            codes = list(getattr(context, "validation_codes", [])[:max_codes])
         prompt = None
         try:
             prompt = await build_factor_mining_prompt(
                 db,
                 codes,
                 candidate_count=budget.candidate_count,
-                lookback_bars=180,
+                lookback_bars=lookback_bars,
                 memory_context=self._memory_context(context),
             )
         except Exception as exc:
@@ -211,7 +223,21 @@ class LLMSearchEngine:
                     "prefer candidates with clear economic hypotheses",
                     "prefer robust, testable mutations of the supplied blueprints",
                     "avoid one-field raw expressions and avoid redundant variants",
+                    "optimize for strict admission, not quick IC only",
+                    "avoid blueprint mutations likely to fail PBO, White Reality Check, or Hansen SPA",
+                    "do not repeat memory_context failed patterns; use them as negative examples",
                 ],
+                "strict_admission_policy": {
+                    "minimum_evidence": {
+                        "sample_dates": 60,
+                        "avg_cross_section_n": 80,
+                        "ic_history_rows": 60,
+                        "abs_rank_ic_mean": 0.025,
+                        "rank_ic_ir": 0.25,
+                        "positive_ratio": 0.52,
+                    },
+                    "governance": "multiple_testing risk must be low; PBO high or weak reality checks block admission",
+                },
             },
             "output_contract": {
                 "root_fields": ["candidates", "analysis", "warnings"],
@@ -237,13 +263,15 @@ class LLMSearchEngine:
             "You are a quantitative equity factor researcher. Return only JSON with "
             "root fields candidates, analysis, warnings. Generate factor candidates "
             "by mutating, combining, and refining the provided alpha_blueprints. "
-            "Use only the DSL fields and functions in the request payload."
+            "Use only the DSL fields and functions in the request payload. "
+            "Optimize for formal strict admission with low multiple-testing risk, not quick IC only."
         )
         user_prompt = (
             "Generate finance-prior factor candidates from this payload:\n"
             f"{json.dumps(request_payload, ensure_ascii=False, indent=2, default=str)}\n\n"
             "Do not include markdown or prose outside JSON. Before finalizing, verify that "
-            "every expression_dsl is point-in-time safe and uses only allowed fields/functions."
+            "every expression_dsl is point-in-time safe and uses only allowed fields/functions. "
+            "Avoid candidates that are merely close variants of common basis factors or failed memory patterns."
         )
         return FactorMiningPrompt(
             system_prompt=system_prompt,

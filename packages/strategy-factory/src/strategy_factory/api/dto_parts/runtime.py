@@ -60,6 +60,8 @@ class FactoryStatusDTO:
     last_raw_validation_b_rate: float = 0.0
     last_raw_validation_c_rate: float = 0.0
     last_raw_validation_d_rate: float = 0.0
+    last_incubation_budget_formal_runtime_ready_candidate_count: int = 0
+    last_incubation_budget_formal_runtime_ready_selected_count: int = 0
     last_strict_incubation_ready_count: int = 0
     last_strict_incubation_ready_rate: float = 0.0
     last_live_candidate_ready_count: int = 0
@@ -329,6 +331,24 @@ class FactoryStatusDTO:
                 or last_submission_artifact.get("raw_validation_d_rate")
                 or 0.0
             ),
+            last_incubation_budget_formal_runtime_ready_candidate_count=int(
+                last_summary.get("incubation_budget_formal_runtime_ready_candidate_count")
+                or last_result.get("incubation_budget_formal_runtime_ready_candidate_count")
+                or last_submission_artifact.get("formal_runtime_ready_candidate_count")
+                or dict(last_submission_artifact.get("incubation_budget_summary") or {}).get(
+                    "formal_runtime_ready_candidate_count"
+                )
+                or 0
+            ),
+            last_incubation_budget_formal_runtime_ready_selected_count=int(
+                last_summary.get("incubation_budget_formal_runtime_ready_selected_count")
+                or last_result.get("incubation_budget_formal_runtime_ready_selected_count")
+                or last_submission_artifact.get("formal_runtime_ready_selected_count")
+                or dict(last_submission_artifact.get("incubation_budget_summary") or {}).get(
+                    "formal_runtime_ready_selected_count"
+                )
+                or 0
+            ),
             last_strict_incubation_ready_count=int(
                 last_summary.get("strict_incubation_ready_count")
                 or last_result.get("strict_incubation_ready_count")
@@ -491,6 +511,12 @@ class FactoryStatusDTO:
             "last_raw_validation_b_rate": self.last_raw_validation_b_rate,
             "last_raw_validation_c_rate": self.last_raw_validation_c_rate,
             "last_raw_validation_d_rate": self.last_raw_validation_d_rate,
+            "last_incubation_budget_formal_runtime_ready_candidate_count": (
+                self.last_incubation_budget_formal_runtime_ready_candidate_count
+            ),
+            "last_incubation_budget_formal_runtime_ready_selected_count": (
+                self.last_incubation_budget_formal_runtime_ready_selected_count
+            ),
             "last_strict_incubation_ready_count": self.last_strict_incubation_ready_count,
             "last_strict_incubation_ready_rate": self.last_strict_incubation_ready_rate,
             "last_live_candidate_ready_count": self.last_live_candidate_ready_count,

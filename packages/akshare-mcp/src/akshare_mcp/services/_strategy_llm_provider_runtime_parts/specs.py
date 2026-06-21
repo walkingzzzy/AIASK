@@ -1,6 +1,7 @@
 
         def get_health_snapshot(self) -> dict[str, Any]:
             active_compatibility = self._active_compatibility_failure()
+            _compact_level, recent_failure_reason = self._recent_failure_degrade_state()
             outcomes = list(getattr(self, "_recent_request_outcomes", []) or [])
             recent_request_count = len(outcomes)
             compatibility_failure_count = sum(
@@ -27,6 +28,12 @@
             elif active_compatibility is not None:
                 scheduler_should_disable = True
                 scheduler_skip_reason = "compatibility_cooldown_active"
+            elif recent_failure_reason == "recent_overload":
+                scheduler_should_disable = True
+                scheduler_skip_reason = "overload_cooldown_active"
+            elif recent_failure_reason == "recent_timeout":
+                scheduler_should_disable = True
+                scheduler_skip_reason = "timeout_cooldown_active"
             elif recent_request_count >= 2 and compatibility_failure_ratio >= 0.5:
                 scheduler_should_disable = True
                 scheduler_skip_reason = "compatibility_failure_ratio_high"
@@ -62,6 +69,12 @@
                 "compatibility_cooldown_sec": (
                     active_compatibility.get("compatibility_cooldown_sec") if active_compatibility else 0.0
                 ),
+                "recent_timeout_streak": self._recent_timeout_streak,
+                "recent_timeout_cooldown_active": recent_failure_reason == "recent_timeout",
+                "recent_timeout_cooldown_sec": round(max(self._recent_timeout_cooldown_until - time.monotonic(), 0.0), 4),
+                "recent_overload_streak": int(getattr(self, "_recent_overload_streak", 0) or 0),
+                "recent_overload_cooldown_active": recent_failure_reason == "recent_overload",
+                "recent_overload_cooldown_sec": round(max(getattr(self, "_recent_overload_cooldown_until", 0.0) - time.monotonic(), 0.0), 4),
                 "scheduler_should_disable": scheduler_should_disable,
                 "scheduler_skip_reason": scheduler_skip_reason,
                 "last_error_type": self._last_failure_type,
@@ -127,7 +140,7 @@
                 self._recent_overload_cooldown_until = 0.0
             if self._recent_timeout_streak >= max(1, int(self.config.recent_timeout_minimal_streak or 1)) and self._recent_timeout_cooldown_until > now:
                 return max(initial_level, 2), 'recent_timeout'
-            if getattr(self, "_recent_overload_streak", 0) >= max(1, int(getattr(self.config, "recent_overload_minimal_streak", 1) or 1)) and getattr(self, "_recent_overload_cooldown_until", 0.0) > now:
+            if getattr(self, "_recent_overload_streak", 0) >= max(1, int(getattr(self.config, "recent_overload_minimal_streak", 3) or 3)) and getattr(self, "_recent_overload_cooldown_until", 0.0) > now:
                 return max(initial_level, 2), 'recent_overload'
             return initial_level, None
 
@@ -139,7 +152,7 @@
                 self._recent_connectivity_streak = int(getattr(self, "_recent_connectivity_streak", 0) or 0) + 1
                 self._recent_connectivity_cooldown_until = time.monotonic() + max(
                     0.0,
-                    float(getattr(self.config, "recent_connectivity_cooldown_sec", 600.0) or 0.0),
+                    float(getattr(self.config, "recent_connectivity_cooldown_sec", 120.0) or 0.0),
                 )
                 self._recent_timeout_streak += 1
                 self._recent_timeout_cooldown_until = time.monotonic() + max(0.0, float(self.config.recent_timeout_cooldown_sec or 0.0))
@@ -150,7 +163,7 @@
                 self._recent_overload_streak = int(getattr(self, "_recent_overload_streak", 0) or 0) + 1
                 retry_after = self._retry_after_seconds(exc)
                 cooldown_sec = max(
-                    float(getattr(self.config, "recent_overload_cooldown_sec", 90.0) or 0.0),
+                    float(getattr(self.config, "recent_overload_cooldown_sec", 120.0) or 0.0),
                     float(retry_after or 0.0),
                 )
                 self._recent_overload_cooldown_until = time.monotonic() + max(0.0, cooldown_sec)
@@ -178,8 +191,21 @@
                 compatibility_failed=True,
                 empty_200_response=empty_200_response,
             )
-            cooldown_sec = max(0.0, float(getattr(self.config, "compatibility_cooldown_sec", 300.0) or 300.0))
-            self._compatibility_cooldown_until = time.monotonic() + cooldown_sec if cooldown_sec > 0 else 0.0
+            # P1-E: 加 streak 门 + 分级,避免"单次兼容失败即锁 5 分钟"(病灶 E)。
+            # 原逻辑单次失败即写 compatibility_cooldown_sec(默认300s)冷却,过激。
+            # 现在:连续兼容失败累计到 minimal_streak 才进冷却;empty_200(疑似假成功,
+            # 比硬兼容错误更软)单独宽容——要求更高 streak。成功会清零 streak(见 _record_request_success)。
+            self._compatibility_streak = int(getattr(self, "_compatibility_streak", 0) or 0) + 1
+            minimal_streak = max(1, int(getattr(self.config, "compatibility_minimal_streak", 3) or 3))
+            if empty_200_response:
+                # empty_200 多为上游瞬时空响应,放宽到 2 倍 streak 才冷却
+                minimal_streak = minimal_streak * 2
+            cooldown_sec = max(0.0, float(getattr(self.config, "compatibility_cooldown_sec", 120.0) or 120.0))
+            if self._compatibility_streak >= minimal_streak and cooldown_sec > 0:
+                self._compatibility_cooldown_until = time.monotonic() + cooldown_sec
+            else:
+                # 未达 streak 门:不锁,留给下次请求重试(单次抖动不静默关停 LLM)
+                self._compatibility_cooldown_until = 0.0
 
         def _record_request_success(self) -> None:
             self._recent_timeout_streak = 0
@@ -191,6 +217,17 @@
             self._last_failure_type = None
             self._last_failure_status_code = None
             self._compatibility_cooldown_until = 0.0
+            self._compatibility_streak = 0
+            self._last_compatibility_failure_metrics = {}
+            self._append_recent_request_outcome(status="succeeded")
+
+        def _record_stage_success(self) -> None:
+            self._recent_connectivity_streak = 0
+            self._recent_connectivity_cooldown_until = 0.0
+            self._last_failure_type = None
+            self._last_failure_status_code = None
+            self._compatibility_cooldown_until = 0.0
+            self._compatibility_streak = 0
             self._last_compatibility_failure_metrics = {}
             self._append_recent_request_outcome(status="succeeded")
 
@@ -291,7 +328,15 @@
                         )
                     raw_candidates = data.get("candidates") if isinstance(data, dict) else None
                     if not isinstance(raw_candidates, list):
-                        raise ValueError("external llm response missing candidates")
+                        output_keys = sorted(str(key) for key in list((data or {}).keys())) if isinstance(data, dict) else []
+                        exc = ValueError("external llm response missing candidates")
+                        exc.metrics = {
+                            "output_format_failed": True,
+                            "validation_failure_reason": "missing_candidates",
+                            "output_keys": output_keys[:20],
+                            "parsed_payload_type": type(data).__name__,
+                        }
+                        raise exc
                     analysis = self._normalize_analysis(data.get("analysis") if isinstance(data, dict) else {})
                     candidates = []
                     for item in raw_candidates:
@@ -390,6 +435,7 @@
                     ValueError,
                 ) as exc:
                     last_exc = exc
+                    error_metrics = dict(getattr(exc, "metrics", {}) or {})
                     attempt_reports.append({
                         "attempt": attempt,
                         "status": "failed",
@@ -405,6 +451,7 @@
                         "error": self._error_text(exc),
                         "status_code": self._status_code_from_error(exc),
                         "retry_after_sec": self._retry_after_seconds(exc),
+                        **error_metrics,
                     })
                     if attempt >= attempts or not (
                         isinstance(exc, StrategyLLMResponseParseError) or self._should_retry_request_error(exc)
@@ -443,6 +490,8 @@
                 "last_error": self._error_text(last_exc or RuntimeError("external llm request failed")),
             }
             if isinstance(last_exc, StrategyLLMProviderCompatibilityError):
+                metrics.update(dict(getattr(last_exc, "metrics", {}) or {}))
+            elif last_exc is not None:
                 metrics.update(dict(getattr(last_exc, "metrics", {}) or {}))
             raise StrategyLLMRequestError(
                 f"external llm request failed after {len(attempt_reports)} attempts: {metrics['last_error_type']}",

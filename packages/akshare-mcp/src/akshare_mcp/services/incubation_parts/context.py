@@ -318,14 +318,78 @@
         })
         return {'snapshot': snapshot, 'account': updated_account}
 
+    async def _list_settleable_orders(
+        self,
+        db,
+        *,
+        strategy_id: str,
+        account_id: str,
+        signal_date: date,
+    ) -> list[dict]:
+        acquire = _get_db_acquire(db)
+        if acquire is not None:
+            async with acquire() as conn:
+                rows = await conn.fetch(
+                    """
+                    SELECT *
+                    FROM paper_orders
+                    WHERE strategy_id=$1
+                      AND account_id=$2
+                      AND status IN ('pending', 'submitted')
+                      AND (signal_date IS NULL OR signal_date <= $3)
+                    ORDER BY signal_date ASC, created_at ASC, id ASC
+                    LIMIT 500
+                    """,
+                    strategy_id,
+                    account_id,
+                    signal_date,
+                )
+            return [dict(row) for row in rows]
+
+        list_orders_method = _get_async_db_method(db, 'list_strategy_paper_orders')
+        if list_orders_method is None:
+            return []
+        rows_by_key: dict[str, dict] = {}
+        for status in ('pending', 'submitted'):
+            try:
+                rows = await list_orders_method(strategy_id, status=status, limit=500)
+            except TypeError:
+                rows = await list_orders_method(strategy_id, signal_date)
+            for row in list(rows or []):
+                item = dict(row or {})
+                order_account_id = str(item.get('account_id') or '').strip()
+                if order_account_id and order_account_id != account_id:
+                    continue
+                raw_signal_date = item.get('signal_date')
+                if raw_signal_date is not None:
+                    try:
+                        if str(raw_signal_date)[:10] > str(signal_date):
+                            continue
+                    except Exception:
+                        continue
+                if str(item.get('status') or 'pending') not in {'pending', 'submitted'}:
+                    continue
+                rows_by_key[str(item.get('id') or len(rows_by_key))] = item
+        return sorted(
+            rows_by_key.values(),
+            key=lambda item: (
+                str(item.get('signal_date') or ''),
+                str(item.get('created_at') or ''),
+                str(item.get('id') or ''),
+            ),
+        )
+
     async def settle_orders(self, db, strategy: dict, signal_date: Optional[date] = None) -> dict:
         signal_date = signal_date or date.today()
         ensure = await self.ensure_account(db, strategy)
         account = ensure['account']
         account_id = account['id']
-        list_orders_method = _get_async_db_method(db, 'list_strategy_paper_orders')
-        orders = await list_orders_method(strategy['id'], signal_date) if list_orders_method is not None else []
-        executable = [item for item in orders if str(item.get('status') or 'pending') in {'pending', 'submitted'}]
+        executable = await self._list_settleable_orders(
+            db,
+            strategy_id=strategy['id'],
+            account_id=account_id,
+            signal_date=signal_date,
+        )
         positions = {str(item.get('stock_code') or ''): dict(item) for item in await self._list_positions(db, account_id)}
         cash = float(account.get('current_capital') or account.get('initial_capital') or DEFAULT_INCUBATION_CAPITAL)
         filled = []

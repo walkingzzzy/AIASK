@@ -355,6 +355,169 @@ def test_quick_evidence_evaluator_uses_quick_stage_and_thresholds(monkeypatch):
     assert captured["persist_ic_history"] is False
 
 
+def test_factory_quick_evidence_budget_is_isolated_by_engine(monkeypatch):
+    from akshare_mcp.services import factor_validation_pipeline
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.factory import FactorMiningFactory
+
+    calls: list[str] = []
+
+    async def fake_validate(db, candidate, **kwargs):
+        calls.append(str(candidate.get("name") or ""))
+        return {
+            "success": True,
+            "metrics": {
+                "rank_ic_mean": 0.03,
+                "rank_ic_ir": 0.2,
+                "positive_ratio": 0.54,
+                "sample_dates": 45,
+            },
+            "coverage": {"avg_cross_section_n": 100, "eligible_code_count": 130},
+            "cross_section": {"summary": {"rank_ic_mean": 0.03, "sample_dates": 45}},
+            "lookahead_audit": {"risk_level": "low"},
+            "persisted_outputs": {"enabled": False, "ic_history_rows": 0},
+        }
+
+    monkeypatch.setattr(
+        factor_validation_pipeline,
+        "validate_factor_candidate_pipeline",
+        fake_validate,
+    )
+
+    class Context:
+        validation_codes = [f"000{i:03d}" for i in range(130)]
+
+    async def run():
+        context = Context()
+        factory = FactorMiningFactory()
+        factory._install_quick_evidence_evaluators(
+            object(),
+            context,
+            max_evaluations=1,
+        )
+        gp_first = FactorCandidate(
+            name="gp_first",
+            expression_dsl="ts_mean(close, 20)",
+            generation_engine="gp_classic",
+        )
+        gp_second = FactorCandidate(
+            name="gp_second",
+            expression_dsl="ts_mean(open, 20)",
+            generation_engine="gp_classic",
+        )
+        mcts_first = FactorCandidate(
+            name="mcts_first",
+            expression_dsl="ts_mean(volume, 20)",
+            generation_engine="mcts_guided",
+        )
+
+        gp_first_evidence = await context.quick_evidence_evaluator(gp_first)
+        gp_second_evidence = await context.quick_evidence_evaluator(gp_second)
+        mcts_first_evidence = await context.quick_evidence_evaluator(mcts_first)
+        return context, gp_first_evidence, gp_second_evidence, mcts_first_evidence
+
+    context, gp_first_evidence, gp_second_evidence, mcts_first_evidence = asyncio.run(run())
+
+    assert gp_first_evidence["passed"] is True
+    assert gp_second_evidence["passed"] is False
+    assert gp_second_evidence["fail_reasons"] == ["quick_evaluation_budget_exhausted"]
+    assert mcts_first_evidence["passed"] is True
+    assert set(context.quick_evidence_evaluators) == {"gp_classic", "mcts_guided"}
+    assert context.quick_evidence_evaluators["gp_classic"].evaluation_count == 1
+    assert context.quick_evidence_evaluators["mcts_guided"].evaluation_count == 1
+    assert calls == ["gp_first", "mcts_first"]
+
+
+def test_quick_evidence_budget_uses_env_default(monkeypatch):
+    from akshare_mcp.services import factor_validation_pipeline
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.factory import FactorMiningFactory
+
+    monkeypatch.setenv("FACTOR_MINING_QUICK_EVIDENCE_MAX_EVALUATIONS", "1")
+
+    calls: list[str] = []
+
+    async def fake_validate(db, candidate, **kwargs):
+        calls.append(str(candidate.get("name") or ""))
+        return {
+            "success": True,
+            "metrics": {"rank_ic_mean": 0.03, "rank_ic_ir": 0.2, "positive_ratio": 0.54},
+            "coverage": {"avg_cross_section_n": 100, "eligible_code_count": 130},
+            "cross_section": {"summary": {"rank_ic_mean": 0.03, "sample_dates": 45}},
+            "lookahead_audit": {"risk_level": "low"},
+            "persisted_outputs": {"enabled": False, "ic_history_rows": 0},
+        }
+
+    monkeypatch.setattr(
+        factor_validation_pipeline,
+        "validate_factor_candidate_pipeline",
+        fake_validate,
+    )
+
+    class Context:
+        validation_codes = [f"000{i:03d}" for i in range(130)]
+
+    async def run():
+        context = Context()
+        FactorMiningFactory()._install_quick_evidence_evaluators(object(), context)
+        first = FactorCandidate(
+            name="first",
+            expression_dsl="ts_mean(close, 20)",
+            generation_engine="rule_seed",
+        )
+        second = FactorCandidate(
+            name="second",
+            expression_dsl="ts_mean(open, 20)",
+            generation_engine="rule_seed",
+        )
+        return (
+            await context.quick_evidence_evaluator(first),
+            await context.quick_evidence_evaluator(second),
+        )
+
+    first_evidence, second_evidence = asyncio.run(run())
+
+    assert first_evidence["passed"] is True
+    assert second_evidence["passed"] is False
+    assert second_evidence["fail_reasons"] == ["quick_evaluation_budget_exhausted"]
+    assert calls == ["first"]
+
+
+def test_engine_scheduler_normalizes_budget_for_explicit_single_engine():
+    from akshare_mcp.services.factor_mining_factory.engines.engine_scheduler import EngineScheduler
+
+    class Context:
+        active_pool_size = 100
+        pool_decay_rate = 0.0
+
+    budgets = EngineScheduler()._allocate_budgets(
+        Context(),
+        ["rule_seed"],
+        12,
+    )
+
+    assert list(budgets) == ["rule_seed"]
+    assert budgets["rule_seed"].candidate_count == 12
+
+
+def test_engine_scheduler_normalizes_budget_for_explicit_engine_subset():
+    from akshare_mcp.services.factor_mining_factory.engines.engine_scheduler import EngineScheduler
+
+    class Context:
+        active_pool_size = 100
+        pool_decay_rate = 0.0
+
+    budgets = EngineScheduler()._allocate_budgets(
+        Context(),
+        ["llm_primary", "rule_seed"],
+        20,
+    )
+
+    assert set(budgets) == {"llm_primary", "rule_seed"}
+    assert budgets["llm_primary"].candidate_count + budgets["rule_seed"].candidate_count <= 20
+    assert budgets["rule_seed"].candidate_count > 3
+
+
 def test_active_pool_redundancy_uses_replacement_decision_metadata():
     from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
     from akshare_mcp.services.factor_mining_factory.pool.active_pool import ActiveFactorPool
@@ -407,6 +570,89 @@ def test_active_pool_redundancy_uses_replacement_decision_metadata():
     assert rejected["reason"] == "redundant"
     assert rejected["replacement_decision"]["action"] == "reject"
     assert rejected["incremental_quality_score"] < 10.0
+
+
+def test_active_pool_replacement_returns_retired_record_for_persistence():
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.factory import FactorMiningFactory
+    from akshare_mcp.services.factor_mining_factory.pool.active_pool import ActiveFactorPool
+
+    class Db:
+        def __init__(self):
+            self.saved: list[dict] = []
+
+        async def acquire(self):
+            raise AssertionError("raw connection path is not used in this test")
+
+    validation_result = {
+        "metrics": {
+            "rank_ic_mean": 0.09,
+            "rank_ic_ir": 0.45,
+            "positive_ratio": 0.62,
+            "sample_dates": 80,
+        },
+        "coverage": {"avg_cross_section_n": 120},
+        "lookahead_audit": {"risk_level": "low"},
+        "rating": {"grade": "A"},
+        "persisted_outputs": {"enabled": True, "ic_history_rows": 80},
+    }
+
+    pool = ActiveFactorPool()
+    pool.hydrate(
+        [
+            {
+                "factor_id": "existing-1",
+                "name": "existing",
+                "family": "momentum",
+                "inputs": ["close"],
+                "hypothesis": "existing factor",
+                "expression_dsl": "ts_mean(close, 20)",
+                "status": "active",
+                "fitness": 70.0,
+                "validation_summary": {
+                    "quality_status": "promoted",
+                    "quality_score": 70.0,
+                },
+            }
+        ]
+    )
+
+    admitted = asyncio.run(
+        pool.admit(
+            FactorCandidate(
+                name="better_factor",
+                hypothesis="same expression but materially better",
+                inputs=["close"],
+                expression_dsl="ts_mean(close, 20)",
+                validation_result=validation_result,
+            )
+        )
+    )
+
+    retired = admitted["retired_records"][0]
+    assert admitted["admitted"] is True
+    assert retired["factor_id"] == "existing-1"
+    assert retired["status"] == "retired"
+    assert retired["retired_reason"] == "quality_replacement"
+    assert retired["validation_summary"]["quality_status"] == "retired"
+
+    async def fake_save_factor_to_pool(db, record):
+        db.saved.append(dict(record))
+        return {"saved": True, "factor_id": record.get("factor_id")}
+
+    import akshare_mcp.services.factor_mining_factory.pool.storage as storage
+
+    original = storage.save_factor_to_pool
+    storage.save_factor_to_pool = fake_save_factor_to_pool
+    try:
+        db = Db()
+        asyncio.run(FactorMiningFactory()._persist_admitted_factors(db, [admitted]))
+    finally:
+        storage.save_factor_to_pool = original
+
+    saved_by_id = {item["factor_id"]: item for item in db.saved}
+    assert saved_by_id["existing-1"]["status"] == "retired"
+    assert saved_by_id[admitted["factor_id"]]["status"] == "quarantine"
 
 
 def test_factory_quality_summary_includes_quick_funnel_and_blueprints():
@@ -561,6 +807,324 @@ def test_quality_summary_persists_strict_candidate_validation_result():
     assert strict_rows[0]["validation_result"]["metrics"]["rank_ic_mean"] == 0.05
     assert strict_rows[0]["admission_decision"]["evidence_passed"] is True
     assert "rating_grade_not_admissible:C" in strict_rows[0]["admission_decision"]["blockers"]
+    quick_rows = summary["quick_candidate_results"]
+    assert quick_rows[0]["name"] == "strict_blocked_factor"
+    assert quick_rows[0]["passed"] is True
+    assert quick_rows[0]["expression_dsl"] == "ts_mean(close, 20)"
+
+
+def test_factor_meta_learner_uses_strict_outcomes_for_pattern_memory():
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.feedback.meta_learner import FactorMetaLearner
+
+    quick_only = FactorCandidate(
+        name="quick_only_factor",
+        expression_dsl="ts_mean(close, 20)",
+        generation_engine="llm_primary",
+        factor_family="momentum",
+        quick_evidence={"passed": True},
+    )
+    quick_failed = FactorCandidate(
+        name="quick_failed_factor",
+        expression_dsl="zscore(momentum_20d, 20)",
+        generation_engine="llm_primary",
+        factor_family="momentum",
+        quick_evidence={"passed": False, "fail_reasons": ["rank_ic_mean_below_min"]},
+    )
+    strict_blocked = FactorCandidate(
+        name="strict_blocked_factor",
+        expression_dsl="ts_mean(close, 20)",
+        generation_engine="llm_primary",
+        factor_family="volatility_reversal",
+        blueprint_id="bp_pbo_high",
+        quick_evidence={"passed": True},
+        generation_trace={"strict_validation_attempted": True},
+        validation_result={
+            "success": True,
+            "metrics": {
+                "sample_dates": 60,
+                "rank_ic_mean": 0.03,
+                "rank_ic_ir": 0.35,
+                "positive_ratio": 0.6,
+            },
+            "coverage": {"avg_cross_section_n": 120},
+            "persisted_outputs": {"ic_history_rows": 60},
+            "lookahead_audit": {"risk_level": "low"},
+            "rating": {
+                "grade": "D",
+                "governance": {
+                    "admission_blocked": True,
+                    "admission_block_reasons": ["multiple_testing_risk_high"],
+                },
+            },
+        },
+    )
+    strict_passed = FactorCandidate(
+        name="strict_passed_factor",
+        expression_dsl="ts_mean(close, 20)",
+        generation_engine="llm_primary",
+        factor_family="quality",
+        blueprint_id="bp_quality",
+        generation_trace={"strict_validation_attempted": True},
+        validation_result={
+            "success": True,
+            "metrics": {
+                "sample_dates": 60,
+                "rank_ic_mean": 0.04,
+                "rank_ic_ir": 0.45,
+                "positive_ratio": 0.62,
+            },
+            "coverage": {"avg_cross_section_n": 140},
+            "persisted_outputs": {"ic_history_rows": 60},
+            "lookahead_audit": {"risk_level": "low"},
+            "rating": {"grade": "A", "governance": {"admission_blocked": False}},
+        },
+    )
+
+    learner = FactorMetaLearner()
+    asyncio.run(
+        learner.record_cycle(
+            run_id="run_meta",
+            raw_count=3,
+            evolved_count=3,
+            validated_count=1,
+            admitted_count=0,
+            candidates=[quick_only, quick_failed, strict_blocked, strict_passed],
+        )
+    )
+
+    memory = learner.get_pattern_memory()
+    assert {"pattern": "bp_quality", "count": 1} in memory["successful_pattern_memory"]
+    assert {"pattern": "bp_pbo_high", "count": 1} in memory["failed_pattern_memory"]
+    assert {"pattern": "momentum", "count": 1} in memory["failed_pattern_memory"]
+    assert all(row["pattern"] != "llm_primary:momentum" for row in memory["successful_pattern_memory"])
+
+
+def test_rule_seed_filters_failed_memory_patterns(monkeypatch):
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.engines.rule_engine import RuleSeedEngine
+
+    class Context:
+        failed_pattern_memory = [
+            {"pattern": "momentum", "count": 3},
+            {"pattern": "volume_ratio", "count": 3},
+        ]
+
+    candidates = [
+        FactorCandidate(
+            name="bad_family",
+            family="momentum",
+            expression_dsl="momentum_20d",
+        ),
+        FactorCandidate(
+            name="bad_parent",
+            family="custom",
+            expression_dsl="momentum_20d + volume_ratio_5_20",
+            generation_trace={"parent_a": "volume_ratio"},
+        ),
+        FactorCandidate(
+            name="kept",
+            family="quality",
+            expression_dsl="ts_mean(close, 20)",
+        ),
+    ]
+
+    monkeypatch.setenv("FACTOR_MINING_PATTERN_FILTER_MIN_COUNT", "3")
+    kept = RuleSeedEngine()._filter_failed_patterns(candidates, Context())
+
+    assert [candidate.name for candidate in kept] == ["kept"]
+
+
+def test_rule_seed_memory_fallback_skips_failed_seed_prefix(monkeypatch):
+    from akshare_mcp.services.factor_mining_factory.engines.rule_engine import RuleSeedEngine
+
+    class Context:
+        failed_pattern_memory = [
+            {"pattern": "momentum", "count": 3},
+            {"pattern": "trend", "count": 3},
+        ]
+
+    monkeypatch.setenv("FACTOR_MINING_PATTERN_FILTER_MIN_COUNT", "3")
+    candidates = RuleSeedEngine()._from_seed_library_excluding(2, Context())
+
+    assert candidates
+    assert all(candidate.family not in {"momentum", "trend"} for candidate in candidates)
+
+
+def test_rule_seed_expands_and_ranks_without_running_quick_validation(monkeypatch):
+    from akshare_mcp.services.factor_mining_factory.engines.base import SearchBudget
+    from akshare_mcp.services.factor_mining_factory.engines.rule_engine import RuleSeedEngine
+
+    class Context:
+        alpha_blueprints = []
+        failed_pattern_memory = []
+
+        async def quick_evidence_evaluator(self, candidate):
+            raise AssertionError(f"quick validation must not run inside rule_seed: {candidate.name}")
+
+    engine = RuleSeedEngine()
+    monkeypatch.setattr(engine, "_generate_variants", lambda _count: [])
+
+    candidates = asyncio.run(engine.generate(Context(), SearchBudget(candidate_count=2)))
+
+    assert candidates[0].generation_trace["mode"] == "targeted_low_volatility_variant"
+    assert "high" in candidates[0].inputs
+    assert candidates[0].quick_evidence == {}
+
+
+def test_rule_seed_generates_directional_inversion_candidates():
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.engines.rule_engine import RuleSeedEngine
+
+    base = FactorCandidate(
+        name="seed_atr_14",
+        family="atr",
+        inputs=["high", "low", "close"],
+        expression_dsl="(high - low) / close",
+        generation_trace={"seed_name": "atr_14"},
+    )
+
+    inverted = RuleSeedEngine()._directional_inversions([base])
+
+    assert inverted[0].name == "seed_atr_14_inverse"
+    assert inverted[0].expression_dsl == "-((high - low) / close)"
+    assert inverted[0].generation_trace["mode"] == "directional_inversion"
+    assert inverted[0].generation_trace["parent"] == "seed_atr_14"
+
+
+def test_rule_seed_keeps_targeted_variants_despite_broad_family_memory():
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.engines.rule_engine import RuleSeedEngine
+
+    class Context:
+        failed_pattern_memory = [{"pattern": "volatility", "count": 4}]
+
+    engine = RuleSeedEngine()
+    generic = FactorCandidate(
+        name="generic_vol",
+        family="volatility",
+        factor_family="volatility",
+        expression_dsl="-zscore(volatility_20d, 20)",
+    )
+    targeted = engine._targeted_low_volatility_variants()[0]
+
+    kept = engine._filter_failed_patterns([generic, targeted], Context())
+
+    assert kept == [targeted]
+
+
+def test_evolution_novelty_filter_keeps_one_candidate_for_small_population():
+    from akshare_mcp.services.factor_mining_factory.engines.base import FactorCandidate
+    from akshare_mcp.services.factor_mining_factory.evolution.optimizer import EvolutionaryOptimizer
+
+    class Context:
+        seed_factors = [
+            {"expression_dsl": "zscore(volume_ratio_5_20, 10)"},
+            {"expression_dsl": "ts_mean(returns_1d, 20)"},
+            {"expression_dsl": "-return_5d"},
+        ]
+
+    candidates = [
+        FactorCandidate(
+            name="a",
+            expression_dsl="zscore(volume_ratio_5_20, 10)",
+            fitness=0.1,
+        ),
+        FactorCandidate(
+            name="b",
+            expression_dsl="ts_mean(returns_1d, 20)",
+            fitness=0.3,
+        ),
+        FactorCandidate(
+            name="c",
+            expression_dsl="-return_5d",
+            fitness=0.2,
+        ),
+    ]
+
+    filtered = EvolutionaryOptimizer()._novelty_filter(candidates, Context())
+
+    assert [candidate.name for candidate in filtered] == ["b"]
+
+
+def test_llm_blueprint_fallback_prompt_includes_strict_admission_policy():
+    from akshare_mcp.services.factor_mining_factory.engines.base import SearchBudget
+    from akshare_mcp.services.factor_mining_factory.engines.llm_engine import LLMSearchEngine
+
+    prompt = LLMSearchEngine()._build_blueprint_fallback_prompt(
+        context=object(),
+        budget=SearchBudget(candidate_count=2),
+        codes=["000001", "000002"],
+        blueprints=[],
+    )
+
+    policy = prompt.request_payload["dsl_contract"]["strict_admission_policy"]
+    assert policy["minimum_evidence"]["abs_rank_ic_mean"] == 0.025
+    assert "multiple_testing risk must be low" in policy["governance"]
+    assert "low multiple-testing risk" in prompt.system_prompt
+    assert "failed memory patterns" in prompt.user_prompt
+
+
+def test_factory_loads_persistent_strict_pattern_memory_from_mining_runs():
+    from akshare_mcp.services.factor_mining_factory.factory import FactorMiningFactory
+    from akshare_mcp.services.factor_mining_factory.pool.storage import (
+        ensure_factor_pool_tables,
+        save_mining_run,
+    )
+
+    class Db:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.row_factory = sqlite3.Row
+
+    async def run():
+        db = Db()
+        await ensure_factor_pool_tables(db)
+        await save_mining_run(
+            db,
+            {
+                "success": True,
+                "run_id": "run_strict_memory",
+                "quality_summary": {
+                    "quick_candidate_results": [
+                        {
+                            "generation_engine": "llm_primary",
+                            "family": "momentum",
+                            "passed": False,
+                            "fail_reasons": ["rank_ic_mean_below_min"],
+                        }
+                    ],
+                    "strict_candidate_results": [
+                        {
+                            "blueprint_id": "bp_pbo_high",
+                            "generation_engine": "llm_primary",
+                            "family": "volatility_reversal",
+                            "admission_decision": {
+                                "strict_gate_passed": False,
+                                "blockers": ["multiple_testing_risk_high"],
+                                "rating_grade": "D",
+                            },
+                        },
+                        {
+                            "blueprint_id": "bp_quality",
+                            "generation_engine": "llm_primary",
+                            "family": "quality",
+                            "admission_decision": {
+                                "strict_gate_passed": True,
+                                "blockers": [],
+                                "rating_grade": "A",
+                            },
+                        },
+                    ]
+                },
+            },
+        )
+        return await FactorMiningFactory()._load_persistent_pattern_memory(db)
+
+    memory = asyncio.run(run())
+    assert {"pattern": "bp_pbo_high", "count": 1} in memory["failed_pattern_memory"]
+    assert {"pattern": "momentum", "count": 1} in memory["failed_pattern_memory"]
+    assert {"pattern": "bp_quality", "count": 1} in memory["successful_pattern_memory"]
 
 
 # ALPHA-WIRING-V1 (P-B)：放宽 factor_pool 消费门槛的 toggle。
@@ -626,3 +1190,165 @@ def test_factor_pool_admit_active_without_promotion_toggle(monkeypatch):
     assert "rl_factor_1" in names
     # quarantine 显式淘汰态仍被挡
     assert "gp_factor_q" not in names
+
+
+def test_reappraise_promotes_active_quarantine_stale_records(monkeypatch):
+    import asyncio
+    import sqlite3
+
+    from akshare_mcp.services.factor_mining_factory import reappraise as reappraise_mod
+    from akshare_mcp.services.factor_mining_factory.pool.storage import (
+        ensure_factor_pool_tables,
+        save_factor_to_pool,
+    )
+
+    class _Db:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.row_factory = sqlite3.Row
+
+    async def _load_factor_ic_rows(_db, factor_name: str):
+        values = [0.05, 0.055, 0.06, 0.065, 0.07] * 12
+        return [
+            {"rank_ic": value, "ic_value": value, "stock_count": 120 + (idx % 5)}
+            for idx, value in enumerate(values)
+        ]
+
+    monkeypatch.setattr(reappraise_mod, "_load_factor_ic_rows", _load_factor_ic_rows)
+
+    db = _Db()
+
+    async def _run():
+        await ensure_factor_pool_tables(db)
+        await save_factor_to_pool(
+            db,
+            {
+                "factor_id": "factor_active_quarantine",
+                "name": "active_quarantine_alpha",
+                "family": "momentum",
+                "expression_dsl": "close / ma(close, 20) - 1",
+                "status": "active",
+                "validation_summary": {"quality_status": "quarantine"},
+                "admission_grade": "B",
+                "fitness": 1.0,
+            },
+        )
+        await save_factor_to_pool(
+            db,
+            {
+                "factor_id": "factor_quarantine",
+                "name": "quarantine_alpha",
+                "family": "momentum",
+                "expression_dsl": "close / ma(close, 10) - 1",
+                "status": "quarantine",
+                "validation_summary": {"quality_status": "quarantine"},
+                "admission_grade": "B",
+                "fitness": 1.0,
+            },
+        )
+        result = await reappraise_mod.reappraise_quarantine_factors(db, limit=20)
+        rows = db.conn.execute(
+            "SELECT factor_id, status, validation_summary FROM factor_pool_active ORDER BY factor_id"
+        ).fetchall()
+        return result, rows
+
+    result, rows = asyncio.run(_run())
+    assert result["promoted"] == 2
+    assert [row["status"] for row in rows] == ["active", "active"]
+    assert all('"quality_status": "promoted"' in row["validation_summary"] for row in rows)
+
+
+def test_run_mining_cycle_reports_reappraisal_promoted_count(monkeypatch):
+    import asyncio
+    import sqlite3
+    from types import SimpleNamespace
+
+    from akshare_mcp.services.factor_mining_factory.factory import FactorMiningFactory
+    from akshare_mcp.services.factor_mining_factory import reappraise as reappraise_module
+
+    class _Db:
+        def __init__(self):
+            self.conn = sqlite3.connect(":memory:")
+            self.conn.row_factory = sqlite3.Row
+
+    class _Pool:
+        size = 0
+
+        async def admit_batch(self, validated):
+            return []
+
+    class _Scheduler:
+        last_engines_used = []
+
+        async def search(self, *args, **kwargs):
+            return []
+
+        def record_quality_feedback(self, *args, **kwargs):
+            return None
+
+    class _Optimizer:
+        async def evolve(self, *args, **kwargs):
+            return []
+
+    class _Context:
+        validation_codes = list(range(200))
+        validation_universe_health = {"eligible_count": 200}
+
+    async def _run():
+        factory = FactorMiningFactory()
+        factory._initialized = True
+        factory._engine_scheduler = _Scheduler()
+        factory._evolutionary_optimizer = _Optimizer()
+        factory._active_pool = _Pool()
+        factory._decay_monitor = SimpleNamespace(daily_check=None)
+        factory._meta_learner = SimpleNamespace()
+
+        db = _Db()
+
+        async def _ensure_persistent_pool(_db):
+            return None
+
+        async def _build_mining_context(*args, **kwargs):
+            return _Context()
+
+        async def _quick_filter_candidates(*args, **kwargs):
+            return []
+
+        async def _validate_batch(*args, **kwargs):
+            return []
+
+        async def _persist_admitted_factors(*args, **kwargs):
+            return None
+
+        async def _persist_mining_run(*args, **kwargs):
+            return None
+
+        async def _record_feedback(*args, **kwargs):
+            return None
+
+        async def _reappraise(_db, limit=200):
+            return {"scanned": 1, "promoted": 2, "kept_quarantine": 0}
+
+        async def _get_db():
+            return db
+
+        monkeypatch.setattr(factory, "_get_db", _get_db)
+        monkeypatch.setattr(factory, "_ensure_persistent_pool", _ensure_persistent_pool)
+        monkeypatch.setattr(factory, "_build_mining_context", _build_mining_context)
+        monkeypatch.setattr(factory, "_quick_filter_candidates", _quick_filter_candidates)
+        monkeypatch.setattr(factory, "_validate_batch", _validate_batch)
+        monkeypatch.setattr(factory, "_persist_admitted_factors", _persist_admitted_factors)
+        monkeypatch.setattr(factory, "_persist_mining_run", _persist_mining_run)
+        monkeypatch.setattr(factory, "_record_feedback", _record_feedback)
+        monkeypatch.setattr(factory, "_install_quick_evidence_evaluators", lambda *a, **k: None)
+        monkeypatch.setattr(reappraise_module, "reappraise_quarantine_factors", _reappraise)
+        result = await factory.run_mining_cycle(trigger="quality_session")
+        return result
+
+    result = asyncio.run(_run())
+    assert result["active_promoted_count"] == 2
+    assert result["cycle_active_promoted_count"] == 0
+    assert result["reappraisal_promoted_count"] == 2
+    assert result["quality_summary"]["active_promoted_count"] == 2
+    assert result["quality_summary"]["quality_funnel"]["promoted"] == 2
+    assert result["quality_summary"]["quality_funnel"]["reappraisal_promoted"] == 2

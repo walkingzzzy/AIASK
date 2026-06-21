@@ -210,7 +210,7 @@ def _child_env() -> dict[str, str]:
     env.setdefault("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
     env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
     # 1500/轮:observe 积压上万时加速收敛(每策略孵化 ~0.05s,串行远低于 600s 上限)。
-    env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT", "1500")
+    env["INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT"] = "1500"
     env["INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED"] = "0"
     env.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_BATCH_LIMIT", "300")
     env.setdefault("INCUBATION_FACTORY_GATE3_RECORD_ONLY_MIN_GRADE", "C")

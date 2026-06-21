@@ -67,9 +67,11 @@
 
         def _max_tokens_for_attempt(self, request_limit: int, compact_level: int) -> int:
             base = max(128, int(self.config.max_tokens or 900))
-            analysis_budget = 260 if compact_level <= 0 else (160 if compact_level == 1 else 96)
-            candidate_budget = max(1, int(request_limit or 1)) * (220 if compact_level <= 0 else (170 if compact_level == 1 else 140))
-            return max(128, min(base, analysis_budget + candidate_budget))
+            analysis_budget = 520 if compact_level <= 0 else (360 if compact_level == 1 else 220)
+            candidate_budget = max(1, int(request_limit or 1)) * (
+                2600 if compact_level <= 0 else (1800 if compact_level == 1 else 1200)
+            )
+            return max(512, min(base, analysis_budget + candidate_budget))
 
         @staticmethod
         def _is_timeout_like_error(exc: Exception) -> bool:
@@ -166,7 +168,7 @@
         def _active_connectivity_failure(self) -> Optional[dict[str, Any]]:
             now = time.monotonic()
             cooldown_until = float(getattr(self, "_recent_connectivity_cooldown_until", 0.0) or 0.0)
-            minimal_streak = max(1, int(getattr(self.config, "recent_connectivity_minimal_streak", 1) or 1))
+            minimal_streak = max(1, int(getattr(self.config, "recent_connectivity_minimal_streak", 3) or 3))
             streak = int(getattr(self, "_recent_connectivity_streak", 0) or 0)
             if cooldown_until > 0 and cooldown_until <= now:
                 self._recent_connectivity_streak = 0

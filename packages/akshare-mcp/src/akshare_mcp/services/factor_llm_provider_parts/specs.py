@@ -21,6 +21,7 @@ class FactorLLMProvider:
         self._rebuild_count = 0
         self._last_rebuild_at: Optional[datetime] = None
         self._compatibility_cooldown_until = 0.0
+        self._compatibility_streak = 0
         self._last_compatibility_failure_metrics: dict[str, Any] = {}
         self._last_smoke_check_at: Optional[datetime] = None
         self._last_smoke_check_ok_at: Optional[datetime] = None
@@ -170,6 +171,7 @@ class FactorLLMProvider:
         self._rebuild_count += 1
         self._last_rebuild_at = datetime.now().astimezone()
         self._compatibility_cooldown_until = 0.0
+        self._compatibility_streak = 0
         self._last_compatibility_failure_metrics = {}
         current = self.status()
         current["rebuild_reason"] = reason
@@ -191,6 +193,7 @@ class FactorLLMProvider:
         self._last_error = None
         self._last_error_type = None
         self._compatibility_cooldown_until = 0.0
+        self._compatibility_streak = 0
         self._last_compatibility_failure_metrics = {}
 
     def _mark_failure(self, exc: Exception, *, latency_ms: float) -> None:
@@ -285,12 +288,13 @@ class FactorLLMProvider:
         metrics = dict(self._last_compatibility_failure_metrics or {})
         if not metrics:
             return None
+        if cooldown_until <= 0:
+            return None
         if cooldown_until > 0 and cooldown_until <= now:
             self._compatibility_cooldown_until = 0.0
             self._last_compatibility_failure_metrics = {}
             return None
-        if cooldown_until > 0:
-            metrics["compatibility_cooldown_sec"] = round(max(cooldown_until - now, 0.0), 4)
+        metrics["compatibility_cooldown_sec"] = round(max(cooldown_until - now, 0.0), 4)
         return metrics
 
     @staticmethod
@@ -713,8 +717,15 @@ class FactorLLMProvider:
             "last_error": self._last_error,
             **metrics,
         }
+        self._compatibility_streak = int(getattr(self, "_compatibility_streak", 0) or 0) + 1
+        minimal_streak = max(1, int(getattr(self.config, "compatibility_minimal_streak", 3) or 3))
+        if bool(metrics.get("empty_200_response")):
+            minimal_streak *= 2
         cooldown_sec = max(0.0, float(getattr(self.config, "compatibility_cooldown_sec", 300.0) or 300.0))
-        self._compatibility_cooldown_until = time.monotonic() + cooldown_sec if cooldown_sec > 0 else 0.0
+        if self._compatibility_streak >= minimal_streak and cooldown_sec > 0:
+            self._compatibility_cooldown_until = time.monotonic() + cooldown_sec
+        else:
+            self._compatibility_cooldown_until = 0.0
 
     async def smoke_check(self, *, force: bool = False) -> dict[str, Any]:
         if not self.is_enabled():
@@ -724,8 +735,8 @@ class FactorLLMProvider:
         compatibility_metrics = self._active_compatibility_failure()
         if compatibility_metrics is not None and not force:
             return {
-                "status": "compatibility_skip",
                 **compatibility_metrics,
+                "status": "compatibility_skip",
             }
         now = datetime.now().astimezone()
         ttl_sec = max(0.0, float(self.config.smoke_check_ttl_sec or 0.0))
@@ -850,10 +861,10 @@ class FactorLLMProvider:
             raise FactorLLMRequestError(
                 "factor llm request skipped during compatibility cooldown",
                 metrics={
-                    "status": "compatibility_skip",
                     "provider": str(self.config.provider or "openai_compatible"),
                     "model": resolved_model,
                     **compatibility_metrics,
+                    "status": "compatibility_skip",
                 },
             )
         async with self._request_semaphore:

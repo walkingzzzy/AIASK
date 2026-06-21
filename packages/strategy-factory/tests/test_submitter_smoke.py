@@ -23,6 +23,58 @@ def test_submitter_mro_chain():
     assert "_StrategySubmitterActionsMixin" in mro_names
 
 
+def test_submitter_candidate_provenance_reads_params_payload():
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    provenance = StrategySubmitter._candidate_provenance(
+        {
+            "strategy_type": "multi_factor",
+            "params": {
+                "candidate_provenance": {
+                    "source_candidate_artifact_id": "factor-1",
+                    "source_validation_artifact_id": "factor-1",
+                    "candidate_family": "liquidity",
+                    "generator_mode": "factor_pool",
+                    "alpha_source": "factor_mining_active_pool",
+                }
+            },
+        }
+    )
+
+    assert provenance["source_candidate_artifact_id"] == "factor-1"
+    assert provenance["source_validation_artifact_id"] == "factor-1"
+    assert provenance["candidate_family"] == "liquidity"
+    assert provenance["generator_mode"] == "factor_pool"
+    assert provenance["alpha_source"] == "factor_mining_active_pool"
+
+
+def test_submitter_candidate_provenance_reassembles_params_fields():
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    provenance = StrategySubmitter._candidate_provenance(
+        {
+            "strategy_type": "macro_timing",
+            "params": {
+                "source_candidate_artifact_id": "factor-2",
+                "source_validation_artifact_id": "factor-2",
+                "candidate_family": "liquidity",
+                "generator_mode": "factor_pool",
+                "alpha_source": "factor_mining_active_pool",
+                "candidate_registry_stage": "active_factor_pool",
+                "candidate_validation_score": 77.0,
+            },
+        }
+    )
+
+    assert provenance["source_candidate_artifact_id"] == "factor-2"
+    assert provenance["source_validation_artifact_id"] == "factor-2"
+    assert provenance["candidate_family"] == "liquidity"
+    assert provenance["generator_mode"] == "factor_pool"
+    assert provenance["alpha_source"] == "factor_mining_active_pool"
+    assert provenance["candidate_registry_stage"] == "active_factor_pool"
+    assert provenance["validation_score"] == 77.0
+
+
 def test_submitter_birth_regime_includes_compact_market_temperature_context():
     from strategy_factory.application.submitter import StrategySubmitter
 

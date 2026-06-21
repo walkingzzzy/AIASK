@@ -147,6 +147,8 @@ def build_factor_research_artifact_payload(
         "available": bool(factory_pool_factors),
         "count": len(factory_pool_factors),
         "factors": factory_pool_factors,
+        "raw_count": int(runtime_context.get("factory_pool_factors_raw_count") or len(factory_pool_factors)),
+        "filtered_count": int(runtime_context.get("factory_pool_factors_filtered_count") or 0),
     }
 
     family_preference_order = builder_cls._build_family_preference_order(

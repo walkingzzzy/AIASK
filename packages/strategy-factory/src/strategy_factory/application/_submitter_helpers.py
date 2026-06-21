@@ -324,6 +324,12 @@ class _StrategySubmitterHelpersMixin:
                 params.get("targeting_policy"),
             )
             _assign_dict(
+                "factor_pool_validation_summary",
+                payload.get("factor_pool_validation_summary"),
+                params.get("factor_pool_validation_summary"),
+                dict(payload.get("factor_pool_metadata") or {}).get("validation_summary"),
+            )
+            _assign_dict(
                 "constraint_check",
                 payload.get("constraint_check"),
                 params.get("constraint_check"),
@@ -366,8 +372,67 @@ class _StrategySubmitterHelpersMixin:
         def _candidate_provenance(cls, candidate: Optional[dict], existing: Optional[dict] = None) -> dict[str, Any]:
             payload = dict(candidate or {})
             existing_payload = dict(existing or {})
+            params = dict(payload.get("params") or {})
             existing_params = dict(existing_payload.get("params") or {})
-            existing_provenance = dict(existing_params.get("candidate_provenance") or {})
+            params_provenance = {
+                key: params.get(key)
+                for key in (
+                    "source_candidate_artifact_id",
+                    "source_generation_artifact_id",
+                    "source_validation_artifact_id",
+                    "memory_record_id",
+                    "candidate_family",
+                    "candidate_name",
+                    "candidate_grade",
+                    "candidate_registry_stage",
+                    "validation_score",
+                    "expected_regime",
+                    "expected_holding_period",
+                    "latest_validation_at",
+                    "latest_validation_age_days",
+                    "admission_block_reasons",
+                    "candidate_evidence_status",
+                    "holding_period_bucket",
+                    "pool_profile",
+                    "volatility_bucket",
+                    "liquidity_bucket",
+                    "family_mix_constraints",
+                    "alpha_source",
+                    "risk_level",
+                    "regime_fit",
+                    "generator_mode",
+                    "generator_type",
+                    "direction_bias",
+                    "candidate_family_id",
+                    "validation_profile",
+                    "target_symbol_count",
+                )
+                if params.get(key) not in (None, [], {}, "")
+            }
+            if (
+                "validation_score" not in params_provenance
+                and params.get("candidate_validation_score") not in (None, [], {}, "")
+            ):
+                params_provenance["validation_score"] = params.get("candidate_validation_score")
+            if (
+                "validation_profile" not in params_provenance
+                and params.get("validation_profile_name") not in (None, [], {}, "")
+            ):
+                params_provenance["validation_profile"] = params.get("validation_profile_name")
+            explicit_provenance = dict(
+                {
+                    **params_provenance,
+                    **dict(
+                        payload.get("candidate_provenance")
+                        or params.get("candidate_provenance")
+                        or {}
+                    ),
+                }
+            )
+            existing_provenance = {
+                **dict(existing_params.get("candidate_provenance") or {}),
+                **explicit_provenance,
+            }
             strategy_profile = cls._candidate_strategy_profile(payload, existing_payload)
             research_task = _normalize_research_task_contract(
                 payload.get("research_task") or existing_params.get("research_task") or {}
@@ -655,6 +720,14 @@ class _StrategySubmitterHelpersMixin:
                 "event_id": str(research_task.get("event_id") or event_context.get("event_id") or "").strip() or None,
                 "theme_code": str(research_task.get("theme_code") or event_context.get("theme_code") or "").strip() or None,
             }
+            if explicit_provenance:
+                provenance.update(
+                    {
+                        key: value
+                        for key, value in explicit_provenance.items()
+                        if value not in (None, [], {}, "")
+                    }
+                )
             return {
                 key: value
                 for key, value in provenance.items()

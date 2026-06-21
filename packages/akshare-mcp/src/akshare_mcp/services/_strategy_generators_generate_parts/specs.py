@@ -11,6 +11,10 @@
             original_candidate = candidate
             candidate = _normalize_snapshot_pipeline_candidate(candidate)
             if candidate is None:
+                # P0-C: 冒泡 normalize 清零原因(_normalize 已写到 original_candidate),
+                # 消除候选静默清零无痕迹的盲区。
+                reason = str(original_candidate.get("_generator_normalize_reject_reason") or "normalize_returned_none")
+                original_candidate["_generator_normalize_reject_reason"] = reason
                 return None
             research_task = normalize_research_task_contract(candidate.get('research_task') or {})
             target_symbols = cls._normalize_code_list(candidate.get('target_symbols'))
@@ -32,6 +36,19 @@
                 'validation_focus': validation_focus,
                 'primary_validation_layer': 'target' if validation_focus in {'event_target_only', 'candidate_target_only', 'target_only'} else 'combined',
             })
+            expected_validation_profile = resolve_candidate_validation_profile(
+                {
+                    'strategy_type': strategy_type,
+                    'research_task': dict(research_task),
+                },
+                research_task=research_task,
+            )
+            validation_profile = {
+                **validation_profile,
+                'profile': expected_validation_profile.get('profile'),
+                'validation_focus': expected_validation_profile.get('validation_focus'),
+                'primary_validation_layer': expected_validation_profile.get('primary_validation_layer'),
+            }
             precompile_validation = validate_precompile_candidate_contract(
                 {
                     **candidate,

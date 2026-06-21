@@ -56,6 +56,9 @@ def test_spawner_spawn_with_factor_research():
 
 def test_spawner_injects_factor_pool_candidates():
     from strategy_factory.domain.spawner import StrategySpawner
+    from strategy_factory.application.research.candidate_origin import (
+        classify_research_candidate_origin,
+    )
 
     spawner = StrategySpawner()
     snapshot = {
@@ -73,6 +76,17 @@ def test_spawner_injects_factor_pool_candidates():
                         "fitness": 1.2,
                         "admission_grade": "A",
                         "generation_engine": "rule_seed",
+                        "validation_summary": {
+                            "quality_status": "promoted",
+                            "metrics": {
+                                "sample_dates": 60,
+                                "rank_ic_mean": 0.05,
+                                "rank_ic_std": 0.04,
+                                "rank_ic_ir": 1.25,
+                            },
+                            "rating": {"grade": "A", "total_score": 82.0},
+                            "evidence_summary": {"avg_cross_section_n": 120},
+                        },
                     }
                 ],
             }
@@ -92,7 +106,93 @@ def test_spawner_injects_factor_pool_candidates():
     assert factor_pool_candidates[0]["params"]["fitness"] == 1.2
     assert factor_pool_candidates[0]["params"]["grade"] == "A"
     assert factor_pool_candidates[0]["params"]["engine"] == "rule_seed"
+    assert factor_pool_candidates[0]["params"]["factor_pool_validation_summary"]["metrics"]["rank_ic_ir"] == 1.25
     assert factor_pool_candidates[0]["metadata"]["factor_pool_factor_id"] == "factor-1"
+    assert factor_pool_candidates[0]["factor_pool_metadata"]["validation_summary"]["quality_status"] == "promoted"
+    assert factor_pool_candidates[0]["source_candidate_artifact_id"] == "factor-1"
+    assert factor_pool_candidates[0]["validation_profile"]["profile"] == "factor_rank_validation"
+    assert factor_pool_candidates[0]["validation_profile"]["validation_focus"] == "broad_generalization"
+    assert factor_pool_candidates[0]["params"]["validation_profile"]["primary_validation_layer"] == "combined"
+    assert classify_research_candidate_origin(factor_pool_candidates[0]) == "governed_candidate_activation"
+
+
+def test_spawner_factor_pool_strategy_type_uses_feedback_and_diversity():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+    snapshot = {
+        "factor_research": {
+            "factory_pool_payload": {
+                "available": True,
+                "factors": [
+                    {
+                        "factor_id": "factor-volatility",
+                        "name": "volatility_reversal_alpha",
+                        "family": "volatility",
+                        "expression_dsl": "zscore(high - low, 20) * -zscore(return_5d, 20)",
+                        "fitness": 2.0,
+                        "admission_grade": "A",
+                    },
+                    {
+                        "factor_id": "factor-liquidity",
+                        "name": "liquidity_alpha",
+                        "family": "liquidity",
+                        "expression_dsl": "rank(volume) + rank(open)",
+                        "fitness": 1.8,
+                        "admission_grade": "A",
+                    },
+                ],
+            }
+        },
+        "family_gate_feedback": {
+            "event_structure_breakout": {"control_mode": "suppress"},
+            "volatility_breakout": {"control_mode": "suppress"},
+            "ma_cross": {"control_mode": "suppress"},
+        },
+        "event_driven": {},
+        "sources": {},
+    }
+
+    candidates = spawner._from_factor_pool(snapshot)
+    by_factor = {candidate["factor_pool_factor_id"]: candidate for candidate in candidates}
+
+    assert by_factor["factor-volatility"]["strategy_type"] == "macro_timing"
+    assert by_factor["factor-liquidity"]["strategy_type"] in {"macro_timing", "multi_factor"}
+    assert by_factor["factor-liquidity"]["strategy_type"] != "ma_cross"
+
+
+def test_spawner_keeps_one_governed_factor_pool_candidate_under_suppression():
+    from strategy_factory.domain.spawner import StrategySpawner
+
+    spawner = StrategySpawner()
+    snapshot = {
+        "factor_research": {
+            "factory_pool_payload": {
+                "available": True,
+                "factors": [
+                    {
+                        "factor_id": "factor-governed",
+                        "name": "governed_momentum_alpha",
+                        "family": "momentum",
+                        "expression_dsl": "rank(return_20d)",
+                        "fitness": 2.0,
+                        "admission_grade": "A",
+                        "current_ic": 0.07,
+                    }
+                ],
+            }
+        },
+        "family_gate_feedback": {
+            "momentum": {"suppressed": True},
+            "ma_cross": {"suppressed": True},
+        },
+        "event_driven": {},
+        "sources": {},
+    }
+
+    candidates = spawner.spawn(snapshot)
+
+    assert any(candidate.get("factor_pool_factor_id") == "factor-governed" for candidate in candidates)
 
 
 # ALPHA-WIRING-V1 (P-A)：泛因子 IC 接入 —— 把已挖出（gp_*/rl_*）但被经典分支忽略的
