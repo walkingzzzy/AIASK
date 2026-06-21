@@ -88,11 +88,11 @@ export function PageShell({
   aside?: ReactNode;
 }) {
   return (
-    <section className="page-shell">
+    <section className="page-shell" data-testid="page-shell">
       <header className="page-header">
         <div>
           <div className="page-title-row">
-            <h1>{title}</h1>
+            <h1 data-testid="page-title">{title}</h1>
             {badge}
           </div>
           <p>{description}</p>
@@ -204,7 +204,7 @@ export function DataTable<T extends UnknownRecord>({
 
 export function JsonPanel({ data, title = "证据 JSON" }: { data: unknown; title?: string }) {
   return (
-    <details className="json-panel">
+    <details className="json-panel" data-testid="json-panel">
       <summary>{title}</summary>
       <pre>{JSON.stringify(redactSecrets(data), null, 2)}</pre>
     </details>

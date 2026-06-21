@@ -31,11 +31,31 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
   const jobs = useAsyncResource(() => api.jobs(), [api]);
   const [result, setResult] = useState<unknown>(null);
   const rows = list(jobs.data);
+  const sampleJobName = "desktop-v1-smoke-job";
 
   async function runFirstJob() {
     const first = rows[0];
     if (!first?.id) return;
     setResult(await api.runJob(String(first.id)));
+    await jobs.reload();
+  }
+
+  async function createSampleJob() {
+    setResult(await api.createJob({ name: sampleJobName, prompt: "AIASK Desktop V1 smoke job", interval_seconds: 3600, enabled: false }));
+    await jobs.reload();
+  }
+
+  async function disableSampleJob() {
+    const target = rows.find((job) => String(job.name || "") === sampleJobName);
+    if (!target?.id) return;
+    setResult(await api.updateJob(String(target.id), { enabled: false }));
+    await jobs.reload();
+  }
+
+  async function deleteSampleJob() {
+    const target = rows.find((job) => String(job.name || "") === sampleJobName);
+    if (!target?.id) return;
+    setResult(await api.deleteJob(String(target.id)));
     await jobs.reload();
   }
 
@@ -62,6 +82,13 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
             { key: "toolset", header: "Toolset" }
           ]}
         />
+      </Panel>
+      <Panel title="Job Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable} onClick={() => void createSampleJob()}>Create sample job</Button>
+          <Button disabled={!controlAvailable} onClick={() => void disableSampleJob()}>Disable sample job</Button>
+          <Button disabled={!controlAvailable} onClick={() => void deleteSampleJob()}>Delete sample job</Button>
+        </div>
       </Panel>
       <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="自动化证据" />
     </PageShell>
@@ -215,19 +242,34 @@ function ReadinessHealthPage({ api }: PageProps) {
   );
 }
 
-function LocalUserMemoryPage({ api, settings }: PageProps) {
+function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
   const profile = useAsyncResource(() => api.localProfile(), [api]);
   const activity = useAsyncResource(() => api.userActivity(settings?.userId || "local-user"), [api, settings?.userId]);
   const policy = useAsyncResource(() => api.userDataPolicy(settings?.userId || "local-user"), [api, settings?.userId]);
+  const [actionResult, setActionResult] = useState<unknown>(null);
   const profileData = dataObject(profile.data, {});
   const activityRows = firstArray(dataObject(activity.data, {}), ["data", "activity", "events"]);
+  const userId = settings?.userId || "local-user";
+
+  async function exportUserData() {
+    setActionResult(await api.userExport(userId));
+  }
+
+  async function previewDeleteUserData() {
+    setActionResult(await api.userDelete(userId, { dry_run: true, reason: "desktop V1 dry-run preview" }));
+  }
+
+  async function savePolicy() {
+    setActionResult(await api.userDataPolicySave(userId, { retention_days: 90, allow_learning: false, updated_from: "desktop_v1" }));
+    await policy.reload();
+  }
 
   return (
     <PageShell
       title="记忆与个人能力"
       description="展示本地画像、活动摘要、数据策略、导出/删除预览和治理状态；个人数据操作通过 Agent route。"
       metrics={[
-        metric("User", profileData.user_id || settings?.userId || "local-user", "info"),
+        metric("User", profileData.user_id || userId, "info"),
         metric("活动", activityRows.length, "success"),
         metric("Policy", policy.data ? "loaded" : "pending", policy.data ? "success" : "warning"),
         metric("Secrets", "Redacted", "success")
@@ -241,6 +283,14 @@ function LocalUserMemoryPage({ api, settings }: PageProps) {
           <JsonPanel data={{ activity: activity.data, policy: policy.data }} title="Activity / Policy" />
         </Panel>
       </div>
+      <Panel title="User Data Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable} onClick={() => void exportUserData()}>Export data</Button>
+          <Button disabled={!controlAvailable} onClick={() => void previewDeleteUserData()}>Preview delete dry-run</Button>
+          <Button disabled={!controlAvailable} onClick={() => void savePolicy()}>Save safe policy</Button>
+        </div>
+        {actionResult ? <JsonPanel data={actionResult} title="User data action result" /> : null}
+      </Panel>
     </PageShell>
   );
 }
@@ -250,7 +300,41 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
   const review = useAsyncResource(() => api.learningReview(), [api]);
   const envs = useAsyncResource(() => api.rlEnvironments(), [api]);
   const runs = useAsyncResource(() => api.rlRuns(), [api]);
+  const [actionResult, setActionResult] = useState<unknown>(null);
   const learningData = dataObject(learning.data, {});
+  const reviewRows = list(review.data);
+  const envRows = list(envs.data);
+  const runRows = list(runs.data);
+
+  async function applyFirstProposal() {
+    const first = reviewRows[0];
+    const proposalId = String(first?.id || first?.proposal_id || "");
+    if (!proposalId) return;
+    setActionResult(await api.learningApply({ proposal_id: proposalId }));
+    await review.reload();
+  }
+
+  async function startFirstEnvironment() {
+    const first = envRows[0];
+    const environment = String(first?.id || first?.environment || first?.name || "");
+    if (!environment) return;
+    setActionResult(await api.rlRunCreate({ environment, config: { dry_run: true, source: "desktop_v1" } }));
+    await runs.reload();
+  }
+
+  async function runAction(action: "stop" | "results" | "logs") {
+    const first = runRows[0];
+    const runId = String(first?.id || first?.run_id || "");
+    if (!runId) return;
+    const result =
+      action === "stop"
+        ? await api.rlRunStop(runId)
+        : action === "results"
+          ? await api.rlRunResults(runId)
+          : await api.rlRunLogs(runId);
+    setActionResult(result);
+    await runs.reload();
+  }
 
   return (
     <PageShell
@@ -259,22 +343,32 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
       badge={<GatedNotice controlAvailable={controlAvailable} action="应用学习建议/RL 运行" />}
       metrics={[
         metric("Learning", learningData.enabled ? "enabled" : "disabled", learningData.enabled ? "success" : "warning"),
-        metric("Proposals", list(review.data).length, "warning"),
-        metric("Envs", list(envs.data).length, "info"),
-        metric("Runs", list(runs.data).length, "success")
+        metric("Proposals", reviewRows.length, "warning"),
+        metric("Envs", envRows.length, "info"),
+        metric("Runs", runRows.length, "success")
       ]}
     >
       <div className="grid-3">
         <Panel title="Review Proposals">
-          <DataTable items={list(review.data)} columns={[{ key: "title", header: "建议" }, { key: "status", header: "状态" }, { key: "risk", header: "风险" }]} />
+          <DataTable items={reviewRows} columns={[{ key: "title", header: "建议" }, { key: "status", header: "状态" }, { key: "risk", header: "风险" }]} />
         </Panel>
         <Panel title="RL Environments">
-          <DataTable items={list(envs.data)} columns={[{ key: "id", header: "环境" }, { key: "status", header: "状态" }, { key: "side_effect", header: "副作用" }]} />
+          <DataTable items={envRows} columns={[{ key: "id", header: "环境" }, { key: "status", header: "状态" }, { key: "side_effect", header: "副作用" }]} />
         </Panel>
         <Panel title="RL Runs">
-          <DataTable items={list(runs.data)} columns={[{ key: "id", header: "运行" }, { key: "environment", header: "环境" }, { key: "status", header: "状态" }]} />
+          <DataTable items={runRows} columns={[{ key: "id", header: "运行" }, { key: "environment", header: "环境" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
+      <Panel title="Learning / RL Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable || !reviewRows.length} onClick={() => void applyFirstProposal()}>Apply first proposal</Button>
+          <Button disabled={!controlAvailable || !envRows.length} onClick={() => void startFirstEnvironment()}>Start first environment</Button>
+          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("stop")}>Stop first run</Button>
+          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("results")}>Load results</Button>
+          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("logs")}>Load logs</Button>
+        </div>
+        {actionResult ? <JsonPanel data={actionResult} title="Learning/RL action result" /> : null}
+      </Panel>
       <JsonPanel data={{ learning: learning.data, review: review.data, envs: envs.data, runs: runs.data }} title="学习能力证据" />
     </PageShell>
   );

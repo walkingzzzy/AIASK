@@ -1,10 +1,12 @@
 import { defineConfig, devices } from "@playwright/test";
 
+const isLive = process.env.AIASK_E2E_MODE === "live";
+
 export default defineConfig({
   testDir: "./e2e",
-  timeout: 30_000,
+  timeout: isLive ? 60_000 : 30_000,
   expect: { timeout: 5_000 },
-  fullyParallel: true,
+  fullyParallel: !isLive,
   reporter: "list",
   use: {
     baseURL: "http://127.0.0.1:1420",

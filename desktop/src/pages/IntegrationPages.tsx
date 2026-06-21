@@ -61,6 +61,28 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
   const prompts = useAsyncResource(() => api.mcpPrompts(), [api]);
   const oauth = useAsyncResource(() => api.mcpOauth(), [api]);
   const connectors = useAsyncResource(() => api.connectors(), [api]);
+  const [actionResult, setActionResult] = useState<unknown>(null);
+  const resourceRows = list(resources.data);
+  const promptRows = list(prompts.data);
+  const connectorRows = list(connectors.data);
+
+  async function readFirstResource() {
+    const first = resourceRows[0];
+    if (!first) return;
+    setActionResult(await api.mcpResourceRead({ server: first.server || first.server_name, uri: first.uri }));
+  }
+
+  async function getFirstPrompt() {
+    const first = promptRows[0];
+    if (!first) return;
+    setActionResult(await api.mcpPromptGet({ server: first.server || first.server_name, name: first.name || first.prompt, arguments: {} }));
+  }
+
+  async function testFirstConnector() {
+    const first = connectorRows[0];
+    if (!first) return;
+    setActionResult(await api.connectorTest(String(first.type || first.connector_type || first.category || "mcp"), String(first.name || first.id || "")));
+  }
 
   return (
     <PageShell
@@ -70,8 +92,8 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
       metrics={[
         metric("Servers", list(servers.data).length, "success"),
         metric("Tools", list(tools.data).length, "info"),
-        metric("Resources", list(resources.data).length, "info"),
-        metric("Connectors", list(connectors.data).length, "warning")
+        metric("Resources", resourceRows.length, "info"),
+        metric("Connectors", connectorRows.length, "warning")
       ]}
     >
       <div className="grid-2">
@@ -105,12 +127,20 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
           <DataTable items={list(tools.data)} columns={[{ key: "name", header: "工具" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
         </Panel>
         <Panel title="Resources">
-          <DataTable items={list(resources.data)} columns={[{ key: "uri", header: "URI" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
+          <DataTable items={resourceRows} columns={[{ key: "uri", header: "URI" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
         </Panel>
         <Panel title="Prompts / OAuth">
-          <DataTable items={[...list(prompts.data), ...list(oauth.data)]} columns={[{ key: "name", header: "名称" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
+          <DataTable items={[...promptRows, ...list(oauth.data)]} columns={[{ key: "name", header: "名称" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
+      <Panel title="MCP / Connector Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable || !resourceRows.length} onClick={() => void readFirstResource()}>Read first resource</Button>
+          <Button disabled={!controlAvailable || !promptRows.length} onClick={() => void getFirstPrompt()}>Get first prompt</Button>
+          <Button disabled={!controlAvailable || !connectorRows.length} onClick={() => void testFirstConnector()}>Test first connector</Button>
+        </div>
+        {actionResult ? <JsonPanel data={actionResult} title="MCP action result" /> : null}
+      </Panel>
       <JsonPanel data={{ servers: servers.data, tools: tools.data, resources: resources.data, prompts: prompts.data, oauth: oauth.data, connectors: connectors.data }} title="MCP/Connector 证据" />
     </PageShell>
   );
@@ -119,8 +149,41 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
 function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
   const skills = useAsyncResource(() => api.skills(), [api]);
   const plugins = useAsyncResource(() => api.plugins(), [api]);
+  const [actionResult, setActionResult] = useState<unknown>(null);
   const skillData = dataObject(skills.data, {});
   const installedSkills = Array.isArray(skillData.installed) ? skillData.installed.map((name) => ({ name })) : list(skills.data);
+  const pluginRows = list(plugins.data);
+
+  async function createSampleSkill() {
+    setActionResult(
+      await api.skillCreate({
+        name: "desktop-v1-smoke-skill",
+        description: "Created by AIASK Desktop V1 closed-loop smoke.",
+        content: "# Desktop V1 Smoke Skill\n\nThis skill is created through the gated Agent HTTP API."
+      })
+    );
+    await skills.reload();
+  }
+
+  async function deleteSampleSkill() {
+    setActionResult(await api.skillDelete("desktop-v1-smoke-skill"));
+    await skills.reload();
+  }
+
+  async function toggleFirstPlugin() {
+    const first = pluginRows[0];
+    const name = String(first?.name || first?.id || "");
+    if (!name) return;
+    setActionResult(await api.pluginToggle(name, !Boolean(first.enabled)));
+    await plugins.reload();
+  }
+
+  async function testFirstPlugin() {
+    const first = pluginRows[0];
+    const name = String(first?.name || first?.id || "");
+    if (!name) return;
+    setActionResult(await api.pluginToolTest(name, "__manifest__", {}));
+  }
 
   return (
     <PageShell
@@ -129,7 +192,7 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
       badge={<GatedNotice controlAvailable={controlAvailable} action="插件/技能变更" />}
       metrics={[
         metric("Skills", installedSkills.length, "success"),
-        metric("Plugins", list(plugins.data).length, "info"),
+        metric("Plugins", pluginRows.length, "info"),
         metric("变更动作", controlAvailable ? "可发起" : "门禁", controlAvailable ? "success" : "gated"),
         metric("Secrets", "Redacted", "success")
       ]}
@@ -146,7 +209,7 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
         </Panel>
         <Panel title="Plugins">
           <DataTable
-            items={list(plugins.data)}
+            items={pluginRows}
             columns={[
               { key: "name", header: "插件" },
               { key: "enabled", header: "启用", render: (item) => <StatusBadge tone={item.enabled ? "success" : "warning"}>{item.enabled ? "enabled" : "disabled"}</StatusBadge> },
@@ -156,6 +219,15 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
           />
         </Panel>
       </div>
+      <Panel title="Skill / Plugin Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable} onClick={() => void createSampleSkill()}>Create sample skill</Button>
+          <Button disabled={!controlAvailable} onClick={() => void deleteSampleSkill()}>Delete sample skill</Button>
+          <Button disabled={!controlAvailable || !pluginRows.length} onClick={() => void toggleFirstPlugin()}>Toggle first plugin</Button>
+          <Button disabled={!controlAvailable || !pluginRows.length} onClick={() => void testFirstPlugin()}>Self-test first plugin</Button>
+        </div>
+        {actionResult ? <JsonPanel data={actionResult} title="Skill/plugin action result" /> : null}
+      </Panel>
       <JsonPanel data={{ skills: skills.data, plugins: plugins.data }} title="插件技能证据" />
     </PageShell>
   );
@@ -172,6 +244,8 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
   const [sendResult, setSendResult] = useState<unknown>(null);
   const statusData = dataObject(status.data, {});
   const daemonData = dataObject(daemon.data, {});
+  const platformRows = list(platforms.data);
+  const messageRows = list(messages.data);
 
   async function createDeliveryIntent() {
     setSendResult(
@@ -185,6 +259,36 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
     await messages.reload();
   }
 
+  function firstPlatform(): string {
+    const first = platformRows[0];
+    return String(first?.platform || first?.name || first?.id || "local");
+  }
+
+  async function refreshDirectory() {
+    setSendResult(await api.gatewayDirectoryRefresh());
+    await directory.reload();
+  }
+
+  async function retryFirstMessage() {
+    const first = messageRows[0];
+    const messageId = String(first?.id || first?.message_id || "");
+    if (!messageId) return;
+    setSendResult(await api.gatewayRetry(messageId));
+    await messages.reload();
+  }
+
+  async function platformAction(action: "health" | "start" | "stop") {
+    const platform = firstPlatform();
+    const result =
+      action === "health"
+        ? await api.gatewayPlatformHealth(platform)
+        : action === "start"
+          ? await api.gatewayPlatformStart(platform)
+          : await api.gatewayPlatformStop(platform);
+    setSendResult(result);
+    await platforms.reload();
+  }
+
   return (
     <PageShell
       title="Gateway 与 Webhooks"
@@ -193,7 +297,7 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
       metrics={[
         metric("Gateway", statusData.mode || statusData.status || "unknown", statusTone(statusData.mode || statusData.status)),
         metric("Daemon", daemonData.running ? "running" : "stopped", daemonData.running ? "success" : "warning"),
-        metric("Platforms", list(platforms.data).length, "info"),
+        metric("Platforms", platformRows.length, "info"),
         metric("Webhooks", list(webhooks.data).length, "info")
       ]}
     >
@@ -210,7 +314,7 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
         </Panel>
         <Panel title="平台状态">
           <DataTable
-            items={list(platforms.data)}
+            items={platformRows}
             columns={[
               { key: "platform", header: "平台" },
               { key: "configured", header: "配置" },
@@ -221,7 +325,7 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
       </div>
       <div className="grid-3">
         <Panel title="消息">
-          <DataTable items={list(messages.data)} columns={[{ key: "platform", header: "平台" }, { key: "direction", header: "方向" }, { key: "status", header: "状态" }]} />
+          <DataTable items={messageRows} columns={[{ key: "platform", header: "平台" }, { key: "direction", header: "方向" }, { key: "status", header: "状态" }]} />
         </Panel>
         <Panel title="目录">
           <DataTable items={list(directory.data)} columns={[{ key: "platform", header: "平台" }, { key: "kind", header: "类型" }, { key: "name", header: "名称" }]} />
@@ -230,6 +334,15 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
           <DataTable items={list(webhooks.data)} columns={[{ key: "platform", header: "平台" }, { key: "status", header: "状态" }, { key: "verified", header: "验签" }]} />
         </Panel>
       </div>
+      <Panel title="Gateway Actions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable} onClick={() => void refreshDirectory()}>Refresh directory</Button>
+          <Button disabled={!controlAvailable || !messageRows.length} onClick={() => void retryFirstMessage()}>Retry first message</Button>
+          <Button disabled={!controlAvailable || !platformRows.length} onClick={() => void platformAction("health")}>Platform health</Button>
+          <Button disabled={!controlAvailable || !platformRows.length} onClick={() => void platformAction("start")}>Start platform</Button>
+          <Button disabled={!controlAvailable || !platformRows.length} onClick={() => void platformAction("stop")}>Stop platform</Button>
+        </div>
+      </Panel>
       <JsonPanel data={{ status: status.data, daemon: daemon.data, send_result: sendResult }} title="Gateway 证据" />
       <Panel title="成熟方案约束" action={<Radio size={18} />}>
         <p>Webhook 入站验签、平台目录刷新、daemon start/stop 和直接投递都由 Agent route/adapter 控制；前端只展示状态和发起受控请求。</p>

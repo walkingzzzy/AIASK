@@ -13,6 +13,15 @@ from .numeric import bounded_float, bounded_int
 from .stock_data_sources import search_source_by_provider
 
 
+def _active_json_request() -> Callable[..., dict[str, Any]]:
+    try:
+        from . import native_capabilities
+
+        return getattr(native_capabilities, "_json_request", _json_request)
+    except Exception:
+        return _json_request
+
+
 def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, Any]:
     async def web_extract(arguments: dict[str, Any]) -> dict[str, Any]:
         tool = "agent_web_extract"
@@ -56,6 +65,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
             results: list[dict[str, Any]] = []
             status: int | None = None
             provider_payload: dict[str, Any] = {"source_id": (configured_source or {}).get("id"), "source": (configured_source or {}).get("source")}
+            json_request = _active_json_request()
 
             if provider == "tavily" and api_key:
                 payload = {
@@ -65,7 +75,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
                     "include_answer": bool(arguments.get("include_answer") or (configured_source or {}).get("include_answer") or False),
                 }
                 response = await asyncio.to_thread(
-                    _json_request,
+                    json_request,
                     "POST",
                     f"{base_url or 'https://api.tavily.com'}/search",
                     payload,
@@ -82,7 +92,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
             elif provider == "brave_search" and api_key:
                 params = urlencode({"q": query, "count": str(limit)})
                 response = await asyncio.to_thread(
-                    _json_request,
+                    json_request,
                     "GET",
                     f"{base_url or 'https://api.search.brave.com/res/v1'}/web/search?{params}",
                     None,
@@ -99,7 +109,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
             elif provider == "serpapi" and api_key:
                 params = urlencode({"engine": str((configured_source or {}).get("engine") or "google"), "q": query, "api_key": api_key, "num": str(limit)})
                 response = await asyncio.to_thread(
-                    _json_request,
+                    json_request,
                     "GET",
                     f"{base_url or 'https://serpapi.com/search.json'}?{params}",
                     None,
@@ -114,7 +124,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
             elif provider == "exa" and api_key:
                 payload = {"query": query, "numResults": limit, "type": str(arguments.get("search_type") or (configured_source or {}).get("search_type") or "auto")}
                 response = await asyncio.to_thread(
-                    _json_request,
+                    json_request,
                     "POST",
                     f"{base_url or 'https://api.exa.ai'}/search",
                     payload,
@@ -190,7 +200,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
                 params["next_token"] = str(arguments.get("next_token"))
             query_string = "&".join(f"{quote_plus(key)}={quote_plus(value)}" for key, value in params.items())
             result = await asyncio.to_thread(
-                _json_request,
+                _active_json_request(),
                 "GET",
                 f"{base_url}/tweets/search/recent?{query_string}",
                 None,

@@ -138,10 +138,10 @@ function DataSyncPage({ api }: PageProps) {
         <Panel title="同步计划">
           <label className="field">
             <span>股票代码</span>
-            <textarea value={codes} onChange={(event) => setCodes(event.target.value)} />
+            <textarea data-testid="data-sync-codes" value={codes} onChange={(event) => setCodes(event.target.value)} />
             <small>计划生成不会直接同步；执行需要后端 intent/control 策略。</small>
           </label>
-          <Button icon={<RefreshCw size={16} />} onClick={() => void createPlan()}>
+          <Button data-testid="data-sync-plan" icon={<RefreshCw size={16} />} onClick={() => void createPlan()}>
             生成同步计划
           </Button>
           {plan ? <JsonPanel data={plan} title="同步计划结果" /> : null}
@@ -208,6 +208,21 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
   const candidateRows = firstArray(dataObject(candidates.data, {}), ["candidates", "data"]);
   const statusData = dataObject(status.data, {});
   const digestData = dataObject(digest.data, {});
+  const [actionResult, setActionResult] = useState<unknown>(null);
+
+  async function createRadarIntent(action: "run" | "deliver") {
+    setActionResult(
+      await api.createIntent({
+        action: action === "run" ? "stock_radar.run" : "stock_radar.deliver_digest",
+        params: {
+          run_id: statusData.latest_run_id,
+          channels: action === "deliver" ? ["local"] : undefined,
+          dry_run: true
+        },
+        rationale: `Desktop V1 stock radar ${action} intent`
+      })
+    );
+  }
 
   return (
     <PageShell
@@ -237,13 +252,14 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
         <Panel title="摘要与动作">
           {digestData.digest ? <p>{String(digestData.digest)}</p> : <EmptyState title="暂无摘要" detail="等待雷达 digest 或 live Agent 返回。" />}
           <div className="page-actions">
-            <Button icon={<Play size={16} />} disabled={!controlAvailable}>
+            <Button icon={<Play size={16} />} disabled={!controlAvailable} onClick={() => void createRadarIntent("run")}>
               创建运行意图
             </Button>
-            <Button icon={<ShieldAlert size={16} />} disabled={!controlAvailable}>
+            <Button icon={<ShieldAlert size={16} />} disabled={!controlAvailable} onClick={() => void createRadarIntent("deliver")}>
               创建投递意图
             </Button>
           </div>
+          {actionResult ? <JsonPanel data={actionResult} title="Radar intent result" /> : null}
         </Panel>
       </div>
       <JsonPanel data={{ status: status.data, candidates: candidates.data, digest: digest.data }} title="股票雷达证据" />
@@ -289,10 +305,21 @@ function QuantResearchPage({ api }: PageProps) {
   const [preset, setPreset] = useState("momentum_research");
   const [symbol, setSymbol] = useState("600519");
   const [run, setRun] = useState<unknown>(null);
+  const [report, setReport] = useState<unknown>(null);
   const rows = list(presets.data);
 
   async function createRun() {
-    setRun(await api.quantRun({ preset, universe: [symbol], dry_run: true, source: "desktop_v1" }));
+    const result = await api.quantRun({ preset, universe: [symbol], dry_run: true, source: "desktop_v1" });
+    setRun(result);
+    setReport(null);
+  }
+
+  async function loadReport() {
+    const runData = dataObject(run, {});
+    const inner = dataObject(runData.data || runData, {});
+    const researchId = String(inner.id || inner.research_id || runData.id || "");
+    if (!researchId) return;
+    setReport(await api.quantReport(researchId));
   }
 
   const runData = dataObject(run, {});
@@ -329,12 +356,15 @@ function QuantResearchPage({ api }: PageProps) {
           <Button icon={<Play size={16} />} onClick={() => void createRun()}>
             创建研究运行
           </Button>
+          <Button disabled={!run} onClick={() => void loadReport()}>
+            Load report
+          </Button>
         </Panel>
         <Panel title="Preset 列表">
           <DataTable items={rows} columns={[{ key: "name", header: "名称" }, { key: "risk", header: "风险" }, { key: "default_universe", header: "默认范围" }]} />
         </Panel>
       </div>
-      {run ? <JsonPanel data={run} title="研究报告/运行证据" /> : null}
+      {run ? <JsonPanel data={{ run, report }} title="研究报告/运行证据" /> : null}
     </PageShell>
   );
 }
@@ -357,6 +387,14 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
 
   async function createIntent() {
     setResult(await api.financialManagerIntent({ action: "review", query, dry_run: true }));
+  }
+
+  async function runBrokerAnalytics() {
+    setResult(await api.brokerAnalyticsRun({ dry_run: true, source: "desktop_v1", read_only: true }));
+  }
+
+  async function loadBrokerAnalytics() {
+    setResult(await api.brokerAnalyticsLatest());
   }
 
   return (
@@ -383,6 +421,12 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
             </Button>
             <Button icon={<ShieldAlert size={16} />} disabled={!controlAvailable} onClick={() => void createIntent()}>
               创建受控意图
+            </Button>
+            <Button disabled={!controlAvailable} onClick={() => void runBrokerAnalytics()}>
+              Broker analytics dry-run
+            </Button>
+            <Button disabled={!controlAvailable} onClick={() => void loadBrokerAnalytics()}>
+              Latest broker analytics
             </Button>
           </div>
         </Panel>

@@ -10,8 +10,8 @@
     "test:watch": "vitest --environment jsdom",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 1421",
-    "test:e2e:mock": "playwright test --project=chromium",
-    "test:e2e:live": "AIASK_E2E_MODE=live playwright test --project=chromium",
+    "test:e2e:mock": "node ./scripts/run-playwright.mjs mock",
+    "test:e2e:live": "node ./scripts/run-playwright.mjs live",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

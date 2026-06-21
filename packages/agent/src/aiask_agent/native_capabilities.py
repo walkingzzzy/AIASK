@@ -19,6 +19,7 @@ from .native_planning_handlers import build_planning_handlers
 from .native_skill_store import SkillStore
 from .native_utils import _safe_slug
 from .native_web_handlers import build_web_handlers
+from .native_web_utils import _json_request
 from .numeric import bounded_int
 from .platform_apis import DiscordServerClient, FeishuClient
 from .plugin_runtime import NativePluginManager

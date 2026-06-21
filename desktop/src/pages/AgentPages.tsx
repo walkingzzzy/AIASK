@@ -99,10 +99,10 @@ function WorkbenchPage({ api, settings, controlAvailable }: PageProps) {
             <div className="composer">
               <label className="field">
                 <span>Prompt</span>
-                <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+                <textarea data-testid="workbench-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} />
                 <small>模型不可用时页面会显示门禁；真实发送只通过 `/v1/responses`。</small>
               </label>
-              <Button tone="success" icon={<Send size={16} />} busy={busy} onClick={() => void submitPrompt()}>
+              <Button data-testid="workbench-submit" tone="success" icon={<Send size={16} />} busy={busy} onClick={() => void submitPrompt()}>
                 发送任务
               </Button>
             </div>
@@ -301,7 +301,7 @@ function ProjectsContextsPage({ api, settings }: PageProps) {
   );
 }
 
-function SessionsRunsPage({ api }: PageProps) {
+function SessionsRunsPage({ api, controlAvailable }: PageProps) {
   const sessions = useAsyncResource(() => api.sessions(), [api]);
   const runs = useAsyncResource(() => api.desktopRuns(), [api]);
   const runRows = list(runs.data);
@@ -310,6 +310,20 @@ function SessionsRunsPage({ api }: PageProps) {
   const artifacts = useAsyncResource(() => api.runArtifacts(selectedRun), [api, selectedRun]);
   const sources = useAsyncResource(() => api.runSources(selectedRun), [api, selectedRun]);
   const sessionRows = list(sessions.data);
+  const [controlResult, setControlResult] = useState<unknown>(null);
+  const [steerInstruction, setSteerInstruction] = useState("Please summarize the current run state and continue safely.");
+
+  async function controlRun(action: "cancel" | "stop" | "steer") {
+    if (!selectedRun) return;
+    const result =
+      action === "cancel"
+        ? await api.runCancel(selectedRun)
+        : action === "stop"
+          ? await api.runStop(selectedRun)
+          : await api.runSteer(selectedRun, steerInstruction);
+    setControlResult(result);
+    await Promise.all([runs.reload(), events.reload()]);
+  }
 
   return (
     <PageShell
@@ -371,6 +385,24 @@ function SessionsRunsPage({ api }: PageProps) {
           <DataTable items={list(sources.data)} columns={[{ key: "source_type", header: "来源类型" }, { key: "title", header: "标题" }, { key: "uri", header: "URI" }]} />
         </Panel>
       </div>
+      <Panel title="Run Control">
+        <div className="form-grid">
+          <label className="field">
+            <span>Run ID</span>
+            <input value={selectedRun} onChange={(event) => setSelectedRun(event.target.value)} />
+          </label>
+          <label className="field">
+            <span>Steer instruction</span>
+            <input value={steerInstruction} onChange={(event) => setSteerInstruction(event.target.value)} />
+          </label>
+        </div>
+        <div className="page-actions">
+          <Button disabled={!controlAvailable || !selectedRun} onClick={() => void controlRun("steer")}>Steer</Button>
+          <Button disabled={!controlAvailable || !selectedRun} onClick={() => void controlRun("stop")}>Stop</Button>
+          <Button disabled={!controlAvailable || !selectedRun} onClick={() => void controlRun("cancel")}>Cancel</Button>
+        </div>
+        {controlResult ? <JsonPanel data={controlResult} title="Run control result" /> : null}
+      </Panel>
     </PageShell>
   );
 }
@@ -379,6 +411,7 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
   const tools = useAsyncResource(() => api.tools(), [api]);
   const intents = useAsyncResource(() => api.intents(), [api]);
   const approvals = useAsyncResource(() => api.approvals(), [api]);
+  const [actionResult, setActionResult] = useState<unknown>(null);
   const toolRows = useMemo(
     () =>
       list(tools.data).filter((tool) => {
@@ -387,15 +420,35 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
       }),
     [tools.data]
   );
+  const intentRows = list(intents.data);
+  const approvalRows = list(approvals.data);
 
   async function createSafeIntent() {
     await api.createIntent({
-      title: "V1 safe diagnostic intent",
-      action: "diagnostic_preview",
-      side_effect: "none",
-      reason: "desktop V1 gated flow check"
+      title: "V1 safe data sync dry-run intent",
+      action: "data_sync.sync",
+      params: { task_type: "preflight", codes: ["600519"], dry_run: true },
+      rationale: "desktop V1 gated flow check"
     });
     await intents.reload();
+  }
+
+  async function decideFirstIntent(decision: "confirm" | "deny") {
+    const first = intentRows[0];
+    const intentId = String(first?.id || first?.intent_id || "");
+    if (!intentId) return;
+    const result = decision === "confirm" ? await api.intentConfirm(intentId) : await api.intentDeny(intentId);
+    setActionResult(result);
+    await intents.reload();
+  }
+
+  async function decideFirstApproval(decision: "approve" | "deny") {
+    const first = approvalRows[0];
+    const approvalId = String(first?.id || first?.approval_id || "");
+    if (!approvalId) return;
+    const result = await api.approvalDecision(approvalId, decision);
+    setActionResult(result);
+    await approvals.reload();
   }
 
   return (
@@ -404,14 +457,14 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
       description="只展示 agent_* 工具门面；有副作用的动作必须走 ActionIntent 或审批，不暴露 raw manager。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="创建意图/审批决策" />}
       actions={
-        <Button icon={<ShieldCheck size={16} />} disabled={!controlAvailable} onClick={() => void createSafeIntent()}>
+        <Button data-testid="create-safe-intent" icon={<ShieldCheck size={16} />} disabled={!controlAvailable} onClick={() => void createSafeIntent()}>
           创建诊断意图
         </Button>
       }
       metrics={[
         metric("agent_* 工具", toolRows.length, "success"),
-        metric("Intent", list(intents.data).length, "warning"),
-        metric("审批", list(approvals.data).length, "warning"),
+        metric("Intent", intentRows.length, "warning"),
+        metric("审批", approvalRows.length, "warning"),
         metric("Raw manager", "隐藏", "success")
       ]}
     >
@@ -428,7 +481,7 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
         </Panel>
         <Panel title="ActionIntent">
           <DataTable
-            items={list(intents.data)}
+            items={intentRows}
             columns={[
               { key: "title", header: "意图" },
               { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> },
@@ -438,7 +491,7 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
         </Panel>
         <Panel title="审批队列">
           <DataTable
-            items={list(approvals.data)}
+            items={approvalRows}
             columns={[
               { key: "title", header: "审批" },
               { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> },
@@ -447,6 +500,15 @@ function ToolsApprovalsPage({ api, controlAvailable }: PageProps) {
           />
         </Panel>
       </div>
+      <Panel title="Intent / Approval Decisions">
+        <div className="page-actions">
+          <Button disabled={!controlAvailable || !intentRows.length} onClick={() => void decideFirstIntent("confirm")}>Confirm first intent</Button>
+          <Button disabled={!controlAvailable || !intentRows.length} onClick={() => void decideFirstIntent("deny")}>Deny first intent</Button>
+          <Button disabled={!controlAvailable || !approvalRows.length} onClick={() => void decideFirstApproval("approve")}>Approve first approval</Button>
+          <Button disabled={!controlAvailable || !approvalRows.length} onClick={() => void decideFirstApproval("deny")}>Deny first approval</Button>
+        </div>
+        {actionResult ? <JsonPanel data={actionResult} title="Decision result" /> : null}
+      </Panel>
       <JsonPanel data={{ tools: tools.data, intents: intents.data, approvals: approvals.data }} title="工具与审批证据" />
     </PageShell>
   );
