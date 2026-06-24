@@ -140,23 +140,27 @@ build_mcp_runtime_adapters = build_runtime_adapters
 
 
 __all__ = [
+    # Canonical names (primary)
+    "RuntimeAdapters",
+    "build_runtime_adapters",
+    "StrategyFactoryRepositoryAdapter",
+    "adapt_repository",
+    # Gateway implementation aliases (host-neutral)
     "AutonomyGatewayImpl",
     "FactorResearchGatewayImpl",
     "IncubationGatewayImpl",
+    "RiskGatewayImpl",
+    "ValidationGatewayImpl",
+    "VectorSearchGatewayImpl",
+    # MCP-prefixed gateway implementations (concrete)
     "MCPAutonomyGatewayImpl",
     "MCPFactorResearchGatewayImpl",
     "MCPIncubationGatewayImpl",
     "MCPRiskGatewayImpl",
-    "MCPRuntimeAdapters",
-    "MCPStrategyFactoryRepositoryAdapter",
     "MCPValidationGatewayImpl",
     "MCPVectorSearchGatewayImpl",
-    "RiskGatewayImpl",
-    "RuntimeAdapters",
-    "StrategyFactoryRepositoryAdapter",
-    "ValidationGatewayImpl",
-    "VectorSearchGatewayImpl",
-    "adapt_repository",
+    # Compatibility aliases (deprecated)
+    "MCPRuntimeAdapters",
+    "MCPStrategyFactoryRepositoryAdapter",
     "build_mcp_runtime_adapters",
-    "build_runtime_adapters",
 ]

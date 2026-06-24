@@ -488,8 +488,12 @@ class MCPRiskGatewayImpl:
 
 
 @dataclass(frozen=True)
-class MCPRuntimeAdapters:
-    """Typed bundle of MCP-backed adapters for incremental dependency injection."""
+class RuntimeAdapters:
+    """Typed bundle of runtime adapters for incremental dependency injection.
+
+    This is the canonical adapter type for strategy-factory runtime providers.
+    Host integrations should inject concrete implementations through this interface.
+    """
 
     repository: StrategyFactoryRepository
     vector_search: VectorSearchGateway
@@ -506,7 +510,7 @@ def adapt_repository(db: Any) -> StrategyFactoryRepository:
     return StrategyFactoryRepositoryAdapter(db)
 
 
-def build_mcp_runtime_adapters(
+def build_runtime_adapters(
     db: Any,
     *,
     vector_engine: Any | None = None,
@@ -517,8 +521,15 @@ def build_mcp_runtime_adapters(
     incubation_pipeline_service: Any | None = None,
     validation_runner=None,
     risk_runner=None,
-) -> MCPRuntimeAdapters:
-    return MCPRuntimeAdapters(
+) -> RuntimeAdapters:
+    """Build runtime adapters bundle - canonical factory (host-neutral).
+
+    This is the primary entry point for constructing runtime adapter bundles.
+
+    Returns:
+        RuntimeAdapters instance with all injected dependencies
+    """
+    return RuntimeAdapters(
         repository=adapt_repository(db),
         vector_search=MCPVectorSearchGatewayImpl(vector_engine),
         autonomy=MCPAutonomyGatewayImpl(autonomy_service),
@@ -529,19 +540,27 @@ def build_mcp_runtime_adapters(
     )
 
 
+# Compatibility aliases - these will be removed in a future version
+MCPRuntimeAdapters = RuntimeAdapters
+build_mcp_runtime_adapters = build_runtime_adapters
 MCPStrategyFactoryRepositoryAdapter = StrategyFactoryRepositoryAdapter
 
 
 __all__ = [
+    # Canonical names (primary)
+    "RuntimeAdapters",
+    "build_runtime_adapters",
+    "StrategyFactoryRepositoryAdapter",
+    "adapt_repository",
+    # Gateway implementations
     "MCPAutonomyGatewayImpl",
     "MCPFactorResearchGatewayImpl",
     "MCPIncubationGatewayImpl",
     "MCPRiskGatewayImpl",
-    "MCPRuntimeAdapters",
-    "MCPStrategyFactoryRepositoryAdapter",
     "MCPValidationGatewayImpl",
     "MCPVectorSearchGatewayImpl",
-    "StrategyFactoryRepositoryAdapter",
-    "adapt_repository",
+    # Compatibility aliases (deprecated)
+    "MCPRuntimeAdapters",
     "build_mcp_runtime_adapters",
+    "MCPStrategyFactoryRepositoryAdapter",
 ]
