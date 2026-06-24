@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+from pathlib import Path
 
 from akshare_mcp.tools.managers import strategy_mgr_lifecycle as lifecycle
 
@@ -190,12 +191,47 @@ def test_recent_factory_status_surfaces_strict_incubation_blockers(monkeypatch) 
     assert summary["sample_blocked_strategies"][0]["strategy_id"] == "s1"
 
 
-def test_mcp_server_does_not_enable_strategy_factory_embedded_start_by_default(monkeypatch) -> None:
-    monkeypatch.delenv("STRATEGY_FACTORY_ENABLED", raising=False)
-    monkeypatch.setenv("AKSHARE_MCP_STARTUP_PROFILE", "full")
+def test_mcp_server_background_env_only_counts_non_factory_services(monkeypatch) -> None:
+    monkeypatch.setenv("FACTOR_SCHEDULER_ENABLED", "1")
+    monkeypatch.setenv("MATCHING_ENGINE_ENABLED", "1")
+    monkeypatch.setenv("NAV_ENGINE_ENABLED", "1")
+    monkeypatch.setenv("SIGNAL_TRACKER_ENABLED", "1")
+    monkeypatch.setenv("STRATEGY_FACTORY_ENABLED", "1")
+    monkeypatch.setenv("DATA_SYNC_SCHEDULER_ENABLED", "0")
+    monkeypatch.setenv("STARTUP_VALIDATION_ENABLED", "0")
     server = importlib.import_module("akshare_mcp.server")
 
-    assert server._strategy_factory_embedded_start_enabled("full") is False
+    assert server._background_services_env_enabled() is False
+
+
+def test_mcp_server_source_no_longer_embeds_factory_owned_runtimes() -> None:
+    server_path = (
+        Path(__file__).resolve().parents[1] / "src" / "akshare_mcp" / "server.py"
+    )
+    text = server_path.read_text(encoding="utf-8", errors="ignore")
+
+    assert '_try_start("FactorScheduler"' not in text
+    assert '_try_start("MatchingEngine"' not in text
+    assert '_try_start("NavEngine"' not in text
+    assert '_try_start("SignalTracker"' not in text
+    assert "get_strategy_factory_scheduler(**build_strategy_factory_scheduler_kwargs())" not in text
+
+
+def test_strategy_mgr_runtime_uses_canonical_signal_tracker_runtime() -> None:
+    runtime_path = (
+        Path(__file__).resolve().parents[1]
+        / "src"
+        / "akshare_mcp"
+        / "tools"
+        / "managers"
+        / "strategy_mgr_runtime.py"
+    )
+    text = runtime_path.read_text(encoding="utf-8", errors="ignore")
+
+    assert "from ...services.signal_tracker import get_signal_tracker" not in text
+    assert "strategy_factory.runtime.default_bootstrap" in text
+    assert "from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime" in text
+    assert "ensure_default_runtime_services()" in text
 
 
 def test_mcp_server_rejects_background_leader_when_lock_unavailable(monkeypatch) -> None:

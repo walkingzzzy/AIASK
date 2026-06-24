@@ -86,7 +86,10 @@ def validate_strategy_factory_runtime(
             missing_runtime_adapters = checked_adapters
         else:
             missing_runtime_adapters = tuple(
-                name for name in checked_adapters if getattr(runtime_adapters, name, None) is None
+                name
+                for name in checked_adapters
+                if getattr(runtime_adapters, name, None) is None
+                or getattr(getattr(runtime_adapters, name, None), "runtime_provider_missing", None)
             )
 
     ok = not missing_repository_methods and not missing_runtime_adapters

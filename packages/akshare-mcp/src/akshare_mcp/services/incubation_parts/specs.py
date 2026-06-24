@@ -459,6 +459,10 @@
             else:
                 position = dict(positions.get(code) or {})
                 shares = int(position.get('quantity') or 0)
+                # P0 FIX: fallback to open_trade_positions if no account-level position
+                if shares <= 0:
+                    trade_position = dict(open_trade_positions.get(code) or {})
+                    shares = int(trade_position.get('quantity') or 0)
                 if shares <= 0:
                     _skip("sell_without_position")
                     continue

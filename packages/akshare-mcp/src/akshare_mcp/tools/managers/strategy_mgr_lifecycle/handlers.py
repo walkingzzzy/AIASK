@@ -136,7 +136,7 @@ async def handle_submission_replay(db, params: dict) -> dict:
     if not strategy_ids:
         return fail("strategy_id is required")
     recheck_reports = parse_bool(params.get("recheck_reports"), True)
-    from strategy_factory import StrategySubmitter
+    from strategy_factory.api import StrategySubmitter
 
     submitter = StrategySubmitter()
     items: list[dict] = []
@@ -224,7 +224,7 @@ async def handle_submit(db, params: dict) -> dict:
         strategy,
         latest_report,
     )
-    from strategy_factory import StrategySubmitter
+    from strategy_factory.api import StrategySubmitter
 
     submitter = StrategySubmitter()
     snapshot = dict((latest_report or {}).get("snapshot") or {})
@@ -308,13 +308,12 @@ async def handle_closure_review(db, params: dict) -> dict:
 
 
 async def handle_factory_status(db, params: dict) -> dict:
-    from strategy_factory import get_factory_constants
     from strategy_factory.api.market_views import extract_bulk_stock_cursor
+    from strategy_factory.api import FactoryStatusDTO, get_factory_constants
     from strategy_factory.api.market_views import (
         build_research_window_status,
         hydrate_full_market_topn_payload,
     )
-    from strategy_factory.api import FactoryStatusDTO
 
     factory_constants = get_factory_constants()
     status = _factory_defaults_from_constants(factory_constants)
@@ -749,7 +748,7 @@ async def run_quality_gate(
     backtest_metrics: Optional[dict] = None,
 ) -> dict:
     """Run the shared submission-stage quality gate and normalize the result."""
-    from strategy_factory import run_submission_quality_gate
+    from strategy_factory.api import run_submission_quality_gate
 
     return normalize_quality_gate_result(
         await run_submission_quality_gate(

@@ -83,10 +83,12 @@ class FactorMiningFactoryScheduler:
 
     async def run_once(self) -> dict[str, Any]:
         """执行一次完整的挖掘周期（兼容 FactorScheduler.run_once）。"""
-        from . import get_factor_mining_factory
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
 
-        factory = get_factor_mining_factory()
-        result = await factory.run_mining_cycle(trigger="manual")
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        result = await runtime.run_once(trigger="manual")
         self._last_mining_at = datetime.now(timezone.utc)
         return result
 
@@ -135,20 +137,24 @@ class FactorMiningFactoryScheduler:
 
     async def _run_mining(self):
         """执行挖掘周期。"""
-        from . import get_factor_mining_factory
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
 
-        factory = get_factor_mining_factory()
-        result = await factory.run_mining_cycle(trigger="scheduled")
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        result = await runtime.run_once(trigger="scheduled")
         self._last_mining_at = datetime.now(timezone.utc)
         logger.info("FactorMiningFactoryScheduler: mining completed: admitted=%d pool=%d",
                     result.get("admitted_count", 0), result.get("pool_size", 0))
 
     async def _run_maintenance(self):
         """执行维护任务。"""
-        from . import get_factor_mining_factory
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
 
-        factory = get_factor_mining_factory()
-        result = await factory.run_maintenance()
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        result = await runtime.run_maintenance()
         self._last_maintenance_at = datetime.now(timezone.utc)
         logger.info("FactorMiningFactoryScheduler: maintenance completed: pool=%d",
                     result.get("pool_size", 0))

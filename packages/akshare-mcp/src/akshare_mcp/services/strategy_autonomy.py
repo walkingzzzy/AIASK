@@ -10,7 +10,7 @@ from datetime import date
 from typing import Any, Optional
 from uuid import uuid4
 
-from strategy_factory import extract_event_context as _extract_event_context
+from strategy_factory.api import extract_event_context as _extract_event_context
 from .strategy_autonomy_components import (  # noqa: F401
     CandidateGenerationService,
     CommitteeReviewService,

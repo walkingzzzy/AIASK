@@ -1,6 +1,7 @@
 import { Play, Save, ShieldCheck } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
+import { DryRunPreview } from "../components/IntentComponents";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { Button, DataTable, GatedNotice, JsonPanel, LinkCard, PageShell, Panel, StatusBadge } from "../components/ui";
 import type { ConnectionSettings } from "../types";
@@ -30,88 +31,157 @@ export function OpsPages(props: PageProps) {
 function AutomationPage({ api, controlAvailable }: PageProps) {
   const jobs = useAsyncResource(() => api.jobs(), [api]);
   const [result, setResult] = useState<unknown>(null);
+  const [previewAction, setPreviewAction] = useState<null | "run-first" | "create" | "disable" | "delete">(null);
   const rows = list(jobs.data);
-  const sampleJobName = "desktop-v1-smoke-job";
+  const sampleJobName = useMemo(() => `desktop-v1-smoke-job-${Date.now().toString(36)}`, []);
+  const enabledRows = rows.filter((job) => Boolean(job.enabled));
+  const scheduledRows = rows.filter((job) => !String(job.schedule || "").includes("manual"));
+  const manualRows = rows.filter((job) => String(job.schedule || "").includes("manual"));
+
+  function jobId(job: Record<string, unknown> | undefined) {
+    return String(job?.id || job?.job_id || "");
+  }
 
   async function runFirstJob() {
     const first = rows[0];
-    if (!first?.id) return;
-    setResult(await api.runJob(String(first.id)));
+    const targetId = jobId(first);
+    if (!targetId) return;
+    setResult(await api.runJob(targetId));
+    setPreviewAction(null);
     await jobs.reload();
   }
 
   async function createSampleJob() {
     setResult(await api.createJob({ name: sampleJobName, prompt: "AIASK Desktop V1 smoke job", interval_seconds: 3600, enabled: false }));
+    setPreviewAction(null);
     await jobs.reload();
   }
 
   async function disableSampleJob() {
     const target = rows.find((job) => String(job.name || "") === sampleJobName);
-    if (!target?.id) return;
-    setResult(await api.updateJob(String(target.id), { enabled: false }));
+    const targetId = jobId(target);
+    if (!targetId) return;
+    setResult(await api.updateJob(targetId, { enabled: false }));
+    setPreviewAction(null);
     await jobs.reload();
   }
 
   async function deleteSampleJob() {
     const target = rows.find((job) => String(job.name || "") === sampleJobName);
-    if (!target?.id) return;
-    setResult(await api.deleteJob(String(target.id)));
+    const targetId = jobId(target);
+    if (!targetId) return;
+    setResult(await api.deleteJob(targetId));
+    setPreviewAction(null);
     await jobs.reload();
   }
 
   return (
     <PageShell
-      title="自动化盯盘与任务处理"
-      description="管理 jobs、运行历史、手动触发和调度门禁；运行任务需要 control token 或后端批准。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="创建/触发任务" />}
-      actions={<Button icon={<Play size={16} />} disabled={!controlAvailable || !rows.length} onClick={() => void runFirstJob()}>触发首个任务</Button>}
+      title="Automation Triage"
+      description="以 triage / inbox 语义重排 jobs、历史 runs、计划任务和 workflow 入口，保留受控动作但不再只是 jobs 表格。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建 / 触发任务" />}
+      actions={
+        <Button icon={<Play size={16} />} disabled={!controlAvailable || !rows.length} onClick={() => setPreviewAction("run-first")}>
+          触发首个任务
+        </Button>
+      }
       metrics={[
         metric("Jobs", rows.length, "info"),
-        metric("Enabled", rows.filter((job) => Boolean(job.enabled)).length, "success"),
-        metric("Manual", rows.filter((job) => String(job.schedule || "").includes("manual")).length, "warning"),
-        metric("Gate", controlAvailable ? "open" : "control required", controlAvailable ? "success" : "gated")
+        metric("Enabled", enabledRows.length, "success"),
+        metric("Scheduled", scheduledRows.length, "info"),
+        metric("Manual", manualRows.length, "warning")
       ]}
     >
-      <Panel title="任务列表">
-        <DataTable
-          items={rows}
-          columns={[
-            { key: "name", header: "任务" },
-            { key: "enabled", header: "启用" },
-            { key: "schedule", header: "计划" },
-            { key: "toolset", header: "Toolset" }
-          ]}
-        />
-      </Panel>
+      <div className="grid-2">
+        <Panel title="Triage Inbox">
+          <DataTable
+            items={rows}
+            columns={[
+              { key: "name", header: "任务" },
+              { key: "enabled", header: "启用" },
+              { key: "schedule", header: "计划" },
+              { key: "toolset", header: "Toolset" }
+            ]}
+          />
+        </Panel>
+
+        <Panel title="Finding / 下一步动作">
+          <JsonPanel
+            data={{
+              jobs: rows,
+              enabled_count: enabledRows.length,
+              scheduled_count: scheduledRows.length,
+              manual_count: manualRows.length
+            }}
+            title="Automation findings"
+          />
+        </Panel>
+      </div>
+
       <Panel title="Job Actions">
         <div className="page-actions">
-          <Button disabled={!controlAvailable} onClick={() => void createSampleJob()}>Create sample job</Button>
-          <Button disabled={!controlAvailable} onClick={() => void disableSampleJob()}>Disable sample job</Button>
-          <Button disabled={!controlAvailable} onClick={() => void deleteSampleJob()}>Delete sample job</Button>
+          <Button data-testid="job-create-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("create")}>
+            Create sample job
+          </Button>
+          <Button data-testid="job-disable-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("disable")}>
+            Disable sample job
+          </Button>
+          <Button data-testid="job-delete-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("delete")}>
+            Delete sample job
+          </Button>
         </div>
+
+        {previewAction ? (
+          <DryRunPreview
+            title="Automation 动作预览"
+            changes={[
+              { label: "动作", after: previewAction },
+              { label: "目标", after: previewAction === "run-first" ? String(rows[0]?.name || rows[0]?.id || "-") : sampleJobName },
+              { label: "约束", after: "通过 Agent Jobs API 发起受控动作" }
+            ]}
+            onCancel={() => setPreviewAction(null)}
+            onConfirm={() => {
+              if (previewAction === "run-first") {
+                void runFirstJob();
+                return;
+              }
+              if (previewAction === "create") {
+                void createSampleJob();
+                return;
+              }
+              if (previewAction === "disable") {
+                void disableSampleJob();
+                return;
+              }
+              void deleteSampleJob();
+            }}
+          />
+        ) : null}
       </Panel>
-      <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="自动化证据" />
+
+      <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="Automation evidence" />
     </PageShell>
   );
 }
 
 function WorkflowsPage(_props: PageProps) {
   const steps = [
-    { name: "Data", detail: "数据源配置、数据库状态、新鲜度和同步计划。", to: "/data-sync", tone: "info" as const },
-    { name: "Radar", detail: "股票候选、摘要和受控运行/投递意图。", to: "/stock-radar", tone: "success" as const },
-    { name: "Market", detail: "市场温度、行业冷热和缓存验证。", to: "/market-temperature", tone: "warning" as const },
-    { name: "Quant", detail: "Preset、研究运行、报告和限制说明。", to: "/quant-research", tone: "neutral" as const },
+    { name: "Data", detail: "数据源、状态、freshness 与同步计划。", to: "/data-sync", tone: "info" as const },
+    { name: "Radar", detail: "候选股、摘要和受控投递意图。", to: "/stock-radar", tone: "success" as const },
+    { name: "Market", detail: "市场温度、行业冷热与 cache readiness。", to: "/market-temperature", tone: "warning" as const },
+    { name: "Quant", detail: "Preset、研究运行、报告与限制说明。", to: "/quant-research", tone: "neutral" as const },
     { name: "Manager", detail: "经理台只读查询和受控意图。", to: "/financial-manager", tone: "gated" as const },
-    { name: "Gateway", detail: "投递预览、目录、消息和 Webhooks。", to: "/gateway-webhooks", tone: "neutral" as const }
+    { name: "Gateway", detail: "投递预览、目录、消息与 Webhooks。", to: "/gateway-webhooks", tone: "neutral" as const }
   ];
+
   return (
     <PageShell
-      title="V1 工作流"
-      description="展示第一版金融研究与自动化的端到端路径：Data -> Radar -> Market -> Quant -> Manager -> Gateway/Automation。"
+      title="Workflow Map"
+      description="展示 Data -> Radar -> Market -> Quant -> Manager -> Gateway 的端到端编排路径。"
       metrics={[
         metric("流程节点", steps.length, "info"),
-        metric("副作用动作", "Intent/Approval", "gated"),
-        metric("实盘交易", "不开放", "success"),
+        metric("副作用动作", "Intent / Approval", "gated"),
+        metric("实盘交易", "未开放", "success"),
         metric("后续能力", "Deferred", "success")
       ]}
     >
@@ -124,6 +194,7 @@ function WorkflowsPage(_props: PageProps) {
           </div>
         ))}
       </div>
+
       <div className="grid-3">
         {steps.map((step) => (
           <LinkCard key={step.name} to={step.to} title={step.name} detail={step.detail} tone={step.tone} />
@@ -144,8 +215,8 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
 
   return (
     <PageShell
-      title="设置、安全与门禁"
-      description="设置 Agent HTTP base、API token、control token、mock/live 模式和用户上下文；secret 在页面与证据中脱敏。"
+      title="Settings"
+      description="集中管理 Agent HTTP base、API token、control token、mock / live 模式和用户上下文，保留 secret 脱敏。"
       badge={<StatusBadge tone={controlAvailable ? "success" : "gated"}>{controlAvailable ? "Control token 已输入" : "Control token 缺失"}</StatusBadge>}
       metrics={[
         metric("Mode", local.mode, local.mode === "mock" ? "warning" : "info"),
@@ -184,12 +255,13 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
           保存设置
         </Button>
       </Panel>
+
       <Panel title="安全矩阵">
         <DataTable
           items={[
-            { area: "Desktop boundary", rule: "仅 Agent HTTP", status: "enforced" },
-            { area: "Secrets", rule: "页面/JSON 脱敏", status: "enforced" },
-            { area: "Side effects", rule: "Intent/Approval/control token", status: controlAvailable ? "ready" : "gated" },
+            { area: "Desktop boundary", rule: "仅通过 Agent HTTP", status: "enforced" },
+            { area: "Secrets", rule: "页面 / JSON 脱敏", status: "enforced" },
+            { area: "Side effects", rule: "Intent / Approval / control token", status: controlAvailable ? "ready" : "gated" },
             { area: "Live trading", rule: "V1 不开放", status: "blocked" }
           ]}
           columns={[
@@ -217,8 +289,8 @@ function ReadinessHealthPage({ api }: PageProps) {
 
   return (
     <PageShell
-      title="Readiness 健康诊断与运维"
-      description="检查 Agent、Hermes、capabilities parity、金融 readiness 和 next actions；建议不会跳向 V1 不展示入口。"
+      title="Readiness / Health"
+      description="统一展示当前环境、门禁、capabilities parity、financial readiness 与下一步动作。"
       metrics={[
         metric("Agent", healthData.status || "-", statusTone(healthData.status)),
         metric("Tools", dataObject(dataObject(healthData.tools, {}), {}).count || "-", "info"),
@@ -237,7 +309,8 @@ function ReadinessHealthPage({ api }: PageProps) {
           <DataTable items={nextActions} columns={[{ key: "name", header: "建议" }]} />
         </Panel>
       </div>
-      <JsonPanel data={{ health: health.data, hermes: hermes.data, financial: financial.data, capabilities: capabilities.data, parity: parity.data }} title="Readiness 证据" />
+
+      <JsonPanel data={{ health: health.data, hermes: hermes.data, financial: financial.data, capabilities: capabilities.data, parity: parity.data }} title="Readiness evidence" />
     </PageShell>
   );
 }
@@ -247,27 +320,31 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
   const activity = useAsyncResource(() => api.userActivity(settings?.userId || "local-user"), [api, settings?.userId]);
   const policy = useAsyncResource(() => api.userDataPolicy(settings?.userId || "local-user"), [api, settings?.userId]);
   const [actionResult, setActionResult] = useState<unknown>(null);
+  const [previewAction, setPreviewAction] = useState<null | "export" | "delete" | "save-policy">(null);
   const profileData = dataObject(profile.data, {});
   const activityRows = firstArray(dataObject(activity.data, {}), ["data", "activity", "events"]);
   const userId = settings?.userId || "local-user";
 
   async function exportUserData() {
     setActionResult(await api.userExport(userId));
+    setPreviewAction(null);
   }
 
   async function previewDeleteUserData() {
     setActionResult(await api.userDelete(userId, { dry_run: true, reason: "desktop V1 dry-run preview" }));
+    setPreviewAction(null);
   }
 
   async function savePolicy() {
     setActionResult(await api.userDataPolicySave(userId, { retention_days: 90, allow_learning: false, updated_from: "desktop_v1" }));
+    setPreviewAction(null);
     await policy.reload();
   }
 
   return (
     <PageShell
-      title="记忆与个人能力"
-      description="展示本地画像、活动摘要、数据策略、导出/删除预览和治理状态；个人数据操作通过 Agent route。"
+      title="Local User Memory"
+      description="承接本地画像、活动摘要、数据策略、导出、删除预览和治理状态，所有动作都通过 Agent route。"
       metrics={[
         metric("User", profileData.user_id || userId, "info"),
         metric("活动", activityRows.length, "success"),
@@ -283,12 +360,43 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
           <JsonPanel data={{ activity: activity.data, policy: policy.data }} title="Activity / Policy" />
         </Panel>
       </div>
+
       <Panel title="User Data Actions">
         <div className="page-actions">
-          <Button disabled={!controlAvailable} onClick={() => void exportUserData()}>Export data</Button>
-          <Button disabled={!controlAvailable} onClick={() => void previewDeleteUserData()}>Preview delete dry-run</Button>
-          <Button disabled={!controlAvailable} onClick={() => void savePolicy()}>Save safe policy</Button>
+          <Button data-testid="user-export-data" disabled={!controlAvailable} onClick={() => setPreviewAction("export")}>
+            Export data
+          </Button>
+          <Button data-testid="user-delete-dry-run" disabled={!controlAvailable} onClick={() => setPreviewAction("delete")}>
+            Preview delete dry-run
+          </Button>
+          <Button data-testid="user-save-policy" disabled={!controlAvailable} onClick={() => setPreviewAction("save-policy")}>
+            Save safe policy
+          </Button>
         </div>
+
+        {previewAction ? (
+          <DryRunPreview
+            title="用户数据动作预览"
+            changes={[
+              { label: "动作", after: previewAction },
+              { label: "用户", after: userId },
+              { label: "说明", after: previewAction === "delete" ? "只执行 dry-run 预览" : "通过 Agent user data route 执行" }
+            ]}
+            onCancel={() => setPreviewAction(null)}
+            onConfirm={() => {
+              if (previewAction === "export") {
+                void exportUserData();
+                return;
+              }
+              if (previewAction === "delete") {
+                void previewDeleteUserData();
+                return;
+              }
+              void savePolicy();
+            }}
+          />
+        ) : null}
+
         {actionResult ? <JsonPanel data={actionResult} title="User data action result" /> : null}
       </Panel>
     </PageShell>
@@ -301,9 +409,11 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
   const envs = useAsyncResource(() => api.rlEnvironments(), [api]);
   const runs = useAsyncResource(() => api.rlRuns(), [api]);
   const [actionResult, setActionResult] = useState<unknown>(null);
+  const [previewAction, setPreviewAction] = useState<null | "apply" | "start" | "stop">(null);
   const learningData = dataObject(learning.data, {});
+  const envData = dataObject(envs.data, {});
   const reviewRows = list(review.data);
-  const envRows = list(envs.data);
+  const envRows = firstArray(envData, ["environments", "data"]);
   const runRows = list(runs.data);
 
   async function applyFirstProposal() {
@@ -311,6 +421,7 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
     const proposalId = String(first?.id || first?.proposal_id || "");
     if (!proposalId) return;
     setActionResult(await api.learningApply({ proposal_id: proposalId }));
+    setPreviewAction(null);
     await review.reload();
   }
 
@@ -319,6 +430,7 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
     const environment = String(first?.id || first?.environment || first?.name || "");
     if (!environment) return;
     setActionResult(await api.rlRunCreate({ environment, config: { dry_run: true, source: "desktop_v1" } }));
+    setPreviewAction(null);
     await runs.reload();
   }
 
@@ -333,14 +445,15 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
           ? await api.rlRunResults(runId)
           : await api.rlRunLogs(runId);
     setActionResult(result);
+    setPreviewAction(null);
     await runs.reload();
   }
 
   return (
     <PageShell
-      title="Learning / RL / MoA 学习能力"
-      description="展示学习循环、review proposals、RL environments/runs 和运行结果入口；应用变更受 full/control 门禁。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="应用学习建议/RL 运行" />}
+      title="Learning / RL"
+      description="承接学习状态、review proposals、RL environments / runs 和结果诊断，动作继续受 control 门禁约束。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="应用学习建议 / RL 运行" />}
       metrics={[
         metric("Learning", learningData.enabled ? "enabled" : "disabled", learningData.enabled ? "success" : "warning"),
         metric("Proposals", reviewRows.length, "warning"),
@@ -359,17 +472,61 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
           <DataTable items={runRows} columns={[{ key: "id", header: "运行" }, { key: "environment", header: "环境" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
+
       <Panel title="Learning / RL Actions">
         <div className="page-actions">
-          <Button disabled={!controlAvailable || !reviewRows.length} onClick={() => void applyFirstProposal()}>Apply first proposal</Button>
-          <Button disabled={!controlAvailable || !envRows.length} onClick={() => void startFirstEnvironment()}>Start first environment</Button>
-          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("stop")}>Stop first run</Button>
-          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("results")}>Load results</Button>
-          <Button disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("logs")}>Load logs</Button>
+          <Button data-testid="learning-apply-first" disabled={!controlAvailable || !reviewRows.length} onClick={() => setPreviewAction("apply")}>
+            Apply first proposal
+          </Button>
+          <Button data-testid="rl-start-first" disabled={!controlAvailable || !envRows.length} onClick={() => setPreviewAction("start")}>
+            Start first environment
+          </Button>
+          <Button data-testid="rl-stop-first" disabled={!controlAvailable || !runRows.length} onClick={() => setPreviewAction("stop")}>
+            Stop first run
+          </Button>
+          <Button data-testid="rl-load-results" disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("results")}>
+            Load results
+          </Button>
+          <Button data-testid="rl-load-logs" disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("logs")}>
+            Load logs
+          </Button>
         </div>
-        {actionResult ? <JsonPanel data={actionResult} title="Learning/RL action result" /> : null}
+
+        {previewAction ? (
+          <DryRunPreview
+            title="Learning / RL 动作预览"
+            changes={[
+              { label: "动作", after: previewAction },
+              {
+                label: "目标",
+                after:
+                  previewAction === "apply"
+                    ? String(reviewRows[0]?.title || reviewRows[0]?.id || "-")
+                    : previewAction === "start"
+                      ? String(envRows[0]?.id || envRows[0]?.environment || "-")
+                      : String(runRows[0]?.id || runRows[0]?.run_id || "-")
+              },
+              { label: "模式", after: previewAction === "start" ? "dry-run" : "受控动作" }
+            ]}
+            onCancel={() => setPreviewAction(null)}
+            onConfirm={() => {
+              if (previewAction === "apply") {
+                void applyFirstProposal();
+                return;
+              }
+              if (previewAction === "start") {
+                void startFirstEnvironment();
+                return;
+              }
+              void runAction("stop");
+            }}
+          />
+        ) : null}
+
+        {actionResult ? <JsonPanel data={actionResult} title="Learning / RL action result" /> : null}
       </Panel>
-      <JsonPanel data={{ learning: learning.data, review: review.data, envs: envs.data, runs: runs.data }} title="学习能力证据" />
+
+      <JsonPanel data={{ learning: learning.data, review: review.data, envs: envs.data, runs: runs.data }} title="Learning capability evidence" />
     </PageShell>
   );
 }
@@ -382,8 +539,8 @@ function NativeDiagnosticsPage({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="Native 文件、代码、终端、浏览器能力"
-      description="V1 仅展示本机能力诊断、后端门禁和会话状态，不让前端直接执行本机操作。"
+      title="Native Diagnostics"
+      description="只展示本机能力诊断、后端门禁和会话状态，不允许前端直接执行本机动作。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="本机高权限操作" />}
       metrics={[
         metric("Processes", list(processes.data).length, "info"),
@@ -403,8 +560,9 @@ function NativeDiagnosticsPage({ api, controlAvailable }: PageProps) {
           <DataTable items={list(browserSessions.data)} columns={[{ key: "id", header: "会话" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
+
       <Panel title="能力边界" action={<ShieldCheck size={18} />}>
-        <p>前端只展示 Agent 返回的诊断状态。本机文件、终端、浏览器、进程等动作必须由 Agent `agent_*` 工具和后端策略控制。</p>
+        <p>前端只显示 Agent 返回的诊断状态。文件、终端、浏览器、进程等动作必须通过 Agent `agent_*` 工具和后端策略控制。</p>
       </Panel>
     </PageShell>
   );

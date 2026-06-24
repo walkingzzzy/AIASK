@@ -39,7 +39,7 @@ def create_hermes_router(
         limit: int = 100,
         include_archived: bool = False,
     ) -> dict[str, Any]:
-        require_full(request)
+        require_api(request)
         return hermes_sessions_payload(user_id=user_id, limit=limit, include_archived=include_archived)
 
     @router.get("/v1/hermes/handoffs")

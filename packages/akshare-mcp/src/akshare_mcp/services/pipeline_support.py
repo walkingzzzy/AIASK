@@ -37,7 +37,7 @@ from .strategy_llm_provider import (
 logger = logging.getLogger(__name__)
 
 def _get_pipeline_constants():
-    from strategy_factory import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
+    from strategy_factory.api.constants import PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
     return PIPELINE_STAGE_TIMEOUT_SEC, PIPELINE_STAGE_TIMEOUTS
 
 

@@ -108,9 +108,9 @@ class _StrategySubmitterHelpersMixin:
 
         def _get_incubation_gateway(self) -> "IncubationGateway":
             if self._incubation_gateway is None:
-                from ..infrastructure.mcp_adapters import MCPIncubationGatewayImpl
+                from ..infrastructure.runtime_adapters import IncubationGatewayImpl
 
-                self._incubation_gateway = MCPIncubationGatewayImpl()
+                self._incubation_gateway = IncubationGatewayImpl()
             return self._incubation_gateway
 
         def _get_factor_pool_gateway(self) -> "FactorPoolGateway":

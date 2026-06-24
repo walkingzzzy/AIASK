@@ -73,7 +73,7 @@ if TYPE_CHECKING:
         ValidationGateway,
         VectorSearchGateway,
     )
-    from ..infrastructure.mcp_adapters import MCPRuntimeAdapters
+    from ..infrastructure.runtime_adapters import RuntimeAdapters
 
 logger = logging.getLogger(__name__)
 
@@ -152,7 +152,7 @@ class StrategyFactoryScheduler(_StrategyFactorySchedulerAnalysisMixin, _Strategy
             incubation_gateway: Optional["IncubationGateway"] = None,
             autonomy_gateway: Optional["AutonomyGateway"] = None,
             factor_research_gateway: Optional["FactorResearchGateway"] = None,
-            runtime_adapters: Optional["MCPRuntimeAdapters"] = None,
+            runtime_adapters: Optional["RuntimeAdapters"] = None,
         ):
             self.schedule_mode: str = FACTORY_SCHEDULE_MODE if FACTORY_SCHEDULE_MODE in ("continuous", "daily") else "continuous"
             self._market_timezone = _MARKET_TIMEZONE

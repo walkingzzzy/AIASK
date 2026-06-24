@@ -181,6 +181,11 @@ def _bootstrap_runtime() -> Path:
         project_root=repo,
         script_path=Path(__file__).resolve(),
         argv=sys.argv[1:],
+        editable_packages=(
+            "packages/strategy-factory",
+            "packages/aiask-quant-core",
+            "packages/akshare-mcp",
+        ),
     )
     return repo
 

@@ -172,7 +172,7 @@ def run() -> None:
 
     class APIClient:
         def __init__(self) -> None:
-            self.base_url = str(os.getenv("AIASK_AGENT_URL") or "http://127.0.0.1:8767").rstrip("/")
+            self.base_url = str(os.getenv("AIASK_AGENT_URL") or "http://127.0.0.1:8765").rstrip("/")
             self.token = str(os.getenv("AIASK_AGENT_API_TOKEN") or "").strip()
             self.control_token = str(os.getenv("AIASK_AGENT_CONTROL_TOKEN") or os.getenv("AIASK_LOCAL_CONTROL_TOKEN") or "").strip()
 

@@ -22,11 +22,21 @@ def _active_json_request() -> Callable[..., dict[str, Any]]:
         return _json_request
 
 
+def _active_fetch_url() -> Callable[..., tuple[str, str, int | None]]:
+    try:
+        from . import native_capabilities
+
+        return getattr(native_capabilities, "_fetch_url", _fetch_url)
+    except Exception:
+        return _fetch_url
+
+
 def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, Any]:
     async def web_extract(arguments: dict[str, Any]) -> dict[str, Any]:
         tool = "agent_web_extract"
         try:
-            content, content_type, status = _fetch_url(
+            fetch_url = _active_fetch_url()
+            content, content_type, status = fetch_url(
                 str(arguments.get("url") or ""),
                 max_bytes=bounded_int(arguments.get("max_bytes"), default=262144, minimum=1, maximum=1024 * 1024),
                 timeout=bounded_float(arguments.get("timeout_seconds"), default=15.0, minimum=1.0, maximum=60.0),
@@ -140,7 +150,7 @@ def build_web_handlers(_envelope: Callable[..., dict[str, Any]]) -> dict[str, An
             else:
                 provider = "duckduckgo"
                 url = f"{base_url or 'https://duckduckgo.com/html/'}?q={quote_plus(query)}"
-                content, content_type, status = _fetch_url(url, max_bytes=524288, timeout=timeout)
+                content, content_type, status = _active_fetch_url()(url, max_bytes=524288, timeout=timeout)
                 provider_payload["content_type"] = content_type
                 links = _extract_links(content, url, limit=limit * 3)
                 seen: set[str] = set()

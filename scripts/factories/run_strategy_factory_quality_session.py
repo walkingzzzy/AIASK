@@ -44,9 +44,13 @@ ensure_factory_runtime(
     project_root=ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
 )
 
-from akshare_mcp.adapters.strategy_factory_runtime import configure_strategy_factory_runtime_services
 from akshare_mcp.env_loader import load_mcp_env
 from akshare_mcp.storage.sqlite import close_db, get_db
 from akshare_mcp.tools.managers.strategy_mgr_crud import handle_review_report
@@ -56,8 +60,7 @@ from akshare_mcp.tools.managers.strategy_mgr_lifecycle import (
     handle_factory_runs,
     handle_incubation_overview,
 )
-from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
-
+from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
 
 from _quality_session_common import (
     _LEGACY_BUDGET_MISMATCH_FLAGS,
@@ -270,12 +273,43 @@ def _apply_quality_session_runtime_defaults() -> None:
     os.environ["STRATEGY_QUALITY_FACTOR_MAINTENANCE_AFTER_MINING"] = "1"
     os.environ.setdefault("STRATEGY_QUALITY_FACTOR_MAINTENANCE_TIMEOUT_SEC", "60")
     os.environ.setdefault("STRATEGY_QUALITY_SIGNAL_TRACKER_TIMEOUT_SEC", "90")
-    os.environ.setdefault("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_ENABLED", "1")
-    os.environ.setdefault("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_BATCH_LIMIT", "200")
-    os.environ.setdefault("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_ENABLED", "1")
-    os.environ.setdefault("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_BATCH_LIMIT", "200")
-    os.environ.setdefault("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", "1")
-    os.environ.setdefault("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_BATCH_LIMIT", "200")
+    # P0 FIX: 补偿逻辑默认禁用 - 只有通过 --enable-compensation 显式启用
+    # os.environ.setdefault("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_ENABLED", "1")
+    # os.environ.setdefault("INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_BATCH_LIMIT", "200")
+    # os.environ.setdefault("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_ENABLED", "1")
+    # os.environ.setdefault("INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_BATCH_LIMIT", "200")
+    # os.environ.setdefault("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", "1")
+    # os.environ.setdefault("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_BATCH_LIMIT", "200")
+
+
+def _apply_compensation_logic_if_enabled(args: argparse.Namespace) -> None:
+    """Apply compensation logic ONLY if explicitly requested via --enable-compensation.
+
+    P0 FIX: 补偿逻辑默认禁用,只能通过显式参数启用。
+    这不是生产观察模式,仅用于补证据验证场景。
+    """
+    if not getattr(args, "enable_compensation", False):
+        return
+
+    # 打印警告
+    LOGGER.warning("=" * 80)
+    LOGGER.warning("⚠️  补偿逻辑已启用 - 这不是生产观察模式")
+    LOGGER.warning("⚠️  Compensation logic enabled - NOT production observation mode")
+    LOGGER.warning("=" * 80)
+
+    # 启用补偿逻辑
+    os.environ["INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_ENABLED"] = "1"
+    os.environ["INCUBATION_FACTORY_PAPER_EXECUTION_BACKLOG_BATCH_LIMIT"] = "200"
+    os.environ["INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_ENABLED"] = "1"
+    os.environ["INCUBATION_FACTORY_EXECUTION_AUDIT_NATIVE_EVIDENCE_BACKFILL_BATCH_LIMIT"] = "200"
+    os.environ["INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED"] = "1"
+    os.environ["INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_BATCH_LIMIT"] = "200"
+
+    LOGGER.info("Compensation settings applied:")
+    LOGGER.info("  - Paper Execution Backlog: ENABLED")
+    LOGGER.info("  - Native Evidence Backfill: ENABLED")
+    LOGGER.info("  - Stale Position Closure: ENABLED")
+    LOGGER.warning("=" * 80)
 
 
 def _factory_module():
@@ -348,6 +382,7 @@ def _build_session_state(args: argparse.Namespace, paths: SessionPaths) -> dict[
             "with_incubation": bool(args.with_incubation),
             "run_factor_mining": bool(args.with_incubation and not args.skip_factor_mining),
             "strategy_sample_limit": args.strategy_sample_limit,
+            "compensation_enabled": bool(getattr(args, "enable_compensation", False)),  # P0 FIX: 记录补偿模式
         },
         "updated_at": _iso_now(),
         "entries": [],
@@ -902,6 +937,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--resume", action="store_true", help="resume an existing session_id/state.json if present")
     parser.add_argument("--render-only", action="store_true", help="only reload state.json and rewrite the markdown report")
     parser.add_argument("--verbose", action="store_true", help="enable debug logging")
+    parser.add_argument(
+        "--enable-compensation",
+        action="store_true",
+        help="⚠️ 启用补偿逻辑(backlog/backfill/stale close) - 这不是生产观察模式,仅用于补证据验证",
+    )
     return parser.parse_args()
 
 
@@ -1043,6 +1083,7 @@ def main() -> int:
     sqlite_path = (ROOT / "data" / "db" / "akshare_mcp.sqlite3").resolve()
     _apply_base_session_env(sqlite_path)
     _apply_quality_session_runtime_defaults()
+    _apply_compensation_logic_if_enabled(args)  # P0 FIX: 补偿逻辑条件启用
     load_mcp_env(override=False)
     try:
         args.quality_mode_configs = resolve_quality_session_modes(
@@ -1069,7 +1110,7 @@ def main() -> int:
     )
     if args.quality_mode_configs:
         apply_quality_mode_env(args.quality_mode_configs[0], runtime_controls=args.runtime_controls)
-    configure_strategy_factory_runtime_services()
+    ensure_default_runtime_services()
     LOGGER.info(
         "Session bootstrap: session_id=%s report=%s python=%s sqlite=%s quality_modes=%s runtime_controls=%s",
         args.session_id,

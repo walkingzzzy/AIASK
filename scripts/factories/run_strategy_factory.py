@@ -86,6 +86,17 @@ ensure_factory_runtime(
     project_root=PROJECT_ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
+    distribution_names=(
+        "strategy-factory",
+        "aiask-quant-core",
+        "akshare-mcp",
+    ),
+    uv_project="packages/agent",
 )
 
 
@@ -93,7 +104,6 @@ def _bootstrap_local_package_paths() -> None:
     for package_src in (
         PROJECT_ROOT / "packages" / "aiask-quant-core" / "src",
         PROJECT_ROOT / "packages" / "strategy-factory" / "src",
-        PROJECT_ROOT / "packages" / "akshare-mcp" / "src",
     ):
         path = str(package_src)
         if package_src.exists() and path not in sys.path:
@@ -104,10 +114,18 @@ _bootstrap_local_package_paths()
 
 
 def _load_strategy_factory_runtime_kwargs() -> dict:
+    from strategy_factory.api.runtime import build_scheduler_runtime_kwargs
+
     try:
-        from akshare_mcp.adapters.strategy_factory_runtime import (
-            build_strategy_factory_scheduler_kwargs,
-        )
+        return build_scheduler_runtime_kwargs()
+    except RuntimeError as exc:
+        if "missing_provider=" not in str(exc):
+            raise
+
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+
+    try:
+        ensure_default_runtime_services()
     except ModuleNotFoundError as exc:
         if not str(getattr(exc, "name", "") or "").startswith("akshare_mcp"):
             raise
@@ -119,16 +137,15 @@ def _load_strategy_factory_runtime_kwargs() -> dict:
         if inserted:
             sys.path.insert(0, path)
         try:
-            from akshare_mcp.adapters.strategy_factory_runtime import (
-                build_strategy_factory_scheduler_kwargs,
-            )
+            ensure_default_runtime_services()
         finally:
             if inserted:
                 try:
                     sys.path.remove(path)
                 except ValueError:
                     pass
-    return build_strategy_factory_scheduler_kwargs()
+
+    return build_scheduler_runtime_kwargs()
 
 # 加载 .env
 def _load_dotenv():
@@ -585,7 +602,7 @@ class StrategyFactoryRunner:
 
     async def _execute_cycle(self) -> dict:
         """执行一次策略生产周期。"""
-        from strategy_factory import get_strategy_factory_scheduler
+        from strategy_factory.api import get_strategy_factory_scheduler
 
         runtime_kwargs = _load_strategy_factory_runtime_kwargs()
         scheduler = get_strategy_factory_scheduler(**runtime_kwargs)

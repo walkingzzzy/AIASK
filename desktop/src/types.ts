@@ -28,6 +28,7 @@ export interface ApiProblem {
   title: string;
   detail?: string;
   code?: string;
+  trace_id?: string;
   raw?: unknown;
 }
 
@@ -97,6 +98,7 @@ export interface ViewDefinition {
 }
 
 export interface WorkbenchMessage {
+  [key: string]: unknown;
   id: string;
   role: "user" | "assistant" | "system";
   content: string;
@@ -121,4 +123,38 @@ export interface RunEvent {
 export interface OptionItem {
   label: string;
   value: string;
+}
+
+export interface WorkbenchThreadSummary {
+  [key: string]: unknown;
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+  messageCount: number;
+}
+
+export interface WorkbenchSelectionState {
+  selectedThreadId: string;
+  selectedRunId: string;
+  selectedMessageId: string;
+  selectedApprovalId: string;
+  selectedArtifactId: string;
+  selectedReviewTab: "overview" | "artifacts" | "approvals" | "review" | "diagnostics";
+}
+
+export interface WorkbenchEvidenceState {
+  selectedSessionMessages: WorkbenchMessage[];
+  selectedRunEvents: RunEvent[];
+  selectedRunArtifacts: UnknownRecord[];
+  selectedRunSources: UnknownRecord[];
+  selectedRunTools: UnknownRecord[];
+}
+
+export interface WorkbenchContext extends WorkbenchSelectionState, WorkbenchEvidenceState {
+  availableThreads: WorkbenchThreadSummary[];
+  availableRuns: UnknownRecord[];
+  approvals: UnknownRecord[];
+  currentThread: WorkbenchThreadSummary | null;
+  currentRun: UnknownRecord | null;
 }

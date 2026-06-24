@@ -364,8 +364,12 @@ class FactorPoolGateway:
         engines: list[str] | None = None,
     ) -> dict[str, Any]:
         """手动触发一次挖掘周期。"""
-        factory = self._get_factory()
-        return await factory.run_mining_cycle(trigger=trigger, engines=engines)
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
+
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        return await runtime.run_once(trigger=trigger, engines=engines)
 
     def status(self) -> dict[str, Any]:
         """Gateway 状态。"""

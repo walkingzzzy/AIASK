@@ -576,7 +576,7 @@ async def handle_ai_optimize_personal_strategy(db, params: dict) -> dict:
 
 
 async def handle_capabilities(db, params: dict) -> dict:
-    from strategy_factory import get_factory_constants
+    from strategy_factory.api import get_factory_constants
 
     factory_constants = get_factory_constants()
     high_confidence_feature_flags = dict(factory_constants.get("HIGH_CONFIDENCE_FEATURE_FLAGS") or {})

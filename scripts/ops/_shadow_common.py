@@ -18,7 +18,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_SHADOW_DB = REPO_ROOT / "data" / "validation" / "trade_prediction_shadow.sqlite3"
 DEFAULT_REPORT_ROOT = REPO_ROOT / "reports" / "ops" / "trade_prediction_shadow"
 DEFAULT_BATCH_ID = f"trade_prediction_soak_{date.today().isoformat().replace('-', '_')}"
-DEFAULT_AGENT_BASE_URL = "http://127.0.0.1:8767"
+DEFAULT_AGENT_BASE_URL = "http://127.0.0.1:8765"
 REQUIRED_TABLES = (
     "kline_intraday",
     "strategy_trade_predictions",

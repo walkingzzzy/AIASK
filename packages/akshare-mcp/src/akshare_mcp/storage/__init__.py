@@ -14,11 +14,9 @@ from aiask_quant_core.storage import (
 logger = logging.getLogger(__name__)
 
 try:
-    from akshare_mcp.adapters.strategy_factory_runtime import (
-        configure_akshare_storage_runtime_hooks,
-    )
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
 
-    configure_akshare_storage_runtime_hooks()
+    ensure_default_runtime_services()
 except Exception as exc:
     logger.debug("AKShare storage runtime hook registration skipped: %s", exc)
 

@@ -1,46 +1,28 @@
 #!/usr/bin/env python3
-"""SignalTracker 独立运行入口（仓库根 wrapper）。
-
-实际运行器位于 packages/akshare-mcp/scripts/run_signal_tracker.py；
-本 wrapper 只是把仓库根作为 cwd 时的入口对齐到与
-run_strategy_factory.py / run_factor_mining_factory.py /
-run_incubation_factory.py 同位置，方便 operators 与
-run_all_factories.py / cron / systemd 配置统一。
-
-为何引入：
-    SignalTracker 在传统部署里是 MCP server 的后台 daemon
-    （server.py:570），但我们的 ``run_all_factories.py`` 只起
-    strategy/factor/incubation 三个独立工厂进程，从不启动 MCP server，
-    导致 SignalTracker 永远没运行 → strategy_signals 表始终为空 →
-    孵化工厂 Phase 3 拿不到 signal 做前向验证 → 12 个 warmup 账户
-    effective_n_5d 永远是 0 → 永远升不到 candidate 阶段。
-
-    本 wrapper 让 SignalTracker 以独立进程方式跑，可由 supervisor
-    在 18:00（incubation 18:30 之前）拉起，串联完整一日流水线：
-        18:00  SignalTracker → 写 strategy_signals
-        18:30  IncubationFactory → 读上面这张表做前向验证
-
-用法：
-    python run_signal_tracker.py             # 守护（默认 18:00）
-    python run_signal_tracker.py --once      # 单次
-    python run_signal_tracker.py --run-time 18:00 --daemon
-"""
+"""SignalTracker standalone runner."""
 
 from __future__ import annotations
 
+import argparse
+import asyncio
 import io
+import json
+import logging
 import os
 import sys
+from datetime import datetime, timedelta
 from pathlib import Path
 
 
+ERROR_BACKOFF_SEC = 300
+
+
 def _configure_stdio_utf8() -> None:
-    """Force stdout/stderr to UTF-8 so Chinese chars render in
-    Windows PowerShell / cmd (default codepage 936)."""
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
     if sys.platform == "win32":
         try:
             import ctypes
+
             kernel32 = ctypes.windll.kernel32
             kernel32.SetConsoleCP(65001)
             kernel32.SetConsoleOutputCP(65001)
@@ -74,55 +56,176 @@ def _configure_stdio_utf8() -> None:
 
 _configure_stdio_utf8()
 
-_ROOT = Path(__file__).resolve().parents[2]
-_STRATEGY_FACTORY_SRC = _ROOT / "packages" / "strategy-factory" / "src"
-if str(_STRATEGY_FACTORY_SRC) not in sys.path:
-    sys.path.insert(0, str(_STRATEGY_FACTORY_SRC))
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+STRATEGY_FACTORY_SRC = PROJECT_ROOT / "packages" / "strategy-factory" / "src"
+if str(STRATEGY_FACTORY_SRC) not in sys.path:
+    sys.path.insert(0, str(STRATEGY_FACTORY_SRC))
 
 from strategy_factory.runtime_bootstrap import ensure_factory_runtime
 
 ensure_factory_runtime(
-    project_root=_ROOT,
+    project_root=PROJECT_ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
+    distribution_names=(
+        "strategy-factory",
+        "aiask-quant-core",
+        "akshare-mcp",
+    ),
+    uv_project="packages/agent",
 )
-
-_TARGET = _ROOT / "packages" / "akshare-mcp" / "scripts" / "run_signal_tracker.py"
-_TARGET_SCRIPT_DIR = _TARGET.parent
 
 
 def _bootstrap_local_package_paths() -> None:
     for package_src in (
-        _ROOT / "packages" / "aiask-quant-core" / "src",
-        _ROOT / "packages" / "strategy-factory" / "src",
-        _ROOT / "packages" / "akshare-mcp" / "src",
-        _TARGET_SCRIPT_DIR,
+        PROJECT_ROOT / "packages" / "aiask-quant-core" / "src",
+        PROJECT_ROOT / "packages" / "strategy-factory" / "src",
+        PROJECT_ROOT / "packages" / "akshare-mcp" / "src",
     ):
         path = str(package_src)
         if package_src.exists() and path not in sys.path:
             sys.path.insert(0, path)
 
 
-def main() -> int:
-    if not _TARGET.exists():
-        sys.stderr.write(
-            f"run_signal_tracker wrapper: target not found at {_TARGET}\n"
-            "Make sure packages/akshare-mcp is checked out.\n"
-        )
-        return 2
-    _bootstrap_local_package_paths()
-    try:
-        from akshare_mcp.adapters.strategy_factory_runtime import (
-            configure_strategy_factory_runtime_services,
-        )
-        configure_strategy_factory_runtime_services()
-    except Exception:
-        # configure helper is best-effort; SignalTracker doesn't strictly need it
-        pass
-    from run_signal_tracker import main as target_main  # noqa: PLC0415
+_bootstrap_local_package_paths()
 
-    sys.argv[0] = str(_TARGET)
-    return target_main()
+
+def _setup_logging(verbose: bool) -> None:
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
+def _parse_run_time(raw: str) -> tuple[int, int]:
+    parts = raw.strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"--run-time expects HH:MM, got {raw!r}")
+    hh = int(parts[0])
+    mm = int(parts[1])
+    if not (0 <= hh <= 23 and 0 <= mm <= 59):
+        raise ValueError(f"--run-time out of range: {raw!r}")
+    return hh, mm
+
+
+def _build_runtime():
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime
+
+    ensure_default_runtime_services()
+    return get_signal_tracker_runtime()
+
+
+async def _run_once_inner(verbose: bool = False) -> dict:
+    logger = logging.getLogger("signal_tracker_runner")
+    tracker = _build_runtime()
+    logger.info("SignalTracker: invoking run_once()")
+    result = await tracker.run_once()
+    logger.info(
+        "SignalTracker: run_once finished | signals=%s snapshots=%s fwd_returns=%s "
+        "incub_orders=%s incub_metrics=%s risk_events=%s errors=%s",
+        result.get("signals_generated"),
+        result.get("signal_event_snapshots"),
+        result.get("forward_returns_computed"),
+        result.get("incubation_orders"),
+        result.get("incubation_metrics"),
+        result.get("risk_events"),
+        len(result.get("errors") or []),
+    )
+    if verbose:
+        logger.debug("SignalTracker: full result = %s", json.dumps(result, default=str))
+    errors = result.get("errors") or []
+    if errors:
+        for err in errors[:10]:
+            logger.warning("SignalTracker: error: %s", err)
+    return result
+
+
+async def _run_once(args: argparse.Namespace) -> None:
+    result = await _run_once_inner(verbose=args.verbose)
+    print(json.dumps(result, ensure_ascii=False, default=str, indent=2))
+
+
+async def _run_daemon(args: argparse.Namespace) -> None:
+    logger = logging.getLogger("signal_tracker_runner")
+    hh, mm = _parse_run_time(args.run_time)
+    logger.info(
+        "SignalTracker daemon started (run_time=%02d:%02d, retry_backoff=%ds)",
+        hh,
+        mm,
+        ERROR_BACKOFF_SEC,
+    )
+    try:
+        while True:
+            now = datetime.now()
+            target = now.replace(hour=hh, minute=mm, second=0, microsecond=0)
+            if now >= target:
+                target += timedelta(days=1)
+            wait_seconds = (target - now).total_seconds()
+            logger.info(
+                "SignalTracker: next run at %s (waiting %.0fs)",
+                target.strftime("%Y-%m-%d %H:%M"),
+                wait_seconds,
+            )
+            await asyncio.sleep(wait_seconds)
+            try:
+                await _run_once_inner(verbose=args.verbose)
+            except Exception as exc:
+                logger.exception("SignalTracker: run_once failed: %s", exc)
+                logger.warning("SignalTracker: retrying in %ds", ERROR_BACKOFF_SEC)
+                await asyncio.sleep(ERROR_BACKOFF_SEC)
+                try:
+                    await _run_once_inner(verbose=args.verbose)
+                except Exception as exc2:
+                    logger.exception("SignalTracker: retry also failed: %s", exc2)
+    except KeyboardInterrupt:
+        print("\nSignalTracker daemon stopped")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(
+        description="SignalTracker daemon",
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--daemon",
+        action="store_true",
+        help="daemon mode (default 18:00)",
+    )
+    mode.add_argument(
+        "--once",
+        action="store_true",
+        help="run once and exit",
+    )
+    parser.add_argument(
+        "--run-time",
+        default="18:00",
+        help="daily daemon trigger time in HH:MM format",
+    )
+    parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="enable verbose logging",
+    )
+
+    args = parser.parse_args()
+    _setup_logging(args.verbose)
+
+    if not args.once and not args.daemon:
+        args.daemon = True
+
+    if args.once:
+        asyncio.run(_run_once(args))
+    else:
+        asyncio.run(_run_daemon(args))
+    return 0
 
 
 if __name__ == "__main__":

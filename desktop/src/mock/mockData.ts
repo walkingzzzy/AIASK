@@ -13,7 +13,7 @@ export const mockMessages: WorkbenchMessage[] = [
   {
     id: "msg_ai_001",
     role: "assistant",
-    content: "数据源处于部分降级状态，雷达候选可先用于只读研究；需要刷新 TDX/Tushare 后再进入量化报告。",
+    content: "数据源处于部分降级状态，雷达候选可先用于只读研究；建议先刷新 TDX / Tushare 后再进入量化报告。",
     created_at: now,
     status: "completed",
     sources: [{ type: "data_status", freshness: "stale", source: "mock" }]
@@ -86,6 +86,59 @@ export const mockRunEvents: RunEvent[] = [
     timestamp: now
   }
 ];
+
+const mockArtifactsByRun: Record<string, UnknownRecord[]> = {
+  run_20260621_001: [
+    { id: "artifact_preflight_001", artifact_id: "artifact_preflight_001", kind: "report", title: "Data Preflight Report", created_at: now },
+    { id: "artifact_digest_001", artifact_id: "artifact_digest_001", kind: "digest", title: "Radar Digest Summary", created_at: now }
+  ],
+  run_20260621_002: [{ id: "artifact_gateway_001", artifact_id: "artifact_gateway_001", kind: "log", title: "Gateway Scan Log", created_at: now }]
+};
+
+const mockSourcesByRun: Record<string, UnknownRecord[]> = {
+  run_20260621_001: [
+    { id: "source_market_001", source_type: "tool", title: "Market temperature snapshot", uri: "tool://agent_market_temperature_snapshot" },
+    { id: "source_sync_001", source_type: "api", title: "Desktop data status", uri: "/v1/desktop/data/status" }
+  ],
+  run_20260621_002: [{ id: "source_gateway_001", source_type: "api", title: "Gateway status", uri: "/v1/gateway/status" }]
+};
+
+const mockToolInvocationsByRun: Record<string, UnknownRecord[]> = {
+  run_20260621_001: [
+    { id: "tool_call_001", source_type: "tool", title: "agent_market_temperature_cache_readiness", uri: "tool://agent_market_temperature_cache_readiness" },
+    { id: "tool_call_002", source_type: "tool", title: "agent_stock_radar_candidates", uri: "tool://agent_stock_radar_candidates" }
+  ],
+  run_20260621_002: [{ id: "tool_call_003", source_type: "tool", title: "agent_gateway_send_intent", uri: "tool://agent_gateway_send_intent" }]
+};
+
+const mockSessionMessages: Record<string, WorkbenchMessage[]> = {
+  sess_research_001: [
+    ...mockMessages,
+    {
+      id: "msg_ai_002",
+      role: "assistant",
+      content: "当前线程已有数据预检报告和雷达摘要，可继续查看产物并决定是否进入审批流。",
+      created_at: now,
+      status: "completed"
+    }
+  ],
+  sess_ops_001: [
+    {
+      id: "msg_ops_user_001",
+      role: "user",
+      content: "检查 Gateway readiness，并确认是否需要外部投递审批。",
+      created_at: now,
+      status: "sent"
+    },
+    {
+      id: "msg_ops_ai_001",
+      role: "assistant",
+      content: "Gateway 当前工作在 dry-run 模式，平台健康可读，但外部投递仍需审批。",
+      created_at: now,
+      status: "completed"
+    }
+  ]
+};
 
 export const mockApiPayloads: Record<string, unknown> = {
   "/health": { status: "ok", service: "aiask-agent", mock: true },
@@ -163,6 +216,7 @@ export const mockApiPayloads: Record<string, unknown> = {
       {
         id: "intent_gateway_001",
         title: "Send digest preview",
+        action: "gateway.send_preview",
         status: "pending",
         side_effect: "external_platform",
         created_at: now
@@ -174,9 +228,12 @@ export const mockApiPayloads: Record<string, unknown> = {
     data: [
       {
         id: "approval_001",
+        approval_id: "approval_001",
         title: "Gateway outbound message",
         status: "pending",
         risk: "external_delivery",
+        session_id: "sess_ops_001",
+        run_id: "run_20260621_002",
         created_at: now
       }
     ]
@@ -245,7 +302,7 @@ export const mockApiPayloads: Record<string, unknown> = {
       candidates: [
         { symbol: "600519", name: "贵州茅台", tier: "A", score: 87, reason: "趋势稳定，数据完整", risk: "估值敏感" },
         { symbol: "300750", name: "宁德时代", tier: "B", score: 79, reason: "行业温度回升", risk: "波动较高" },
-        { symbol: "000858", name: "五粮液", tier: "B", score: 74, reason: "资金面修复", risk: "消费弱复苏" }
+        { symbol: "000858", name: "五粮液", tier: "B", score: 74, reason: "资金面修复", risk: "消费复苏待确认" }
       ]
     }
   },
@@ -346,4 +403,32 @@ export function mockToolResponse(toolName: string, body: unknown): unknown {
     };
   }
   return { object: "tool_result", success: true, data: { echoed_tool: toolName, body, mock: true } };
+}
+
+export function mockSessionMessagesPayload(sessionId: string) {
+  return {
+    object: "list",
+    data: mockSessionMessages[sessionId] || mockMessages
+  };
+}
+
+export function mockRunArtifactsPayload(runId: string) {
+  return {
+    object: "list",
+    data: mockArtifactsByRun[runId] || []
+  };
+}
+
+export function mockRunSourcesPayload(runId: string) {
+  return {
+    object: "list",
+    data: mockSourcesByRun[runId] || []
+  };
+}
+
+export function mockRunToolInvocationsPayload(runId: string) {
+  return {
+    object: "list",
+    data: mockToolInvocationsByRun[runId] || []
+  };
 }

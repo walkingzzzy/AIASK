@@ -395,6 +395,8 @@ def _write_startup_manifest(
         "restart": not args.no_restart,
         "market_event_ingest_enabled": not args.no_event_ingest
         and not _env_disabled(env.get("MARKET_EVENT_INGEST_ENABLED")),
+        "mcp_service_expected": False,
+        "mcp_service_command": None,
         "incubation_catchup": _command_text(_build_incubation_catchup_command(args))
         if _should_run_incubation_catchup(args)
         else None,
@@ -422,6 +424,54 @@ def _write_startup_manifest(
             log_file.write("=" * 100 + "\n")
 
 
+def _write_execution_record(log_dir: Path, event_type: str, **fields: object) -> None:
+    """Append a machine-readable supervisor event for 24h acceptance audits."""
+    log_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "ts": _timestamp(),
+        "event_type": event_type,
+        **fields,
+    }
+    with (log_dir / "execution_records.jsonl").open("a", encoding="utf-8", buffering=1) as record_file:
+        record_file.write(json.dumps(payload, ensure_ascii=False, default=str) + "\n")
+
+
+def _write_planned_execution_records(
+    *,
+    log_dir: Path,
+    specs: list[FactorySpec],
+    args: argparse.Namespace,
+    env: dict[str, str],
+) -> None:
+    _write_execution_record(
+        log_dir,
+        "supervisor_plan",
+        project_root=str(PROJECT_ROOT),
+        restart=not args.no_restart,
+        mcp_service_expected=False,
+        mcp_service_command=None,
+        market_event_ingest_enabled=not args.no_event_ingest
+        and not _env_disabled(env.get("MARKET_EVENT_INGEST_ENABLED")),
+        factory_count=len(specs),
+    )
+    for spec in specs:
+        _write_execution_record(
+            log_dir,
+            "factory_planned",
+            factory=spec.name,
+            command=list(spec.command),
+            log=str(log_dir / spec.log_name),
+            mcp_service_expected=False,
+        )
+    if _should_run_incubation_catchup(args):
+        _write_execution_record(
+            log_dir,
+            "incubation_catchup_planned",
+            command=list(_build_incubation_catchup_command(args)),
+            log=str(log_dir / "incubation_factory_catchup.log"),
+        )
+
+
 def _write_header(log_file: TextIO, spec: FactorySpec) -> None:
     log_file.write("\n" + "=" * 100 + "\n")
     log_file.write(f"{_timestamp()} starting {spec.name}\n")
@@ -440,6 +490,12 @@ async def _run_incubation_catchup(
     command = _build_incubation_catchup_command(args)
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "incubation_factory_catchup.log"
+    _write_execution_record(
+        log_dir,
+        "incubation_catchup_start",
+        command=list(command),
+        log=str(log_path),
+    )
     print(
         f"{_timestamp()} [incubation_factory_catchup] starting "
         f"{subprocess.list2cmdline(list(command))} log={log_path}",
@@ -468,6 +524,12 @@ async def _run_incubation_catchup(
                 print(f"{_timestamp()} [incubation_factory_catchup] {text}", flush=True)
         exit_code = await process.wait()
         log_file.write(f"{_timestamp()} catch-up exited code={exit_code}\n")
+    _write_execution_record(
+        log_dir,
+        "incubation_catchup_exit",
+        exit_code=exit_code,
+        log=str(log_path),
+    )
     if exit_code == 0:
         print(f"{_timestamp()} [incubation_factory_catchup] completed", flush=True)
     else:
@@ -547,6 +609,16 @@ async def _run_factory(
             state.pid = process.pid
             state.started_at = datetime.now(timezone.utc)
             state.status = "running"
+            _write_execution_record(
+                log_dir,
+                "factory_start",
+                factory=spec.name,
+                pid=process.pid,
+                restart_count=state.restart_count,
+                command=list(spec.command),
+                log=str(log_path),
+                mcp_service_expected=False,
+            )
             print(
                 f"{_timestamp()} [{spec.name}] started pid={process.pid} log={log_path}",
                 flush=True,
@@ -572,6 +644,16 @@ async def _run_factory(
                 state.last_exit_code = exit_code
                 state.pid = None
                 state.status = "stopped" if stop_event.is_set() else "exited"
+                _write_execution_record(
+                    log_dir,
+                    "factory_exit",
+                    factory=spec.name,
+                    exit_code=exit_code,
+                    status=state.status,
+                    uptime_seconds=_elapsed(state.started_at),
+                    restart_count=state.restart_count,
+                    log=str(log_path),
+                )
                 print(
                     f"{_timestamp()} [{spec.name}] exited code={exit_code} "
                     f"uptime={_elapsed(state.started_at)}s",
@@ -582,6 +664,14 @@ async def _run_factory(
             break
         state.restart_count += 1
         state.status = "waiting_restart"
+        _write_execution_record(
+            log_dir,
+            "factory_restart_scheduled",
+            factory=spec.name,
+            restart_count=state.restart_count,
+            restart_delay_sec=restart_delay_sec,
+            last_exit_code=state.last_exit_code,
+        )
         await _sleep_or_stop(stop_event, restart_delay_sec)
 
 
@@ -597,6 +687,7 @@ async def _sleep_or_stop(stop_event: asyncio.Event, seconds: int) -> None:
 async def _heartbeat(
     states: dict[str, FactoryState],
     *,
+    log_dir: Path,
     stop_event: asyncio.Event,
     interval_sec: int,
 ) -> None:
@@ -613,6 +704,22 @@ async def _heartbeat(
                 f"{state.name}: status={state.status} pid={pid} "
                 f"uptime={_elapsed(state.started_at)}s restarts={state.restart_count}"
             )
+        _write_execution_record(
+            log_dir,
+            "supervisor_heartbeat",
+            factories=[
+                {
+                    "factory": state.name,
+                    "status": state.status,
+                    "pid": state.pid,
+                    "uptime_seconds": _elapsed(state.started_at),
+                    "restart_count": state.restart_count,
+                    "last_exit_code": state.last_exit_code,
+                }
+                for state in states.values()
+            ],
+            mcp_service_expected=False,
+        )
         print(f"{_timestamp()} [supervisor] " + " | ".join(parts), flush=True)
 
 
@@ -677,12 +784,14 @@ async def _run(args: argparse.Namespace) -> int:
         return 0
 
     _write_startup_manifest(log_dir=log_dir, specs=specs, args=args, env=env)
+    _write_planned_execution_records(log_dir=log_dir, specs=specs, args=args, env=env)
 
     stop_event = asyncio.Event()
     loop = asyncio.get_running_loop()
 
     def request_stop(signum: int | None = None, _frame: object | None = None) -> None:
         name = signal.Signals(signum).name if signum is not None else "manual"
+        _write_execution_record(log_dir, "supervisor_stop_requested", signal=name)
         print(f"\n{_timestamp()} received {name}; stopping factories...", flush=True)
         loop.call_soon_threadsafe(stop_event.set)
 
@@ -738,6 +847,7 @@ async def _run(args: argparse.Namespace) -> int:
         asyncio.create_task(
             _heartbeat(
                 states,
+                log_dir=log_dir,
                 stop_event=stop_event,
                 interval_sec=max(0, int(args.heartbeat_interval)),
             ),
@@ -751,6 +861,21 @@ async def _run(args: argparse.Namespace) -> int:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        _write_execution_record(
+            log_dir,
+            "supervisor_stopped",
+            factories=[
+                {
+                    "factory": state.name,
+                    "status": state.status,
+                    "pid": state.pid,
+                    "restart_count": state.restart_count,
+                    "last_exit_code": state.last_exit_code,
+                }
+                for state in states.values()
+            ],
+            mcp_service_expected=False,
+        )
     return 0
 
 

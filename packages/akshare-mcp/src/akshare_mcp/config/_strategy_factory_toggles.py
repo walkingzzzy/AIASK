@@ -155,7 +155,7 @@ def execution_audit_native_evidence_backfill_batch_limit() -> int:
 
 
 def stale_paper_position_closure_enabled() -> bool:
-    return _env_bool("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", default=False)
+    return _env_bool("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", default=True)
 
 
 def stale_paper_position_closure_batch_limit() -> int:

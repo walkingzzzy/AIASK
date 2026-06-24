@@ -16,7 +16,7 @@ async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapsh
             })
 
     # 尝试从 DB 加载股票池并按主题关键词匹配
-    from strategy_factory import call_optional_async
+    from strategy_factory.api import call_optional_async
     universe = await call_optional_async(db, "list_stock_universe", limit=200, offset=0, default=[])
 
     normalized_universe = [
@@ -80,7 +80,7 @@ async def _fallback_exposure_mapping(db: Any, input_data: dict[str, Any], snapsh
 
 async def _fallback_market_confirmation(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用技术面扫描逻辑做确认。"""
-    from strategy_factory import call_optional_async
+    from strategy_factory.api import call_optional_async
 
     exposures = list(input_data.get("exposures") or [])
     symbol_jobs: list[tuple[str, str]] = []

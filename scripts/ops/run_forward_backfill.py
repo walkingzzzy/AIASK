@@ -14,6 +14,11 @@ ensure_factory_runtime(
     project_root=REPO,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
 )
 
 from akshare_mcp.env_loader import load_mcp_env

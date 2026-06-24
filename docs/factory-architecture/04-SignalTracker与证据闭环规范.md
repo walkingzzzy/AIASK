@@ -34,14 +34,16 @@ SignalTracker 可以：
 | submitted runtime 策略 | `_load_runtime_submitted_strategies()`，读取 `submission_lane`、paper/live review metadata |
 | paper/observe/warmup 策略 | `list_active_paper_observation_strategies()`、`list_paper_observation_strategies()` |
 
-但这仍不是标准化的 `ExecutionUniverseContract` 实现。Incubation Factory 仍主要从 `strategy_incubation_accounts` 和自身 phase 输入加载 `warmup/paper/observe/candidate` 等策略。两者已经有部分共享 DB helper，但没有一个独立类、接口或只读诊断命令裁决“今天哪些策略应进入 paper execution universe”。
+**重要说明**：canonical `ExecutionUniverseContract` 已存在于 `packages/strategy-factory/src/strategy_factory/contracts/execution_universe.py`，并由 `strategy_factory.api.contracts` 对外公开。当前缺口不再是“契约不存在”，而是 SignalTracker/Incubation 消费面仍保留 contract-first + legacy fallback 的兼容路径，尚未完全收敛到单一路径。
+
+Incubation Factory 仍主要从 `strategy_incubation_accounts` 和自身 phase 输入加载 `warmup/diagnostic` 等策略（注意：实际数据库中无 `paper`/`observe`/`candidate` 等 stage 值）。两者已经有部分共享 DB helper，但没有一个独立类、接口或只读诊断命令裁决”今天哪些策略应进入 paper execution universe”。
 
 当前必须按以下口径描述：
 
-- `ExecutionUniverseContract` 是目标契约，不是当前已完整实现的类名。
-- 当前实现是“多条查询路径部分收敛”，仍有 drift 风险。
+- `ExecutionUniverseContract` 的 canonical owner 已在 `strategy-factory`，并已有守门测试冻结 owner。
+- 当前实现仍是“canonical contract 已落位 + 多条兼容查询路径待继续收敛”，因此仍有 drift 风险。
 - 若 SignalTracker 与 Incubation 对同一策略是否可执行得出不同结论，质量报告必须标为 contract mismatch。
-- supervisor 当前不拥有 SignalTracker，因此生产启动手册必须要求 sidecar preflight 或单独启动，而不能只写“运行四工厂”。
+- supervisor 当前不拥有 SignalTracker，因此生产启动手册必须要求 sidecar preflight 或单独启动，而不能只写”运行四工厂”。
 
 ## 闭环职责
 
@@ -97,15 +99,17 @@ flowchart LR
 - `saved_signal_evidence=0` 在有 signal/order/trade 时必须被解释为 backfill 或 native lineage blocker。
 - `execution_audit_gate_status=missing` 是链路缺失，不是样本债。
 
-## ExecutionUniverseContract
+## ExecutionUniverseContract（canonical owner 已落位，消费面仍在去 compat 化）
 
-SignalTracker 与 Incubation Factory 最终必须使用同一套可执行策略集合定义。最小字段：
+**重要说明**：`ExecutionUniverseContract` 已是当前代码中的 canonical contract，不再是纯目标概念。下面字段描述既是当前 canonical owner 所承载的统一语义，也是后续继续清理 fallback/query drift 的裁决基线。
+
+SignalTracker 与 Incubation Factory 最终必须使用同一套可执行策略集合定义。最小字段设计：
 
 | 字段 | 含义 |
 | --- | --- |
 | `strategy_id` | 全链路主键 |
 | `account_id` | paper/observe/incubation account |
-| `stage/status` | warmup、paper、observe、candidate、incubating、listed 等当前状态 |
+| `stage/status` | warmup、diagnostic、failed、incubating、listed 等当前状态 (注意: 实际数据库中无 `paper`、`observe`、`candidate` 等值) |
 | `paper_lane_ready` | 是否允许 paper execution |
 | `runtime_control` | 是否被暂停、阻塞、diagnostic-only |
 | `universe/codes` | 可执行股票集合 |
@@ -120,7 +124,14 @@ SignalTracker 与 Incubation Factory 最终必须使用同一套可执行策略�
 2. 再把 shared DB helper 收敛为一个 provider，例如 `list_execution_universe_candidates()`。
 3. 最后让 SignalTracker Phase A/C 和 Incubation Phase 3/3c 共用同一 provider。
 
-在该契约落地前，文档和报告都不能声称“执行宇宙已标准化完成”。
+**当前落地状态**：canonical owner、公开导出和 contract guard tests 已完成；SignalTracker/Incubation 运行面仍保留兼容 fallback，因此文档不能声称“消费面已经完全单一路径化完成”。
+
+**验证方式**：
+```bash
+# 验证 canonical owner 与消费面
+rg "class ExecutionUniverseContract" packages/strategy-factory packages/akshare-mcp
+grep -r “list_execution_universe” packages/
+```
 
 ## Sidecar 依赖检查
 
@@ -143,7 +154,7 @@ Incubation Factory 可以批量消化 signal-only backlog，也可以运行 pape
 
 - SignalTracker 负责每日信号和执行宇宙。
 - Incubation Factory 负责孵化视角的 evidence 消费、修复、验收和反馈。
-- 目标上两者共享 `ExecutionUniverseContract` 和 `PaperEvidenceContract`；当前仍需通过只读对账发现差集。
+- 当前两者已经共享 canonical `ExecutionUniverseContract` owner；剩余工作是继续移除 compat fallback 并通过只读对账发现差集。
 - quality session 只能调用或验证两者，不能在生产语义上成为第三套补偿入口。
 
 ## 健康标准

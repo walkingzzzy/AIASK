@@ -118,6 +118,7 @@ class IncubationFactoryRunner:
         self._last_result: Optional[dict[str, Any]] = None
         self._run_count: int = 0
         self._error_count: int = 0
+        self._error_backoff_sec: int = ERROR_BACKOFF_SEC
 
     async def _start_paper_trading_daemons(self) -> None:
         """启动 MatchingEngine + NavEngine 后台 daemon。
@@ -196,7 +197,7 @@ class IncubationFactoryRunner:
 
         self._paper_trading_started = False
 
-    async def run_once(self) -> dict[str, Any]:
+    async def _run_once_impl(self) -> dict[str, Any]:
         """单次执行完整孵化周期。
 
         流程：
@@ -403,12 +404,23 @@ class IncubationFactoryRunner:
                 timeout=BATCH_TIMEOUT_SEC,
             ) or {}
 
+            logger.info("IncubationFactory [%s] Phase 3c2: Exit signal paper execution", run_id)
+            exit_signal_execution_result = await _run_phase(
+                "exit_signal_paper_execution",
+                lambda: self._run_exit_signal_paper_execution(
+                    db,
+                    strategies=all_strategies,
+                    as_of=as_of,
+                ),
+                timeout=BATCH_TIMEOUT_SEC,
+            ) or {}
+
             logger.info("IncubationFactory [%s] Phase 3d: Stale paper position closure", run_id)
             stale_position_closure_result = await _run_phase(
                 "stale_paper_position_closure",
                 lambda: self._run_stale_paper_position_closure(
                     db,
-                    strategies=list(incubating) + list(paper_observation),
+                    strategies=all_strategies,
                 ),
                 timeout=BATCH_TIMEOUT_SEC,
             ) or {}
@@ -550,6 +562,7 @@ class IncubationFactoryRunner:
                     "intraday_sync": dict(trade_prediction_result.get("intraday_sync") or {}),
                 },
                 "paper_execution_backlog": paper_execution_backlog_result,
+                "exit_signal_paper_execution": exit_signal_execution_result,
                 "stale_paper_position_closure": stale_position_closure_result,
                 "native_execution_evidence_backfill": native_evidence_backfill_result,
                 "execution_audit_acceptance": execution_audit_acceptance_result,
@@ -620,68 +633,29 @@ class IncubationFactoryRunner:
         finally:
             await self._close_db(db)
 
-    async def run_daemon(self) -> None:
-        """守护进程模式：每日定时运行。
+    async def run_once(self) -> dict[str, Any]:
+        from strategy_factory.runtime.incubation import build_incubation_runtime
 
-        在指定时间（默认 18:30）执行孵化周期，
-        失败后等待 5 分钟重试一次。
-
-        2026-05-28: 启动时自动拉起 MatchingEngine + NavEngine（如果
-        owns_paper_trading=True），优雅退出时关闭。
-        """
-        logger.info(
-            "IncubationFactory: daemon started (run_time=%s, dry_run=%s, owns_paper_trading=%s)",
-            self.run_time,
-            self.dry_run,
-            self.owns_paper_trading,
+        runtime = build_incubation_runtime(
+            run_time=self.run_time,
+            dry_run=self.dry_run,
+            auto_apply_review=self.auto_apply_review,
+            owns_paper_trading=self.owns_paper_trading,
+            support=self,
         )
+        return await runtime.run_once()
 
-        # 启动 paper-trading 后台 daemon (MatchingEngine + NavEngine)
-        await self._start_paper_trading_daemons()
+    async def run_daemon(self) -> None:
+        from strategy_factory.runtime.incubation import build_incubation_runtime
 
-        try:
-            while True:
-                now = datetime.now()
-                target = now.replace(
-                    hour=self.run_time.hour,
-                    minute=self.run_time.minute,
-                    second=0,
-                    microsecond=0,
-                )
-                if now >= target:
-                    target += timedelta(days=1)
-
-                wait_seconds = (target - now).total_seconds()
-                logger.info(
-                    "IncubationFactory: next run at %s (waiting %.0fs)",
-                    target.strftime("%Y-%m-%d %H:%M"),
-                    wait_seconds,
-                )
-
-                await asyncio.sleep(wait_seconds)
-
-                # 执行孵化周期
-                result = await self.run_once()
-
-                # 如果失败，等待后重试一次
-                if result.get("status") == "failed":
-                    logger.warning(
-                        "IncubationFactory: run failed, retrying in %ds",
-                        ERROR_BACKOFF_SEC,
-                    )
-                    await asyncio.sleep(ERROR_BACKOFF_SEC)
-                    retry_result = await self.run_once()
-                    if retry_result.get("status") == "failed":
-                        logger.error(
-                            "IncubationFactory: retry also failed: %s",
-                            retry_result.get("error"),
-                        )
-        finally:
-            # 优雅关闭 paper-trading daemon (CancelledError / KeyboardInterrupt 路径)
-            try:
-                await self._stop_paper_trading_daemons()
-            except Exception as exc:
-                logger.warning("IncubationFactory: paper-trading shutdown failed: %s", exc)
+        runtime = build_incubation_runtime(
+            run_time=self.run_time,
+            dry_run=self.dry_run,
+            auto_apply_review=self.auto_apply_review,
+            owns_paper_trading=self.owns_paper_trading,
+            support=self,
+        )
+        await runtime.run_daemon()
 
     async def _settle_strategy_orders(
         self,
@@ -1084,6 +1058,202 @@ class IncubationFactoryRunner:
             "rejected_orders": rejected_orders,
             "metrics_recorded": metrics_recorded,
             "skip_reason_counts": dict(skip_reason_counts),
+            "items": items[:50],
+            "error_items": errors[:20],
+        }
+
+    async def _select_exit_signal_candidates(
+        self,
+        db: Any,
+        *,
+        strategies: Optional[list[dict[str, Any]]] = None,
+        limit: int = 200,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Select strategies with exit signal + open positions but no exit orders."""
+        candidates: list[dict[str, Any]] = []
+
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for strategy in list(strategies or []):
+            sid = str((strategy or {}).get("id") or "").strip()
+            if not sid or sid in seen:
+                continue
+            seen.add(sid)
+            unique.append(dict(strategy or {}))
+
+        for strategy in unique:
+            sid = str(strategy.get("id") or "").strip()
+            if not sid:
+                continue
+
+            try:
+                # Check for exit signals
+                cursor = db.connection.execute(
+                    "SELECT COUNT(*) FROM strategy_signals WHERE strategy_id = ? AND signal = -1",
+                    (sid,)
+                )
+                exit_signal_count = cursor.fetchone()[0] if cursor else 0
+
+                if exit_signal_count == 0:
+                    continue
+
+                # Check for open positions
+                cursor = db.connection.execute(
+                    "SELECT id, code FROM strategy_trade_positions WHERE strategy_id = ? AND status = 'open'",
+                    (sid,)
+                )
+                open_positions = [{"id": row[0], "code": row[1]} for row in cursor.fetchall()] if cursor else []
+
+                if not open_positions:
+                    continue
+
+                # Check if already has exit orders
+                cursor = db.connection.execute(
+                    "SELECT COUNT(*) FROM paper_orders WHERE strategy_id = ? AND direction IN ('sell', 'exit', 'short')",
+                    (sid,)
+                )
+                exit_order_count = cursor.fetchone()[0] if cursor else 0
+
+                if exit_order_count > 0:
+                    continue
+
+                strategy["_exit_signal_count"] = exit_signal_count
+                strategy["_open_positions"] = open_positions
+                candidates.append(strategy)
+            except Exception:  # noqa: BLE001
+                continue
+
+        return candidates[:limit], len(candidates)
+
+    async def _run_exit_signal_paper_execution(
+        self,
+        db: Any,
+        *,
+        strategies: Optional[list[dict[str, Any]]] = None,
+        as_of: Optional[date] = None,
+    ) -> dict[str, Any]:
+        """Convert exit signals with open positions into exit orders."""
+        if self.dry_run:
+            return {"status": "skipped", "reason": "dry_run", "evaluated": 0}
+
+        try:
+            from akshare_mcp.config._strategy_factory_toggles import (
+                paper_execution_backlog_batch_limit,
+                paper_execution_backlog_enabled,
+            )
+        except Exception:
+            return {"status": "skipped", "reason": "toggle_import_failed", "evaluated": 0}
+
+        if not paper_execution_backlog_enabled():
+            return {"status": "skipped", "reason": "disabled", "evaluated": 0}
+
+        try:
+            from ..incubation import get_strategy_incubation_service
+            incubation_service = get_strategy_incubation_service()
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "skipped",
+                "reason": "incubation_service_unavailable",
+                "error": f"{type(exc).__name__}:{exc}",
+                "evaluated": 0,
+            }
+
+        as_of_date = as_of or date.today()
+        limit = paper_execution_backlog_batch_limit()
+
+        try:
+            selected, total_count = await self._select_exit_signal_candidates(
+                db,
+                strategies=strategies,
+                limit=limit,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "status": "error",
+                "reason": "candidate_selection_failed",
+                "error": f"{type(exc).__name__}:{exc}",
+                "evaluated": 0,
+                "limit": limit,
+            }
+
+        if not selected:
+            return {
+                "status": "skipped",
+                "reason": "no_exit_signal_backlog",
+                "exit_signal_backlog_count": 0,
+                "selected_count": 0,
+                "evaluated": 0,
+                "limit": limit,
+            }
+
+        items: list[dict[str, Any]] = []
+        errors: list[dict[str, Any]] = []
+        exit_orders_created = 0
+        exit_orders_filled = 0
+        positions_closed = 0
+
+        for strategy in selected:
+            sid = str(strategy.get("id") or "").strip()
+            open_positions = list(strategy.get("_open_positions") or [])
+            exit_signal_count = int(strategy.get("_exit_signal_count") or 0)
+
+            if not open_positions:
+                continue
+
+            codes = [str(p.get("code") or "").strip() for p in open_positions if p.get("code")]
+            if not codes:
+                continue
+
+            try:
+                close_result = await incubation_service.force_close_open_positions(
+                    db,
+                    strategy,
+                    as_of_date,
+                    reason="exit_signal_driven_close",
+                    source="incubation_factory_exit_signal",
+                    codes=codes,
+                )
+
+                orders_created = int((close_result or {}).get("orders_created") or 0)
+                orders_filled = int((close_result or {}).get("orders_filled") or 0)
+                closed_count = int((close_result or {}).get("positions_closed") or 0)
+
+                exit_orders_created += orders_created
+                exit_orders_filled += orders_filled
+                positions_closed += closed_count
+
+                items.append({
+                    "strategy_id": sid,
+                    "exit_signal_count": exit_signal_count,
+                    "open_position_count": len(open_positions),
+                    "codes": codes,
+                    "orders_created": orders_created,
+                    "orders_filled": orders_filled,
+                    "positions_closed": closed_count,
+                })
+            except Exception as exc:  # noqa: BLE001
+                errors.append({
+                    "strategy_id": sid,
+                    "error_type": type(exc).__name__,
+                    "error": str(exc),
+                })
+
+        result_status = "ok" if not errors else "partial"
+        if exit_orders_created <= 0 and selected:
+            result_status = "pending_execution" if result_status == "ok" else result_status
+        if not items and errors:
+            result_status = "error"
+
+        return {
+            "status": result_status,
+            "exit_signal_backlog_count": total_count,
+            "selected_count": len(selected),
+            "evaluated": len(items),
+            "errors": len(errors),
+            "limit": limit,
+            "exit_orders_created": exit_orders_created,
+            "exit_orders_filled": exit_orders_filled,
+            "positions_closed": positions_closed,
             "items": items[:50],
             "error_items": errors[:20],
         }

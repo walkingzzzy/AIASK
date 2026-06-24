@@ -264,6 +264,8 @@ def test_data_sync_market_text_source_ingest_task_and_schedule_params(tmp_path, 
     _write_embedding_env(tmp_path, monkeypatch, "market_text_sync")
 
     import akshare_mcp.services.market_text_source_ingest as ingest_mod
+    import strategy_factory.runtime.market_event_ingest as ingest_runtime_module
+    import akshare_mcp.runtime.strategy_factory_bootstrap as bootstrap_module
 
     monkeypatch.setattr(
         ingest_mod,
@@ -284,6 +286,13 @@ def test_data_sync_market_text_source_ingest_task_and_schedule_params(tmp_path, 
             }
         ],
     )
+    monkeypatch.setattr(bootstrap_module, "configure_local_strategy_factory_runtime", lambda: None)
+
+    class _Runtime:
+        async def run_once(self, *, db=None, **kwargs):
+            return await ingest_mod.run_market_text_source_ingest(db, **kwargs)
+
+    monkeypatch.setattr(ingest_runtime_module, "get_market_event_ingest_runtime", lambda: _Runtime())
 
     async def _run() -> None:
         db = get_db()

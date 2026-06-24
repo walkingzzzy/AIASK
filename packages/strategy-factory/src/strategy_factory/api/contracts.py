@@ -6,6 +6,13 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Mapping, Optional, Protocol, runtime_checkable
 
+from ..contracts.execution_universe import (
+    ExecutableStrategy,
+    ExecutionUniverseContract,
+    ExecutionUniverseQuery,
+    ExecutionUniverseStrategy,
+)
+
 
 JSONDict = dict[str, Any]
 JSONLike = Any
@@ -695,3 +702,30 @@ class RiskGateway(Protocol):
     """Gateway for risk reports derived from strategy panels."""
 
     async def run_risk_report(self, strategy_type: str, params: Mapping[str, Any], db: Any) -> Optional[JSONDict]: ...
+
+
+__all__ = [
+    "AutonomyGateway",
+    "ExecutableStrategy",
+    "ExecutionUniverseContract",
+    "ExecutionUniverseQuery",
+    "ExecutionUniverseStrategy",
+    "FactorPoolGateway",
+    "FactorResearchGateway",
+    "FactoryBacktestAssumptions",
+    "IncubationGateway",
+    "ResearchValidationContract",
+    "RiskGateway",
+    "StrategyExecutionAssumptions",
+    "StrategyFactoryRepository",
+    "StrategyPortfolioSpec",
+    "StrategyResearchContract",
+    "StrategySubmissionAudit",
+    "StrategyTargetingPolicy",
+    "StrategyValidationProfile",
+    "ValidationGateway",
+    "VectorSearchGateway",
+    "normalize_execution_assumptions",
+    "normalize_strategy_preferences",
+    "resolve_refresh_existing_contract",
+]

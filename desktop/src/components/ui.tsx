@@ -132,7 +132,7 @@ export function Panel({
   );
 }
 
-export function LoadingState({ label = "正在加载" }: { label?: string }) {
+export function LoadingState({ label = "Loading" }: { label?: string }) {
   return (
     <div className="state state-loading">
       <Loader2 className="spin" size={18} />
@@ -157,9 +157,13 @@ export function ErrorState({ error, onRetry }: { error: ApiProblem; onRetry?: ()
     <div className="state state-error" role="alert">
       <XCircle size={18} />
       <strong>{error.title}</strong>
-      <p>{error.detail || "请求失败，请检查 Agent HTTP 或 token 配置。"}</p>
+      <p>{error.detail || "The request failed. Check the Agent HTTP connection or token settings."}</p>
       {error.code ? <code>{error.code}</code> : null}
-      {onRetry ? <Button icon={<RefreshCw size={16} />} onClick={onRetry}>重试</Button> : null}
+      {onRetry ? (
+        <Button icon={<RefreshCw size={16} />} onClick={onRetry}>
+          Retry
+        </Button>
+      ) : null}
     </div>
   );
 }
@@ -167,13 +171,13 @@ export function ErrorState({ error, onRetry }: { error: ApiProblem; onRetry?: ()
 export function DataTable<T extends UnknownRecord>({
   items,
   columns,
-  empty = "暂无数据"
+  empty = "No data"
 }: {
   items: T[];
   columns: TableColumn<T>[];
   empty?: string;
 }) {
-  if (!items.length) return <EmptyState title={empty} detail="当前状态没有返回记录。" />;
+  if (!items.length) return <EmptyState title={empty} detail="There are no records for the current state." />;
   return (
     <div className="table-wrap">
       <table>
@@ -202,7 +206,7 @@ export function DataTable<T extends UnknownRecord>({
   );
 }
 
-export function JsonPanel({ data, title = "证据 JSON" }: { data: unknown; title?: string }) {
+export function JsonPanel({ data, title = "Evidence JSON" }: { data: unknown; title?: string }) {
   return (
     <details className="json-panel" data-testid="json-panel">
       <summary>{title}</summary>
@@ -221,7 +225,14 @@ export function ResourcePanel<T>({
   children: (data: T) => ReactNode;
 }) {
   return (
-    <Panel title={title} action={<Button icon={<RefreshCw size={16} />} onClick={() => void resource.reload()}>刷新</Button>}>
+    <Panel
+      title={title}
+      action={
+        <Button icon={<RefreshCw size={16} />} onClick={() => void resource.reload()}>
+          Refresh
+        </Button>
+      }
+    >
       {resource.loading ? <LoadingState /> : null}
       {resource.error ? <ErrorState error={resource.error} onRetry={() => void resource.reload()} /> : null}
       {!resource.loading && !resource.error && resource.data ? children(resource.data) : null}
@@ -256,9 +267,9 @@ export function LinkCard({
 
 export function GatedNotice({ controlAvailable, action }: { controlAvailable: boolean; action: string }) {
   if (controlAvailable) {
-    return <StatusBadge tone="success">Control token 可用</StatusBadge>;
+    return <StatusBadge tone="success">Control token available</StatusBadge>;
   }
-  return <StatusBadge tone="gated">{action} 需要 control token</StatusBadge>;
+  return <StatusBadge tone="gated">{action} requires a control token</StatusBadge>;
 }
 
 export function listFromPayload<T extends UnknownRecord = UnknownRecord>(payload: unknown): T[] {

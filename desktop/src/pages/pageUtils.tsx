@@ -1,6 +1,13 @@
 import type { AiaskApi } from "../services/aiaskApi";
 import { objectData, toList } from "../services/api/core";
-import type { ConnectionSettings, Metric, Tone, UnknownRecord, ViewId } from "../types";
+import type {
+  ConnectionSettings,
+  Metric,
+  Tone,
+  UnknownRecord,
+  ViewId,
+  WorkbenchContext
+} from "../types";
 
 export interface PageProps {
   view: ViewId;
@@ -8,6 +15,14 @@ export interface PageProps {
   settings?: ConnectionSettings;
   updateSettings?: (patch: Partial<ConnectionSettings>) => void;
   controlAvailable: boolean;
+  workbench?: WorkbenchContext;
+  setSelectedThreadId?: (threadId: string) => void;
+  setSelectedRunId?: (runId: string) => void;
+  setSelectedMessageId?: (messageId: string) => void;
+  setSelectedApprovalId?: (approvalId: string) => void;
+  setSelectedArtifactId?: (artifactId: string) => void;
+  setSelectedReviewTab?: (tab: WorkbenchContext["selectedReviewTab"]) => void;
+  reloadWorkbench?: () => Promise<void>;
 }
 
 export function list<T extends UnknownRecord = UnknownRecord>(payload: unknown): T[] {

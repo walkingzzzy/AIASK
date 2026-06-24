@@ -14,7 +14,7 @@ from .route_auth import control_token_configured
 from .stock_data_sources import list_stock_data_sources
 
 
-def agent_endpoint(default: str = "http://127.0.0.1:8767") -> str:
+def agent_endpoint(default: str = "http://127.0.0.1:8765") -> str:
     host = str(os.getenv("AIASK_AGENT_HOST", "")).strip()
     port = str(os.getenv("AIASK_AGENT_PORT", "")).strip()
     if host and port:

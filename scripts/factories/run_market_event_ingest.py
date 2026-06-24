@@ -33,6 +33,17 @@ ensure_factory_runtime(
     project_root=PROJECT_ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
+    distribution_names=(
+        "strategy-factory",
+        "aiask-quant-core",
+        "akshare-mcp",
+    ),
+    uv_project="packages/agent",
 )
 DEFAULT_INTERVAL_SEC = 3600
 DEFAULT_ERROR_SLEEP_SEC = 300
@@ -219,13 +230,14 @@ def _build_ingest_kwargs(args: argparse.Namespace) -> dict[str, Any]:
 
 
 async def _run_one_round(args: argparse.Namespace, round_no: int) -> dict[str, Any]:
-    from akshare_mcp.services.market_text_source_ingest import run_market_text_source_ingest
-    from akshare_mcp.storage import get_db
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.market_event_ingest import get_market_event_ingest_runtime
 
+    ensure_default_runtime_services()
     kwargs = _build_ingest_kwargs(args)
     logger.info("round=%s starting args=%s", round_no, json.dumps(kwargs, ensure_ascii=False, default=str))
     started_at = datetime.now(timezone.utc)
-    result = await run_market_text_source_ingest(get_db(), **kwargs)
+    result = await get_market_event_ingest_runtime().run_once(**kwargs)
     elapsed_sec = int((datetime.now(timezone.utc) - started_at).total_seconds())
     summary = _compact_round_summary(result)
     summary["elapsed_sec"] = elapsed_sec

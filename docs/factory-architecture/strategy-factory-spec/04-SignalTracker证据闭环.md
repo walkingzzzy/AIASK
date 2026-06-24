@@ -419,4 +419,4 @@ LEFT JOIN strategy_signal_evidence e ON s.signal_id = e.signal_id;
 - [03-孵化工厂](03-孵化工厂.md)
 - [06-数据库Schema与证据表](06-数据库Schema与证据表.md)
 - [07-运行与诊断](07-运行与诊断.md)
-- [深度代码审查报告](../../DEEP_CODE_REVIEW_2026-06-21.md)
+- [深度架构审查报告](../09-深度架构审查报告.md)

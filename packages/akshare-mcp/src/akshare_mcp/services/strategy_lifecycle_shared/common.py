@@ -12,7 +12,7 @@ import logging
 from datetime import date, datetime, timezone
 from typing import Any, Optional
 
-from strategy_factory import (
+from strategy_factory.api.constants import (
     DEPRECATION_THRESHOLDS,
     PROMOTION_THRESHOLDS,
     STRATEGY_FACTORY_CONFIDENCE_DIAGNOSTICS_ENABLED,
@@ -198,5 +198,4 @@ def _contract_version_stable(value: Any, explicit_flag: Any = None) -> bool:
         return False
     unstable_tokens = ("draft", "unstable", "experimental", "preview", "beta", "alpha")
     return not any(token in version for token in unstable_tokens)
-
 

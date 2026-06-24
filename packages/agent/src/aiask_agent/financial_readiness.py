@@ -15,7 +15,7 @@ from .adapters import quant as quant_adapter
 
 LIVE_SMOKE_WORKING_DIRECTORY = "packages/agent"
 LIVE_SMOKE_SELF_TEST_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --self-test --pretty"
-LIVE_SMOKE_LIVE_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --endpoint http://127.0.0.1:8767 --pretty"
+LIVE_SMOKE_LIVE_COMMAND = r"uv run python ..\..\scripts\ops\live_readiness_smoke.py --endpoint http://127.0.0.1:8765 --pretty"
 LIVE_SMOKE_ENVIRONMENT_NOTE = "Run from packages/agent so the Agent runtime dependencies are loaded; root or system Python may report missing FastAPI/pandas dependencies."
 LIVE_SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
     {"name": "health", "method": "GET", "path": "/health/detailed"},

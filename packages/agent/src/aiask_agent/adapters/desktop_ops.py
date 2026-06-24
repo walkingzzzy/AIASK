@@ -163,16 +163,18 @@ async def _execute_data_sync(action: str, params: dict[str, Any]) -> dict[str, A
 async def _execute_factor_factory(action: str, params: dict[str, Any]) -> dict[str, Any]:
     try:
         _ensure_monorepo_paths()
-        from akshare_mcp.services.factor_mining_factory import get_factor_mining_factory
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
     except ModuleNotFoundError as exc:
         return _dependency_missing(exc, dependency="factor_factory")
 
     try:
-        factory = get_factor_mining_factory()
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
         timeout = bounded_float(params.get("_timeout_seconds"), default=300.0, minimum=1.0, maximum=3600.0)
         if action == "run_once":
             result = await asyncio.wait_for(
-                factory.run_mining_cycle(
+                runtime.run_once(
                     trigger=str(params.get("trigger") or "desktop_intent"),
                     engines=[str(item) for item in list(params.get("engines") or [])] or None,
                     candidate_count=bounded_int(params.get("candidate_count") or params.get("candidates"), default=10, minimum=1, maximum=1000),
@@ -182,7 +184,7 @@ async def _execute_factor_factory(action: str, params: dict[str, Any]) -> dict[s
                 timeout=timeout,
             )
         elif action == "maintenance":
-            result = await asyncio.wait_for(factory.run_maintenance(), timeout=timeout)
+            result = await asyncio.wait_for(runtime.run_maintenance(), timeout=timeout)
         else:
             raise ValueError(f"unsupported factor factory action: {action}")
         return {"success": bool(not isinstance(result, dict) or result.get("success") is not False), "data": result, "error": None}
@@ -193,26 +195,26 @@ async def _execute_factor_factory(action: str, params: dict[str, Any]) -> dict[s
 async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> dict[str, Any]:
     try:
         _ensure_monorepo_paths()
-        from akshare_mcp.services.incubation_factory import (
-            IncubationFactoryRunner,
-            get_incubation_factory_runner,
-        )
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.incubation import build_incubation_runtime
     except ModuleNotFoundError as exc:
         return _dependency_missing(exc, dependency="incubation_factory")
 
     try:
+        ensure_default_runtime_services()
         timeout = bounded_float(params.get("_timeout_seconds"), default=600.0, minimum=1.0, maximum=3600.0)
         if action == "dry_run":
-            runner = IncubationFactoryRunner(dry_run=True)
-            result = await asyncio.wait_for(runner.run_once(), timeout=timeout)
+            runtime = build_incubation_runtime(dry_run=True)
+            result = await asyncio.wait_for(runtime.run_once(), timeout=timeout)
         elif action == "run_once":
-            result = await asyncio.wait_for(get_incubation_factory_runner().run_once(), timeout=timeout)
+            runtime = build_incubation_runtime()
+            result = await asyncio.wait_for(runtime.run_once(), timeout=timeout)
         elif action == "maintenance":
-            runner = get_incubation_factory_runner()
+            runtime = build_incubation_runtime()
             result = {
                 "status": "ready",
                 "detail": "Incubation factory has no separate maintenance pass; status was refreshed.",
-                "runner": runner.status(),
+                "runner": runtime.status(),
             }
         else:
             raise ValueError(f"unsupported incubation factory action: {action}")

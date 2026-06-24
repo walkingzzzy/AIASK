@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 
-DEFAULT_ENDPOINT = "http://127.0.0.1:8767"
+DEFAULT_ENDPOINT = "http://127.0.0.1:8765"
 DEFAULT_CODES = ("600519", "000001")
 DEFAULT_BENCHMARK_CODE = "000300"
 RECOMMENDED_WORKING_DIRECTORY = "packages/agent"
@@ -600,7 +600,7 @@ def run_self_test(*, timeout: float = 15.0) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run a read-only AIASK live readiness smoke against a running Agent.")
-    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Agent endpoint, default http://127.0.0.1:8767")
+    parser.add_argument("--endpoint", default=DEFAULT_ENDPOINT, help="Agent endpoint, default http://127.0.0.1:8765")
     parser.add_argument("--api-token", default="", help="API token if the Agent requires one")
     parser.add_argument("--control-token", default="", help="Control token for gated MCP inventory checks")
     parser.add_argument("--timeout", type=float, default=15.0)

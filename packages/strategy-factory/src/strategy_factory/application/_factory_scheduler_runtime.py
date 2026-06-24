@@ -64,7 +64,7 @@ if TYPE_CHECKING:
         ValidationGateway,
         VectorSearchGateway,
     )
-    from ..infrastructure.mcp_adapters import MCPRuntimeAdapters
+    from ..infrastructure.runtime_adapters import RuntimeAdapters
 
 logger = logging.getLogger(__name__)
 
@@ -189,17 +189,17 @@ class _StrategyFactorySchedulerRuntimeMixin:
 
         def _get_autonomy_gateway(self) -> "AutonomyGateway":
             if self._autonomy_gateway is None:
-                from ..infrastructure.mcp_adapters import MCPAutonomyGatewayImpl
+                from ..infrastructure.runtime_adapters import AutonomyGatewayImpl
 
-                self._autonomy_gateway = MCPAutonomyGatewayImpl()
+                self._autonomy_gateway = AutonomyGatewayImpl()
             return self._autonomy_gateway
 
         def _get_factor_research_gateway(self) -> "FactorResearchGateway":
             if self._factor_research_gateway is None:
-                from ..infrastructure.mcp_adapters import MCPFactorResearchGatewayImpl
+                from ..infrastructure.runtime_adapters import FactorResearchGatewayImpl
 
                 factory_pkg = get_strategy_factory_package()
-                self._factor_research_gateway = MCPFactorResearchGatewayImpl(
+                self._factor_research_gateway = FactorResearchGatewayImpl(
                     builder=getattr(factory_pkg, "FactorResearchBuilder", None),
                 )
             return self._factor_research_gateway

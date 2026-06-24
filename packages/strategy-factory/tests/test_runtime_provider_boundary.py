@@ -4,6 +4,7 @@ import asyncio
 import io
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 import textwrap
@@ -23,6 +24,17 @@ def test_root_runner_no_longer_dispatches_through_strategy_manager() -> None:
     assert 'strategy_manager(action="factory_run_once"' not in text
     assert "target_codes=self.target_codes" in text
     assert "list_strategy_factory_dispatches" in text
+
+
+def test_maintained_runner_uses_canonical_runtime_kwargs_before_akshare_fallback() -> None:
+    text = (ROOT / "scripts" / "factories" / "run_strategy_factory.py").read_text(
+        encoding="utf-8",
+        errors="ignore",
+    )
+
+    assert "akshare_mcp.adapters.strategy_factory_runtime" not in text
+    assert "build_scheduler_runtime_kwargs" in text
+    assert "ensure_default_runtime_services" in text
 
 
 def test_root_runner_accepts_scheduler_native_result() -> None:
@@ -87,7 +99,7 @@ def test_runner_runtime_bootstrap_does_not_require_risk_model() -> None:
 
         kwargs = runner._runner._load_strategy_factory_runtime_kwargs()
         assert callable(kwargs["db_provider"])
-        assert type(kwargs["runtime_adapters"]).__name__ == "MCPRuntimeAdapters"
+        assert type(kwargs["runtime_adapters"]).__name__ == "RuntimeAdapters"
         """
     )
 
@@ -100,6 +112,89 @@ def test_runner_runtime_bootstrap_does_not_require_risk_model() -> None:
     )
 
     assert completed.returncode == 0, completed.stderr
+
+
+def test_runner_uses_preconfigured_runtime_services_without_akshare_imports() -> None:
+    code = textwrap.dedent(
+        f"""
+        import builtins
+        import importlib.abc
+        import sys
+
+        class _BlockAkshare(importlib.abc.MetaPathFinder):
+            def find_spec(self, fullname, path=None, target=None):
+                if str(fullname).startswith("akshare_mcp"):
+                    raise ModuleNotFoundError("blocked akshare import", name=fullname)
+                return None
+
+        sys.meta_path.insert(0, _BlockAkshare())
+        sys.path.insert(0, {str(ROOT)!r})
+        sys.path.insert(0, {str(ROOT / "packages" / "strategy-factory" / "src")!r})
+        sys.path.insert(0, {str(ROOT / "packages" / "aiask-quant-core" / "src")!r})
+
+        import run_strategy_factory as runner
+        from strategy_factory.infrastructure.runtime_services import configure_runtime_services, clear_runtime_services
+
+        class _Db:
+            pass
+
+        clear_runtime_services()
+        configure_runtime_services(
+            db_provider=lambda: _Db(),
+            factor_scheduler=lambda: None,
+            factor_mining_factory=lambda: None,
+            factor_pool_gateway=lambda: None,
+            quant_manager_callable=lambda *args, **kwargs: None,
+            runtime_warmup_runner=lambda *args, **kwargs: None,
+            strategy_promotion_pipeline_service=lambda: None,
+            strategy_runtime_control_service=lambda: None,
+            event_context_builder=lambda *args, **kwargs: {{}},
+            sentiment_analyzer=object(),
+            financial_semantic_service_factory=lambda: None,
+            index_kline_provider=lambda *args, **kwargs: {{}},
+            strategy_dsl_compiler=lambda *args, **kwargs: None,
+            strategy_vector_platform_factory=lambda: None,
+            execution_audit_snapshot_builder=lambda *args, **kwargs: {{}},
+            closure_review_builder=lambda *args, **kwargs: {{}},
+            strategy_llm_provider_loader=lambda *args, **kwargs: None,
+        )
+
+        kwargs = runner._runner._load_strategy_factory_runtime_kwargs()
+        assert callable(kwargs["db_provider"])
+        assert type(kwargs["runtime_adapters"]).__name__ == "RuntimeAdapters"
+        print("ok")
+        """
+    )
+
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "ok" in completed.stdout
+
+
+def test_public_runtime_api_keeps_mcp_aliases_compatible() -> None:
+    sys.path.insert(0, str(ROOT / "packages" / "strategy-factory" / "src"))
+    try:
+        from strategy_factory.api.runtime import (
+            MCPRuntimeAdapters,
+            RuntimeAdapters,
+            build_mcp_runtime_adapters,
+            build_runtime_adapters,
+        )
+    finally:
+        try:
+            sys.path.remove(str(ROOT / "packages" / "strategy-factory" / "src"))
+        except ValueError:
+            pass
+
+    assert RuntimeAdapters is MCPRuntimeAdapters
+    assert build_runtime_adapters is build_mcp_runtime_adapters
 
 
 def test_supervisor_does_not_force_strategy_interval_by_default() -> None:
@@ -483,9 +578,10 @@ def test_root_runner_marks_active_dispatch_failed_on_cancel() -> None:
 def test_strategy_factory_source_has_no_akshare_imports() -> None:
     source_root = ROOT / "packages" / "strategy-factory" / "src" / "strategy_factory"
     offenders: list[str] = []
+    pattern = re.compile(r"^\s*(?:from|import)\s+akshare_mcp\b", re.MULTILINE)
     for path in source_root.rglob("*.py"):
         text = path.read_text(encoding="utf-8", errors="ignore")
-        if "akshare_mcp" in text:
+        if pattern.search(text):
             offenders.append(str(path.relative_to(ROOT)))
 
     assert offenders == []

@@ -59,6 +59,43 @@ ValidationGatewayImpl = MCPValidationGatewayImpl
 RiskGatewayImpl = MCPRiskGatewayImpl
 build_runtime_adapters = build_mcp_runtime_adapters
 
+
+def build_scheduler_runtime_kwargs(db=None):
+    """Build canonical scheduler kwargs from the registered runtime providers.
+
+    This function bridges the old scheduler interface to the new runtime adapters.
+    Used by default_bootstrap.py for backward compatibility.
+    """
+    from ..infrastructure.mcp_services import (
+        get_strategy_autonomy_service,
+        get_strategy_incubation_service,
+        get_strategy_incubation_pipeline_service,
+        get_factor_scheduler_singleton,
+        get_validation_runner,
+        get_risk_runner,
+        get_strategy_vector_search_engine_builder,
+    )
+
+    db_provider = get_db_provider()
+    resolved_db = db if db is not None else db_provider()
+
+    vector_engine_builder = get_strategy_vector_search_engine_builder()
+    vector_engine = vector_engine_builder() if callable(vector_engine_builder) else None
+
+    return {
+        "db_provider": db_provider,
+        "runtime_adapters": build_runtime_adapters(
+            resolved_db,
+            vector_engine=vector_engine,
+            autonomy_service=get_strategy_autonomy_service(),
+            factor_scheduler=get_factor_scheduler_singleton(),
+            incubation_service=get_strategy_incubation_service(),
+            incubation_pipeline_service=get_strategy_incubation_pipeline_service(),
+            validation_runner=get_validation_runner(),
+            risk_runner=get_risk_runner(),
+        ),
+    }
+
 __all__ = [
     "AutonomyGatewayImpl",
     "FactorResearchGatewayImpl",
@@ -81,6 +118,7 @@ __all__ = [
     "adapt_repository",
     "build_mcp_runtime_adapters",
     "build_runtime_adapters",
+    "build_scheduler_runtime_kwargs",
     "build_strategy_vector_profile",
     "clear_runtime_services",
     "configure_runtime_services",

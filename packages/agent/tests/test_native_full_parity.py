@@ -300,7 +300,7 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
     assert payload["live_smoke"]["working_directory"] == "packages/agent"
     assert payload["live_smoke"]["self_test_command"].startswith("uv run python")
     assert "--self-test --pretty" in payload["live_smoke"]["self_test_command"]
-    assert "--endpoint http://127.0.0.1:8767 --pretty" in payload["live_smoke"]["live_command"]
+    assert "--endpoint http://127.0.0.1:8765 --pretty" in payload["live_smoke"]["live_command"]
     assert "packages/agent" in payload["live_smoke"]["environment_note"]
     smoke_checks = {item["name"] for item in payload["live_smoke"]["checks"]}
     assert {

@@ -193,13 +193,19 @@ async def handle_promotion_review_run(db, params: dict) -> dict:
 # ── Runtime cycle ────────────────────────────────────────────────────────────
 
 async def handle_runtime_cycle_status(db, params: dict) -> dict:
-    from ...services.signal_tracker import get_signal_tracker
-    return ok(get_signal_tracker().status())
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime
+
+    ensure_default_runtime_services()
+    return ok(get_signal_tracker_runtime().status())
 
 
 async def handle_runtime_cycle_run(db, params: dict) -> dict:
-    from ...services.signal_tracker import get_signal_tracker
-    return ok(await get_signal_tracker().run_once())
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime
+
+    ensure_default_runtime_services()
+    return ok(await get_signal_tracker_runtime().run_once())
 
 
 # ── Domain events & projection ───────────────────────────────────────────────

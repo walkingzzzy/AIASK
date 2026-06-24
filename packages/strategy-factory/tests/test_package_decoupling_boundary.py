@@ -8,7 +8,7 @@ module under ``packages/strategy-factory/src`` may import from
 
 Cross-package capabilities (factor mining factory, factor pool gateway,
 incubation runtime, quant manager callable, …) are wired in via
-``strategy_factory.infrastructure.mcp_services.configure_runtime_services``
+``strategy_factory.infrastructure.runtime_services.configure_runtime_services``
 and consumed through ``_required("name", call=True)``. The host process
 (``akshare-mcp/server.py`` or test fixtures) is responsible for the
 registration.
@@ -20,12 +20,16 @@ last line of defence before review.
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
 
+ROOT = Path(__file__).resolve().parents[3]
 SRC_ROOT = Path(__file__).resolve().parents[1] / "src" / "strategy_factory"
 TESTS_ROOT = Path(__file__).resolve().parents[1] / "tests"
 
@@ -97,22 +101,76 @@ def test_strategy_factory_pyproject_does_not_depend_on_akshare_mcp() -> None:
 
 
 def test_runtime_services_registry_uses_lazy_required_lookup() -> None:
-    """``mcp_services._required`` must be the single resolution path for host providers.
+    """``runtime_services._required`` must be the single resolution path for host providers.
 
     This catches accidental ``from akshare_mcp.services... import factory`` style
     refactors that bypass the configure_runtime_services boundary.
     """
 
-    services_path = SRC_ROOT / "infrastructure" / "mcp_services.py"
+    services_path = SRC_ROOT / "infrastructure" / "runtime_services.py"
     text = services_path.read_text(encoding="utf-8")
 
     assert "configure_runtime_services" in text
     assert "_required(" in text
     # Anti-pattern: importing factor_mining or incubation runtime statically.
     assert "from akshare_mcp" not in text, (
-        "mcp_services.py must remain free of host-side imports; "
+        "runtime_services.py must remain free of host-side imports; "
         "all host capabilities flow through configure_runtime_services()."
     )
+
+
+def test_execution_universe_contract_imports_without_akshare() -> None:
+    env = os.environ.copy()
+    env["PYTHONPATH"] = os.pathsep.join(
+        [
+            str(ROOT / "packages" / "strategy-factory" / "src"),
+        ]
+    )
+    script = r'''
+import builtins
+real_import = builtins.__import__
+
+def guard(name, globals=None, locals=None, fromlist=(), level=0):
+    if str(name).startswith("akshare_mcp"):
+        raise ModuleNotFoundError("blocked " + str(name), name=name)
+    return real_import(name, globals, locals, fromlist, level)
+
+builtins.__import__ = guard
+from strategy_factory.contracts.execution_universe import (
+    ExecutableStrategy,
+    ExecutionUniverseContract,
+    ExecutionUniverseQuery,
+    ExecutionUniverseStrategy,
+)
+
+query = ExecutionUniverseQuery(limit=3)
+contract = ExecutionUniverseContract()
+record = ExecutionUniverseStrategy(
+    strategy_id="s1",
+    strategy_name="demo",
+    strategy_type="momentum",
+    status="incubating",
+    incubation_stage="warmup",
+    incubation_status="active",
+    account_id="acc1",
+    created_at=None,
+)
+assert ExecutableStrategy is ExecutionUniverseStrategy
+print(type(contract).__name__)
+print(query.limit)
+print(record.strategy_id)
+'''
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        cwd=str(ROOT),
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ExecutionUniverseContract" in result.stdout
 
 
 def test_event_driven_modules_avoid_host_imports() -> None:

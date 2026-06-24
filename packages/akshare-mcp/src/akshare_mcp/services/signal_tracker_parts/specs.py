@@ -278,349 +278,71 @@ class SignalTracker:
             resolved = resolved[:max_active_symbols]
         return resolved or list(default_universe or [])
 
-    async def run_once(self):
-        """Execute a single signal tracking cycle."""
-        from ..storage import get_db
-        from .backtest.strategy_registry import StrategyRegistry
+    @staticmethod
+    def _get_default_universe() -> list[str]:
         from .factor_scheduler import DEFAULT_UNIVERSE
 
-        logger.info("SignalTracker: starting daily cycle")
-        start = datetime.now()
-        db = get_db()
-        today = date.today()
-        task_run = await db.save_strategy_task_run({
-            'task_name': 'strategy_runtime_cycle',
-            'task_scope': 'signal_tracker',
-            'task_key': str(today),
-            'status': 'running',
-            'trace_id': uuid4().hex[:12],
-            'payload': {'signal_date': str(today)},
-        }) if hasattr(db, 'save_strategy_task_run') else {'id': None, 'trace_id': None}
-        results = {
-            "signals_generated": 0,
-            "signal_event_snapshots": 0,
-            "forward_returns_computed": 0,
-            "incubation_orders": 0,
-            "incubation_metrics": 0,
-            "risk_events": 0,
-            "risk_actions": 0,
-            "transitions": 0,
-            "vector_registry_updates": 0,
-            "projection_snapshots": 0,
-            "skipped_runtime_controls": 0,
-            "task_run_id": task_run.get('id'),
-            "errors": [],
-            "phase_results": {},
-        }
+        return list(DEFAULT_UNIVERSE)
 
-        strategies = []
-        executable_strategies = []
-        submitted_runtime_strategies = []
-        paper_runtime_strategies = []
-
-        async def _run_phase(phase_name: str, phase_coro_factory):
-            before = {
-                key: int(value or 0)
-                for key, value in results.items()
-                if isinstance(value, (int, float)) and key != "task_run_id"
-            }
-            before_errors = len(results["errors"])
-            timeout_sec = self._phase_timeout_seconds(phase_name)
-            phase_started = datetime.now()
-            status = "completed"
-            error = None
-            payload: dict[str, Any] = {}
-            try:
-                raw_payload = await asyncio.wait_for(phase_coro_factory(), timeout=timeout_sec)
-                if isinstance(raw_payload, dict):
-                    payload = raw_payload
-            except asyncio.TimeoutError:
-                status = "timeout"
-                error = f"phase_{phase_name}_timeout"
-                results["errors"].append(error)
-                logger.warning("SignalTracker: Phase %s timed out after %.1fs", phase_name, timeout_sec)
-            except Exception as exc:
-                status = "error"
-                error = f"Phase {phase_name}: {exc}"
-                results["errors"].append(error)
-                logger.warning("SignalTracker: Phase %s failed: %s", phase_name, exc)
-            elapsed = (datetime.now() - phase_started).total_seconds()
-            after = {
-                key: int(value or 0)
-                for key, value in results.items()
-                if isinstance(value, (int, float)) and key != "task_run_id"
-            }
-            deltas = {
-                key: after.get(key, 0) - before.get(key, 0)
-                for key in sorted(set(before) | set(after))
-                if after.get(key, 0) - before.get(key, 0)
-            }
-            phase_result = {
-                "status": status,
-                "timeout": status == "timeout",
-                "timeout_sec": timeout_sec,
-                "elapsed_seconds": round(elapsed, 3),
-                "errors": len(results["errors"]) - before_errors,
-                "metric_deltas": deltas,
-            }
-            phase_result.update(payload)
-            if error:
-                phase_result["error"] = error
-            results["phase_results"][phase_name] = phase_result
-            return phase_result
-
-        # Phase A: Generate signals for listed/incubating/observation strategies
-        async def _phase_a():
-            nonlocal strategies, executable_strategies, submitted_runtime_strategies, paper_runtime_strategies
-            active_strategies = []
-            for status in ("listed", "incubating"):
-                rows = await db.list_strategies(status, limit=200)
-                active_strategies.extend(rows)
-            submitted_runtime_strategies = await self._load_runtime_submitted_strategies(
-                db,
-                limit=200,
-            )
-            paper_runtime_strategies = await self._load_runtime_observation_strategies(
-                db,
-                limit=200,
-            )
-            strategies = self._merge_unique_strategies(
-                active_strategies,
-                submitted_runtime_strategies,
-                paper_runtime_strategies,
-            )
-
-            from .runtime_control import get_strategy_runtime_control_service
-            control_service = get_strategy_runtime_control_service()
-            processed = 0
-            for s in strategies:
-                control = await db.get_strategy_runtime_control(s['id']) if hasattr(db, 'get_strategy_runtime_control') else None
-                if control_service.is_blocking_mode((control or {}).get('control_mode')):
-                    results['skipped_runtime_controls'] += 1
-                    continue
-                executable_strategies.append(s)
-
-            for s in executable_strategies:
-                processed += 1
-                try:
-                    stype = s.get("strategy_type", "")
-                    instance, execution_semantic_mode = StrategyRegistry.create_runtime_strategy(
-                        stype,
-                        s.get("params") or {},
-                    )
-                    if instance is None:
-                        continue
-
-                    signals_by_date: dict[date, list[dict[str, Any]]] = {}
-                    for code in self._resolve_strategy_universe(s, DEFAULT_UNIVERSE):
-                        klines = await self._get_klines_with_fallback(db, code, limit=200)
-                        if not klines or len(klines) < 20:
-                            continue
-                        artifacts = _build_signal_tracking_artifacts(
-                            instance,
-                            klines,
-                            execution_semantic_mode=execution_semantic_mode,
-                        )
-                        snapshot_payload = dict(artifacts.get("snapshot") or {})
-                        if snapshot_payload and hasattr(db, "save_strategy_signal_event_snapshot"):
-                            snapshot_metadata = dict(snapshot_payload.get("metadata") or {})
-                            snapshot_metadata["runtime_cycle_seen_today"] = True
-                            snapshot_payload["metadata"] = snapshot_metadata
-                            snapshot_payload.update(
-                                {
-                                    "strategy_id": s["id"],
-                                    "code": code,
-                                    "as_of_date": today,
-                                    "execution_semantic_mode": execution_semantic_mode,
-                                }
-                            )
-                            await db.save_strategy_signal_event_snapshot(snapshot_payload)
-                            results["signal_event_snapshots"] += 1
-
-                        signal_row = dict(artifacts.get("signal_row") or {})
-                        latest_signal = int(signal_row.get("signal") or 0)
-                        if latest_signal != 0:
-                            signal_row["code"] = code
-                            signal_date = self._resolve_signal_record_date(signal_row) or today
-                            signal_row["signal_date"] = signal_date.isoformat()
-                            signals_by_date.setdefault(signal_date, []).append(signal_row)
-
-                    for signal_date, signals_batch in sorted(signals_by_date.items()):
-                        if signals_batch:
-                            count = await db.save_signals(s["id"], signal_date, signals_batch)
-                            results["signals_generated"] += count
-                except Exception as e:
-                    results["errors"].append(f"Signal gen {s.get('id')}: {e}")
-            return {
-                "active_strategy_count": len(active_strategies),
-                "submitted_runtime_strategy_count": len(submitted_runtime_strategies),
-                "paper_runtime_strategy_count": len(paper_runtime_strategies),
-                "strategy_count": len(strategies),
-                "executable_strategy_count": len(executable_strategies),
-                "processed_strategy_count": processed,
-            }
-
-        await _run_phase("A", _phase_a)
-
-        # Phase B: Compute forward returns for past signals and historical backlog
-        async def _phase_b():
-            backfill_result = await self.backfill_forward_returns(
-                db,
-                forward_days_list=FORWARD_DAYS,
-                batch_limit=FORWARD_RETURN_BATCH_LIMIT,
-                max_rounds=FORWARD_RETURN_MAX_ROUNDS,
-            )
-            results["forward_returns_computed"] = int(backfill_result.get("computed") or 0)
-            results["forward_returns_backfill"] = backfill_result
-            return {
-                "computed": int(backfill_result.get("computed") or 0),
-                "windows": list(dict(backfill_result.get("per_window") or {}).keys()),
-                "truncated": bool(backfill_result.get("truncated")),
-            }
-
-        await _run_phase("B", _phase_b)
-
-        # Phase C: Sync incubation orders and metrics
-        async def _phase_c():
-            from .incubation import get_strategy_incubation_service
-            incubation_result = await get_strategy_incubation_service().process_strategies(db, executable_strategies, signal_date=today)
-            results["incubation_orders"] = int(incubation_result.get("orders_created") or 0)
-            results["incubation_orders_filled"] = int(incubation_result.get("orders_filled") or 0)
-            results["incubation_nav_snapshots"] = int(incubation_result.get("nav_snapshots") or 0)
-            results["incubation_metrics"] = int(incubation_result.get("metrics_recorded") or 0)
-            return {
-                "strategy_count": len(executable_strategies),
-                "orders_created": int(incubation_result.get("orders_created") or 0),
-                "orders_filled": int(incubation_result.get("orders_filled") or 0),
-                "metrics_recorded": int(incubation_result.get("metrics_recorded") or 0),
-            }
-
-        await _run_phase("C", _phase_c)
-
-        # Phase D: Runtime risk scan
-        async def _phase_d():
-            from .runtime_risk import get_strategy_runtime_risk_service
-            risk_result = await get_strategy_runtime_risk_service().scan(db, strategies, enforce_actions=True)
-            results["risk_events"] = int(risk_result.get("event_count") or 0)
-            results["risk_actions"] = int(risk_result.get("action_count") or 0)
-            return {
-                "strategy_count": len(strategies),
-                "event_count": int(risk_result.get("event_count") or 0),
-                "action_count": int(risk_result.get("action_count") or 0),
-            }
-
-        await _run_phase("D", _phase_d)
-
-        # Phase E: 孵化流水线推进与自动晋级
-        async def _phase_e():
-            from .incubation_pipeline import get_strategy_incubation_pipeline_service
-            pipeline_service = get_strategy_incubation_pipeline_service()
-            pipeline_result = await pipeline_service.run_batch(
-                db,
-                statuses=['incubating'],
-                limit=200,
-                source='signal_tracker',
-                auto_apply_review=True,
-            )
-            submitted_pipeline_snapshots = 0
-            for strategy in submitted_runtime_strategies:
-                try:
-                    await pipeline_service.run_strategy(
-                        db,
-                        strategy,
-                        source='signal_tracker_submitted',
-                        auto_apply_review=False,
-                    )
-                    submitted_pipeline_snapshots += 1
-                except Exception as exc:
-                    results["errors"].append(f"Phase E submitted {strategy.get('id')}: {exc}")
-            results["incubation_pipeline_snapshots"] = int(pipeline_result.get("count") or 0)
-            results["incubation_pipeline_snapshots"] += submitted_pipeline_snapshots
-            results["incubation_auto_promotions"] = int(pipeline_result.get("auto_promoted") or 0)
-            results["submitted_runtime_pipeline_snapshots"] = submitted_pipeline_snapshots
-            return {
-                "incubating_pipeline_snapshots": int(pipeline_result.get("count") or 0),
-                "submitted_runtime_pipeline_snapshots": submitted_pipeline_snapshots,
-                "auto_promoted": int(pipeline_result.get("auto_promoted") or 0),
-            }
-
-        await _run_phase("E", _phase_e)
-
-        # Phase F: Lifecycle scan
-        async def _phase_f():
-            from ..tools.managers.strategy_manager import _lifecycle_scan
-            scan_result = await _lifecycle_scan(db)
-            results["transitions"] = len(scan_result.get("transitions", []))
-            return {"transitions": len(scan_result.get("transitions", []))}
-
-        await _run_phase("F", _phase_f)
-
-        # Phase G: Vector registry reconciliation.
-        async def _phase_g():
-            from .vector_governance import get_strategy_vector_governance_service
-            vector_result = await get_strategy_vector_governance_service().reconcile_registry(db, index_name='strategy_behavior', profile_type='behavior')
-            results["vector_registry_updates"] = int(vector_result.get("registry_updated") or 0)
-            return {"registry_updated": int(vector_result.get("registry_updated") or 0)}
-
-        await _run_phase("G", _phase_g)
-
-        # Phase H: 事件投影快照重建
-        async def _phase_h():
-            from .domain_projection import get_strategy_domain_projection_service
-            projection_result = await get_strategy_domain_projection_service().rebuild_batch(
-                db,
-                statuses=['incubating', 'listed', 'suspended', 'deprecated'],
-                limit=200,
-                source='signal_tracker',
-            )
-            results["projection_snapshots"] = int(projection_result.get("count") or 0)
-            return {"projection_snapshots": int(projection_result.get("count") or 0)}
-
-        await _run_phase("H", _phase_h)
-
-        elapsed = (datetime.now() - start).total_seconds()
-        phase_timeouts = [
-            name
-            for name, payload in dict(results.get("phase_results") or {}).items()
-            if bool(dict(payload or {}).get("timeout"))
-        ]
-        phase_errors = [
-            name
-            for name, payload in dict(results.get("phase_results") or {}).items()
-            if str(dict(payload or {}).get("status") or "") == "error"
-        ]
-        results["timeout"] = bool(phase_timeouts)
-        results["phase_timeout_count"] = len(phase_timeouts)
-        results["phase_timeouts"] = phase_timeouts
-        results["phase_error_count"] = len(phase_errors)
-        results["phase_errors"] = phase_errors
-        results["runtime_universe"] = {
-            "strategies": len(strategies),
-            "executable": len(executable_strategies),
-            "submitted_runtime": len(submitted_runtime_strategies),
-            "paper_runtime": len(paper_runtime_strategies),
-        }
-        self.last_run = datetime.now()
-        self.last_result = {**results, "elapsed_seconds": round(elapsed, 1)}
-        if task_run.get('id') is not None and hasattr(db, 'update_strategy_task_run'):
-            await db.update_strategy_task_run(task_run['id'], status='completed', result=self.last_result, completed_at=datetime.now().isoformat())
-        if hasattr(db, 'save_strategy_domain_event'):
-            await db.save_strategy_domain_event({
-                'strategy_id': None,
-                'aggregate_type': 'runtime_cycle',
-                'aggregate_id': str(task_run.get('id') or today),
-                'event_type': 'runtime_cycle.completed',
-                'source': 'signal_tracker',
-                'severity': 'info',
-                'correlation_id': task_run.get('trace_id'),
-                'payload': self.last_result,
-            })
-        logger.info(
-            "SignalTracker: completed in %.1fs — %d signals, %d event snapshots, %d fwd returns, %d incubation orders, %d pipeline snapshots, %d auto promotions, %d risk events, %d risk actions, %d transitions, %d errors",
-            elapsed, results["signals_generated"], results["signal_event_snapshots"], results["forward_returns_computed"],
-            results["incubation_orders"], results["incubation_pipeline_snapshots"], results["incubation_auto_promotions"], results["risk_events"], results["risk_actions"], results["transitions"], len(results["errors"]),
+    @staticmethod
+    def _build_signal_tracking_artifacts(instance: Any, klines: list[dict[str, Any]], *, execution_semantic_mode: str) -> dict[str, Any]:
+        return _build_signal_tracking_artifacts(
+            instance,
+            klines,
+            execution_semantic_mode=execution_semantic_mode,
         )
-        return self.last_result
+
+    @staticmethod
+    async def _load_executable_strategies_with_fallback(
+        db,
+        *,
+        limit: int = 500,
+        use_contract: bool = True,
+    ) -> list[dict]:
+        from .execution_universe_adapter import load_executable_strategies_with_fallback
+
+        return await load_executable_strategies_with_fallback(
+            db,
+            limit=limit,
+            use_contract=use_contract,
+        )
+
+    @staticmethod
+    def _get_runtime_control_service():
+        from .runtime_control import get_strategy_runtime_control_service
+
+        return get_strategy_runtime_control_service()
+
+    @staticmethod
+    def _get_runtime_risk_service():
+        from .runtime_risk import get_strategy_runtime_risk_service
+
+        return get_strategy_runtime_risk_service()
+
+    @staticmethod
+    async def _run_lifecycle_scan(db):
+        from ..tools.managers.strategy_manager import _lifecycle_scan
+
+        return await _lifecycle_scan(db)
+
+    @staticmethod
+    def _get_vector_governance_service():
+        from .vector_governance import get_strategy_vector_governance_service
+
+        return get_strategy_vector_governance_service()
+
+    @staticmethod
+    def _get_domain_projection_service():
+        from .domain_projection import get_strategy_domain_projection_service
+
+        return get_strategy_domain_projection_service()
+
+    async def run_once(self):
+        """Compat entrypoint delegating canonical orchestration to strategy-factory."""
+        from strategy_factory.runtime.signal_tracker import build_signal_tracker_runtime
+
+        runtime = build_signal_tracker_runtime(support=self, run_time=self.run_time)
+        return await runtime.run_once()
 
     async def backfill_forward_returns(
         self,
@@ -900,23 +622,19 @@ class SignalTracker:
     async def _fetch_provider_klines(self, code: str, *, limit: int) -> list[dict[str, Any]]:
         providers: list[tuple[str, Any]] = []
         try:
-            from akshare_mcp.data_source import tdx_tqcenter
+            from akshare_mcp.services.data_sync import data_sync_service
 
             providers.append(
                 (
-                    "tqcenter",
-                    lambda: tdx_tqcenter.get_kline(code, period="daily", limit=limit),
-                )
-            )
-        except Exception:
-            pass
-        try:
-            from akshare_mcp.data_source.tdx_local import get_tdx_local_source
-
-            providers.append(
-                (
-                    "tdx_local",
-                    lambda: get_tdx_local_source().get_kline(code, period="daily", limit=limit),
+                    "data_sync_service",
+                    lambda: data_sync_service.get_kline_with_cache(
+                        code,
+                        "daily",
+                        "",
+                        "",
+                        limit,
+                        use_cache=True,
+                    ),
                 )
             )
         except Exception:
@@ -924,7 +642,7 @@ class SignalTracker:
 
         for provider_name, loader in providers:
             try:
-                rows = await asyncio.to_thread(loader)
+                payload = await loader()
             except Exception as exc:
                 logger.warning(
                     "SignalTracker: provider kline refresh failed for %s via %s: %s",
@@ -933,6 +651,10 @@ class SignalTracker:
                     exc,
                 )
                 continue
+            if isinstance(payload, dict):
+                rows = payload.get("data") or payload.get("rows") or []
+            else:
+                rows = payload
             normalized = self._normalize_provider_klines(code, list(rows or []))
             if normalized:
                 return normalized

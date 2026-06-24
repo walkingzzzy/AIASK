@@ -85,6 +85,17 @@ ensure_factory_runtime(
     project_root=PROJECT_ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
+    distribution_names=(
+        "strategy-factory",
+        "aiask-quant-core",
+        "akshare-mcp",
+    ),
+    uv_project="packages/agent",
 )
 
 
@@ -102,14 +113,12 @@ def _bootstrap_local_package_paths() -> None:
 _bootstrap_local_package_paths()
 
 
-def _get_factor_mining_factory():
-    from akshare_mcp.adapters.strategy_factory_runtime import (
-        configure_strategy_factory_runtime_services,
-    )
-    from strategy_factory.runtime.factor_mining import get_factor_mining_factory
+def _get_factor_mining_runtime():
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
 
-    configure_strategy_factory_runtime_services()
-    return get_factor_mining_factory()
+    ensure_default_runtime_services()
+    return get_factor_mining_runtime()
 
 
 def _load_dotenv():
@@ -283,9 +292,9 @@ class FactorMiningFactoryRunner:
         logger.info("第 %d 轮挖掘周期 [trigger=%s]", self._run_count, trigger)
 
         try:
-            factory = _get_factor_mining_factory()
+            runtime = _get_factor_mining_runtime()
 
-            result = await factory.run_mining_cycle(
+            result = await runtime.run_once(
                 trigger=trigger,
                 engines=self.engines,
                 candidate_count=self.candidate_count,
@@ -320,8 +329,8 @@ class FactorMiningFactoryRunner:
         logger.info("执行因子池维护...")
 
         try:
-            factory = _get_factor_mining_factory()
-            result = await factory.run_maintenance()
+            runtime = _get_factor_mining_runtime()
+            result = await runtime.run_maintenance()
 
             decay_report = result.get("decay_report", {})
             decaying = decay_report.get("decaying_count", 0)
@@ -352,9 +361,9 @@ class FactorMiningFactoryRunner:
         logger.info("执行深度进化优化（GP 大种群 + 高代数）...")
 
         try:
-            factory = _get_factor_mining_factory()
+            runtime = _get_factor_mining_runtime()
 
-            result = await factory.run_mining_cycle(
+            result = await runtime.run_once(
                 trigger="weekly_deep_search",
                 engines=["gp_classic", "mcts_guided", "rl_alphagen"],
                 candidate_count=50,
@@ -386,8 +395,8 @@ class FactorMiningFactoryRunner:
 
 async def show_status():
     """显示工厂状态。"""
-    factory = _get_factor_mining_factory()
-    status = factory.status()
+    runtime = _get_factor_mining_runtime()
+    status = runtime.status()
 
     print("因子挖掘工厂状态")
     print("─" * 40)

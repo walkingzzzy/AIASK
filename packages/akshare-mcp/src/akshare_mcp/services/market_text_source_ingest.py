@@ -384,6 +384,338 @@ async def _load_final_counts(db) -> dict[str, Any]:
     }
 
 
+class MarketEventIngestSupport:
+    """AKShare-host support object for the canonical Strategy Factory runtime."""
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "provider": "akshare_mcp",
+            "event_source_status": event_source_status(),
+        }
+
+    def _resolve_runtime_args(self, kwargs: dict[str, Any]) -> dict[str, Any]:
+        requested_doc_types = normalize_market_doc_types(kwargs.get("doc_types")) or [
+            "news",
+            "notice",
+            "research",
+        ]
+        requested_codes = _normalize_codes(kwargs.get("stock_codes"))
+        resolved_news_limit = _positive_int(kwargs.get("news_limit"), 50, minimum=0, maximum=1000)
+        resolved_notice_limit = _positive_int(kwargs.get("notice_limit"), 80, minimum=0, maximum=1000)
+        resolved_official_notice_limit = _positive_int(
+            kwargs.get("official_notice_limit"), 30, minimum=0, maximum=1000
+        )
+        resolved_notice_days = _positive_int(kwargs.get("notice_days"), 30, minimum=1, maximum=365)
+        resolved_code_notice_limit = _positive_int(kwargs.get("code_notice_limit"), 2, minimum=0, maximum=100)
+        resolved_code_notice_code_limit = _positive_int(
+            kwargs.get("code_notice_code_limit"), 20, minimum=0, maximum=1000
+        )
+        resolved_research_code_limit = _positive_int(
+            kwargs.get("research_code_limit"), 30, minimum=0, maximum=1000
+        )
+        resolved_research_per_code = _positive_int(kwargs.get("research_per_code"), 2, minimum=0, maximum=50)
+        resolved_chunk_size = _positive_int(kwargs.get("chunk_size"), 1000, minimum=200, maximum=4000)
+        resolved_overlap = _positive_int(kwargs.get("overlap"), 120, minimum=0, maximum=1500)
+        resolved_embed = _as_bool(kwargs.get("embed"), True)
+        resolved_build_snapshot = _as_bool(kwargs.get("build_snapshot"), True)
+        resolved_activate_snapshot = _as_bool(kwargs.get("activate_snapshot"), True)
+        resolved_allow_network = _as_bool(kwargs.get("allow_network"), True)
+        resolved_dry_run = _as_bool(kwargs.get("dry_run"), False)
+        resolved_version = str(kwargs.get("version") or "v1").strip() or "v1"
+
+        end_date = date.today()
+        start_date = end_date - timedelta(days=resolved_notice_days)
+        args_payload = {
+            "stock_codes": requested_codes,
+            "news_limit": resolved_news_limit,
+            "notice_limit": resolved_notice_limit,
+            "official_notice_limit": resolved_official_notice_limit,
+            "notice_days": resolved_notice_days,
+            "code_notice_limit": resolved_code_notice_limit,
+            "code_notice_code_limit": resolved_code_notice_code_limit,
+            "research_code_limit": resolved_research_code_limit,
+            "research_per_code": resolved_research_per_code,
+            "chunk_size": resolved_chunk_size,
+            "overlap": resolved_overlap,
+            "version": resolved_version,
+            "embed": resolved_embed,
+            "build_snapshot": resolved_build_snapshot,
+            "activate_snapshot": resolved_activate_snapshot,
+            "allow_network": resolved_allow_network,
+            "dry_run": resolved_dry_run,
+        }
+        return {
+            "requested_doc_types": requested_doc_types,
+            "requested_codes": requested_codes,
+            "news_limit": resolved_news_limit,
+            "notice_limit": resolved_notice_limit,
+            "official_notice_limit": resolved_official_notice_limit,
+            "notice_days": resolved_notice_days,
+            "code_notice_limit": resolved_code_notice_limit,
+            "code_notice_code_limit": resolved_code_notice_code_limit,
+            "research_code_limit": resolved_research_code_limit,
+            "research_per_code": resolved_research_per_code,
+            "chunk_size": resolved_chunk_size,
+            "overlap": resolved_overlap,
+            "version": resolved_version,
+            "embed": resolved_embed,
+            "build_snapshot": resolved_build_snapshot,
+            "activate_snapshot": resolved_activate_snapshot,
+            "allow_network": resolved_allow_network,
+            "dry_run": resolved_dry_run,
+            "start_date": start_date,
+            "end_date": end_date,
+            "args_payload": args_payload,
+        }
+
+    @staticmethod
+    def _event_source_status() -> dict[str, Any]:
+        return event_source_status()
+
+    @staticmethod
+    async def _build_market_doc_snapshots(
+        db,
+        *,
+        doc_types: list[str],
+        activate: bool,
+        dry_run: bool,
+    ) -> list[dict[str, Any]]:
+        return await _build_market_doc_snapshots(
+            db,
+            doc_types=doc_types,
+            activate=activate,
+            dry_run=dry_run,
+        )
+
+    @staticmethod
+    async def _load_final_counts(db) -> dict[str, Any]:
+        return await _load_final_counts(db)
+
+    @staticmethod
+    async def _persist_normalized_events(
+        db,
+        stock_code: str,
+        doc_type: str,
+        items: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return await persist_normalized_events(db, stock_code, doc_type, items)
+
+    @staticmethod
+    async def _bridge_normalized_events_to_strategy_factory(
+        db,
+        *,
+        limit: int = 50,
+    ) -> dict[str, Any]:
+        return await bridge_normalized_events_to_strategy_factory(db, limit=limit)
+
+    @staticmethod
+    async def _insert_news_cache(
+        db,
+        rows: list[dict[str, Any]],
+        *,
+        stock_code: str,
+        news_type: str,
+    ) -> int:
+        return await _insert_news_cache(db, rows, stock_code=stock_code, news_type=news_type)
+
+    @staticmethod
+    async def _select_stock_universe(
+        db,
+        *,
+        limit: int,
+        extra_codes: list[str],
+    ) -> list[str]:
+        return await _select_stock_universe(db, limit=limit, extra_codes=extra_codes)
+
+    @staticmethod
+    def _merge_saved_totals(target: dict[str, Any], saved: dict[str, Any]) -> None:
+        _merge_saved_totals(target, saved)
+
+    @staticmethod
+    def _merge_event_summary(bucket: dict[str, Any], event_summary: dict[str, Any]) -> None:
+        _merge_event_summary(bucket, event_summary)
+
+    @staticmethod
+    def _clean_text(value: Any, limit: int = 20000) -> str:
+        return _clean_text(value, limit)
+
+    @staticmethod
+    def _map_notice_item(item: dict[str, Any]) -> dict[str, Any]:
+        return _map_notice_item(item)
+
+    @staticmethod
+    def _map_research_item(item: dict[str, Any]) -> dict[str, Any]:
+        return _map_research_item(item)
+
+    @staticmethod
+    def _fetch_official_market_event_documents(
+        start_iso: str,
+        end_iso: str,
+        *,
+        limit: int,
+        stock_codes: list[str] | None = None,
+    ) -> dict[str, Any]:
+        return fetch_official_market_event_documents(
+            start_iso,
+            end_iso,
+            limit=limit,
+            stock_codes=stock_codes,
+        )
+
+    @staticmethod
+    def _fetch_notice_head(
+        start_date: date,
+        end_date: date,
+        notice_limit: int,
+        result: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        from ..tools.news.notices import fetch_market_notice_head
+
+        raw_notices: list[dict[str, Any]] = []
+        if notice_limit <= 0:
+            return raw_notices
+        try:
+            raw_notices = fetch_market_notice_head(
+                start_date.isoformat(),
+                end_date.isoformat(),
+                max_items=notice_limit,
+            )
+        except Exception as exc:
+            result.setdefault("errors", []).append(
+                {"source": "eastmoney_notice_head", "error": f"{type(exc).__name__}: {exc}"}
+            )
+        return raw_notices
+
+    async def _fetch_code_notice_items(
+        self,
+        *,
+        start_date: date,
+        end_date: date,
+        code: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        from ..tools.news.notices import get_stock_notices
+
+        response = get_stock_notices(
+            start_date=start_date.isoformat(),
+            end_date=end_date.isoformat(),
+            stock_code=code,
+            types=["全部"],
+            prefer_db=False,
+        )
+        events = ((response.get("data") or {}).get("events") or []) if isinstance(response, dict) else []
+        mapped = [self._map_notice_item(item) for item in events[:limit]]
+        return [item for item in mapped if item.get("title")]
+
+    async def _ingest_news(
+        self,
+        db,
+        result: dict[str, Any],
+        *,
+        news_limit: int,
+        embed: bool,
+        chunk_size: int,
+        overlap: int,
+        version: str,
+        dry_run: bool,
+    ) -> None:
+        try:
+            news_items = fetch_eastmoney_finance_news(news_limit)
+        except Exception as exc:
+            news_items = []
+            result["errors"].append({"source": "eastmoney_finance_news", "error": f"{type(exc).__name__}: {exc}"})
+        result["fetched"]["news"] = len(news_items)
+        if not news_items:
+            return
+        if dry_run:
+            result["saved"]["news"] = {"candidate_docs": len(news_items), "dry_run": True}
+            return
+        cache_rows = await self._insert_news_cache(db, news_items, stock_code="MARKET", news_type="news")
+        saved = await db.save_market_documents(
+            "MARKET",
+            "news",
+            news_items,
+            embed=embed,
+            chunk_size=chunk_size,
+            overlap=overlap,
+            version=version,
+        )
+        result["saved"]["news"] = {**saved, "news_cache_inserted": cache_rows}
+        result["normalized_events"]["news"] = await self._persist_normalized_events(
+            db,
+            "MARKET",
+            "news",
+            news_items,
+        )
+
+    async def _ingest_research(
+        self,
+        db,
+        result: dict[str, Any],
+        *,
+        requested_codes: list[str],
+        notice_codes: list[str],
+        research_code_limit: int,
+        research_per_code: int,
+        embed: bool,
+        chunk_size: int,
+        overlap: int,
+        version: str,
+        dry_run: bool,
+    ) -> None:
+        from ..tools.news.research import get_research_reports
+
+        universe = await self._select_stock_universe(
+            db,
+            limit=research_code_limit,
+            extra_codes=requested_codes or notice_codes[:10],
+        )
+        research_saved = {
+            "fetched": 0,
+            "legacy_inserted": 0,
+            "documents": 0,
+            "chunks": 0,
+            "embedded_chunks": 0,
+            "headline_labels": 0,
+            "failed_codes": [],
+        }
+        for code in universe:
+            try:
+                response = get_research_reports(code=code, limit=research_per_code, prefer_db=False)
+                payload = response.get("data") if isinstance(response, dict) else {}
+                rows = list((payload or {}).get("reports") or []) if isinstance(payload, dict) else []
+                mapped = [self._map_research_item(item) for item in rows[:research_per_code]]
+                mapped = [item for item in mapped if item.get("title") or item.get("summary")]
+                research_saved["fetched"] += len(mapped)
+                if mapped and not dry_run:
+                    legacy_inserted = await db.save_research_reports(code, mapped)
+                    saved = await db.save_market_documents(
+                        code,
+                        "research",
+                        mapped,
+                        embed=embed,
+                        chunk_size=chunk_size,
+                        overlap=overlap,
+                        version=version,
+                    )
+                    research_saved["legacy_inserted"] += int(legacy_inserted or 0)
+                    self._merge_saved_totals(research_saved, saved)
+                    event_summary = await self._persist_normalized_events(db, code, "research", mapped)
+                    bucket = result["normalized_events"].setdefault(
+                        "research",
+                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
+                    )
+                    self._merge_event_summary(bucket, event_summary)
+            except Exception as exc:
+                research_saved["failed_codes"].append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
+        result["fetched"]["research_universe"] = universe
+        result["saved"]["research"] = research_saved
+
+
+def get_market_event_ingest_support() -> MarketEventIngestSupport:
+    return MarketEventIngestSupport()
+
+
 async def run_market_text_source_ingest(
     db,
     *,
@@ -406,329 +738,32 @@ async def run_market_text_source_ingest(
     allow_network: Any = True,
     dry_run: Any = False,
 ) -> dict[str, Any]:
-    """Incrementally ingest public market text and rebuild vector snapshots."""
+    """Compatibility entrypoint delegating to the canonical Strategy Factory runtime."""
 
-    requested_doc_types = normalize_market_doc_types(doc_types) or ["news", "notice", "research"]
-    requested_codes = _normalize_codes(stock_codes)
-    resolved_news_limit = _positive_int(news_limit, 50, minimum=0, maximum=1000)
-    resolved_notice_limit = _positive_int(notice_limit, 80, minimum=0, maximum=1000)
-    resolved_official_notice_limit = _positive_int(official_notice_limit, 30, minimum=0, maximum=1000)
-    resolved_notice_days = _positive_int(notice_days, 30, minimum=1, maximum=365)
-    resolved_code_notice_limit = _positive_int(code_notice_limit, 2, minimum=0, maximum=100)
-    resolved_code_notice_code_limit = _positive_int(code_notice_code_limit, 20, minimum=0, maximum=1000)
-    resolved_research_code_limit = _positive_int(research_code_limit, 30, minimum=0, maximum=1000)
-    resolved_research_per_code = _positive_int(research_per_code, 2, minimum=0, maximum=50)
-    resolved_chunk_size = _positive_int(chunk_size, 1000, minimum=200, maximum=4000)
-    resolved_overlap = _positive_int(overlap, 120, minimum=0, maximum=1500)
-    resolved_embed = _as_bool(embed, True)
-    resolved_build_snapshot = _as_bool(build_snapshot, True)
-    resolved_activate_snapshot = _as_bool(activate_snapshot, True)
-    resolved_allow_network = _as_bool(allow_network, True)
-    resolved_dry_run = _as_bool(dry_run, False)
-    resolved_version = str(version or "v1").strip() or "v1"
+    from strategy_factory.runtime.market_event_ingest import build_market_event_ingest_runtime
 
-    result: dict[str, Any] = {
-        "doc_types": requested_doc_types,
-        "args": {
-            "stock_codes": requested_codes,
-            "news_limit": resolved_news_limit,
-            "notice_limit": resolved_notice_limit,
-            "official_notice_limit": resolved_official_notice_limit,
-            "notice_days": resolved_notice_days,
-            "code_notice_limit": resolved_code_notice_limit,
-            "code_notice_code_limit": resolved_code_notice_code_limit,
-            "research_code_limit": resolved_research_code_limit,
-            "research_per_code": resolved_research_per_code,
-            "chunk_size": resolved_chunk_size,
-            "overlap": resolved_overlap,
-            "version": resolved_version,
-            "embed": resolved_embed,
-            "build_snapshot": resolved_build_snapshot,
-            "activate_snapshot": resolved_activate_snapshot,
-            "allow_network": resolved_allow_network,
-            "dry_run": resolved_dry_run,
-        },
-        "fetched": {},
-        "saved": {},
-        "normalized_events": {},
-        "event_source_status": event_source_status(),
-        "strategy_factory_bridge": {},
-        "snapshots": [],
-        "errors": [],
-        "quality_flags": [],
-    }
-    if not resolved_allow_network:
-        result["quality_flags"].append("network_disabled")
-
-    end_date = date.today()
-    start_date = end_date - timedelta(days=resolved_notice_days)
-
-    if "news" in requested_doc_types and resolved_news_limit > 0 and resolved_allow_network:
-        try:
-            news_items = fetch_eastmoney_finance_news(resolved_news_limit)
-        except Exception as exc:
-            news_items = []
-            result["errors"].append({"source": "eastmoney_finance_news", "error": f"{type(exc).__name__}: {exc}"})
-        result["fetched"]["news"] = len(news_items)
-        if news_items:
-            if resolved_dry_run:
-                result["saved"]["news"] = {"candidate_docs": len(news_items), "dry_run": True}
-            else:
-                cache_rows = await _insert_news_cache(db, news_items, stock_code="MARKET", news_type="news")
-                saved = await db.save_market_documents(
-                    "MARKET",
-                    "news",
-                    news_items,
-                    embed=resolved_embed,
-                    chunk_size=resolved_chunk_size,
-                    overlap=resolved_overlap,
-                    version=resolved_version,
-                )
-                result["saved"]["news"] = {**saved, "news_cache_inserted": cache_rows}
-                result["normalized_events"]["news"] = await persist_normalized_events(
-                    db,
-                    "MARKET",
-                    "news",
-                    news_items,
-                )
-
-    notice_codes: list[str] = []
-    if "notice" in requested_doc_types and (resolved_notice_limit > 0 or resolved_official_notice_limit > 0) and resolved_allow_network:
-        from ..tools.news.notices import fetch_market_notice_head, get_stock_notices
-
-        if resolved_official_notice_limit > 0:
-            official_notice_saved = {
-                "documents": 0,
-                "chunks": 0,
-                "embedded_chunks": 0,
-                "headline_labels": 0,
-                "source": "official_disclosure",
-            }
-            try:
-                official_fetch = fetch_official_market_event_documents(
-                    start_date.isoformat(),
-                    end_date.isoformat(),
-                    limit=resolved_official_notice_limit,
-                    stock_codes=requested_codes,
-                )
-            except Exception as exc:
-                official_fetch = {"items": [], "sources": {}, "degraded_count": 1}
-                result["errors"].append({"source": "official_notice", "error": f"{type(exc).__name__}: {exc}"})
-            official_items = list(official_fetch.get("items") or [])
-            result["event_source_status"]["official_ingest"] = {
-                "sources": dict(official_fetch.get("sources") or {}),
-                "degraded_count": int(official_fetch.get("degraded_count") or 0),
-            }
-            result["fetched"]["official_notice"] = len(official_items)
-            if resolved_dry_run:
-                official_notice_saved["candidate_docs"] = len(official_items)
-            else:
-                official_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
-                for item in official_items:
-                    code = _clean_text(item.get("code") or item.get("stock_code"), 20)
-                    if code:
-                        official_by_code[code].append(item)
-                for code, items in official_by_code.items():
-                    saved = await db.save_market_documents(
-                        code,
-                        "notice",
-                        items,
-                        embed=resolved_embed,
-                        chunk_size=resolved_chunk_size,
-                        overlap=resolved_overlap,
-                        version=resolved_version,
-                    )
-                    _merge_saved_totals(official_notice_saved, saved)
-                    event_summary = await persist_normalized_events(db, code, "notice", items)
-                    bucket = result["normalized_events"].setdefault(
-                        "official_notice",
-                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
-                    )
-                    _merge_event_summary(bucket, event_summary)
-            result["saved"]["official_notice"] = official_notice_saved
-
-        raw_notices: list[dict[str, Any]] = []
-        if resolved_notice_limit > 0:
-            try:
-                raw_notices = fetch_market_notice_head(
-                    start_date.isoformat(),
-                    end_date.isoformat(),
-                    max_items=resolved_notice_limit,
-                )
-            except Exception as exc:
-                raw_notices = []
-                result["errors"].append({"source": "eastmoney_notice_head", "error": f"{type(exc).__name__}: {exc}"})
-        notice_items = [_map_notice_item(item) for item in raw_notices]
-        notice_items = [item for item in notice_items if item.get("code") and item.get("title")]
-        result["fetched"]["notice_head"] = len(notice_items)
-        notices_by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
-        for item in notice_items:
-            notices_by_code[str(item.get("code"))].append(item)
-        notice_codes = list(notices_by_code.keys())
-        notice_saved = {"documents": 0, "chunks": 0, "embedded_chunks": 0, "headline_labels": 0, "news_cache_inserted": 0}
-        if resolved_dry_run:
-            notice_saved["candidate_docs"] = len(notice_items)
-        else:
-            for code, items in notices_by_code.items():
-                cache_rows = await _insert_news_cache(db, items, stock_code=code, news_type="notice")
-                saved = await db.save_market_documents(
-                    code,
-                    "notice",
-                    items,
-                    embed=resolved_embed,
-                    chunk_size=resolved_chunk_size,
-                    overlap=resolved_overlap,
-                    version=resolved_version,
-                )
-                _merge_saved_totals(notice_saved, saved)
-                notice_saved["news_cache_inserted"] += int(cache_rows or 0)
-                event_summary = await persist_normalized_events(db, code, "notice", items)
-                bucket = result["normalized_events"].setdefault(
-                    "notice_head",
-                    {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
-                )
-                _merge_event_summary(bucket, event_summary)
-        result["saved"]["notice_head"] = notice_saved
-
-        universe = await _select_stock_universe(
-            db,
-            limit=resolved_code_notice_code_limit,
-            extra_codes=requested_codes or notice_codes[:10],
-        )
-        code_notice_saved = {
-            "fetched": 0,
-            "documents": 0,
-            "chunks": 0,
-            "embedded_chunks": 0,
-            "headline_labels": 0,
-            "news_cache_inserted": 0,
-            "failed_codes": [],
-        }
-        for code in universe:
-            if resolved_code_notice_limit <= 0:
-                break
-            try:
-                response = get_stock_notices(
-                    start_date=start_date.isoformat(),
-                    end_date=end_date.isoformat(),
-                    stock_code=code,
-                    types=["全部"],
-                    prefer_db=False,
-                )
-                events = ((response.get("data") or {}).get("events") or []) if isinstance(response, dict) else []
-                mapped = [_map_notice_item(item) for item in events[:resolved_code_notice_limit]]
-                mapped = [item for item in mapped if item.get("title")]
-                code_notice_saved["fetched"] += len(mapped)
-                if mapped and not resolved_dry_run:
-                    cache_rows = await _insert_news_cache(db, mapped, stock_code=code, news_type="notice")
-                    saved = await db.save_market_documents(
-                        code,
-                        "notice",
-                        mapped,
-                        embed=resolved_embed,
-                        chunk_size=resolved_chunk_size,
-                        overlap=resolved_overlap,
-                        version=resolved_version,
-                    )
-                    _merge_saved_totals(code_notice_saved, saved)
-                    code_notice_saved["news_cache_inserted"] += int(cache_rows or 0)
-                    event_summary = await persist_normalized_events(db, code, "notice", mapped)
-                    bucket = result["normalized_events"].setdefault(
-                        "code_notices",
-                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
-                    )
-                    _merge_event_summary(bucket, event_summary)
-            except Exception as exc:
-                code_notice_saved["failed_codes"].append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
-        result["fetched"]["notice_universe"] = universe
-        result["saved"]["code_notices"] = code_notice_saved
-
-    if "research" in requested_doc_types and resolved_research_code_limit > 0 and resolved_research_per_code > 0 and resolved_allow_network:
-        from ..tools.news.research import get_research_reports
-
-        universe = await _select_stock_universe(
-            db,
-            limit=resolved_research_code_limit,
-            extra_codes=requested_codes or notice_codes[:10],
-        )
-        research_saved = {
-            "fetched": 0,
-            "legacy_inserted": 0,
-            "documents": 0,
-            "chunks": 0,
-            "embedded_chunks": 0,
-            "headline_labels": 0,
-            "failed_codes": [],
-        }
-        for code in universe:
-            try:
-                response = get_research_reports(code=code, limit=resolved_research_per_code, prefer_db=False)
-                payload = response.get("data") if isinstance(response, dict) else {}
-                rows = list((payload or {}).get("reports") or []) if isinstance(payload, dict) else []
-                mapped = [_map_research_item(item) for item in rows[:resolved_research_per_code]]
-                mapped = [item for item in mapped if item.get("title") or item.get("summary")]
-                research_saved["fetched"] += len(mapped)
-                if mapped and not resolved_dry_run:
-                    legacy_inserted = await db.save_research_reports(code, mapped)
-                    saved = await db.save_market_documents(
-                        code,
-                        "research",
-                        mapped,
-                        embed=resolved_embed,
-                        chunk_size=resolved_chunk_size,
-                        overlap=resolved_overlap,
-                        version=resolved_version,
-                    )
-                    research_saved["legacy_inserted"] += int(legacy_inserted or 0)
-                    _merge_saved_totals(research_saved, saved)
-                    event_summary = await persist_normalized_events(db, code, "research", mapped)
-                    bucket = result["normalized_events"].setdefault(
-                        "research",
-                        {"total": 0, "verified": 0, "provisional": 0, "degraded": 0, "rejected": 0, "latest": []},
-                    )
-                    _merge_event_summary(bucket, event_summary)
-            except Exception as exc:
-                research_saved["failed_codes"].append({"code": code, "error": f"{type(exc).__name__}: {exc}"})
-        result["fetched"]["research_universe"] = universe
-        result["saved"]["research"] = research_saved
-
-    if resolved_build_snapshot:
-        try:
-            result["snapshots"] = await _build_market_doc_snapshots(
-                db,
-                doc_types=requested_doc_types,
-                activate=resolved_activate_snapshot,
-                dry_run=resolved_dry_run,
-            )
-        except Exception as exc:
-            result["errors"].append({"source": "snapshot", "error": f"{type(exc).__name__}: {exc}"})
-
-    try:
-        result["strategy_factory_bridge"] = await bridge_normalized_events_to_strategy_factory(db)
-    except Exception as exc:
-        result["errors"].append({"source": "normalized_event_bridge", "error": f"{type(exc).__name__}: {exc}"})
-
-    try:
-        result["final_counts"] = await _load_final_counts(db)
-    except Exception as exc:
-        result["errors"].append({"source": "final_counts", "error": f"{type(exc).__name__}: {exc}"})
-
-    saved_docs = sum(
-        int(value.get("documents") or value.get("candidate_docs") or 0)
-        for value in dict(result.get("saved") or {}).values()
-        if isinstance(value, dict)
+    runtime = build_market_event_ingest_runtime(
+        db_provider=lambda: db,
+        support=get_market_event_ingest_support(),
     )
-    embedded_chunks = sum(
-        int(value.get("embedded_chunks") or 0)
-        for value in dict(result.get("saved") or {}).values()
-        if isinstance(value, dict)
+    return await runtime.run_once(
+        db=db,
+        stock_codes=stock_codes,
+        doc_types=doc_types,
+        news_limit=news_limit,
+        notice_limit=notice_limit,
+        official_notice_limit=official_notice_limit,
+        notice_days=notice_days,
+        code_notice_limit=code_notice_limit,
+        code_notice_code_limit=code_notice_code_limit,
+        research_code_limit=research_code_limit,
+        research_per_code=research_per_code,
+        chunk_size=chunk_size,
+        overlap=overlap,
+        version=version,
+        embed=embed,
+        build_snapshot=build_snapshot,
+        activate_snapshot=activate_snapshot,
+        allow_network=allow_network,
+        dry_run=dry_run,
     )
-    result["totals"] = {
-        "saved_docs": saved_docs,
-        "embedded_chunks": embedded_chunks,
-        "snapshots": len(result.get("snapshots") or []),
-        "errors": len(result.get("errors") or []),
-    }
-    if result["errors"]:
-        result["quality_flags"].append("source_errors_present")
-    return result

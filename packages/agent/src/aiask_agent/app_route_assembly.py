@@ -273,6 +273,7 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
 
     app.include_router(
         create_approvals_router(
+            require_api=routes.require_api,
             require_full=routes.require_full,
             approval_store_factory=lambda: ApprovalStore(routes.runtime.session_store.path),
         )

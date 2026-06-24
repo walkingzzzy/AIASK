@@ -76,7 +76,7 @@ def main(argv: list[str] | None = None) -> None:
         raise SystemExit("unsupported doctor command; use: aiask-agent doctor --full-hermes-native")
     parser = argparse.ArgumentParser(description="Run the AIASK Agent HTTP server.")
     parser.add_argument("--host", default=os.getenv("AIASK_AGENT_HOST", "127.0.0.1"))
-    parser.add_argument("--port", type=int, default=int(os.getenv("AIASK_AGENT_PORT", "8767")))
+    parser.add_argument("--port", type=int, default=int(os.getenv("AIASK_AGENT_PORT", "8765")))
     parser.add_argument("--legacy-http", action="store_true", help="Run the compatibility ThreadingHTTPServer instead of ASGI.")
     args = parser.parse_args(args_list)
 

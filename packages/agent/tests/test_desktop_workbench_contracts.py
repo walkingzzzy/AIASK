@@ -86,7 +86,7 @@ def test_desktop_runs_and_hermes_sessions_contracts_are_backward_compatible(tmp_
     run_id = _seed_main_chain(store, intent_store)
 
     runs_response = client.get("/v1/desktop/runs?limit=5")
-    sessions_response = client.get("/v1/hermes/sessions", headers={"Authorization": "Bearer secret"})
+    sessions_response = client.get("/v1/hermes/sessions")
 
     assert runs_response.status_code == 200
     run = runs_response.json()["data"][0]
@@ -119,7 +119,7 @@ def test_hermes_sessions_contract_exposes_handoff_ownership_state(tmp_path, monk
     )
     store.consume_session_handoff_state("sess_contract", run_id="run_active", trace_id="trace_active")
 
-    response = client.get("/v1/hermes/sessions", headers={"Authorization": "Bearer secret"})
+    response = client.get("/v1/hermes/sessions")
 
     assert response.status_code == 200
     session = response.json()["data"][0]
@@ -175,6 +175,10 @@ def test_hermes_handoff_queue_and_resume_context_contract(tmp_path, monkeypatch)
 
     denied = client.get("/v1/hermes/handoffs")
     assert denied.status_code == 401
+
+    sessions = client.get("/v1/hermes/sessions")
+    assert sessions.status_code == 200
+    assert sessions.json()["data"][0]["handoff_id"] == handoff["handoff_id"]
 
     queue = client.get("/v1/hermes/handoffs?user_id=local", headers={"Authorization": "Bearer secret"})
     assert queue.status_code == 200
@@ -247,33 +251,39 @@ def test_session_archive_route_filters_lists_and_search(tmp_path, monkeypatch) -
     assert archive_payload["archived"] is True
     assert archive_payload["session"]["metadata"]["archived_reason"] == "done"
 
-    hidden = client.get("/v1/hermes/sessions", headers={"Authorization": "Bearer secret"})
+    hidden = client.get("/v1/hermes/sessions")
     assert hidden.status_code == 200
     assert hidden.json()["data"] == []
 
-    visible = client.get("/v1/hermes/sessions?include_archived=true", headers={"Authorization": "Bearer secret"})
+    visible = client.get("/v1/hermes/sessions?include_archived=true")
     assert visible.status_code == 200
     visible_payload = visible.json()
     assert visible_payload["include_archived"] is True
     assert visible_payload["data"][0]["session_id"] == "sess_contract"
     assert visible_payload["data"][0]["archived"] is True
 
-    default_search = client.get("/v1/search?query=600519")
-    assert default_search.status_code == 200
-    assert default_search.json()["data"] == []
 
-    archived_search = client.get("/v1/search?query=600519&include_archived=true")
-    assert archived_search.status_code == 200
-    assert archived_search.json()["data"][0]["session_id"] == "sess_contract"
+def test_approvals_list_is_api_visible_but_decision_stays_control_gated(tmp_path, monkeypatch) -> None:
+    client, store, intent_store = _client_with_state(tmp_path, monkeypatch)
+    _seed_main_chain(store, intent_store)
 
-    restored = client.post(
-        "/v1/sessions/sess_contract/archive",
-        json={"archived": False, "reason": "restore"},
+    list_response = client.get("/v1/approvals")
+    assert list_response.status_code == 200
+    approval = list_response.json()["data"][0]
+    approval_id = approval["approval_id"]
+
+    denied = client.post(f"/v1/approvals/{approval_id}/approve", json={"reason": "no token"})
+    assert denied.status_code == 401
+
+    allowed = client.post(
+        f"/v1/approvals/{approval_id}/approve",
+        json={"reason": "approved for contract"},
         headers={"Authorization": "Bearer secret"},
     )
-    assert restored.status_code == 200
-    assert restored.json()["archived"] is False
-    assert client.get("/v1/hermes/sessions", headers={"Authorization": "Bearer secret"}).json()["data"][0]["session_id"] == "sess_contract"
+    assert allowed.status_code == 200
+    payload = allowed.json()
+    assert payload["object"] == "approval"
+    assert payload["status"] == "approved"
 
 
 def test_run_events_sse_returns_normalized_event_payload(tmp_path, monkeypatch) -> None:

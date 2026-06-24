@@ -24,9 +24,14 @@ sys.path.insert(0, str(ROOT / "packages" / "aiask-quant-core" / "src"))
 sys.path.insert(0, str(ROOT / "packages" / "akshare-mcp" / "src"))
 
 try:
-    from aiask_quant_core.storage.sqlite.connection import get_connection
+    from aiask_quant_core.storage.sqlite import get_db
+    from aiask_quant_core.strategy_lifecycle_ledger import StrategyLifecycleLedger, BusinessLifecycleStage
+    from aiask_quant_core.config import get_settings
 except ImportError:
-    get_connection = None
+    get_db = None
+    StrategyLifecycleLedger = None
+    BusinessLifecycleStage = None
+    get_settings = None
 
 
 class FactoryHealthDiagnostics:
@@ -34,9 +39,20 @@ class FactoryHealthDiagnostics:
 
     def __init__(self, db_path: str | None = None, verbose: bool = False):
         self.verbose = verbose
-        # 使用策略工厂实际使用的数据库路径
-        self.db_path = db_path or str(ROOT / "data" / "db" / "akshare_mcp.sqlite3")
+        # 优先级: 1. 命令行参数  2. 配置中心  3. 默认路径
+        if db_path:
+            self.db_path = db_path
+        elif get_settings:
+            try:
+                settings = get_settings()
+                self.db_path = settings.sqlite_path
+            except Exception:
+                # 配置中心不可用时降级到默认路径
+                self.db_path = str(ROOT / "data" / "db" / "akshare_mcp.sqlite3")
+        else:
+            self.db_path = str(ROOT / "data" / "db" / "akshare_mcp.sqlite3")
         self.conn = None
+        self.ledger = None  # StrategyLifecycleLedger 实例
         self.results = {
             "timestamp": datetime.now().isoformat(),
             "checks": [],
@@ -53,11 +69,19 @@ class FactoryHealthDiagnostics:
     def _connect_db(self) -> bool:
         """连接数据库"""
         try:
-            if get_connection:
-                self.conn = get_connection()
+            if get_db:
+                import asyncio
+                db = get_db()
+                asyncio.run(db.initialize())
+                self.conn = db.connection
+                # 初始化 StrategyLifecycleLedger
+                if StrategyLifecycleLedger:
+                    self.ledger = StrategyLifecycleLedger(self.conn)
             else:
                 self.conn = sqlite3.connect(self.db_path)
                 self.conn.row_factory = sqlite3.Row
+                if StrategyLifecycleLedger:
+                    self.ledger = StrategyLifecycleLedger(self.conn)
             return True
         except Exception as e:
             self._add_check(
@@ -525,16 +549,11 @@ class FactoryHealthDiagnostics:
             )
 
     def check_strategy_lifecycle_state(self):
-        """检查 8: 策略生命周期状态分布"""
+        """检查 8: 策略生命周期状态分布（使用 StrategyLifecycleLedger）"""
         print("\n[8] 检查策略生命周期状态...")
 
-        strategies = self._query_all(
-            """
-            SELECT status, COUNT(*) as count
-            FROM strategies
-            GROUP BY status
-            """
-        )
+        # 先查询所有策略
+        strategies = self._query_all("SELECT id FROM strategies")
 
         if not strategies:
             self._add_check(
@@ -545,34 +564,93 @@ class FactoryHealthDiagnostics:
             )
             return
 
-        stats = {row["status"]: row["count"] for row in strategies}
-        details = dict(stats)
+        # 如果有 StrategyLifecycleLedger，使用统一账本
+        if self.ledger:
+            strategy_ids = [row["id"] for row in strategies]
+            snapshots = self.ledger.batch_get_snapshots(strategy_ids)
 
-        incubating = stats.get("incubating", 0)
-        listed = stats.get("listed", 0)
-        total = sum(stats.values())
+            # 统计物理状态
+            physical_stats = {}
+            for snapshot in snapshots.values():
+                status = snapshot.physical_status
+                physical_stats[status] = physical_stats.get(status, 0) + 1
 
-        if listed > 0:
-            self._add_check(
-                "strategy_lifecycle_state",
-                "passed",
-                f"策略状态分布：{listed} listed, {incubating} incubating, 共 {total} 个策略",
-                details,
-            )
-        elif incubating > 0:
-            self._add_check(
-                "strategy_lifecycle_state",
-                "warning",
-                f"有 {incubating} 个 incubating 策略，但尚无 listed",
-                details,
-            )
+            # 统计业务状态
+            business_stats = {}
+            for snapshot in snapshots.values():
+                stage = snapshot.business_stage.value
+                business_stats[stage] = business_stats.get(stage, 0) + 1
+
+            total = len(snapshots)
+            listed = physical_stats.get("listed", 0)
+            incubating = physical_stats.get("incubating", 0)
+
+            details = {
+                "total": total,
+                "physical_stats": physical_stats,
+                "business_stats": business_stats,
+                "ledger_enabled": True,
+            }
+
+            if listed > 0:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "passed",
+                    f"策略状态：{listed} listed, {incubating} incubating, 共 {total} 个",
+                    details,
+                )
+            elif incubating > 0:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "warning",
+                    f"有 {incubating} 个 incubating 策略，但尚无 listed",
+                    details,
+                )
+            else:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "warning",
+                    f"共 {total} 个策略，但无 incubating 或 listed",
+                    details,
+                )
         else:
-            self._add_check(
-                "strategy_lifecycle_state",
-                "warning",
-                f"共 {total} 个策略，但无 incubating 或 listed",
-                details,
+            # 降级：没有 StrategyLifecycleLedger，使用传统查询
+            strategies = self._query_all(
+                """
+                SELECT status, COUNT(*) as count
+                FROM strategies
+                GROUP BY status
+                """
             )
+
+            stats = {row["status"]: row["count"] for row in strategies}
+            details = {"ledger_enabled": False, **dict(stats)}
+
+            incubating = stats.get("incubating", 0)
+            listed = stats.get("listed", 0)
+            total = sum(stats.values())
+
+            if listed > 0:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "passed",
+                    f"策略状态分布：{listed} listed, {incubating} incubating, 共 {total} 个策略",
+                    details,
+                )
+            elif incubating > 0:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "warning",
+                    f"有 {incubating} 个 incubating 策略，但尚无 listed",
+                    details,
+                )
+            else:
+                self._add_check(
+                    "strategy_lifecycle_state",
+                    "warning",
+                    f"共 {total} 个策略，但无 incubating 或 listed",
+                    details,
+                )
 
     def determine_overall_status(self):
         """确定整体健康状态"""

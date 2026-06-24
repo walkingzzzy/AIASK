@@ -43,6 +43,11 @@ ensure_factory_runtime(
     project_root=PROJECT_ROOT,
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
 )
 
 
@@ -101,14 +106,16 @@ def _parse_time(value: str) -> dt_time:
 async def _run_once(args: argparse.Namespace) -> None:
     """单次运行。"""
     _ensure_src_path()
-    from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.incubation import build_incubation_runtime
 
-    runner = IncubationFactoryRunner(
+    ensure_default_runtime_services()
+    runtime = build_incubation_runtime(
         run_time=_parse_time(args.run_time),
         dry_run=args.dry_run,
     )
 
-    result = await runner.run_once()
+    result = await runtime.run_once()
 
     # 输出结果
     print("\n" + "=" * 60)
@@ -150,9 +157,11 @@ async def _run_once(args: argparse.Namespace) -> None:
 async def _run_daemon(args: argparse.Namespace) -> None:
     """守护进程模式。"""
     _ensure_src_path()
-    from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.incubation import build_incubation_runtime
 
-    runner = IncubationFactoryRunner(
+    ensure_default_runtime_services()
+    runtime = build_incubation_runtime(
         run_time=_parse_time(args.run_time),
         dry_run=args.dry_run,
     )
@@ -161,7 +170,7 @@ async def _run_daemon(args: argparse.Namespace) -> None:
     print("按 Ctrl+C 停止")
 
     try:
-        await runner.run_daemon()
+        await runtime.run_daemon()
     except KeyboardInterrupt:
         print("\n孵化工厂守护进程已停止")
 

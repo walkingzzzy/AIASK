@@ -208,7 +208,7 @@ def _match_sector_to_theme(sector_name: str) -> str:
 
 def _build_stage_definitions() -> dict[str, StageDefinition]:
     """构建 5 个 Stage 的定义。"""
-    from strategy_factory import (
+    from strategy_factory.api.constants import (
         PIPELINE_STAGE_MAX_TOKENS,
         PIPELINE_STAGE_TEMPERATURE,
     )

@@ -12,6 +12,14 @@ describe("V1 route scope", () => {
   });
 
   it("aliases deferred paths back to finance lab", () => {
+    expect(routeToView("/approvals")).toBe("tools-approvals");
+    expect(routeToView("/mcp")).toBe("mcp-connectors");
+    expect(routeToView("/connectors")).toBe("mcp-connectors");
+    expect(routeToView("/skills")).toBe("plugins-skills");
+    expect(routeToView("/plugins")).toBe("plugins-skills");
+    expect(routeToView("/gateway")).toBe("gateway-webhooks");
+    expect(routeToView("/finance-lab")).toBe("finance-lab");
+    expect(routeToView("/user")).toBe("local-user-memory");
     expect(routeToView("/strategy-factory")).toBe("finance-lab");
     expect(routeToView("/factor-factory")).toBe("finance-lab");
     expect(routeToView("/incubation")).toBe("finance-lab");

@@ -63,6 +63,17 @@ def _autonomy_lifecycle_runtime() -> Any:
     )
 
 
+def _strategy_autonomy_service_runtime() -> Any:
+    from ..services.strategy_autonomy import get_strategy_autonomy_service
+
+    autonomy_service = get_strategy_autonomy_service()
+    try:
+        setattr(autonomy_service, "requires_repository_task_persistence", True)
+    except Exception:
+        pass
+    return autonomy_service
+
+
 def configure_akshare_storage_runtime_hooks() -> None:
     """Register AKShare host callbacks used by the shared storage layer."""
 
@@ -109,18 +120,32 @@ def configure_strategy_factory_runtime_services() -> None:
     from ..services.factor_mining_factory.api import get_factor_pool_gateway
     from ..services.factor_scheduler import get_factor_scheduler
     from ..services.financial_semantic_service import get_financial_semantic_service
+    from ..services.incubation_factory.runner import IncubationFactoryRunner
+    from ..services.market_text_source_ingest import (
+        get_market_event_ingest_support,
+        run_market_text_source_ingest,
+    )
     from ..services.promotion_pipeline import get_strategy_promotion_pipeline_service
+    from ..services.runtime_risk import get_strategy_runtime_risk_service
     from ..services.runtime_control import get_strategy_runtime_control_service
     from ..services.sentiment import sentiment_analyzer
+    from ..services.signal_tracker import get_signal_tracker
+    from .signal_tracker import AKShareSignalTrackerProvider
     from ..services.strategy_dsl import compile_strategy_blueprint
     from ..services.strategy_llm_provider import get_strategy_llm_provider
+    from ..services.incubation import get_strategy_incubation_service
+    from ..services.incubation_pipeline import get_strategy_incubation_pipeline_service
     from ..services.strategy_lifecycle_shared import build_closure_review
     from ..services.strategy_lifecycle_shared.execution_audit_snapshot import (
         build_execution_audit_snapshot_payload,
     )
+    from ..services.domain_projection import get_strategy_domain_projection_service
+    from ..services.vector_governance import get_strategy_vector_governance_service
     from ..services.vector_platform import get_strategy_vector_platform
+    from ..services.vector_search import VectorSearchEngine
     from ..tools.managers.data_sync_manager import run_runtime_data_warmup
     from ..tools.managers.quant_manager import quant_manager
+    from ..tools.managers.strategy_manager import _lifecycle_scan
 
     configure_akshare_storage_runtime_hooks()
 
@@ -128,11 +153,23 @@ def configure_strategy_factory_runtime_services() -> None:
         db_provider=get_strategy_factory_db_provider(),
         factor_scheduler=get_factor_scheduler,
         factor_mining_factory=get_factor_mining_factory,
+        factor_mining_support_factory=get_factor_mining_factory,
         factor_pool_gateway=get_factor_pool_gateway,
+        incubation_runtime_factory=IncubationFactoryRunner,
+        incubation_runtime_support_factory=IncubationFactoryRunner,
+        market_event_ingest_runner=run_market_text_source_ingest,
+        market_event_ingest_support_factory=get_market_event_ingest_support,
         quant_manager_callable=quant_manager,
         runtime_warmup_runner=run_runtime_data_warmup,
+        signal_tracker_runtime_factory=lambda **kwargs: AKShareSignalTrackerProvider(
+            get_signal_tracker(**kwargs)
+        ),
+        signal_tracker_runtime_support_factory=lambda **kwargs: AKShareSignalTrackerProvider(
+            get_signal_tracker(**kwargs)
+        ),
         strategy_promotion_pipeline_service=get_strategy_promotion_pipeline_service,
         strategy_runtime_control_service=get_strategy_runtime_control_service,
+        strategy_runtime_risk_service_factory=get_strategy_runtime_risk_service,
         strategy_lifecycle_shared_runtime=_strategy_lifecycle_shared_runtime(),
         event_context_builder=build_event_context,
         sentiment_analyzer=sentiment_analyzer,
@@ -140,8 +177,18 @@ def configure_strategy_factory_runtime_services() -> None:
         index_kline_provider=_get_index_kline_from_db,
         strategy_dsl_compiler=compile_strategy_blueprint,
         strategy_vector_platform_factory=get_strategy_vector_platform,
+        strategy_vector_search_engine_builder=lambda: VectorSearchEngine(
+            backend="index",
+            allow_fallback=True,
+        ),
+        strategy_autonomy_service_factory=_strategy_autonomy_service_runtime,
+        strategy_incubation_service_factory=get_strategy_incubation_service,
+        strategy_incubation_pipeline_service_factory=get_strategy_incubation_pipeline_service,
         autonomy_lifecycle_runtime=_autonomy_lifecycle_runtime(),
         strategy_vector_profile_builder=_build_strategy_vector_profile,
+        strategy_vector_governance_service_factory=get_strategy_vector_governance_service,
+        strategy_domain_projection_service_factory=get_strategy_domain_projection_service,
+        strategy_lifecycle_scan_runner=_lifecycle_scan,
         execution_audit_snapshot_builder=build_execution_audit_snapshot_payload,
         closure_review_builder=build_closure_review,
         strategy_llm_provider_loader=get_strategy_llm_provider,
@@ -149,42 +196,19 @@ def configure_strategy_factory_runtime_services() -> None:
 
 
 def build_strategy_factory_runtime_adapters(db: Any | None = None) -> Any:
-    """Build Strategy Factory runtime adapters backed by AKShare services."""
+    """Compatibility shim for the canonical Strategy Factory runtime adapters."""
 
-    configure_strategy_factory_runtime_services()
+    from strategy_factory.runtime.default_bootstrap import build_default_runtime_adapters
 
-    from strategy_factory.api.runtime import build_runtime_adapters
-    from ..services.vector_search import VectorSearchEngine
-    from ..services.strategy_autonomy import get_strategy_autonomy_service
-    from ..services.factor_scheduler import get_factor_scheduler
-    from ..services.incubation import get_strategy_incubation_service
-    from ..services.incubation_pipeline import get_strategy_incubation_pipeline_service
-
-    resolved_db = db if db is not None else get_strategy_factory_db_provider()()
-    autonomy_service = get_strategy_autonomy_service()
-    try:
-        setattr(autonomy_service, "requires_repository_task_persistence", True)
-    except Exception:
-        pass
-    return build_runtime_adapters(
-        resolved_db,
-        vector_engine=VectorSearchEngine(backend="index", allow_fallback=True),
-        autonomy_service=autonomy_service,
-        factor_scheduler=get_factor_scheduler(),
-        incubation_service=get_strategy_incubation_service(),
-        incubation_pipeline_service=get_strategy_incubation_pipeline_service(),
-    )
+    return build_default_runtime_adapters(db=db)
 
 
 def build_strategy_factory_scheduler_kwargs(db: Any | None = None) -> dict[str, Any]:
-    """Return kwargs for ``strategy_factory.get_strategy_factory_scheduler``."""
+    """Compatibility shim for canonical Strategy Factory scheduler kwargs."""
 
-    db_provider = get_strategy_factory_db_provider()
-    resolved_db = db if db is not None else db_provider()
-    return {
-        "db_provider": db_provider,
-        "runtime_adapters": build_strategy_factory_runtime_adapters(resolved_db),
-    }
+    from strategy_factory.runtime.default_bootstrap import build_default_scheduler_kwargs
+
+    return build_default_scheduler_kwargs(db=db)
 
 
 __all__ = [

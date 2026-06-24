@@ -110,9 +110,12 @@ async def run_factory_mining_cycle(
     传统 batch_compute_factors 后，额外调用此函数执行多引擎挖掘。
     """
     try:
-        from .factor_mining_factory import get_factor_mining_factory
-        factory = get_factor_mining_factory()
-        result = await factory.run_mining_cycle(
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
+
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        result = await runtime.run_once(
             trigger=trigger,
             codes=codes or DEFAULT_UNIVERSE[:50],
         )
@@ -133,4 +136,3 @@ def is_factory_mining_enabled() -> bool:
         os.getenv("FACTOR_MINING_FACTORY_ENABLED", "0").strip().lower()
         in ("1", "true", "yes")
     )
-

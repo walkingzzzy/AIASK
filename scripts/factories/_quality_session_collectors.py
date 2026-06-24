@@ -12,7 +12,6 @@ from typing import Any
 from _quality_session_common import (
     LOGGER, DEFAULT_EXECUTION_MODE, _iso_now, _now, _safe_float, _safe_int,
 )
-from akshare_mcp.services.incubation_factory.runner import IncubationFactoryRunner
 from akshare_mcp.storage.sqlite import close_db, get_db
 from akshare_mcp.tools.managers.strategy_mgr_crud import handle_review_report
 from akshare_mcp.tools.managers.strategy_mgr_lifecycle import (
@@ -231,16 +230,20 @@ async def _run_factor_mining_once(
         }
 
     try:
-        from strategy_factory.runtime.factor_mining import get_factor_mining_factory
+        from strategy_factory.runtime.default_bootstrap import (
+            ensure_default_runtime_services,
+        )
+        from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
 
-        factory = get_factor_mining_factory()
-        result = await factory.run_mining_cycle(
+        ensure_default_runtime_services()
+        runtime = get_factor_mining_runtime()
+        result = await runtime.run_once(
             trigger="quality_session",
             engines=engines or None,
             candidate_count=candidate_count,
             evolution_generations=evolution_generations,
         )
-        maintenance_result = await _run_post_mining_maintenance(factory)
+        maintenance_result = await _run_post_mining_maintenance(runtime)
         cache_cleared = _clear_factor_research_cache()
         quality_summary = dict((result or {}).get("quality_summary") or {})
         quarantine_reappraisal = dict((result or {}).get("quarantine_reappraisal") or {})
@@ -317,9 +320,13 @@ async def _run_signal_tracker_once(enabled: bool) -> dict[str, Any] | None:
         return None
     started_at = _iso_now()
     try:
-        from akshare_mcp.services.signal_tracker import get_signal_tracker
+        from strategy_factory.runtime.default_bootstrap import (
+            ensure_default_runtime_services,
+        )
+        from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime
 
-        tracker = get_signal_tracker()
+        ensure_default_runtime_services()
+        tracker = get_signal_tracker_runtime()
         result = await tracker.run_once()
         return {
             "started_at": started_at,
@@ -350,12 +357,16 @@ async def _run_signal_tracker_once(enabled: bool) -> dict[str, Any] | None:
 async def _run_incubation_once(enabled: bool) -> dict[str, Any] | None:
     if not enabled:
         return None
-    runner = IncubationFactoryRunner(
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.incubation import build_incubation_runtime
+
+    ensure_default_runtime_services()
+    runtime = build_incubation_runtime(
         dry_run=False,
         owns_paper_trading=False,
     )
     started_at = _iso_now()
-    result = await runner.run_once()
+    result = await runtime.run_once()
     return {
         "started_at": started_at,
         "completed_at": _iso_now(),

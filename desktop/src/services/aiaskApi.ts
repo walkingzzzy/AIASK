@@ -1,4 +1,12 @@
-import { mockApiPayloads, mockRunEvents, mockToolResponse } from "../mock/mockData";
+import {
+  mockApiPayloads,
+  mockRunArtifactsPayload,
+  mockRunEvents,
+  mockRunSourcesPayload,
+  mockRunToolInvocationsPayload,
+  mockSessionMessagesPayload,
+  mockToolResponse
+} from "../mock/mockData";
 import type { ConnectionSettings, RunEvent, UnknownRecord } from "../types";
 import { objectData, parseSsePayload, requestJson, requestText } from "./api/core";
 
@@ -13,7 +21,171 @@ export class AiaskApi {
     this.settings = settings;
   }
 
+  private mockSessionId(body?: unknown) {
+    const payload = objectData<UnknownRecord>(body, {});
+    return String(payload.session_id || payload.sessionId || "sess_research_001");
+  }
+
+  private mockRunId(sessionId: string) {
+    return sessionId === "sess_ops_001" ? "run_20260621_002" : "run_20260621_001";
+  }
+
   private async get<T = unknown>(path: string, query?: Record<string, unknown>, control = false): Promise<T> {
+    if (this.settings.mode === "mock") {
+      const sessionMatch = path.match(/^\/v1\/sessions\/([^/]+)\/messages$/);
+      if (sessionMatch) {
+        return mockSessionMessagesPayload(decodeURIComponent(sessionMatch[1])) as T;
+      }
+
+      const runArtifactsMatch = path.match(/^\/v1\/runs\/([^/]+)\/artifacts$/);
+      if (runArtifactsMatch) {
+        return mockRunArtifactsPayload(decodeURIComponent(runArtifactsMatch[1])) as T;
+      }
+
+      const runSourcesMatch = path.match(/^\/v1\/runs\/([^/]+)\/sources$/);
+      if (runSourcesMatch) {
+        return mockRunSourcesPayload(decodeURIComponent(runSourcesMatch[1])) as T;
+      }
+
+      const runToolsMatch = path.match(/^\/v1\/runs\/([^/]+)\/tool-invocations$/);
+      if (runToolsMatch) {
+        return mockRunToolInvocationsPayload(decodeURIComponent(runToolsMatch[1])) as T;
+      }
+
+      const quantRunMatch = path.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)$/);
+      if (quantRunMatch) {
+        return {
+          object: "aiask.quant_research_run",
+          data: {
+            id: decodeURIComponent(quantRunMatch[1]),
+            status: "completed",
+            preset: "momentum_research",
+            metrics: { annual_return: 0.18, max_drawdown: -0.07, sharpe: 1.21 }
+          }
+        } as T;
+      }
+
+      const quantReportMatch = path.match(/^\/v1\/desktop\/quant\/research-runs\/([^/]+)\/report$/);
+      if (quantReportMatch) {
+        return {
+          object: "aiask.quant_research_report",
+          data: {
+            id: `report_${decodeURIComponent(quantReportMatch[1])}`,
+            summary: "Mock 量化报告已生成，可用于页面验收。",
+            metrics: { annual_return: 0.18, max_drawdown: -0.07, sharpe: 1.21 },
+            read_only: true
+          }
+        } as T;
+      }
+
+      const gatewayHealthMatch = path.match(/^\/v1\/gateway\/platforms\/([^/]+)\/health$/);
+      if (gatewayHealthMatch) {
+        return {
+          object: "gateway.platform.health",
+          data: {
+            platform: decodeURIComponent(gatewayHealthMatch[1]),
+            status: "ready",
+            checked_at: new Date().toISOString(),
+            mock: true
+          }
+        } as T;
+      }
+
+      const userActivityMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/activity$/);
+      if (userActivityMatch) {
+        return {
+          object: "list",
+          data: [
+            {
+              id: "activity_001",
+              user_id: decodeURIComponent(userActivityMatch[1]),
+              type: "workbench.response",
+              title: "Workbench 响应验收",
+              created_at: new Date().toISOString()
+            }
+          ]
+        } as T;
+      }
+
+      const userPolicyMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/data-policy$/);
+      if (userPolicyMatch) {
+        return {
+          object: "aiask.user_data_policy",
+          data: {
+            user_id: decodeURIComponent(userPolicyMatch[1]),
+            retention_days: 90,
+            allow_learning: false,
+            updated_from: "mock"
+          }
+        } as T;
+      }
+
+      const userExportMatch = path.match(/^\/v1\/desktop\/users\/([^/]+)\/export$/);
+      if (userExportMatch) {
+        return {
+          object: "aiask.user_export",
+          data: {
+            user_id: decodeURIComponent(userExportMatch[1]),
+            export_ready: true,
+            format: "json",
+            generated_at: new Date().toISOString()
+          }
+        } as T;
+      }
+
+      const jobRunsMatch = path.match(/^\/v1\/jobs\/([^/]+)\/runs$/);
+      if (jobRunsMatch) {
+        return {
+          object: "list",
+          data: [
+            {
+              id: `job_run_${decodeURIComponent(jobRunsMatch[1])}_001`,
+              job_id: decodeURIComponent(jobRunsMatch[1]),
+              status: "completed",
+              started_at: new Date().toISOString()
+            }
+          ]
+        } as T;
+      }
+
+      const rlRunMatch = path.match(/^\/v1\/rl\/runs\/([^/]+)$/);
+      if (rlRunMatch) {
+        return {
+          object: "aiask.rl.run",
+          data: {
+            id: decodeURIComponent(rlRunMatch[1]),
+            status: "completed",
+            score: 0.72,
+            environment: "market_research_mock"
+          }
+        } as T;
+      }
+
+      const rlResultsMatch = path.match(/^\/v1\/rl\/runs\/([^/]+)\/results$/);
+      if (rlResultsMatch) {
+        return {
+          object: "aiask.rl.results",
+          data: {
+            run_id: decodeURIComponent(rlResultsMatch[1]),
+            reward: 0.72,
+            summary: "Mock RL 结果已生成。"
+          }
+        } as T;
+      }
+
+      const rlLogsMatch = path.match(/^\/v1\/rl\/runs\/([^/]+)\/logs$/);
+      if (rlLogsMatch) {
+        return {
+          object: "aiask.rl.logs",
+          data: {
+            run_id: decodeURIComponent(rlLogsMatch[1]),
+            entries: ["environment initialized", "dry-run episode completed"],
+            summary: "Mock RL 日志可用于页面验收。"
+          }
+        } as T;
+      }
+    }
+
     if (this.settings.mode === "mock" && path in mockApiPayloads) {
       return mockApiPayloads[path] as T;
     }
@@ -25,19 +197,38 @@ export class AiaskApi {
 
   private async post<T = unknown>(path: string, body?: unknown, control = false): Promise<T> {
     if (this.settings.mode === "mock") {
+      if (path === "/v1/ai/smoke") {
+        const payload = objectData<UnknownRecord>(body, {});
+        return {
+          object: "aiask.ai_smoke",
+          success: true,
+          data: {
+            provider: payload.provider || "openai-compatible",
+            model: payload.model || "gpt-4.1-compatible",
+            status: "passed",
+            message: "Mock smoke 测试通过。"
+          }
+        } as T;
+      }
       if (path.startsWith("/v1/tools/")) {
         return mockToolResponse(decodeURIComponent(path.split("/").pop() || ""), body) as T;
       }
       if (path === "/v1/responses") {
+        const payload = objectData<UnknownRecord>(body, {});
+        const sessionId = this.mockSessionId(body);
+        const runId = this.mockRunId(sessionId);
+        const prompt = String(payload.prompt || payload.input || "");
         return {
           object: "response",
           id: `resp_${Date.now()}`,
           response: {
             role: "assistant",
-            content: "Mock 模式已生成响应。Live 模式会通过 Agent HTTP 调用模型和工具。"
+            content: prompt
+              ? `Mock 模式已收到任务“${prompt}”，并按当前线程上下文生成验收用响应。`
+              : "Mock 模式已生成响应。Live 模式会通过 Agent HTTP 调用模型和工具。"
           },
-          run: { id: "run_mock_response", status: "completed" },
-          session: { id: "sess_research_001" },
+          run: { id: runId, status: "completed" },
+          session: { id: sessionId },
           events: mockRunEvents
         } as T;
       }
@@ -70,10 +261,43 @@ export class AiaskApi {
         } as T;
       }
       if (path.includes("/financial-manager/intent") || path === "/intents") {
+        const payload = objectData<UnknownRecord>(body, {});
         return {
           object: "action_intent",
           success: true,
-          data: { id: `intent_${Date.now()}`, status: "pending", side_effect: "approval_required", payload: body }
+          data: {
+            id: `intent_${Date.now()}`,
+            action: String(payload.action || payload.title || "mock.intent"),
+            status: "pending",
+            side_effect: "approval_required",
+            risk_level: "medium",
+            payload: body,
+            created_at: new Date().toISOString()
+          }
+        } as T;
+      }
+      if (path === "/v1/gateway/send") {
+        return {
+          object: "gateway.intent_preview",
+          success: true,
+          data: {
+            id: `gateway_msg_${Date.now()}`,
+            status: "pending",
+            delivery_mode: "intent_preview",
+            payload: body
+          }
+        } as T;
+      }
+      if (path === "/v1/desktop/broker/analytics/run") {
+        return {
+          object: "aiask.broker.analytics",
+          success: true,
+          data: {
+            report_id: `broker_report_${Date.now()}`,
+            status: "completed",
+            read_only: true,
+            payload: body
+          }
         } as T;
       }
       return { object: "mock", success: true, data: body ?? {} } as T;
@@ -105,12 +329,15 @@ export class AiaskApi {
   aiConfig = () => this.get("/v1/ai/config");
   aiConfigSave = (body: unknown) => this.patch("/v1/ai/config", body, true);
   aiModels = () => this.get("/v1/ai/models");
-  aiSmoke = (body: unknown) => this.post("/v1/ai/smoke", body);
+  aiSmoke = (body: unknown) =>
+    this.settings.mode === "mock"
+      ? this.post("/v1/ai/smoke", body)
+      : requestJson(this.settings, "/v1/ai/smoke", { method: "POST", body, timeoutMs: 120_000 });
   response = (body: unknown) => this.post("/v1/responses", body);
 
   workbenchSummary = () => this.get("/v1/desktop/workbench/summary", { user_id: this.settings.userId, session_limit: 8, run_limit: 8 });
   sessions = () => this.get("/v1/hermes/sessions", { user_id: this.settings.userId, limit: 100 });
-  desktopRuns = (query?: Record<string, unknown>) => this.get("/v1/desktop/runs", query);
+  desktopRuns = (query?: Record<string, unknown>) => this.get("/v1/desktop/runs", { user_id: this.settings.userId, ...query });
   sessionMessages = (sessionId: string) => this.get(`/v1/sessions/${encodeURIComponent(sessionId)}/messages`);
   runArtifacts = (runId: string) => this.get(`/v1/runs/${encodeURIComponent(runId)}/artifacts`);
   runSources = (runId: string) => this.get(`/v1/runs/${encodeURIComponent(runId)}/sources`);
@@ -134,7 +361,7 @@ export class AiaskApi {
   createIntent = (body: unknown) => this.post("/intents", body, true);
   intentConfirm = (intentId: string) => this.post(`/intents/${encodeURIComponent(intentId)}/confirm`, {}, true);
   intentDeny = (intentId: string, reason = "denied from desktop V1") => this.post(`/intents/${encodeURIComponent(intentId)}/deny`, { reason }, true);
-  approvals = () => this.get("/v1/approvals", undefined, true);
+  approvals = () => this.get("/v1/approvals");
   approvalDecision = (approvalId: string, decision: "approve" | "deny", reason = "desktop V1 decision") =>
     this.post(`/v1/approvals/${encodeURIComponent(approvalId)}/${decision}`, { reason }, true);
 
@@ -169,7 +396,7 @@ export class AiaskApi {
   gatewayPlatforms = () => this.get("/v1/gateway/platforms", undefined, true);
   gatewayMessages = () => this.get("/v1/gateway/messages", undefined, true);
   gatewayDirectory = () => this.get("/v1/gateway/directory", undefined, true);
-  webhooks = () => this.get("/v1/webhooks");
+  webhooks = () => this.get("/v1/webhooks", undefined, true);
   gatewaySend = (body: unknown) => this.post("/v1/gateway/send", body, true);
   gatewayRetry = (messageId: string) => this.post(`/v1/gateway/messages/${encodeURIComponent(messageId)}/retry`, {}, true);
   gatewayDirectoryRefresh = () => this.post("/v1/gateway/directory/refresh", {}, true);

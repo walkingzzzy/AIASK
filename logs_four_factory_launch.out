@@ -1,0 +1,165 @@
+2026-06-17 11:41:54 [INFO] strategy_factory_quality_session: Session bootstrap: session_id=four_factory_p012_10round_20260617_114150 report=C:\Users\walking\Desktop\aiask\���Թ����Ĺ�������-20260617.md python=F:\Python311\python.exe sqlite=C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:41:54 [INFO] strategy_factory_quality_session: Starting round 1
+2026-06-17 11:41:54 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:41:54 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:41:55 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:41:55 [INFO] akshare_mcp.services.factor_mining_factory.factory: FactorMiningFactory: starting cycle run_id=mining_1781667715_b3be56ae trigger=quality_session
+F:\Python311\Lib\site-packages\akshare\datasets.py:18: DeprecationWarning: path is deprecated. Use files() instead. Refer to https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy for migration advice.
+  with resources.path("akshare.data", file) as f:
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:08 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:09 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:10 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+  0%|          | 0/2 [00:00<?, ?it/s] 50%|█████     | 1/2 [00:00<00:00,  2.88it/s]100%|██████████| 2/2 [00:00<00:00,  2.95it/s]                                             F:\Python311\Lib\site-packages\akshare\datasets.py:18: DeprecationWarning: path is deprecated. Use files() instead. Refer to https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy for migration advice.
+  with resources.path("akshare.data", file) as f:
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:13 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:14 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:15 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+  0%|          | 0/2 [00:00<?, ?it/s] 50%|█████     | 1/2 [00:00<00:00,  2.46it/s]100%|██████████| 2/2 [00:00<00:00,  2.41it/s]                                             F:\Python311\Lib\site-packages\akshare\datasets.py:18: DeprecationWarning: path is deprecated. Use files() instead. Refer to https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy for migration advice.
+  with resources.path("akshare.data", file) as f:
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:19 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:20 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:21 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00,  3.00it/s]                                             F:\Python311\Lib\site-packages\akshare\datasets.py:18: DeprecationWarning: path is deprecated. Use files() instead. Refer to https://importlib-resources.readthedocs.io/en/latest/using.html#migrating-from-legacy for migration advice.
+  with resources.path("akshare.data", file) as f:
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:24 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:25 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite.schema_base: Connected to SQLite database C:\Users\walking\Desktop\aiask\data\db\akshare_mcp.sqlite3
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 5 initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 6 initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 7 initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 8 (TDX) initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 9 (factory runtime) initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables phase 10 (market temperature snapshots) initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite._schema_market_common: Market tables initialized
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite.schema_strategy: Strategy tables initialized (sqlite_python=False)
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite.schema_vector: Vector tables initialized (sqlite_python=False)
+2026-06-17 11:42:26 [INFO] aiask_quant_core.storage.sqlite.schema_base: SQLite tables initialized successfully
+  0%|          | 0/1 [00:00<?, ?it/s]100%|██████████| 1/1 [00:00<00:00,  2.89it/s]                                             C:\Users\walking\Desktop\aiask\packages\akshare-mcp\src\akshare_mcp\services\factor_analysis.py:276: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  n_ic, n_p = stats.pearsonr(neutralized, forward_returns)
+C:\Users\walking\Desktop\aiask\packages\akshare-mcp\src\akshare_mcp\services\factor_analysis.py:276: ConstantInputWarning: An input array is constant; the correlation coefficient is not defined.
+  n_ic, n_p = stats.pearsonr(neutralized, forward_returns)
+2026-06-17 11:53:38 [WARNING] akshare_mcp.services.factor_mining_factory.engines.engine_scheduler: Engine gp_classic timed out after 120.0s
+2026-06-17 11:53:38 [WARNING] akshare_mcp.services.factor_mining_factory.engines.engine_scheduler: Engine mcts_guided timed out after 90.0s
+2026-06-17 11:53:38 [WARNING] akshare_mcp.services.factor_mining_factory.engines.engine_scheduler: Engine llm_primary timed out after 180.0s
+2026-06-17 11:53:38 [INFO] akshare_mcp.services.factor_mining_factory.engines.engine_scheduler: EngineScheduler: 5 engines produced 11 candidates
+2026-06-17 11:53:38 [INFO] akshare_mcp.services.factor_mining_factory.factory: FactorMiningFactory: raw candidates=11
+2026-06-17 11:53:38 [INFO] akshare_mcp.services.factor_mining_factory.factory: FactorMiningFactory: evolved candidates=11
+2026-06-17 11:53:38 [INFO] akshare_mcp.services.factor_mining_factory.factory: FactorMiningFactory: quick evidence passed=7/11

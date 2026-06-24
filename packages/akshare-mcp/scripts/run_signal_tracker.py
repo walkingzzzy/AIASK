@@ -56,6 +56,11 @@ ensure_factory_runtime(
     project_root=Path(__file__).resolve().parents[3],
     script_path=Path(__file__).resolve(),
     argv=sys.argv[1:],
+    editable_packages=(
+        "packages/strategy-factory",
+        "packages/aiask-quant-core",
+        "packages/akshare-mcp",
+    ),
 )
 
 
@@ -81,10 +86,12 @@ def _parse_run_time(raw: str) -> tuple[int, int]:
 
 async def _run_once_inner(verbose: bool = False) -> dict:
     _ensure_src_path()
-    from akshare_mcp.services.signal_tracker import get_signal_tracker
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.signal_tracker import get_signal_tracker_runtime
 
+    ensure_default_runtime_services()
     logger = logging.getLogger("signal_tracker_runner")
-    tracker = get_signal_tracker()
+    tracker = get_signal_tracker_runtime()
     logger.info("SignalTracker: invoking run_once()")
     result = await tracker.run_once()
     logger.info(

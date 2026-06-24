@@ -91,172 +91,24 @@ class FactorMiningFactory:
         evolution_generations: int = 5,
         codes: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Run one complete DB-only factor mining cycle."""
-        self._ensure_initialized()
-        db = await self._get_db()
-        await self._ensure_persistent_pool(db)
+        """Compat entrypoint delegating canonical orchestration to strategy-factory."""
+        from strategy_factory.runtime.factor_mining import build_factor_mining_runtime
 
-        run_id = f"mining_{int(datetime.now().timestamp())}_{uuid4().hex[:8]}"
-        started_at = datetime.now(timezone.utc)
-        logger.info("FactorMiningFactory: starting cycle run_id=%s trigger=%s", run_id, trigger)
-
-        try:
-            context = await self._build_mining_context(db=db, codes=codes)
-            if len(getattr(context, "validation_codes", []) or []) < 120:
-                report = {
-                    "success": True,
-                    "skipped": True,
-                    "reason": "data_universe_insufficient",
-                    "run_id": run_id,
-                    "trigger": trigger,
-                    "started_at": started_at.isoformat(),
-                    "completed_at": datetime.now(timezone.utc).isoformat(),
-                    "raw_candidate_count": 0,
-                    "evolved_count": 0,
-                    "validated_count": 0,
-                    "admitted_count": 0,
-                    "quarantine_count": 0,
-                    "active_promoted_count": 0,
-                    "pool_size": self._active_pool.size,
-                    "engines_used": [],
-                    "validation_universe_health": getattr(
-                        context,
-                        "validation_universe_health",
-                        {},
-                    ),
-                    "quality_summary": {
-                        "reject_reasons": {"data_universe_insufficient": 1},
-                    },
-                }
-                await self._persist_mining_run(db, report)
-                return report
-            quick_ic_evaluator = self._install_quick_evidence_evaluators(db, context)
-            raw_candidates = await self._engine_scheduler.search(
-                context=context,
-                engines=engines,
-                candidate_count=candidate_count,
-            )
-            logger.info("FactorMiningFactory: raw candidates=%d", len(raw_candidates))
-
-            evolved = await self._evolutionary_optimizer.evolve(
-                candidates=raw_candidates,
-                context=context,
-                generations=evolution_generations,
-                ic_evaluator=quick_ic_evaluator,
-            )
-            logger.info("FactorMiningFactory: evolved candidates=%d", len(evolved))
-
-            quick_passed = await self._quick_filter_candidates(evolved, context)
-            logger.info(
-                "FactorMiningFactory: quick evidence passed=%d/%d",
-                len(quick_passed),
-                len(evolved),
-            )
-
-            validated = await self._validate_batch(db, quick_passed, context)
-            logger.info("FactorMiningFactory: validated candidates=%d", len(validated))
-
-            admitted = await self._active_pool.admit_batch(validated)
-            await self._persist_admitted_factors(db, admitted)
-            quality_summary = self._build_quality_summary(
-                raw_candidates,
-                evolved,
-                validated,
-                admitted,
-                context,
-            )
-            if hasattr(self._engine_scheduler, "record_quality_feedback"):
-                self._engine_scheduler.record_quality_feedback(
-                    raw_candidates,
-                    validated,
-                    admitted,
-                )
-            logger.info(
-                "FactorMiningFactory: admitted=%d pool_size=%d",
-                len(admitted),
-                self._active_pool.size,
-            )
-
-            await self._record_feedback(run_id, raw_candidates, evolved, validated, admitted)
-
-            # 盘活存量:基于累计 IC 历史复评 quarantine 因子,达标者转回 active(DB 落库)。
-            # 与 evidence 门累计口径修复配套——存量达标因子不再因历史误降级而永困 quarantine。
-            reappraisal: dict[str, Any] = {}
-            try:
-                from .reappraise import reappraise_quarantine_factors
-
-                reappraisal = await reappraise_quarantine_factors(db, limit=200)
-            except Exception as exc:  # noqa: BLE001 - 复评失败不得拖垮挖掘周期
-                logger.warning("FactorMiningFactory: quarantine reappraisal failed: %s", exc)
-                reappraisal = {"error": f"{type(exc).__name__}: {exc}"}
-            reappraisal_promoted_count = int(reappraisal.get("promoted") or 0)
-            cycle_active_promoted_count = int(quality_summary.get("active_promoted_count") or 0)
-            total_active_promoted_count = cycle_active_promoted_count + max(0, reappraisal_promoted_count)
-            quality_summary["reappraisal_promoted_count"] = max(0, reappraisal_promoted_count)
-            quality_summary["active_promoted_count"] = total_active_promoted_count
-            quality_funnel = dict(quality_summary.get("quality_funnel") or {})
-            quality_funnel["promoted"] = total_active_promoted_count
-            quality_funnel["reappraisal_promoted"] = max(0, reappraisal_promoted_count)
-            quality_summary["quality_funnel"] = quality_funnel
-
-            self._last_run_at = datetime.now(timezone.utc)
-            self._run_count += 1
-            report = {
-                "success": True,
-                "run_id": run_id,
-                "trigger": trigger,
-                "started_at": started_at.isoformat(),
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-                "raw_candidate_count": len(raw_candidates),
-                "evolved_count": len(evolved),
-                "validated_count": len(validated),
-                "admitted_count": len(admitted),
-                "quarantine_count": quality_summary.get("quarantine_count", 0),
-                "active_promoted_count": total_active_promoted_count,
-                "cycle_active_promoted_count": cycle_active_promoted_count,
-                "reappraisal_promoted_count": max(0, reappraisal_promoted_count),
-                "pool_size": self._active_pool.size,
-                "engines_used": self._engine_scheduler.last_engines_used,
-                "validation_universe_health": getattr(context, "validation_universe_health", {}),
-                "quality_summary": quality_summary,
-                "quarantine_reappraisal": {
-                    "scanned": reappraisal.get("scanned", 0),
-                    "promoted": reappraisal.get("promoted", 0),
-                    "kept_quarantine": reappraisal.get("kept_quarantine", 0),
-                },
-            }
-            await self._persist_mining_run(db, report)
-            return report
-        except Exception as exc:
-            logger.error("FactorMiningFactory: cycle failed: %s", exc, exc_info=True)
-            report = {
-                "success": False,
-                "run_id": run_id,
-                "trigger": trigger,
-                "error": str(exc),
-                "started_at": started_at.isoformat(),
-                "completed_at": datetime.now(timezone.utc).isoformat(),
-            }
-            await self._persist_mining_run(db, report)
-            return report
+        runtime = build_factor_mining_runtime(support=self)
+        return await runtime.run_once(
+            trigger=trigger,
+            engines=engines,
+            candidate_count=candidate_count,
+            evolution_generations=evolution_generations,
+            codes=codes,
+        )
 
     async def run_maintenance(self) -> dict[str, Any]:
-        """Run daily factor pool maintenance and persist decay measurements."""
-        self._ensure_initialized()
-        db = await self._get_db()
-        await self._ensure_persistent_pool(db)
-        decay_report = await self._decay_monitor.daily_check(self._active_pool, db=db)
-        await self._persist_decay_report(db, decay_report)
-        await self._persist_decay_updates(db, decay_report)
-        promotion_report = await self._promote_quarantine_factors(db)
-        qc_report = await self._run_qc_pipeline(db)
-        return {
-            "decay_report": decay_report,
-            "promotion_report": promotion_report,
-            "qc_pipeline_report": qc_report,
-            "pool_size": self._active_pool.size,
-            "maintained_at": datetime.now(timezone.utc).isoformat(),
-        }
+        """Compat entrypoint delegating canonical maintenance orchestration."""
+        from strategy_factory.runtime.factor_mining import build_factor_mining_runtime
+
+        runtime = build_factor_mining_runtime(support=self)
+        return await runtime.run_maintenance()
 
     async def _run_qc_pipeline(self, db) -> dict[str, Any]:
         """P2-1：toggle ON 时，对活跃因子池跑残酷质检流水线并打标签/(可选)自动上下架。
@@ -1101,6 +953,11 @@ class FactorMiningFactory:
             "promoted_count": len(promoted),
             "rejected_reasons": rejected,
         }
+
+    async def _reappraise_quarantine_factors(self, db, *, limit: int = 200) -> dict[str, Any]:
+        from .reappraise import reappraise_quarantine_factors
+
+        return await reappraise_quarantine_factors(db, limit=limit)
 
     async def _build_quarantine_evidence_result(self, db, record: dict[str, Any]) -> dict[str, Any]:
         name = str(record.get("name") or "").strip()

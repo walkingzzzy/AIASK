@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional
 
 from strategy_factory.api import normalize_run_result_to_detail, normalize_run_result_to_summary
-from strategy_factory import (
+from strategy_factory.api import (
     BACKTEST_AI_PROTOTYPE_THRESHOLDS,
     DEPRECATION_THRESHOLDS,
     PROMOTION_THRESHOLDS,

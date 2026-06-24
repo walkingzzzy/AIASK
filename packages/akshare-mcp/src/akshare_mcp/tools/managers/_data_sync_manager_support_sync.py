@@ -235,11 +235,13 @@ async def _sync_factor_context_now(kwargs: dict) -> dict:
 
 async def _sync_market_text_source_ingest_now(kwargs: dict) -> dict:
     """增量同步公开新闻/公告/研报，并重建市场文本向量 snapshot。"""
-    from ...services.market_text_source_ingest import run_market_text_source_ingest
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+    from strategy_factory.runtime.market_event_ingest import get_market_event_ingest_runtime
 
     db = get_db()
-    result = await run_market_text_source_ingest(
-        db,
+    ensure_default_runtime_services()
+    result = await get_market_event_ingest_runtime().run_once(
+        db=db,
         stock_codes=kwargs.get('stock_codes') or kwargs.get('codes'),
         doc_types=kwargs.get('doc_types'),
         news_limit=kwargs.get('news_limit', 50),

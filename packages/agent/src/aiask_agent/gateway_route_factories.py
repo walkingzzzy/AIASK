@@ -43,8 +43,17 @@ class GatewayRouteFactories:
     def config_store(self) -> GatewayConfigStore:
         return GatewayConfigStore()
 
-    def delivery_router(self) -> DeliveryRouter:
-        return DeliveryRouter()
+    def delivery_router(
+        self,
+        *,
+        messages: GatewayMessageStore | None = None,
+        directory: GatewayChannelDirectoryStore | None = None,
+    ) -> DeliveryRouter:
+        return DeliveryRouter(
+            config=self.config_store(),
+            messages=messages or self.message_store(),
+            directory=directory or self.directory_store(),
+        )
 
     def daemon_status_payload(self) -> dict[str, Any]:
         from .gateway_daemon import daemon_enabled

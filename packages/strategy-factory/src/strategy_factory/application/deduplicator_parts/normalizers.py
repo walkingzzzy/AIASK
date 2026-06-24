@@ -48,9 +48,9 @@
 
     def _get_vector_gateway(self) -> "VectorSearchGateway":
         if self._vector_gateway is None:
-            from ..infrastructure.mcp_adapters import MCPVectorSearchGatewayImpl
+            from ..infrastructure.runtime_adapters import VectorSearchGatewayImpl
 
-            self._vector_gateway = MCPVectorSearchGatewayImpl()
+            self._vector_gateway = VectorSearchGatewayImpl()
             self._vector_engine = getattr(self._vector_gateway, "raw", self._vector_gateway)
         return self._vector_gateway
 

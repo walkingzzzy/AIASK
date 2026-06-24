@@ -1035,6 +1035,7 @@ def _render_report(state: dict[str, Any]) -> str:
         f"- quality_modes: `{', '.join(str(row.get('label') or row.get('mode_id') or '-') for row in mode_rows) or session.get('quality_session_mode') or '-'}`",
         f"- execution_mode: `{session.get('execution_mode')}`",
         f"- runtime_controls: `{_json_inline(runtime_controls)}`",
+        f"- **compensation_mode**: `{'🚨 ENABLED (补偿模式)' if session.get('compensation_enabled') else '✅ DISABLED (纯验证模式)'}`",  # P0 FIX
         f"- target_codes: `{', '.join(session.get('codes') or []) or 'default_universe'}`",
         f"- python: `{session.get('python_executable')}`",
         f"- sqlite: `{session.get('sqlite_path')}`",

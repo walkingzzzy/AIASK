@@ -10,7 +10,7 @@ from typing import Any, Optional
 from uuid import uuid4
 
 def _extract_event_context(*args, **kwargs):
-    from strategy_factory import extract_event_context
+    from strategy_factory.api import extract_event_context
     return extract_event_context(*args, **kwargs)
 
 

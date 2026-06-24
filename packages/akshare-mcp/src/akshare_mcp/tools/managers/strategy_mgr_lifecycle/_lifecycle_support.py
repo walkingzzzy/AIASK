@@ -160,11 +160,12 @@ def _call_supports_parameter(callable_obj, name: str) -> bool:
 
 
 def _get_strategy_factory_scheduler_with_runtime(db):
-    from strategy_factory import get_strategy_factory_scheduler
+    from strategy_factory.api import get_strategy_factory_scheduler
+    from strategy_factory.api.runtime import build_scheduler_runtime_kwargs
+    from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
 
-    from ....adapters.strategy_factory_runtime import build_strategy_factory_scheduler_kwargs
-
-    return get_strategy_factory_scheduler(**build_strategy_factory_scheduler_kwargs(db))
+    ensure_default_runtime_services()
+    return get_strategy_factory_scheduler(**build_scheduler_runtime_kwargs(db=db))
 
 
 def _factory_defaults_from_constants(factory_constants: dict[str, Any]) -> dict[str, Any]:

@@ -11,14 +11,16 @@ from typing import Any, Optional
 
 import pandas as pd
 def _get_strategy_factory_imports():
-    from strategy_factory import (
+    from strategy_factory.api import (
+        extract_event_context as _extract_event_context,
+        preferred_strategy_types_for_factor,
+    )
+    from strategy_factory.api.constants import (
         CATEGORY_MINIMUMS,
         LLM_FAN_OUT_COUNT,
         PIPELINE_MODE,
         PIPELINE_STAGE_TIMEOUTS,
         PIPELINE_STAGE_TIMEOUT_SEC,
-        extract_event_context as _extract_event_context,
-        preferred_strategy_types_for_factor,
     )
     from strategy_factory.api.contracts import (
         normalize_execution_assumptions,

@@ -450,7 +450,8 @@ def test_quality_session_collects_snapshot_after_signal_and_incubation(monkeypat
 
 
 def test_quality_session_signal_tracker_preserves_phase_timeout_result(monkeypatch) -> None:
-    import akshare_mcp.services.signal_tracker as signal_tracker_module
+    import strategy_factory.runtime.signal_tracker as signal_tracker_runtime_module
+    import akshare_mcp.runtime.strategy_factory_bootstrap as bootstrap_module
 
     class FakeTracker:
         async def run_once(self):
@@ -467,7 +468,8 @@ def test_quality_session_signal_tracker_preserves_phase_timeout_result(monkeypat
                 "errors": ["phase_C_timeout"],
             }
 
-    monkeypatch.setattr(signal_tracker_module, "get_signal_tracker", lambda: FakeTracker())
+    monkeypatch.setattr(bootstrap_module, "configure_local_strategy_factory_runtime", lambda: None)
+    monkeypatch.setattr(signal_tracker_runtime_module, "get_signal_tracker_runtime", lambda: FakeTracker())
 
     result = asyncio.run(quality_session_runner._run_signal_tracker_once(True))
 

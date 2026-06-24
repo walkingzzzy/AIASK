@@ -32,7 +32,7 @@ class _StrategyVectorPlatformProfilesMixin:
             index_version: str = 'v1',
         ) -> Optional[dict]:
             try:
-                from strategy_factory import build_strategy_panels
+                from strategy_factory.api import build_strategy_panels
                 started_at = time.perf_counter()
 
                 resolved_vector_method = self.ensure_vector_method_available(vector_method)

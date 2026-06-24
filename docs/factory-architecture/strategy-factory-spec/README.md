@@ -1,8 +1,43 @@
 # 策略工厂标准化功能规范文档集
 
+> 当前口径声明：`strategy-factory-spec/` 目录用于描述目标架构、标准化规格和期望契约，不作为“当前代码已经如此实现”的证明。
+>
+> 仓库级文档导航见：
+> - `../../README.md`
+>
+> 当前真实情况请优先以以下文档为准：
+> - `../01-当前实际架构.md`
+> - `../03-四工厂运行规范.md`
+> - `../09-深度架构审查报告.md`
+> - `../12-四工厂真实流程与MCP依赖审计.md`
+> - `../13-四工厂-MCP能力占用台账.md`
+>
+> 本轮正式 target-state 主方案见仓库根目录：
+> - `../../../四工厂独立化与MCP瘦身拆分开发方案-2026-06-23.md`
+>
+> 已确认与当前代码不符、不能再当作现状路径引用的典型目标态路径包括：
+> - `packages/strategy-factory/src/strategy_factory/application/incubation/`
+> - `packages/strategy-factory/src/strategy_factory/application/market_event_ingest/`
+> - `packages/strategy-factory/src/strategy_factory/application/factor_mining/`
+> - `packages/strategy-factory/src/strategy_factory/application/signal_tracker.py`
+
 **版本**: 1.0.0  
 **创建日期**: 2026-06-21  
-**基于**: [深度代码审查报告](../DEEP_CODE_REVIEW_2026-06-21.md) 和 [生命周期规范](../02-策略工厂全链路生命周期规范.md)
+**基于**: [深度架构审查报告](../09-深度架构审查报告.md) 和 [生命周期规范](../02-策略工厂全链路生命周期规范.md)
+
+## 当前状态同步（截至 2026-06-23）
+
+- `Phase 1` 已完成：canonical naming、`RuntimeAdapters`、`ExecutionUniverseContract` owner、canonical bootstrap owner 都已有代码与守门测试证明。
+- `Phase 2` 已完成：四个 runtime 与 root runner 主路径已收口到 `strategy_factory.api.runtime` / `strategy_factory.runtime.*`。
+- `Phase 3` 已完成当前轮验收要求：`server.py` 已退回 thin host 语义，manager/services ownership 守门测试已补齐，current-state 文档已同步。
+- 仍保留少量 compat/shim：`akshare_mcp.runtime.strategy_factory_bootstrap`、`akshare_mcp.adapters.strategy_factory_runtime.build_strategy_factory_scheduler_kwargs()`、AKShare package runners 与部分 fallback/query adapter。
+- 上述 compat 层的剩余计划是“保留公开名字，持续移除仓库内主动消费点”，而不是回退 canonical owner。
+
+## 目录归类说明
+
+- 本目录只写 target-state、planned 目录、标准化契约和未来迁移目标。
+- current-state 事实、真实流程链、能力占用台账和运行规范统一留在上级目录。
+- 历史运行报告、阶段性附录不进入本目录，统一放在 `../appendix/` 下，避免把观察性材料误读为规范正文。
 
 ## 文档目录
 
@@ -88,13 +123,13 @@ Agent HTTP接口、数据库访问、诊断脚本接口和集成方式。注明V
 
 ## 文档特点
 
-### ✅ 基于真实代码和数据
+### ✅ 作为 target-state 文档的价值
 
-- 所有数据模型来自实际代码路径
-- 所有数据统计来自2026-06-21真实运行数据
-- 所有问题来自深度代码审查报告
+- 为未来目录迁移、接口标准化和长期契约治理提供目标参照
+- 与上级 current-state 文档形成“现状 / 目标态”双轨口径
+- 用于说明仍未物理迁目录的 support/provider/IO 层未来应如何继续瘦身
 
-### ✅ 完整的证据链追踪
+### ✅ 契约与目标路径追踪
 
 - 每个功能点指向具体代码位置
 - 每个表包含实际行数统计
@@ -182,7 +217,7 @@ Agent HTTP接口、数据库访问、诊断脚本接口和集成方式。注明V
 1. 先运行 [健康诊断](07-运行与诊断.md#2-健康诊断)
 2. 根据诊断结果查看对应的 [问题排查](07-运行与诊断.md#3-常见问题排查)
 3. 检查 [证据链完整性](06-数据库Schema与证据表.md#2-关键查询)
-4. 参考 [深度代码审查报告](../DEEP_CODE_REVIEW_2026-06-21.md) 的问题清单
+4. 参考 [深度架构审查报告](../09-深度架构审查报告.md) 的问题清单
 
 ### 开发新功能
 
@@ -218,7 +253,7 @@ Agent HTTP接口、数据库访问、诊断脚本接口和集成方式。注明V
 ## 相关资源
 
 - [策略工厂主规范](../02-策略工厂全链路生命周期规范.md)
-- [深度代码审查报告](../DEEP_CODE_REVIEW_2026-06-21.md)
+- [深度架构审查报告](../09-深度架构审查报告.md)
 - [运行与诊断手册](../06-运行与诊断手册.md)
 - [规范验收清单](../10-规范验收清单.md)
 

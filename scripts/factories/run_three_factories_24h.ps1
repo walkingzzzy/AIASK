@@ -104,11 +104,13 @@ $RunDir = Join-Path $LogRoot $RunId
 $ChildLogDir = Join-Path $RunDir "children"
 $RunLog = Join-Path $RunDir "watchdog.log"
 $StatusPath = Join-Path $RunDir "status.json"
+$ExecutionRecordsPath = Join-Path $RunDir "execution_records.jsonl"
 $StdoutPath = Join-Path $RunDir "supervisor.stdout.log"
 $StderrPath = Join-Path $RunDir "supervisor.stderr.log"
 
 New-Item -ItemType Directory -Force -Path $ChildLogDir | Out-Null
 New-Item -ItemType File -Force -Path $RunLog | Out-Null
+New-Item -ItemType File -Force -Path $ExecutionRecordsPath | Out-Null
 
 $SqlitePath = Join-Path $Root "data\db\akshare_mcp.sqlite3"
 
@@ -144,6 +146,7 @@ Set-Env -Name "LIVE_TRADING_ALLOW_WRITE" -Value "0"
 Set-Env -Name "BROKER_ALLOW_WRITE" -Value "0"
 Set-Env -Name "LIVE_TRADING_READ_ONLY" -Value "1"
 Set-Env -Name "BROKER_READ_ONLY" -Value "1"
+Set-Env -Name "AIASK_FACTORY_MCP_SERVICE_EXPECTED" -Value "0"
 
 $SupervisorArgs = @(
     "-u",
@@ -176,6 +179,8 @@ $Deadline = $StartedAt.AddSeconds([Math]::Ceiling($Hours * 3600))
 $InitialStatus = [ordered]@{
     run_id = $RunId
     status = "planned"
+    mcp_service_expected = $false
+    mcp_service_command = $null
     root = $Root
     started_at = $StartedAt.ToString("o")
     deadline = $Deadline.ToString("o")
@@ -185,6 +190,7 @@ $InitialStatus = [ordered]@{
     supervisor_restart_count = 0
     log_dir = $RunDir
     child_log_dir = $ChildLogDir
+    execution_records = $ExecutionRecordsPath
     python = $Python
     supervisor_args = $SupervisorArgs
     live_trading_enabled = $env:LIVE_TRADING_ENABLED
@@ -196,11 +202,40 @@ $InitialStatus = [ordered]@{
 }
 $InitialStatus | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $StatusPath -Encoding UTF8
 
+function Write-ExecutionRecord {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string] $EventType,
+        [hashtable] $Fields = @{}
+    )
+
+    $Payload = [ordered]@{
+        ts = (Get-Date -Format o)
+        event_type = $EventType
+        run_id = $RunId
+        mcp_service_expected = $false
+    }
+    foreach ($Key in $Fields.Keys) {
+        $Payload[$Key] = $Fields[$Key]
+    }
+    Add-Content -LiteralPath $ExecutionRecordsPath -Value ($Payload | ConvertTo-Json -Depth 8 -Compress) -Encoding UTF8
+}
+
 Write-RunLog "planned run_id=$RunId duration_hours=$Hours deadline=$($Deadline.ToString("o"))"
 Write-RunLog "log_dir=$RunDir"
 Write-RunLog "python=$Python"
 Write-RunLog "supervisor_args=$($SupervisorArgs -join ' ')"
 Write-RunLog "safety live=$env:LIVE_TRADING_ENABLED live_write=$env:LIVE_TRADING_ALLOW_WRITE broker_write=$env:BROKER_ALLOW_WRITE gate3_record_only=$env:STRATEGY_FACTORY_GATE3_RECORD_ONLY_ENABLED"
+Write-RunLog "mcp_service_expected=false"
+Write-ExecutionRecord -EventType "watchdog_plan" -Fields @{
+    root = $Root
+    duration_hours = $Hours
+    deadline = $Deadline.ToString("o")
+    python = $Python
+    supervisor_args = $SupervisorArgs
+    log_dir = $RunDir
+    child_log_dir = $ChildLogDir
+}
 
 if ($DryRun) {
     Write-RunLog "dry_run=true; exiting without starting supervisor"
@@ -227,9 +262,16 @@ try {
             -PassThru
 
         Write-RunLog "started supervisor pid=$($CurrentProcess.Id) restart_count=$RestartCount"
+        Write-ExecutionRecord -EventType "supervisor_start" -Fields @{
+            supervisor_pid = $CurrentProcess.Id
+            supervisor_restart_count = $RestartCount
+            supervisor_started_at = $AttemptStartedAt.ToString("o")
+        }
         $Status = [ordered]@{
             run_id = $RunId
             status = "running"
+            mcp_service_expected = $false
+            mcp_service_command = $null
             root = $Root
             started_at = $StartedAt.ToString("o")
             deadline = $Deadline.ToString("o")
@@ -241,6 +283,7 @@ try {
             last_exit_code = $LastExitCode
             log_dir = $RunDir
             child_log_dir = $ChildLogDir
+            execution_records = $ExecutionRecordsPath
             stdout_log = $StdoutPath
             stderr_log = $StderrPath
         }
@@ -253,6 +296,9 @@ try {
 
         if (-not $CurrentProcess.HasExited) {
             Write-RunLog "deadline reached; stopping supervisor pid=$($CurrentProcess.Id)"
+            Write-ExecutionRecord -EventType "deadline_reached" -Fields @{
+                supervisor_pid = $CurrentProcess.Id
+            }
             Stop-FactoryTree -ProcessId $CurrentProcess.Id
             $CurrentProcess.Refresh()
             $LastExitCode = $CurrentProcess.ExitCode
@@ -261,6 +307,11 @@ try {
 
         $LastExitCode = $CurrentProcess.ExitCode
         Write-RunLog "supervisor exited pid=$($CurrentProcess.Id) exit_code=$LastExitCode before deadline"
+        Write-ExecutionRecord -EventType "supervisor_exit" -Fields @{
+            supervisor_pid = $CurrentProcess.Id
+            exit_code = $LastExitCode
+            before_deadline = $true
+        }
         if ((Get-Date) -ge $Deadline) {
             break
         }
@@ -272,6 +323,8 @@ try {
     $FinalStatus = [ordered]@{
         run_id = $RunId
         status = "deadline_reached_or_stopped"
+        mcp_service_expected = $false
+        mcp_service_command = $null
         root = $Root
         started_at = $StartedAt.ToString("o")
         completed_at = $CompletedAt.ToString("o")
@@ -284,9 +337,16 @@ try {
         last_exit_code = $LastExitCode
         log_dir = $RunDir
         child_log_dir = $ChildLogDir
+        execution_records = $ExecutionRecordsPath
         stdout_log = $StdoutPath
         stderr_log = $StderrPath
     }
     $FinalStatus | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $StatusPath -Encoding UTF8
     Write-RunLog "finished status=$($FinalStatus.status) elapsed_seconds=$($FinalStatus.elapsed_seconds) restarts=$RestartCount last_exit_code=$LastExitCode"
+    Write-ExecutionRecord -EventType "watchdog_finish" -Fields @{
+        status = $FinalStatus.status
+        elapsed_seconds = $FinalStatus.elapsed_seconds
+        supervisor_restart_count = $RestartCount
+        last_exit_code = $LastExitCode
+    }
 }

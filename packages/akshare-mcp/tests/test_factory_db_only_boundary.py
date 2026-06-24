@@ -145,17 +145,16 @@ def test_akshare_does_not_reference_strategy_factory_underscore_public_api() -> 
 def test_strategy_factory_scheduler_kwargs_contract(monkeypatch) -> None:
     from akshare_mcp.adapters import strategy_factory_runtime as bridge
 
-    fake_db = object()
-    fake_adapters = object()
+    fake_kwargs = {"db_provider": object(), "runtime_adapters": object()}
 
-    monkeypatch.setattr(bridge, "get_strategy_factory_db_provider", lambda: (lambda: fake_db))
-    monkeypatch.setattr(bridge, "build_strategy_factory_runtime_adapters", lambda db: fake_adapters)
+    monkeypatch.setattr(
+        "strategy_factory.runtime.default_bootstrap.build_default_scheduler_kwargs",
+        lambda db=None: fake_kwargs,
+    )
 
     kwargs = bridge.build_strategy_factory_scheduler_kwargs()
 
-    assert set(kwargs) == {"db_provider", "runtime_adapters"}
-    assert kwargs["db_provider"]() is fake_db
-    assert kwargs["runtime_adapters"] is fake_adapters
+    assert kwargs is fake_kwargs
 
 
 def test_repo_does_not_use_akshare_strategy_factory_compat_facade() -> None:

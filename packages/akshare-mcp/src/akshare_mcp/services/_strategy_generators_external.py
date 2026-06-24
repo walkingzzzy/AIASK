@@ -15,14 +15,16 @@ import pandas as pd
 from ..env_loader import load_mcp_env
 
 def _get_strategy_factory_imports():
-    from strategy_factory import (
+    from strategy_factory.api import (
+        extract_event_context as _extract_event_context,
+        preferred_strategy_types_for_factor,
+    )
+    from strategy_factory.api.constants import (
         CATEGORY_MINIMUMS,
         LLM_FAN_OUT_COUNT,
         PIPELINE_MODE,
         PIPELINE_STAGE_TIMEOUTS,
         PIPELINE_STAGE_TIMEOUT_SEC,
-        extract_event_context as _extract_event_context,
-        preferred_strategy_types_for_factor,
     )
     from strategy_factory.api.semantic_contract import apply_target_symbol_policy, normalize_research_task_contract
     return {

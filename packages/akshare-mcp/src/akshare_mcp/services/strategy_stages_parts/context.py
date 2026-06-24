@@ -594,7 +594,7 @@ def _snapshot_sector_names(snapshot: dict[str, Any], input_data: dict[str, Any])
 
 async def _fallback_event_recognition(db: Any, input_data: dict[str, Any], snapshot: dict[str, Any]) -> dict[str, Any]:
     """使用 LocalEventDrivenResearchEngine 的规则检测作为 fallback。"""
-    from strategy_factory import get_local_event_engine
+    from strategy_factory.api import get_local_event_engine
 
     engine = get_local_event_engine()
     result = await engine.refresh(db, snapshot=snapshot)

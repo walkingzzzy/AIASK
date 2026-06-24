@@ -137,7 +137,7 @@ if TYPE_CHECKING:
         ValidationGateway,
         VectorSearchGateway,
     )
-    from ..infrastructure.mcp_adapters import MCPRuntimeAdapters
+    from ..infrastructure.runtime_adapters import RuntimeAdapters
 
 logger = logging.getLogger(__name__)
 

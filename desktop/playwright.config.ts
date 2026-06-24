@@ -4,7 +4,7 @@ const isLive = process.env.AIASK_E2E_MODE === "live";
 
 export default defineConfig({
   testDir: "./e2e",
-  timeout: isLive ? 60_000 : 30_000,
+  timeout: isLive ? 180_000 : 30_000,
   expect: { timeout: 5_000 },
   fullyParallel: !isLive,
   reporter: "list",

@@ -12,7 +12,7 @@ from typing import Any
 
 
 def _base_url() -> str:
-    return str(os.getenv("AIASK_AGENT_URL") or "http://127.0.0.1:8767").rstrip("/")
+    return str(os.getenv("AIASK_AGENT_URL") or "http://127.0.0.1:8765").rstrip("/")
 
 
 def _headers() -> dict[str, str]:

@@ -408,12 +408,15 @@ def register_quant_manager(mcp):
                 return _ok(await gw.get_pool_status())
 
             async def _handle_factory_mining_cycle():
-                from ...services.factor_mining_factory import get_factor_mining_factory
-                factory = get_factor_mining_factory()
+                from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+                from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
+
+                ensure_default_runtime_services()
+                factory = get_factor_mining_runtime()
                 engines = _kw.get("engines")
                 codes = _kw.get("codes")
                 candidate_count = int(_kw.get("candidate_count", 30) or 30)
-                result = await factory.run_mining_cycle(
+                result = await factory.run_once(
                     trigger="quant_manager",
                     engines=engines,
                     candidate_count=candidate_count,
@@ -430,8 +433,11 @@ def register_quant_manager(mcp):
                 return _ok({"factors": factors, "count": len(factors)})
 
             async def _handle_factory_maintenance():
-                from ...services.factor_mining_factory import get_factor_mining_factory
-                factory = get_factor_mining_factory()
+                from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+                from strategy_factory.runtime.factor_mining import get_factor_mining_runtime
+
+                ensure_default_runtime_services()
+                factory = get_factor_mining_runtime()
                 result = await factory.run_maintenance()
                 return _ok(result)
 

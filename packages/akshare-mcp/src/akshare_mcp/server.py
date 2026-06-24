@@ -109,29 +109,6 @@ def _load_heavy_module(name: str) -> object:
     return _heavy_modules[name]
 
 
-def get_factor_scheduler():
-    from .services.factor_scheduler import get_factor_scheduler as _get_factor_scheduler
-
-    return _get_factor_scheduler()
-
-
-def get_matching_engine():
-    from .services.matching_engine import get_matching_engine as _get_matching_engine
-
-    return _get_matching_engine()
-
-
-def get_nav_engine():
-    from .services.nav_engine import get_nav_engine as _get_nav_engine
-
-    return _get_nav_engine()
-
-
-def get_signal_tracker():
-    from .services.signal_tracker import get_signal_tracker as _get_signal_tracker
-
-    return _get_signal_tracker()
-
 _started_background_services: list[tuple[str, object]] = []
 _shutdown_lock = threading.Lock()
 _shutdown_completed = False
@@ -419,20 +396,10 @@ def _as_bool(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _strategy_factory_embedded_start_enabled(startup_profile: str) -> bool:
-    if not _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "false")):
-        return False
-    return startup_profile in {"worker", "legacy"}
-
-
 def _background_services_env_enabled() -> bool:
     return any(
         _as_bool(os.getenv(name, "true"))
         for name in (
-            "FACTOR_SCHEDULER_ENABLED",
-            "MATCHING_ENGINE_ENABLED",
-            "NAV_ENGINE_ENABLED",
-            "SIGNAL_TRACKER_ENABLED",
             "DATA_SYNC_SCHEDULER_ENABLED",
             "STARTUP_VALIDATION_ENABLED",
         )
@@ -565,44 +532,25 @@ def _launch_sync_background_services(logger: logging.Logger, startup_profile: st
             logger.warning("[Server] %s failed to start: %s", name, exc)
 
     async def _bg_main() -> None:
-        if startup_profile != "worker":
-            _try_start("FactorScheduler", get_factor_scheduler, "FACTOR_SCHEDULER_ENABLED")
-
-            # 2026-05-28 (P0/A 解耦): 当孵化工厂拥有 paper-trading 时,MCP server
-            # 不再启动 MatchingEngine + NavEngine,避免双跑(撮合冲突 / NAV 双写)。
-            # 单进程旧部署可设 INCUBATION_FACTORY_OWNS_PAPER_TRADING=0 让 server 重新接管。
-            incubation_owns_paper = _as_bool(
-                os.getenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
+        if any(
+            _as_bool(os.getenv(name, "false"))
+            for name in (
+                "STRATEGY_FACTORY_ENABLED",
+                "FACTOR_SCHEDULER_ENABLED",
+                "MATCHING_ENGINE_ENABLED",
+                "NAV_ENGINE_ENABLED",
+                "SIGNAL_TRACKER_ENABLED",
             )
-            if incubation_owns_paper:
-                logger.info(
-                    "[Server] MatchingEngine/NavEngine skipped (owned by incubation_factory; "
-                    "set INCUBATION_FACTORY_OWNS_PAPER_TRADING=0 to revert)"
-                )
-            else:
-                _try_start("MatchingEngine", get_matching_engine, "MATCHING_ENGINE_ENABLED")
-                _try_start("NavEngine", get_nav_engine, "NAV_ENGINE_ENABLED")
-
-            _try_start("SignalTracker", get_signal_tracker, "SIGNAL_TRACKER_ENABLED")
-
-        if _strategy_factory_embedded_start_enabled(startup_profile):
-            try:
-                from strategy_factory import get_strategy_factory_scheduler  # noqa: PLC0415
-                from .adapters.strategy_factory_runtime import (  # noqa: PLC0415
-                    build_strategy_factory_scheduler_kwargs,
-                )
-
-                factory = _remember_started_service(
-                    "StrategyFactory",
-                    get_strategy_factory_scheduler(**build_strategy_factory_scheduler_kwargs()),
-                )
-                factory.start()
-                logger.info("[Server] StrategyFactory started")
-            except Exception as exc:
-                logger.warning("[Server] StrategyFactory failed to start: %s", exc)
-        elif _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "false")):
+        ):
+            logger.info(
+                "[Server] factory-owned runtime env toggles are ignored; "
+                "StrategyFactory, FactorScheduler, MatchingEngine, NavEngine, "
+                "and SignalTracker now run as standalone runtimes"
+            )
+        if _as_bool(os.getenv("STRATEGY_FACTORY_ENABLED", "false")):
             logger.warning(
-                "[Server] STRATEGY_FACTORY_ENABLED is set, but embedded StrategyFactory startup is allowed only in worker/legacy profiles"
+                "[Server] STRATEGY_FACTORY_ENABLED is set, but embedded StrategyFactory startup has been removed; "
+                "run Strategy Factory via the standalone runner instead"
             )
 
         if startup_profile != "worker" and _as_bool(os.getenv("DATA_SYNC_SCHEDULER_ENABLED", "true")):
@@ -648,7 +596,7 @@ async def _main_async(transport: str, mount_path: str | None) -> None:
 
     if startup_profile == "tool-only":
         logger.info("[Server] tool-only profile active, background schedulers and startup validators are disabled")
-    elif startup_profile == "worker" and not _strategy_factory_embedded_start_enabled(startup_profile):
+    elif startup_profile == "worker":
         logger.info("[Server] worker profile active, heavy tools enabled but autonomous background services remain disabled")
     elif startup_profile == "full" and not _background_services_env_enabled():
         logger.info("[Server] full profile active, but autonomous background services are disabled by env")

@@ -359,15 +359,15 @@ async def incubation_factory_status(arguments: dict[str, Any]) -> dict[str, Any]
     """Read-only adapter to the incubation factory runner status."""
     try:
         _ensure_monorepo_paths()
-        from akshare_mcp.services.incubation_factory import (
-            get_incubation_factory_runner,
-        )
+        from strategy_factory.runtime.default_bootstrap import ensure_default_runtime_services
+        from strategy_factory.runtime.incubation import build_incubation_runtime
     except ModuleNotFoundError as exc:
         return _missing_factory_dependency(exc)
 
     try:
-        runner = get_incubation_factory_runner()
-        snapshot = runner.status() if runner is not None else {}
+        ensure_default_runtime_services()
+        runtime = build_incubation_runtime()
+        snapshot = runtime.status()
     except Exception as exc:
         return _unavailable_factory(exc)
 

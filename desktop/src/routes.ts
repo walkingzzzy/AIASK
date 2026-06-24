@@ -34,6 +34,14 @@ export const V1_ROUTES: Record<ViewId, string> = {
 };
 
 export const DEFERRED_ROUTE_ALIASES: Record<string, ViewId> = {
+  "/approvals": "tools-approvals",
+  "/mcp": "mcp-connectors",
+  "/connectors": "mcp-connectors",
+  "/skills": "plugins-skills",
+  "/plugins": "plugins-skills",
+  "/gateway": "gateway-webhooks",
+  "/finance-lab": "finance-lab",
+  "/user": "local-user-memory",
   "/strategy-factory": "finance-lab",
   "/factor-factory": "finance-lab",
   "/incubation": "finance-lab",
@@ -61,3 +69,8 @@ export function viewToRoute(view: ViewId): string {
 export function isDeferredView(view: string): view is DeferredViewId {
   return V1_DEFERRED_VIEWS.includes(view as DeferredViewId);
 }
+
+export const V1_COMPATIBLE_ALIASES = Object.entries(DEFERRED_ROUTE_ALIASES).map(([path, view]) => ({
+  path,
+  view
+}));
