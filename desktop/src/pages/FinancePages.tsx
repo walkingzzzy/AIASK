@@ -1,11 +1,62 @@
 import { Play, RefreshCw, Save, Search, ShieldAlert } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 
-import { DryRunPreview, GatedActionButton } from "../components/IntentComponents";
-import { EmptyState as SharedEmptyState, MockDataNotice } from "../components/StateComponents";
+import { ActiveFilters, FilterBar, type FilterConfig, type FilterValues } from "../components/FilterComponents";
+import { DraggableDataTable } from "../components/DraggableDataTable";
+import { DryRunPreview } from "../components/IntentComponents";
+import { MarketHeatmap, type HeatmapData } from "../components/FinancialChart";
+import { EmptyState as SharedEmptyState, ErrorState as SharedErrorState, FilterEmptyState, MockDataNotice } from "../components/StateComponents";
+import { StatusLight, inferStatusFromData } from "../components/StatusLight";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { Button, DataTable, EmptyState, GatedNotice, JsonPanel, LinkCard, PageShell, Panel, ResourcePanel, StatusBadge } from "../components/ui";
+import type { ApiProblem, UnknownRecord } from "../types";
 import { dataObject, firstArray, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
+
+type RadarFilters = {
+  tier: string;
+  symbol: string;
+  min_score: string;
+  limit: string;
+};
+
+type PairLikeRecord = Record<string, unknown>;
+
+function normalizeRadarFilters(filters: RadarFilters) {
+  return {
+    tier: filters.tier || undefined,
+    symbol: filters.symbol || undefined,
+    min_score: filters.min_score ? Number(filters.min_score) : undefined,
+    limit: filters.limit ? Number(filters.limit) : undefined
+  };
+}
+
+function summarizeError(error: ApiProblem | null) {
+  if (!error) return null;
+  return error.detail || error.title;
+}
+
+function brokerRows(payload: unknown, key: "accounts" | "positions" | "orders") {
+  const envelope = dataObject(payload, {});
+  const rows = firstArray(envelope, [key, "data"]);
+  return rows;
+}
+
+function analyticsRecord(payload: unknown) {
+  const envelope = dataObject(payload, {});
+  const data = dataObject(envelope.data, envelope);
+  return dataObject<UnknownRecord>(data.analytics, {});
+}
+
+function candidateDetailFields(candidate: PairLikeRecord) {
+  return [
+    { label: "代码", value: valueOf(candidate, ["symbol"], "-") },
+    { label: "名称", value: valueOf(candidate, ["name"], "-") },
+    { label: "层级", value: valueOf(candidate, ["tier"], "-") },
+    { label: "分数", value: valueOf(candidate, ["score"], "-") },
+    { label: "原因", value: valueOf(candidate, ["reason", "thesis", "summary"], "-") },
+    { label: "风险", value: valueOf(candidate, ["risk", "risk_note"], "-") }
+  ];
+}
 
 export function FinancePages(props: PageProps) {
   switch (props.view) {
@@ -66,7 +117,7 @@ function StockDataSourcesPage({ api, controlAvailable, settings }: PageProps) {
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
               },
               { key: "secrets_redacted", header: "已脱敏" }
             ]}
@@ -133,7 +184,7 @@ function DataSyncPage({ api }: PageProps) {
   return (
     <PageShell
       title="数据状态与同步计划"
-      description="总览数据库、freshness、缺失项与 dry-run 同步计划；真正执行仍受后端意图与控制策略约束。"
+      description="总览数据库、freshness、缺失项与 dry-run 同步计划；实际执行仍由后端 intent 和 control token 约束。"
       metrics={[
         metric("Database", valueOf(dataObject(statusData.database, {}), ["status"]), statusTone(dataObject(statusData.database, {}).status)),
         metric("Freshness", freshness.status || "-", statusTone(freshness.status)),
@@ -150,7 +201,7 @@ function DataSyncPage({ api }: PageProps) {
           <label className="field">
             <span>股票代码</span>
             <textarea data-testid="data-sync-codes" value={codes} onChange={(event) => setCodes(event.target.value)} />
-            <small>这里只生成计划，不直接写入数据；实际执行需要后端的 intent / control 门禁。</small>
+            <small>这里只生成计划，不直接写入数据；实际执行仍需后端的 intent / control 门禁。</small>
           </label>
           <Button data-testid="data-sync-plan" icon={<RefreshCw size={16} />} onClick={() => void createPlan()}>
             生成同步计划
@@ -167,7 +218,7 @@ function DataSyncPage({ api }: PageProps) {
             {
               key: "status",
               header: "状态",
-              render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+              render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
             }
           ]}
         />
@@ -189,7 +240,7 @@ function FinanceLabPage({ api, workbench }: PageProps) {
   return (
     <PageShell
       title="Finance Lab"
-      description="按总览、数据、雷达、温度、量化、经理台六个分区组织金融工作面，并保持四工厂仅作为内部高级能力或重定向目标。"
+      description="按总览、数据、雷达、温度、量化、经理台六个分区组织金融工作面，并保持更高级能力只作为内部能力承接。"
       metrics={[
         metric("数据状态", valueOf(dataObject(data.database, {}), ["status"]), statusTone(dataObject(data.database, {}).status)),
         metric("雷达候选", radarData.candidate_count || "-", "success"),
@@ -201,7 +252,7 @@ function FinanceLabPage({ api, workbench }: PageProps) {
         <LinkCard to="/finance" title="总览" detail="承接金融研究总览、当前线程上下文与关键 readiness。" tone="info" />
         <LinkCard to="/stock-data-sources" title="数据" detail="数据源、同步计划、freshness 和缺失项。" tone="success" />
         <LinkCard to="/stock-radar" title="雷达" detail="候选股、摘要、受控动作与推送意图。" tone="warning" />
-        <LinkCard to="/market-temperature" title="温度" detail="市场广度、行业冷热和 cache readiness。" />
+        <LinkCard to="/market-temperature" title="温度" detail="市场广度、行业冷热和缓存 readiness。" />
         <LinkCard to="/quant-research" title="量化" detail="Preset、研究运行、报告与证据。" />
         <LinkCard to="/financial-manager" title="经理台" detail="只读查询、受控意图与券商只读信息。" tone="gated" />
       </div>
@@ -219,7 +270,7 @@ function FinanceLabPage({ api, workbench }: PageProps) {
           />
         </Panel>
         <Panel title="产品边界">
-          <p>四个延迟能力入口继续隐藏为直接产品入口，仅保留内部高级能力承接与兼容重定向。</p>
+          <p>更高级的工厂能力继续隐藏为内部能力入口，仅保留承接关系，不作为直接产品主入口。</p>
           <JsonPanel data={{ broker: broker.data, manager: manager.data }} title="Broker / Manager readiness" />
         </Panel>
       </div>
@@ -228,32 +279,134 @@ function FinanceLabPage({ api, workbench }: PageProps) {
 }
 
 function StockRadarPage({ api, controlAvailable }: PageProps) {
-  const status = useAsyncResource(() => api.stockRadarStatus(), [api]);
-  const candidates = useAsyncResource(() => api.stockRadarCandidates(), [api]);
-  const digest = useAsyncResource(() => api.stockRadarDigest(), [api]);
+  const [filters, setFilters] = useState<RadarFilters>({ tier: "", symbol: "", min_score: "", limit: "20" });
+  const [selectedSymbol, setSelectedSymbol] = useState("");
+  const [selectedCandidateIds, setSelectedCandidateIds] = useState<Set<string>>(new Set());
+  const [targetPoolId, setTargetPoolId] = useState("");
+  const [actionResult, setActionResult] = useState<unknown>(null);
+  const [actionError, setActionError] = useState<string>("");
+  const query = useMemo(() => normalizeRadarFilters(filters), [filters]);
+  const status = useAsyncResource(() => api.stockRadarStatus({ limit: query.limit }), [api, query.limit]);
+  const candidates = useAsyncResource(() => api.stockRadarCandidates(query), [api, query.tier, query.symbol, query.min_score, query.limit]);
+  const pools = useAsyncResource(() => api.userStockPools(), [api]);
+  const latestRunId = String(dataObject(status.data, {}).latest_run_id || "");
+  const digest = useAsyncResource(
+    () =>
+      api.stockRadarDigest({
+        run_id: latestRunId || undefined,
+        channels: "local,preview",
+        limit: query.limit
+      }),
+    [api, latestRunId, query.limit]
+  );
+
   const candidateRows = firstArray(dataObject(candidates.data, {}), ["candidates", "data"]);
+  const poolRows = list(pools.data);
+  const selectedCandidateRows = candidateRows.filter((item) => selectedCandidateIds.has(String(item.symbol || item.code || "")));
   const statusData = dataObject(status.data, {});
   const digestData = dataObject(digest.data, {});
-  const [actionResult, setActionResult] = useState<unknown>(null);
+  const selectedCandidate =
+    candidateRows.find((item) => String(item.symbol || "") === selectedSymbol) ||
+    candidateRows[0] ||
+    null;
+  const filterConfigs: FilterConfig[] = [
+    {
+      id: "tier",
+      label: "层级",
+      type: "select",
+      options: [
+        { value: "A", label: "A" },
+        { value: "B", label: "B" },
+        { value: "C", label: "C" }
+      ]
+    },
+    {
+      id: "symbol",
+      label: "股票 / 关键词",
+      type: "search",
+      placeholder: "输入代码或名称"
+    },
+    {
+      id: "min_score",
+      label: "最低分数",
+      type: "select",
+      options: [
+        { value: "60", label: "60+" },
+        { value: "70", label: "70+" },
+        { value: "80", label: "80+" }
+      ]
+    },
+    {
+      id: "limit",
+      label: "数量上限",
+      type: "select",
+      options: [
+        { value: "10", label: "10" },
+        { value: "20", label: "20" },
+        { value: "50", label: "50" }
+      ]
+    }
+  ];
+
+  function toFilterValues(): FilterValues {
+    return filters;
+  }
+
+  function clearFilters() {
+    setFilters({ tier: "", symbol: "", min_score: "", limit: "20" });
+  }
 
   async function createRadarIntent(action: "run" | "deliver") {
-    setActionResult(
-      await api.createIntent({
+    setActionError("");
+    setActionResult(null);
+    try {
+      const result = await api.createIntent({
         action: action === "run" ? "stock_radar.run_once" : "stock_radar.push_digest",
         params: {
           run_id: statusData.latest_run_id,
           channels: action === "deliver" ? ["local"] : undefined,
           dry_run: true
         },
-        rationale: `Desktop V1 stock radar ${action} intent`
-      })
-    );
+        rationale: `Desktop stock radar ${action} intent`
+      });
+      setActionResult(result);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    }
   }
+
+  async function addSelectedToPool() {
+    if (!targetPoolId || !selectedCandidateRows.length) return;
+    setActionError("");
+    const results = [];
+    for (const candidate of selectedCandidateRows) {
+      const code = String(candidate.symbol || candidate.code || "");
+      if (!code) continue;
+      try {
+        const result = await api.stockPoolAddStock(targetPoolId, {
+          code,
+          name: String(candidate.name || code),
+          tags: ["radar"],
+          note: `Radar tier=${String(candidate.tier || "-")} score=${String(candidate.score || "-")}`
+        });
+        results.push({ code, success: true, result });
+      } catch (error) {
+        results.push({ code, success: false, error: error instanceof Error ? error.message : String(error) });
+      }
+    }
+    setActionResult({ object: "stock_radar.batch_add_to_pool", pool_id: targetPoolId, results });
+    setSelectedCandidateIds(new Set());
+    await pools.reload();
+  }
+
+  const hasActiveFilters = Boolean(filters.tier || filters.symbol || filters.min_score || filters.limit !== "20");
+  const candidateError = candidates.error || status.error;
+  const noCandidates = !candidateError && !candidates.loading && candidateRows.length === 0;
 
   return (
     <PageShell
       title="Stock Radar"
-      description="独立承接股票发现、候选池、摘要、风险说明和受控动作意图。"
+      description="承接股票发现、候选池、摘要、风险说明和受控动作意图。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="运行 / 推送雷达意图" />}
       metrics={[
         metric("最新运行", statusData.latest_run_id || "-", "info"),
@@ -262,32 +415,140 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
         metric("投递", digestData.delivery_intent_required ? "intent" : "read-only", digestData.delivery_intent_required ? "gated" : "success")
       ]}
     >
+      <FilterBar
+        filters={filterConfigs}
+        values={toFilterValues()}
+        onChange={(nextValues) =>
+          setFilters({
+            tier: String(nextValues.tier || ""),
+            symbol: String(nextValues.symbol || ""),
+            min_score: String(nextValues.min_score || ""),
+            limit: String(nextValues.limit || "20")
+          })
+        }
+        onClear={clearFilters}
+      />
+      <ActiveFilters
+        filters={filterConfigs}
+        values={toFilterValues()}
+        onRemove={(id) => setFilters((current) => ({ ...current, [id]: id === "limit" ? "20" : "" }))}
+        onClear={clearFilters}
+      />
+
       <div className="grid-2">
         <Panel title="候选股">
-          <DataTable
-            items={candidateRows}
-            columns={[
-              { key: "symbol", header: "代码" },
-              { key: "name", header: "名称" },
-              { key: "tier", header: "层级" },
-              { key: "score", header: "分数" },
-              { key: "risk", header: "风险" }
-            ]}
-            empty="暂无候选股"
-          />
+          {candidates.loading ? <SharedEmptyState title="Loading..." detail="正在加载雷达候选。" /> : null}
+          {candidateError ? <SharedErrorState error={candidateError} onRetry={() => void candidates.reload()} /> : null}
+          {noCandidates ? (
+            hasActiveFilters ? (
+              <FilterEmptyState onClear={clearFilters} />
+            ) : (
+              <EmptyState title="暂无候选股" detail="当前没有可展示的雷达候选，请稍后刷新或调整数据条件。" />
+            )
+          ) : null}
+          {!candidates.loading && !candidateError && candidateRows.length ? (
+            <DraggableDataTable
+              items={candidateRows}
+              getRowId={(item) => String(item.symbol || item.code || "")}
+              selectedIds={selectedCandidateIds}
+              onSelectionChange={setSelectedCandidateIds}
+              batchActions={
+                <>
+                  <select
+                    data-testid="stock-radar-target-pool"
+                    value={targetPoolId}
+                    onChange={(event) => setTargetPoolId(event.target.value)}
+                    disabled={!controlAvailable}
+                  >
+                    <option value="">Select pool</option>
+                    {poolRows.map((pool) => (
+                      <option key={String(pool.id || "")} value={String(pool.id || "")}>
+                        {valueOf(pool, ["name"], String(pool.id || ""))}
+                      </option>
+                    ))}
+                  </select>
+                  <Button
+                    data-testid="stock-radar-add-selected"
+                    tone="success"
+                    icon={<Save size={14} />}
+                    disabled={!controlAvailable || !targetPoolId || !selectedCandidateRows.length}
+                    onClick={() => void addSelectedToPool()}
+                  >
+                    Add to pool
+                  </Button>
+                </>
+              }
+              columns={[
+                {
+                  key: "symbol",
+                  header: "代码",
+                  render: (item) => (
+                    <button
+                      type="button"
+                      className="table-link-button"
+                      data-testid={`stock-radar-candidate-${String(item.symbol || "")}`}
+                      onClick={() => setSelectedSymbol(String(item.symbol || ""))}
+                    >
+                      {String(item.symbol || "-")}
+                    </button>
+                  )
+                },
+                { key: "name", header: "名称" },
+                { key: "tier", header: "层级" },
+                { key: "score", header: "分数" },
+                { key: "risk", header: "风险" }
+              ]}
+            />
+          ) : null}
         </Panel>
 
+        <Panel title="候选详情" className="stock-radar-detail">
+          {selectedCandidate ? (
+            <div data-testid="stock-radar-detail">
+              <div className="page-actions" style={{ justifyContent: "space-between", marginBottom: 12 }}>
+                <div>
+                  <strong>{valueOf(selectedCandidate, ["name"], valueOf(selectedCandidate, ["symbol"], "-"))}</strong>
+                  <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{valueOf(selectedCandidate, ["symbol"], "-")}</div>
+                </div>
+                <StatusBadge tone={Number(selectedCandidate.score ?? 0) >= 80 ? "success" : "warning"}>Score {valueOf(selectedCandidate, ["score"], "-")}</StatusBadge>
+              </div>
+              <div className="form-grid">
+                {candidateDetailFields(selectedCandidate).map((field) => (
+                  <div className="field" key={field.label}>
+                    <span>{field.label}</span>
+                    <strong>{field.value}</strong>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <EmptyState title="未选择候选" detail="点击左侧候选项查看详情。" />
+          )}
+        </Panel>
+      </div>
+
+      <div className="grid-2">
         <Panel title="摘要与动作">
-          {digestData.digest ? <p>{String(digestData.digest)}</p> : <EmptyState title="暂无摘要" detail="等待雷达 digest 或 live Agent 返回。" />}
+          {digest.loading ? <SharedEmptyState title="Loading..." detail="正在加载雷达摘要。" /> : null}
+          {digest.error ? <SharedErrorState error={digest.error} onRetry={() => void digest.reload()} /> : null}
+          {!digest.loading && !digest.error ? (
+            digestData.digest ? <p data-testid="stock-radar-digest">{String(digestData.digest)}</p> : <EmptyState title="暂无摘要" detail="当前没有可展示的 digest。" />
+          ) : null}
           <div className="page-actions">
             <Button data-testid="stock-radar-run-intent" icon={<Play size={16} />} disabled={!controlAvailable} onClick={() => void createRadarIntent("run")}>
               创建运行意图
             </Button>
             <Button data-testid="stock-radar-deliver-intent" icon={<ShieldAlert size={16} />} disabled={!controlAvailable} onClick={() => void createRadarIntent("deliver")}>
-              创建投递意图
+              创建推送意图
             </Button>
           </div>
+          {actionError ? <p role="alert">{actionError}</p> : null}
           {actionResult ? <JsonPanel data={actionResult} title="Radar intent result" /> : null}
+        </Panel>
+
+        <Panel title="筛选说明">
+          <p>当前页面会把 `tier`、`symbol`、`min_score`、`limit` 直接透传到雷达候选接口，不再无条件全量拉取。</p>
+          <JsonPanel data={{ filters: query, status: status.data }} title="Radar query evidence" />
         </Panel>
       </div>
 
@@ -299,11 +560,41 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
 function MarketTemperaturePage({ api }: PageProps) {
   const snapshot = useAsyncResource(() => api.marketTemperatureSnapshot(), [api]);
   const readiness = useAsyncResource(() => api.marketTemperatureReadiness(), [api]);
-  const snapshotData = dataObject(snapshot.data, {});
-  const readinessData = dataObject(readiness.data, {});
+  const [historyWindow, setHistoryWindow] = useState("7");
+  const parsedHistoryWindow = [3, 7, 14, 30].includes(Number(historyWindow)) ? Number(historyWindow) : 7;
+  const history = useAsyncResource(() => api.marketTemperatureHistory(parsedHistoryWindow, true), [api, parsedHistoryWindow]);
+  const snapshotEnvelope = dataObject(snapshot.data, {});
+  const readinessEnvelope = dataObject(readiness.data, {});
+  const historyEnvelope = dataObject(history.data, {});
+  const snapshotData = dataObject(snapshotEnvelope.data, snapshotEnvelope);
+  const readinessData = dataObject(readinessEnvelope.data, readinessEnvelope);
   const market = dataObject(snapshotData.market, {});
   const hot = firstArray(snapshotData, ["hot_industries"]);
   const cold = firstArray(snapshotData, ["cold_industries"]);
+  const historyData = dataObject(historyEnvelope.data, historyEnvelope);
+  const historyItems = firstArray(historyData, ["items"]);
+  const heatmapLoading = snapshot.loading || history.loading;
+  const heatmapError = snapshot.error || history.error;
+
+  const heatmapData = useMemo<HeatmapData[]>(() => {
+    const primary = [...hot, ...cold];
+    if (primary.length) {
+      return primary.map((item, index) => ({
+        industry: valueOf(item, ["name", "industry", "code"], `Sector ${index + 1}`),
+        temperature: Number(item.temperature ?? 0),
+        stocks: Math.max(1, Number(item.stock_count ?? item.stocks ?? Math.round(Number(item.breadth ?? 0.3) * 20))),
+        avgChange: Number(item.change ?? item.avg_change ?? ((Number(item.breadth ?? 0.5) - 0.5) * 10))
+      }));
+    }
+    const latestHistory = dataObject(historyItems[0]?.snapshot, {});
+    const industries = firstArray(latestHistory, ["industries"]);
+    return industries.map((item, index) => ({
+      industry: valueOf(item, ["name", "industry", "code"], `Sector ${index + 1}`),
+      temperature: Number(item.temperature ?? 0),
+      stocks: Math.max(1, Number(item.stock_count ?? 1)),
+      avgChange: Number(item.change ?? item.avg_change ?? 0)
+    }));
+  }, [cold, historyItems, hot]);
 
   return (
     <PageShell
@@ -316,6 +607,42 @@ function MarketTemperaturePage({ api }: PageProps) {
         metric("缓存", readinessData.status || readinessData.ready || "-", statusTone(readinessData.status || readinessData.ready))
       ]}
     >
+      <Panel
+        title="Heatmap"
+        action={
+          <label className="field" style={{ minWidth: 140 }}>
+            <span>History window</span>
+            <select data-testid="market-history-window" value={historyWindow} onChange={(event) => setHistoryWindow(event.target.value)}>
+              <option value="3">3 days</option>
+              <option value="7">7 days</option>
+              <option value="14">14 days</option>
+              <option value="30">30 days</option>
+            </select>
+          </label>
+        }
+      >
+        <div data-testid="market-heatmap-panel">
+          {heatmapLoading ? <SharedEmptyState title="Loading..." detail="Loading market temperature snapshot and history." /> : null}
+          {heatmapError ? (
+            <SharedErrorState
+              error={heatmapError}
+              onRetry={() => {
+                void snapshot.reload();
+                void history.reload();
+              }}
+            />
+          ) : null}
+          {!heatmapLoading && !heatmapError && heatmapData.length ? (
+            <div data-testid="market-heatmap-ready">
+              <MarketHeatmap data={heatmapData} />
+            </div>
+          ) : null}
+          {!heatmapLoading && !heatmapError && !heatmapData.length ? (
+            <EmptyState title="No heatmap data" detail="No market temperature industries are available for the selected history window." />
+          ) : null}
+        </div>
+      </Panel>
+
       <div className="grid-2">
         <Panel title="热门行业">
           <DataTable items={hot} columns={[{ key: "industry", header: "行业" }, { key: "temperature", header: "温度" }, { key: "breadth", header: "广度" }]} />
@@ -325,7 +652,20 @@ function MarketTemperaturePage({ api }: PageProps) {
         </Panel>
       </div>
 
-      <JsonPanel data={{ snapshot: snapshot.data, readiness: readiness.data }} title="Market temperature evidence" />
+      <Panel title="Snapshot history">
+        <DataTable
+          items={historyItems}
+          columns={[
+            { key: "as_of", header: "Date" },
+            { key: "market_temperature", header: "Temperature" },
+            { key: "market_state", header: "State" },
+            { key: "quality_status", header: "Quality" }
+          ]}
+          empty="No cached history"
+        />
+      </Panel>
+
+      <JsonPanel data={{ snapshot: snapshot.data, readiness: readiness.data, history: history.data }} title="Market temperature evidence" />
     </PageShell>
   );
 }
@@ -358,7 +698,7 @@ function QuantResearchPage({ api }: PageProps) {
   return (
     <PageShell
       title="Quant Research"
-      description="用 preset、参数、研究运行与报告构成量化分区，保持 dry-run 与证据链清晰可见。"
+      description="由 preset、参数、研究运行与报告构成量化分区，保持 dry-run 与证据链清晰可见。"
       metrics={[
         metric("Presets", rows.length, "success"),
         metric("当前 preset", preset, "info"),
@@ -411,11 +751,16 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
   const accounts = useAsyncResource(() => api.brokerAccounts(), [api]);
   const positions = useAsyncResource(() => api.brokerPositions(), [api]);
   const orders = useAsyncResource(() => api.brokerOrders(), [api]);
+  const analytics = useAsyncResource(() => api.brokerAnalyticsLatest(), [api]);
   const [query, setQuery] = useState("请复核当前组合风险，只返回只读分析。");
   const [result, setResult] = useState<unknown>(null);
   const [previewAction, setPreviewAction] = useState<null | "intent" | "broker-run">(null);
   const statusData = dataObject(status.data, {});
   const brokerData = dataObject(broker.data, {});
+  const accountRows = brokerRows(accounts.data, "accounts");
+  const positionRows = brokerRows(positions.data, "positions");
+  const orderRows = brokerRows(orders.data, "orders");
+  const analyticsData = analyticsRecord(analytics.data);
 
   async function runQuery() {
     setResult(
@@ -443,10 +788,12 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
   async function runBrokerAnalytics() {
     setResult(await api.brokerAnalyticsRun({ dry_run: true, source: "desktop_v1", read_only: true }));
     setPreviewAction(null);
+    await analytics.reload();
   }
 
   async function loadBrokerAnalytics() {
     setResult(await api.brokerAnalyticsLatest());
+    await analytics.reload();
   }
 
   return (
@@ -501,19 +848,50 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
         </Panel>
       </div>
 
-      <div className="grid-3">
-        <Panel title="账户">
-          <DataTable items={list(accounts.data)} columns={[{ key: "provider", header: "Provider" }, { key: "account_id", header: "账户" }, { key: "read_only", header: "只读" }]} />
-        </Panel>
+      <Panel title="我的实际情况">
+        <div className="grid-2">
+          <div>
+            <h3 style={{ marginBottom: 12 }}>账户</h3>
+            <DataTable items={accountRows} columns={[{ key: "provider", header: "Provider" }, { key: "account_id", header: "账户" }, { key: "read_only", header: "只读" }]} />
+          </div>
+          <div>
+            <h3 style={{ marginBottom: 12 }}>最新分析</h3>
+            {Object.keys(analyticsData).length ? (
+              <div className="form-grid">
+                <div className="field">
+                  <span>总资产</span>
+                  <strong>{valueOf(analyticsData, ["total_asset"], "-")}</strong>
+                </div>
+                <div className="field">
+                  <span>现金占比</span>
+                  <strong>{valueOf(analyticsData, ["cash_ratio"], "-")}</strong>
+                </div>
+                <div className="field">
+                  <span>持仓数</span>
+                  <strong>{valueOf(analyticsData, ["position_count"], "-")}</strong>
+                </div>
+                <div className="field">
+                  <span>订单数</span>
+                  <strong>{valueOf(analyticsData, ["order_count"], "-")}</strong>
+                </div>
+              </div>
+            ) : (
+              <EmptyState title="暂无分析结果" detail="点击上方按钮加载或生成最新券商分析。" />
+            )}
+          </div>
+        </div>
+      </Panel>
+
+      <div className="grid-2">
         <Panel title="持仓">
-          <DataTable items={list(positions.data)} columns={[{ key: "symbol", header: "代码" }, { key: "quantity", header: "数量" }, { key: "market_value", header: "市值" }]} />
+          <DataTable items={positionRows} columns={[{ key: "symbol", header: "代码" }, { key: "quantity", header: "数量" }, { key: "market_value", header: "市值" }]} />
         </Panel>
         <Panel title="订单只读">
-          <DataTable items={list(orders.data)} columns={[{ key: "id", header: "订单" }, { key: "symbol", header: "代码" }, { key: "status", header: "状态" }]} />
+          <DataTable items={orderRows} columns={[{ key: "id", header: "订单" }, { key: "symbol", header: "代码" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
 
-      <JsonPanel data={{ status: status.data, broker: broker.data, result }} title="Financial manager evidence" />
+      <JsonPanel data={{ status: status.data, broker: broker.data, analytics: analytics.data, result }} title="Financial manager evidence" />
     </PageShell>
   );
 }

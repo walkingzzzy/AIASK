@@ -26,6 +26,7 @@ from .quant_research import QuantResearchStore
 from .rl_atropos import RLAtroposManager
 from .routes.ai import create_ai_router
 from .routes.approvals import create_approvals_router
+from .routes.desktop_assets import create_desktop_assets_router
 from .routes.connectors import create_connectors_router
 from .routes.desktop_data import create_desktop_data_router
 from .routes.desktop_finance import create_desktop_finance_router
@@ -47,6 +48,7 @@ from .routes.run_control import create_run_control_router
 from .routes.run_history import create_run_history_router
 from .routes.tools import create_tools_router
 from .routes.webhooks import create_webhooks_router
+from .routes.ws import create_ws_router
 from .runtime import AgentRuntime
 from .server_http_utils import cors_origins as _cors_origins
 from .server_http_utils import truthy as _truthy
@@ -90,6 +92,8 @@ class AgentRouteAssembly:
     broker_sync_payload: Callable[..., Any]
     broker_accounts_payload: Callable[..., dict[str, Any]]
     broker_analytics_payload: Callable[..., dict[str, Any]]
+    desktop_asset_call: Callable[..., Any]
+    desktop_file_upload: Callable[..., Any]
     workbench_summary_payload: Callable[..., dict[str, Any]]
     ai_status_payload: Callable[..., dict[str, Any]]
     ai_config_payload: Callable[..., dict[str, Any]]
@@ -116,6 +120,7 @@ class AgentRouteAssembly:
     hermes_toolsets_payload: Callable[..., dict[str, Any]]
     hermes_config_payload: Callable[..., dict[str, Any]]
     hermes_sessions_payload: Callable[..., dict[str, Any]]
+    hermes_session_create_payload: Callable[..., dict[str, Any]]
     hermes_handoffs_payload: Callable[..., dict[str, Any]]
     hermes_resume_context_payload: Callable[..., dict[str, Any]]
     full_tool_call: Callable[..., Any]
@@ -175,6 +180,15 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
             event_batch_from_payload=routes.event_batch_from_payload,
             request_context_payload=routes.request_context_payload,
             truthy=_truthy,
+        )
+    )
+
+    app.include_router(
+        create_desktop_assets_router(
+            require_api=routes.require_api,
+            require_full=routes.require_full,
+            desktop_asset_call=routes.desktop_asset_call,
+            desktop_file_upload=routes.desktop_file_upload,
         )
     )
 
@@ -253,6 +267,13 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
     )
 
     app.include_router(
+        create_ws_router(
+            session_store=routes.runtime.session_store,
+            normalize_run_event=routes.normalize_run_event,
+        )
+    )
+
+    app.include_router(
         create_run_control_router(
             require_api=routes.require_api,
             require_full=routes.require_full,
@@ -311,11 +332,13 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
     app.include_router(
         create_hermes_router(
             require_api=routes.require_api,
+            require_control=routes.require_control,
             require_full=routes.require_full,
             hermes_toolsets_payload=routes.hermes_toolsets_payload,
             tool_catalog_payload=routes.tool_catalog_payload,
             hermes_config_payload=routes.hermes_config_payload,
             hermes_sessions_payload=routes.hermes_sessions_payload,
+            hermes_session_create_payload=routes.hermes_session_create_payload,
             hermes_handoffs_payload=routes.hermes_handoffs_payload,
             hermes_resume_context_payload=routes.hermes_resume_context_payload,
         )
@@ -381,6 +404,7 @@ def configure_agent_app(app: FastAPI, routes: AgentRouteAssembly) -> None:
         create_gateway_router(
             require_api=routes.require_api,
             require_full=routes.require_full,
+            full_tool_call=routes.full_tool_call,
             gateway_runtime_factory=gateway_factories.runtime,
             message_store_factory=gateway_factories.message_store,
             directory_store_factory=gateway_factories.directory_store,

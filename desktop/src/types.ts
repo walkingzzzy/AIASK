@@ -59,6 +59,7 @@ export type ViewId =
   | "workbench"
   | "models"
   | "projects-contexts"
+  | "user-profile"
   | "sessions-runs"
   | "tools-approvals"
   | "integrations"
@@ -72,6 +73,8 @@ export type ViewId =
   | "market-temperature"
   | "quant-research"
   | "financial-manager"
+  | "my-strategy"
+  | "my-stocks"
   | "automation"
   | "workflows"
   | "settings-security"
@@ -91,7 +94,7 @@ export interface ViewDefinition {
   label: string;
   shortLabel: string;
   route: string;
-  group: "core" | "integrations" | "finance" | "ops";
+  group: "core" | "integrations" | "finance" | "personal" | "ops";
   description: string;
   icon: LucideIcon;
   spec: string;

@@ -19,6 +19,57 @@ describe("AiaskApi", () => {
     await expect(api.stockRadarStatus()).resolves.toMatchObject({ success: true });
   });
 
+  it("supports stock radar query filters in mock mode", async () => {
+    const api = new AiaskApi(settings);
+    const candidates = await api.stockRadarCandidates({ tier: "A", symbol: "600519", min_score: 80, limit: 5 });
+    expect(candidates).toMatchObject({
+      success: true,
+      data: {
+        count: 1,
+        candidates: [{ symbol: "600519", tier: "A" }]
+      }
+    });
+
+    const digest = await api.stockRadarDigest({ run_id: "radar_filtered", channels: "local,wecom", limit: 2 });
+    expect(digest).toMatchObject({
+      success: true,
+      data: {
+        run_id: "radar_filtered",
+        channels: ["local", "wecom"],
+        limit: 2
+      }
+    });
+  });
+
+  it("supports gateway pairing status and create in mock mode", async () => {
+    const api = new AiaskApi(settings);
+    const status = await api.gatewayPairing({ platform: "feishu", user_id: "desk-user", session_id: "sess_1" });
+    expect(status).toMatchObject({
+      object: "gateway.pairing",
+      success: true,
+      data: {
+        action: "status",
+        platform: "feishu",
+        user_id: "desk-user",
+        session_id: "sess_1",
+        configured: true
+      }
+    });
+
+    const created = await api.gatewayPairingCreate({ platform: "discord", user_id: "desk-user", session_id: "sess_2" });
+    expect(created).toMatchObject({
+      object: "gateway.pairing",
+      success: true,
+      data: {
+        action: "create",
+        platform: "discord",
+        user_id: "desk-user",
+        session_id: "sess_2",
+        configured: true
+      }
+    });
+  });
+
   it("returns market temperature through agent tool facade", async () => {
     const api = new AiaskApi(settings);
     const result = await api.marketTemperatureSnapshot();

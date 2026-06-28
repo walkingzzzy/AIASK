@@ -21,7 +21,10 @@ import {
   ScrollText,
   Settings,
   Sparkles,
-  TableProperties
+  UserRound,
+  TableProperties,
+  TrendingUp,
+  Star
 } from "lucide-react";
 
 import { V1_ROUTES } from "./routes";
@@ -47,6 +50,16 @@ export const V1_VIEWS: ViewDefinition[] = [
     description: "Project context, user profile, evidence references, and environment boundaries.",
     icon: BriefcaseBusiness,
     spec: "projects-context"
+  },
+  {
+    id: "user-profile",
+    label: "Projects & Models",
+    shortLabel: "Profile",
+    route: V1_ROUTES["user-profile"],
+    group: "core",
+    description: "Investment profile, preferences, memory signals, and reusable personal context.",
+    icon: UserRound,
+    spec: "user-profile"
   },
   {
     id: "models",
@@ -147,6 +160,26 @@ export const V1_VIEWS: ViewDefinition[] = [
     description: "Catalog, status, read-only query, controlled intents, and broker read-only data.",
     icon: BarChart3,
     spec: "financial-manager"
+  },
+  {
+    id: "my-strategy",
+    label: "Personal Assets",
+    shortLabel: "My Strategy",
+    route: "/personal/my-strategy",
+    group: "personal",
+    description: "Manage personal investment strategies, track performance and holdings.",
+    icon: TrendingUp,
+    spec: "my-strategy"
+  },
+  {
+    id: "my-stocks",
+    label: "Personal Assets",
+    shortLabel: "My Stocks",
+    route: "/personal/my-stocks",
+    group: "personal",
+    description: "Manage personal stock pools with tags and notes.",
+    icon: Star,
+    spec: "my-stocks"
   },
   {
     id: "integrations",
@@ -263,6 +296,7 @@ export const V1_VIEWS: ViewDefinition[] = [
 export const NAV_GROUPS = [
   { id: "core", label: "Task Workspace" },
   { id: "finance", label: "Finance Research" },
+  { id: "personal", label: "Personal Assets" },
   { id: "integrations", label: "Integration Surfaces" },
   { id: "ops", label: "Automation & Ops" }
 ] as const;

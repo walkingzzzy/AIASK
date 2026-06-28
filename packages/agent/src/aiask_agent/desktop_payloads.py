@@ -31,6 +31,20 @@ def default_local_profile() -> dict[str, Any]:
         "object": "aiask.local_profile",
         "user_id": "local",
         "profile_name": "Local Operator",
+        "preferences": {
+            "investment_style": "balanced",
+            "risk_tolerance": 3,
+            "preferred_sectors": [],
+            "investment_horizon": "medium",
+            "experience_level": "intermediate",
+            "tags": [],
+        },
+        "behavior": {
+            "frequent_queries": [],
+            "preferred_models": [],
+            "active_hours": [],
+            "common_stocks": [],
+        },
         "storage": "local_file",
         "path": str(local_profile_path()),
         "updated_at": None,
@@ -45,9 +59,9 @@ def local_profile_payload() -> dict[str, Any]:
         if path.exists():
             loaded = json.loads(path.read_text(encoding="utf-8"))
             if isinstance(loaded, dict):
-                for key in ("user_id", "profile_name", "updated_at"):
+                for key in ("user_id", "profile_name", "updated_at", "preferences", "behavior"):
                     if loaded.get(key):
-                        profile[key] = str(loaded[key])
+                        profile[key] = loaded[key]
     except Exception as exc:
         profile["status"] = "degraded"
         profile["error"] = str(exc)
@@ -60,10 +74,22 @@ def save_local_profile(payload: dict[str, Any] | None = None) -> dict[str, Any]:
     update = dict(payload or {})
     user_id = str(update.get("user_id") or current.get("user_id") or "local").strip() or "local"
     profile_name = str(update.get("profile_name") or current.get("profile_name") or "Local Operator").strip() or "Local Operator"
+    current_preferences = current.get("preferences") if isinstance(current.get("preferences"), dict) else {}
+    current_behavior = current.get("behavior") if isinstance(current.get("behavior"), dict) else {}
+    update_preferences = update.get("preferences") if isinstance(update.get("preferences"), dict) else {}
+    update_behavior = update.get("behavior") if isinstance(update.get("behavior"), dict) else {}
     saved = {
         "object": "aiask.local_profile",
         "user_id": user_id,
         "profile_name": profile_name,
+        "preferences": {
+            **dict(current_preferences or {}),
+            **dict(update_preferences or {}),
+        },
+        "behavior": {
+            **dict(current_behavior or {}),
+            **dict(update_behavior or {}),
+        },
         "storage": "local_file",
         "path": str(local_profile_path()),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),

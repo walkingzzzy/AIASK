@@ -7,10 +7,14 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 
+FullToolCall = Callable[[Request, str, dict[str, Any]], Any]
+
+
 def create_gateway_router(
     *,
     require_api: Callable[[Request], Any],
     require_full: Callable[[Request], Any],
+    full_tool_call: FullToolCall,
     gateway_runtime_factory: Callable[[], Any],
     message_store_factory: Callable[[], Any],
     directory_store_factory: Callable[[], Any],
@@ -31,6 +35,56 @@ def create_gateway_router(
     async def gateway_platforms_api(request: Request) -> dict[str, Any]:
         require_full(request)
         return {"object": "list", "data": gateway_runtime_factory().list_platforms()}
+
+    @router.get("/v1/gateway/pairing")
+    async def gateway_pairing_status_api(
+        request: Request,
+        platform: str | None = None,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        result = await full_tool_call(
+            request,
+            "agent_gateway_pairing",
+            {
+                "action": "status",
+                "platform": platform,
+                "user_id": user_id,
+                "session_id": session_id,
+            },
+        )
+        return {
+            "object": "gateway.pairing",
+            "success": bool(result.get("success", True)),
+            "data": result.get("data"),
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+            "meta": result.get("meta"),
+            "secrets_redacted": True,
+        }
+
+    @router.post("/v1/gateway/pairing")
+    async def gateway_pairing_create_api(request: Request) -> dict[str, Any]:
+        payload = dict(await request.json() or {})
+        result = await full_tool_call(
+            request,
+            "agent_gateway_pairing",
+            {
+                "action": str(payload.get("action") or "create").strip().lower() or "create",
+                "platform": payload.get("platform"),
+                "user_id": payload.get("user_id"),
+                "session_id": payload.get("session_id"),
+            },
+        )
+        return {
+            "object": "gateway.pairing",
+            "success": bool(result.get("success", True)),
+            "data": result.get("data"),
+            "error": result.get("error"),
+            "error_code": result.get("error_code"),
+            "meta": result.get("meta"),
+            "secrets_redacted": True,
+        }
 
     @router.get("/v1/gateway/messages")
     async def gateway_messages_api(request: Request, platform: str | None = None, limit: int = 100) -> dict[str, Any]:

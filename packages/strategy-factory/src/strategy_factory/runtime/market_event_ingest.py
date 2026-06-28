@@ -1,32 +1,21 @@
 """Canonical market event ingest runtime owned by Strategy Factory.
 
-This module provides the runtime wrapper and lifecycle management.
-The actual pipeline orchestration logic has been migrated to the application layer.
+Phase 2D complete: Orchestration logic now lives in application layer.
 """
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
-
-class MarketEventIngestOrchestrator:
-    """Temporary stub orchestrator until application layer is ready."""
-
-    def __init__(self, support: Any):
-        self._support = support
-
-    async def run_cycle(self, **kwargs) -> dict[str, Any]:
-        """Stub implementation."""
-        return {"success": True, "events_ingested": 0}
-
+from ..application.market_event_ingest import MarketEventIngestOrchestrator
+from ..infrastructure.runtime_services import get_market_event_ingest_support_factory
 
 
 class MarketEventIngestRuntime:
     """Host-neutral market event ingest runtime with Strategy Factory-owned orchestration.
 
-    This class now delegates to the application-layer orchestrator for actual
-    pipeline execution logic. The support object is wrapped as a provider.
+    Phase 2D: Delegates to application-layer orchestrator for bridge and
+    normalization decision logic.
     """
 
     def __init__(self, support: Any):
@@ -37,6 +26,7 @@ class MarketEventIngestRuntime:
         return {
             "available": self._support is not None,
             "runtime_type": type(self._support).__name__ if self._support is not None else None,
+            "orchestrator_ready": self._orchestrator is not None,
         }
 
     def status(self) -> dict[str, Any]:
@@ -48,37 +38,28 @@ class MarketEventIngestRuntime:
     async def run_once(
         self,
         *,
-        as_of: date | None = None,
+        trigger: str = "scheduled",
         lookback_days: int = 7,
     ) -> dict[str, Any]:
         """Execute one complete market event ingest cycle.
 
-        Now delegates to the application-layer orchestrator which owns the
-        pipeline execution logic.
+        Phase 2D: Delegates to application-layer orchestrator.
         """
         if self._orchestrator is None:
             return {
                 "success": False,
                 "error": "market_event_ingest_support_missing",
-                "sources_scanned": 0,
-                "events_ingested": 0,
-                "events_normalized": 0,
-                "clusters_created": 0,
-                "signals_generated": 0,
-                "theme_events_detected": 0,
-                "phase_results": {},
-                "errors": ["market_event_ingest_support_missing"],
-                "elapsed_seconds": 0.0,
+                "trigger": trigger,
             }
 
         return await self._orchestrator.run_cycle(
-            as_of=as_of,
+            trigger=trigger,
             lookback_days=lookback_days,
         )
 
 
 def build_market_event_ingest_runtime(*, support: Any | None = None) -> MarketEventIngestRuntime:
-    resolved_support = support or get_market_event_ingest_support_factory()()
+    resolved_support = support or get_market_event_ingest_runtime_support_factory()()
     return MarketEventIngestRuntime(resolved_support)
 
 

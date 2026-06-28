@@ -299,6 +299,17 @@ def build_server(
             parsed_url = urlparse(self.path)
             path = parsed_url.path
             query = parse_qs(parsed_url.query)
+            # WebSocket 仅 ASGI 模式可用;legacy-http 下优雅降级,避免前端无限重连 404
+            if path == "/ws" or self.headers.get("upgrade", "").lower() == "websocket":
+                self._send_json(
+                    426,
+                    {
+                        "error": "WebSocket requires ASGI mode",
+                        "detail": "Restart aiask-agent without --legacy-http to enable /ws",
+                        "object": "aiask.ws_unavailable",
+                    },
+                )
+                return
             if path == "/health":
                 self._send_json(
                     200,

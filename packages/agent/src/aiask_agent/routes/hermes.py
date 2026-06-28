@@ -9,11 +9,13 @@ from fastapi import APIRouter, HTTPException, Request
 def create_hermes_router(
     *,
     require_api: Callable[[Request], None],
+    require_control: Callable[[Request], Any],
     require_full: Callable[[Request], Any],
     hermes_toolsets_payload: Callable[[], dict[str, Any]],
     tool_catalog_payload: Callable[..., dict[str, Any]],
     hermes_config_payload: Callable[[Any], dict[str, Any]],
     hermes_sessions_payload: Callable[..., dict[str, Any]],
+    hermes_session_create_payload: Callable[[dict[str, Any]], dict[str, Any]],
     hermes_handoffs_payload: Callable[..., dict[str, Any]],
     hermes_resume_context_payload: Callable[[str], dict[str, Any]],
 ) -> APIRouter:
@@ -41,6 +43,12 @@ def create_hermes_router(
     ) -> dict[str, Any]:
         require_api(request)
         return hermes_sessions_payload(user_id=user_id, limit=limit, include_archived=include_archived)
+
+    @router.post("/v1/hermes/sessions")
+    async def hermes_session_create(request: Request) -> dict[str, Any]:
+        require_control(request)
+        payload = dict(await request.json() or {})
+        return hermes_session_create_payload(payload)
 
     @router.get("/v1/hermes/handoffs")
     async def hermes_handoffs(

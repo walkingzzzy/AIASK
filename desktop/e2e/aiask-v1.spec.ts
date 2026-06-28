@@ -41,6 +41,7 @@ const pages = [
   "/",
   "/models",
   "/projects",
+  "/user-profile",
   "/sessions-runs",
   "/tools-approvals",
   "/integrations",
@@ -143,6 +144,94 @@ test("live workbench submits a response through Agent HTTP", async ({ page }) =>
   const result = await response;
   expect(result.ok()).toBeTruthy();
   await expect(page.getByTestId("json-panel").last()).toBeVisible();
+});
+
+test("mock workbench submits selected model and text attachment evidence", async ({ page }) => {
+  test.skip(isLive, "mock contract scenario");
+
+  await page.goto("/");
+  await page.getByTestId("file-upload-button").click();
+  await page.getByTestId("file-upload-input").setInputFiles({
+    name: "release-context.txt",
+    mimeType: "text/plain",
+    buffer: Buffer.from("release context attachment for mock e2e")
+  });
+  await page.getByTestId("file-upload-submit").click();
+  await expect(page.getByTestId("workbench-uploaded-files")).toContainText("release-context.txt");
+
+  await page.getByTestId("workbench-prompt").fill("Use the uploaded release context.");
+  await page.getByTestId("workbench-submit").click();
+
+  await expect(page.locator("body")).toContainText("release-context.txt");
+  await expect(page.locator("body")).toContainText("attachment_count");
+  await expect(page.locator("body")).toContainText("gpt-4.1-compatible");
+});
+
+test("mock finance stock pool batch flows are usable", async ({ page }) => {
+  test.skip(isLive, "mock contract scenario");
+
+  await page.goto("/stock-radar");
+  await page.getByTestId("batch-select-row-600519").check();
+  await page.getByTestId("stock-radar-target-pool").selectOption("pool_watchlist");
+  await page.getByTestId("stock-radar-add-selected").click();
+  await expect(page.locator("body")).toContainText("stock_radar.batch_add_to_pool");
+
+  await page.goto("/personal/my-stocks");
+  await page.getByRole("button", { name: /Open|Selected/ }).first().click();
+  await page.getByTestId("batch-select-row-600519").check();
+  page.once("dialog", (dialog) => void dialog.accept());
+  await page.getByTestId("stock-pool-batch-remove").click();
+  await expect(page.locator("body")).toContainText("stock_pool.batch_remove");
+});
+
+test("mock automation watch job supports create disable run and delete", async ({ page }) => {
+  test.skip(isLive, "mock contract scenario");
+
+  await page.goto("/automation");
+  await page.getByTestId("job-template").selectOption("watch");
+  await page.getByTestId("job-name").fill("E2E watch job");
+  await page.getByTestId("job-watch-symbol").fill("600519");
+  await page.getByTestId("job-watch-condition").fill("price_change_pct > 2");
+  await page.getByTestId("job-create").click();
+  await confirmDryRun(page);
+  await expect(page.getByRole("cell", { name: "E2E watch job" })).toBeVisible();
+
+  const createdRow = page.locator("tr", { hasText: "E2E watch job" });
+  await createdRow.getByRole("button", { name: "Disable" }).click();
+  await confirmDryRun(page);
+  await createdRow.getByRole("button", { name: "Run" }).click();
+  await confirmDryRun(page);
+  await createdRow.getByRole("button", { name: "Delete" }).click();
+  await confirmDryRun(page);
+  await expect(page.locator("body")).toContainText("job.deleted");
+});
+
+test("mock gateway platform selection drives pairing and delivery preview", async ({ page }) => {
+  test.skip(isLive, "mock contract scenario");
+
+  await page.goto("/gateway-webhooks");
+  await page.getByTestId("gateway-platform").selectOption("discord");
+  await page.getByTestId("gateway-user").fill("e2e-user");
+  await page.getByTestId("gateway-session").fill("e2e-session");
+  await page.getByTestId("gateway-target").fill("release-channel");
+  await page.getByTestId("gateway-pairing-create").click();
+  await confirmDryRun(page);
+  await expect(page.getByTestId("gateway-pairing-panel")).toContainText("discord");
+
+  await page.getByTestId("gateway-message").fill("mock gateway preview");
+  await page.getByTestId("gateway-send-local").click();
+  await confirmDryRun(page);
+  await expect(page.locator("body")).toContainText("intent_preview");
+  await expect(page.locator("body")).toContainText("release-channel");
+});
+
+test("mock market heatmap renders history window and degraded states cleanly", async ({ page }) => {
+  test.skip(isLive, "mock contract scenario");
+
+  await page.goto("/market-temperature");
+  await page.getByTestId("market-history-window").selectOption("14");
+  await expect(page.getByTestId("market-heatmap-panel")).toBeVisible();
+  await expect(page.getByTestId("market-heatmap-ready")).toBeVisible();
 });
 
 test("live sessions and runs page loads run evidence and steers a run", async ({ page }) => {
@@ -469,21 +558,26 @@ test("live automation creates disables and deletes an isolated sample job", asyn
   test.skip(!controlToken, "control token is required for job mutation");
 
   await page.goto("/automation");
+  const jobName = `desktop-v1-live-${Date.now().toString(36)}`;
+  await page.getByTestId("job-name").fill(jobName);
+  await page.getByTestId("job-prompt").fill("AIASK V1 live automation smoke. Dry-run only.");
 
   const createResponse = page.waitForResponse(matchesAgent("/v1/jobs", "POST"));
-  await page.getByTestId("job-create-sample").click();
+  await page.getByTestId("job-create").click();
   await confirmDryRun(page);
   const createPayload = await (await createResponse).json();
-  expect(createPayload.job_id).toBeTruthy();
-  await expect(page.getByRole("cell", { name: createPayload.name })).toBeVisible();
+  const created = createPayload.data || createPayload.job || createPayload;
+  const jobId = String(created.job_id || created.id || createPayload.job_id || "");
+  expect(jobId).toBeTruthy();
+  await expect(page.getByRole("cell", { name: jobName })).toBeVisible();
 
-  const patchResponse = page.waitForResponse(matchesAgentPrefix(`/v1/jobs/${createPayload.job_id}`, "PATCH"));
-  await page.getByTestId("job-disable-sample").click();
+  const patchResponse = page.waitForResponse(matchesAgentPrefix(`/v1/jobs/${jobId}`, "PATCH"));
+  await page.getByTestId(`job-toggle-${jobId}`).click();
   await confirmDryRun(page);
   expect((await patchResponse).ok()).toBeTruthy();
 
-  const deleteResponse = page.waitForResponse(matchesAgentPrefix(`/v1/jobs/${createPayload.job_id}`, "DELETE"));
-  await page.getByTestId("job-delete-sample").click();
+  const deleteResponse = page.waitForResponse(matchesAgentPrefix(`/v1/jobs/${jobId}`, "DELETE"));
+  await page.getByTestId(`job-delete-${jobId}`).click();
   await confirmDryRun(page);
   const deletePayload = await (await deleteResponse).json();
   expect(deletePayload.deleted).toBeTruthy();

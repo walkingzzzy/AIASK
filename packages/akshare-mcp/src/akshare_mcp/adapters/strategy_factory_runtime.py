@@ -120,7 +120,7 @@ def configure_strategy_factory_runtime_services() -> None:
     from ..services.factor_mining_factory.api import get_factor_pool_gateway
     from ..services.factor_scheduler import get_factor_scheduler
     from ..services.financial_semantic_service import get_financial_semantic_service
-    from ..services.incubation_factory.runner import IncubationFactoryRunner
+    from ..integration.strategy_factory_support import build_incubation_support
     from ..services.market_text_source_ingest import (
         get_market_event_ingest_support,
         run_market_text_source_ingest,
@@ -155,8 +155,8 @@ def configure_strategy_factory_runtime_services() -> None:
         factor_mining_factory=get_factor_mining_factory,
         factor_mining_support_factory=get_factor_mining_factory,
         factor_pool_gateway=get_factor_pool_gateway,
-        incubation_runtime_factory=IncubationFactoryRunner,
-        incubation_runtime_support_factory=IncubationFactoryRunner,
+        incubation_runtime_factory=build_incubation_support,
+        incubation_runtime_support_factory=build_incubation_support,
         market_event_ingest_runner=run_market_text_source_ingest,
         market_event_ingest_support_factory=get_market_event_ingest_support,
         quant_manager_callable=quant_manager,

@@ -24,7 +24,22 @@ def create_plugins_skills_router(
     async def skills(request: Request) -> dict[str, Any]:
         require_full(request)
         result = await build_full_runtime().tool_registry.call_tool("agent_skill_manage", {"action": "snapshot"})
-        return {"object": "list", "data": dict(result.get("data") or {})}
+        snapshot = dict(result.get("data") or {})
+        rows = []
+        for item in list(snapshot.get("skills") or []):
+            if not isinstance(item, dict):
+                continue
+            row = dict(item)
+            row.setdefault("id", str(row.get("name") or ""))
+            row.setdefault("type", "local")
+            row.setdefault("status", "enabled" if row.get("state") == "active" else str(row.get("state") or "unknown"))
+            row.setdefault("enabled", row.get("state") == "active")
+            rows.append(row)
+        return {
+            "object": "list",
+            "data": rows,
+            "meta": {"root": snapshot.get("root"), "count": len(rows)},
+        }
 
     @router.post("/v1/skills")
     async def skill_create(request: Request) -> dict[str, Any]:

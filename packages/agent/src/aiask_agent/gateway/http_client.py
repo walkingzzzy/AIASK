@@ -183,7 +183,7 @@ def _multipart_request(
     url: str,
     *,
     fields: dict[str, Any] | None = None,
-    files: dict[str, tuple[str, bytes, str]] | None = None,
+    files: dict[str, tuple[str, bytes, str]] | list[tuple[str, tuple[str, bytes, str]]] | None = None,
     headers: dict[str, str] | None = None,
     timeout: float = 30.0,
 ) -> dict[str, Any]:
@@ -198,7 +198,11 @@ def _multipart_request(
                 b"\r\n",
             ]
         )
-    for key, (filename, data, content_type) in dict(files or {}).items():
+    if isinstance(files, dict):
+        file_items = list(files.items())
+    else:
+        file_items = list(files or [])
+    for key, (filename, data, content_type) in file_items:
         chunks.extend(
             [
                 f"--{boundary}\r\n".encode("utf-8"),

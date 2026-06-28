@@ -1,0 +1,65 @@
+/* CodeEditor.css */
+.code-editor-wrapper {
+  border: 1px solid #e7e3da;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #1e1e1e;
+}
+
+.code-editor-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  background: #2d2d2d;
+  border-bottom: 1px solid #3e3e3e;
+}
+
+.code-editor-info {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.code-editor-filename {
+  font-size: 13px;
+  font-weight: 500;
+  color: #e0e0e0;
+}
+
+.code-editor-language {
+  font-size: 12px;
+  color: #999;
+  text-transform: uppercase;
+  padding: 2px 8px;
+  background: #3e3e3e;
+  border-radius: 4px;
+}
+
+.code-editor-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.code-editor-action-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+  background: transparent;
+  border: 1px solid #3e3e3e;
+  border-radius: 4px;
+  color: #999;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.code-editor-action-btn:hover {
+  background: #3e3e3e;
+  color: #e0e0e0;
+  border-color: #4e4e4e;
+}
+
+.code-editor-action-btn:active {
+  transform: scale(0.95);
+}

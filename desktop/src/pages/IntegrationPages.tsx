@@ -1,7 +1,10 @@
-import { Radio, Send } from "lucide-react";
+import { Radio } from "lucide-react";
 import { useMemo, useState } from "react";
 
 import { DryRunPreview } from "../components/IntentComponents";
+import { McpAddButton } from "../components/McpAddDialog";
+import { SkillAddButton } from "../components/SkillAddDialog";
+import { StatusLight, inferStatusFromData } from "../components/StatusLight";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { Button, DataTable, GatedNotice, JsonPanel, LinkCard, PageShell, Panel, ResourcePanel, StatusBadge } from "../components/ui";
 import { dataObject, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
@@ -32,9 +35,9 @@ function IntegrationsOverview({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="Integrations 总览"
-      description="统一汇总 MCP、Connectors、Plugins / Skills、Gateway 和 readiness，并把受控动作反馈收敛到二级页。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="集成管理" />}
+      title="Integrations"
+      description="Overview for MCP, connectors, plugins, skills, gateway, and readiness."
+      badge={<GatedNotice controlAvailable={controlAvailable} action="integration management" />}
       metrics={[
         metric("MCP Servers", list(mcp.data).length, "success"),
         metric("Connectors Ready", connectorData.ready ?? "-", "info"),
@@ -43,12 +46,12 @@ function IntegrationsOverview({ api, controlAvailable }: PageProps) {
       ]}
     >
       <div className="grid-3">
-        <LinkCard to="/mcp-connectors" title="MCP / Connectors" detail="Servers、tools、resources、prompts、OAuth 与连接器健康。" tone="info" meta="统一聚合入口" />
-        <LinkCard to="/plugins-skills" title="Plugins / Skills" detail="Runtime skills、插件、自测动作与最近变更反馈。" tone="success" meta="受控变更" />
-        <LinkCard to="/gateway-webhooks" title="Gateway" detail="平台状态、消息、目录、Webhook 与外部动作反馈。" tone="warning" meta="外部投递受控" />
-        <LinkCard to="/readiness" title="Health & Readiness" detail="Agent、Hermes、capabilities 和 financial readiness。" meta="排障入口" />
-        <LinkCard to="/settings" title="Settings" detail="Base URL、Token、模式与全局安全边界。" meta="Secret redaction" />
-        <LinkCard to="/tools-approvals" title="Approvals" detail="Intent 与 approval 的统一审阅流。" tone="gated" meta="ActionIntent" />
+        <LinkCard to="/mcp-connectors" title="MCP / Connectors" detail="Servers, tools, resources, prompts, OAuth, and connector health." tone="info" meta="P0 entry" />
+        <LinkCard to="/plugins-skills" title="Plugins / Skills" detail="Runtime skills, plugins, tests, and controlled changes." tone="success" meta="P0 entry" />
+        <LinkCard to="/gateway-webhooks" title="Gateway" detail="Platform status, directory, daemon state, pairing, and webhook feedback." tone="warning" meta="P1 entry" />
+        <LinkCard to="/readiness" title="Health & Readiness" detail="Agent, Hermes, and financial readiness." meta="Diagnostics" />
+        <LinkCard to="/settings" title="Settings" detail="Base URL, tokens, mode, and global boundaries." meta="Secrets redaction" />
+        <LinkCard to="/tools-approvals" title="Approvals" detail="Intent and approval review flow." tone="gated" meta="ActionIntent" />
       </div>
 
       <JsonPanel data={{ mcp: mcp.data, connectors: connectors.data, plugins: plugins.data, gateway: gateway.data, readiness: readiness.data }} title="Integrations evidence" />
@@ -91,11 +94,31 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
     setActionResult(await api.connectorTest(connectorType, connectorName));
   }
 
+  async function handleAddMcp(data: { name: string; command: string; args?: string[]; env?: Record<string, string> }) {
+    await api.mcpServerAdd(data);
+    await servers.reload();
+    setActionResult({ success: true, message: "MCP server added" });
+  }
+
+  async function toggleServer(serverId: string, enabled: boolean) {
+    await api.mcpServerUpdate(serverId, { enabled });
+    await servers.reload();
+    setActionResult({ success: true, message: enabled ? "MCP server enabled" : "MCP server disabled" });
+  }
+
+  async function deleteServer(serverId: string, name: string) {
+    if (!window.confirm(`Delete MCP server "${name}"?`)) return;
+    await api.mcpServerDelete(serverId);
+    await servers.reload();
+    setActionResult({ success: true, message: "MCP server deleted" });
+  }
+
   return (
     <PageShell
-      title="MCP 服务与连接器"
-      description="按 servers、tools、resources、prompts、OAuth 和 connectors 分层编排，展示健康、最近错误和动作反馈。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="MCP discovery / OAuth / resource read" />}
+      title="MCP / Connectors"
+      description="Manage MCP servers, resources, prompts, and connector health."
+      badge={<GatedNotice controlAvailable={controlAvailable} action="MCP management" />}
+      actions={controlAvailable ? <McpAddButton onAdd={handleAddMcp} /> : undefined}
       metrics={[
         metric("Servers", list(servers.data).length, "success"),
         metric("Tools", list(tools.data).length, "info"),
@@ -109,9 +132,23 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
             <DataTable
               items={list(data)}
               columns={[
-                { key: "name", header: "服务" },
+                { key: "name", header: "Name" },
                 { key: "transport", header: "Transport" },
-                { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }
+                { key: "status", header: "Status", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> },
+                {
+                  key: "id",
+                  header: "Actions",
+                  render: (item) => (
+                    <div style={{ display: "flex", gap: "0.5rem" }}>
+                      <Button onClick={() => void toggleServer(String(item.id || ""), !Boolean(item.enabled))} disabled={!controlAvailable || !item.id}>
+                        {item.enabled ? "Disable" : "Enable"}
+                      </Button>
+                      <Button tone="danger" onClick={() => void deleteServer(String(item.id || ""), String(item.name || item.id || ""))} disabled={!controlAvailable || !item.id}>
+                        Delete
+                      </Button>
+                    </div>
+                  )
+                }
               ]}
             />
           )}
@@ -122,9 +159,9 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
             <DataTable
               items={list(data)}
               columns={[
-                { key: "name", header: "名称" },
-                { key: "category", header: "分类" },
-                { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }
+                { key: "name", header: "Name" },
+                { key: "category", header: "Category" },
+                { key: "status", header: "Status", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }
               ]}
             />
           )}
@@ -133,17 +170,17 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
 
       <div className="grid-3">
         <Panel title="Tools">
-          <DataTable items={list(tools.data)} columns={[{ key: "name", header: "工具" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
+          <DataTable items={list(tools.data)} columns={[{ key: "name", header: "Tool" }, { key: "server", header: "Server" }, { key: "status", header: "Status" }]} />
         </Panel>
         <Panel title="Resources">
-          <DataTable items={resourceRows} columns={[{ key: "uri", header: "URI" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
+          <DataTable items={resourceRows} columns={[{ key: "uri", header: "URI" }, { key: "server", header: "Server" }, { key: "status", header: "Status" }]} />
         </Panel>
         <Panel title="Prompts / OAuth">
-          <DataTable items={[...promptRows, ...list(oauth.data)]} columns={[{ key: "name", header: "名称" }, { key: "server", header: "服务" }, { key: "status", header: "状态" }]} />
+          <DataTable items={[...promptRows, ...list(oauth.data)]} columns={[{ key: "name", header: "Name" }, { key: "server", header: "Server" }, { key: "status", header: "Status" }]} />
         </Panel>
       </div>
 
-      <Panel title="MCP / Connector Actions">
+      <Panel title="MCP Actions">
         <div className="page-actions">
           <Button data-testid="mcp-read-first-resource" disabled={!controlAvailable || !resourceRows.length} onClick={() => void readFirstResource()}>
             Read first resource
@@ -157,8 +194,6 @@ function McpConnectorsPage({ api, controlAvailable }: PageProps) {
         </div>
         {actionResult ? <JsonPanel data={actionResult} title="MCP action result" /> : null}
       </Panel>
-
-      <JsonPanel data={{ servers: servers.data, tools: tools.data, resources: resources.data, prompts: prompts.data, oauth: oauth.data, connectors: connectors.data }} title="MCP / Connector evidence" />
     </PageShell>
   );
 }
@@ -169,24 +204,29 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
   const [actionResult, setActionResult] = useState<unknown>(null);
   const [previewAction, setPreviewAction] = useState<null | "create-skill" | "delete-skill" | "toggle-plugin">(null);
   const sampleSkillName = useMemo(() => `desktop-v1-smoke-skill-${Date.now().toString(36)}`, []);
-  const skillData = dataObject(skills.data, {});
-  const installedSkills = Array.isArray(skillData.installed) ? skillData.installed.map((name) => ({ name })) : list(skills.data);
+  const installedSkills = list(skills.data);
   const pluginRows = list(plugins.data);
 
   async function createSampleSkill() {
     setActionResult(
       await api.skillCreate({
         name: sampleSkillName,
-        description: "Created by AIASK Desktop V1 closed-loop smoke.",
-        content: "# Desktop V1 Smoke Skill\n\nThis skill is created through the gated Agent HTTP API."
+        type: "local",
+        path: `C:/skills/${sampleSkillName}/SKILL.md`,
+        config: { source: "desktop-smoke" }
       })
     );
     setPreviewAction(null);
     await skills.reload();
   }
 
-  async function deleteSampleSkill() {
-    setActionResult(await api.skillDelete(sampleSkillName));
+  async function deleteSampleSkillByName(name: string) {
+    const target = installedSkills.find((item) => String(item.name || "") === name);
+    if (!target?.id) {
+      setActionResult({ success: false, error: `Skill not found: ${name}` });
+      return;
+    }
+    setActionResult(await api.skillDelete(String(target.id)));
     setPreviewAction(null);
     await skills.reload();
   }
@@ -207,15 +247,35 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
     setActionResult(await api.pluginToolTest(name, "__manifest__", {}));
   }
 
+  async function handleAddSkill(data: { name: string; type: string; path: string; config?: Record<string, unknown> }) {
+    await api.skillCreate(data);
+    await skills.reload();
+    setActionResult({ success: true, message: "Skill added" });
+  }
+
+  async function toggleSkill(skillId: string, enabled: boolean) {
+    await api.skillUpdate(skillId, { enabled });
+    await skills.reload();
+    setActionResult({ success: true, message: enabled ? "Skill enabled" : "Skill disabled" });
+  }
+
+  async function deleteSkill(skillId: string, name: string) {
+    if (!window.confirm(`Delete skill "${name}"?`)) return;
+    await api.skillDelete(skillId);
+    await skills.reload();
+    setActionResult({ success: true, message: "Skill deleted" });
+  }
+
   return (
     <PageShell
-      title="Plugins / Skills 管理"
-      description="统一展示 runtime skills、插件、自测能力和最近动作反馈；所有变更继续受 control 门禁约束。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="插件 / 技能变更" />}
+      title="Plugins / Skills"
+      description="Manage runtime skills, plugins, tests, and controlled changes."
+      badge={<GatedNotice controlAvailable={controlAvailable} action="plugin / skill changes" />}
+      actions={controlAvailable ? <SkillAddButton onAdd={handleAddSkill} /> : undefined}
       metrics={[
         metric("Skills", installedSkills.length, "success"),
         metric("Plugins", pluginRows.length, "info"),
-        metric("变更动作", controlAvailable ? "可发起" : "门禁", controlAvailable ? "success" : "gated"),
+        metric("Mutations", controlAvailable ? "allowed" : "gated", controlAvailable ? "success" : "gated"),
         metric("Secrets", "Redacted", "success")
       ]}
     >
@@ -224,11 +284,22 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
           <DataTable
             items={installedSkills}
             columns={[
-              { key: "name", header: "技能" },
+              { key: "name", header: "Name" },
+              { key: "type", header: "Type" },
+              { key: "status", header: "Status", render: (item) => <StatusLight status={inferStatusFromData(item.status || item.enabled)} label={valueOf(item, ["status"], item.enabled ? "enabled" : "disabled")} /> },
               {
-                key: "status",
-                header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status || "installed")}>{valueOf(item, ["status"], "installed")}</StatusBadge>
+                key: "id",
+                header: "Actions",
+                render: (item) => (
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <Button onClick={() => void toggleSkill(String(item.id || ""), !Boolean(item.enabled))} disabled={!controlAvailable || !item.id}>
+                      {item.enabled ? "Disable" : "Enable"}
+                    </Button>
+                    <Button tone="danger" onClick={() => void deleteSkill(String(item.id || ""), String(item.name || item.id || ""))} disabled={!controlAvailable || !item.id}>
+                      Delete
+                    </Button>
+                  </div>
+                )
               }
             ]}
           />
@@ -238,14 +309,10 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
           <DataTable
             items={pluginRows}
             columns={[
-              { key: "name", header: "插件" },
-              {
-                key: "enabled",
-                header: "启用",
-                render: (item) => <StatusBadge tone={item.enabled ? "success" : "warning"}>{item.enabled ? "enabled" : "disabled"}</StatusBadge>
-              },
-              { key: "tools", header: "工具" },
-              { key: "commands", header: "命令" }
+              { key: "name", header: "Plugin" },
+              { key: "enabled", header: "Enabled", render: (item) => <StatusLight status={item.enabled ? "connected" : "disconnected"} label={item.enabled ? "enabled" : "disabled"} /> },
+              { key: "tools", header: "Tools" },
+              { key: "commands", header: "Commands" }
             ]}
           />
         </Panel>
@@ -269,11 +336,11 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
 
         {previewAction ? (
           <DryRunPreview
-            title="Plugin / Skill 变更预览"
+            title="Plugin / Skill preview"
             changes={[
-              { label: "动作", after: previewAction },
-              { label: "目标", after: previewAction.includes("skill") ? sampleSkillName : String(pluginRows[0]?.name || pluginRows[0]?.id || "-") },
-              { label: "模式", after: "受控变更" }
+              { label: "Action", after: previewAction },
+              { label: "Target", after: previewAction.includes("skill") ? sampleSkillName : String(pluginRows[0]?.name || pluginRows[0]?.id || "-") },
+              { label: "Mode", after: "controlled change" }
             ]}
             onCancel={() => setPreviewAction(null)}
             onConfirm={() => {
@@ -282,7 +349,7 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
                 return;
               }
               if (previewAction === "delete-skill") {
-                void deleteSampleSkill();
+                void deleteSampleSkillByName(sampleSkillName);
                 return;
               }
               void toggleFirstPlugin();
@@ -292,32 +359,49 @@ function PluginsSkillsPage({ api, controlAvailable }: PageProps) {
 
         {actionResult ? <JsonPanel data={actionResult} title="Skill / plugin action result" /> : null}
       </Panel>
-
-      <JsonPanel data={{ skills: skills.data, plugins: plugins.data }} title="Plugins / skills evidence" />
     </PageShell>
   );
 }
 
-function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
+function GatewayWebhooksPage({ api, controlAvailable, settings }: PageProps) {
+  const [gatewayForm, setGatewayForm] = useState({
+    platform: "local",
+    user_id: settings?.userId || "local-user",
+    session_id: "gateway-session",
+    target: "Research Desk"
+  });
   const status = useAsyncResource(() => api.gatewayStatus(), [api]);
   const daemon = useAsyncResource(() => api.gatewayDaemon(), [api]);
   const platforms = useAsyncResource(() => api.gatewayPlatforms(), [api]);
+  const pairing = useAsyncResource(
+    () =>
+      api.gatewayPairing({
+        platform: gatewayForm.platform,
+        user_id: gatewayForm.user_id,
+        session_id: gatewayForm.session_id
+      }),
+    [api, gatewayForm.platform, gatewayForm.user_id, gatewayForm.session_id]
+  );
   const messages = useAsyncResource(() => api.gatewayMessages(), [api]);
   const directory = useAsyncResource(() => api.gatewayDirectory(), [api]);
   const webhooks = useAsyncResource(() => api.webhooks(), [api]);
-  const [draft, setDraft] = useState("雷达摘要预览：请确认后再投递。");
+  const [draft, setDraft] = useState("Radar digest preview: confirm before delivery.");
   const [sendResult, setSendResult] = useState<unknown>(null);
-  const [previewAction, setPreviewAction] = useState<null | "send" | "refresh-directory" | "retry" | "start" | "stop">(null);
+  const [previewAction, setPreviewAction] = useState<null | "send" | "refresh-directory" | "retry" | "start" | "stop" | "pair-create">(null);
+  const [pairingResult, setPairingResult] = useState<unknown>(null);
   const statusData = dataObject(status.data, {});
   const daemonData = dataObject(daemon.data, {});
+  const pairingData = dataObject(pairing.data, {});
   const platformRows = list(platforms.data);
   const messageRows = list(messages.data);
 
   async function createDeliveryIntent() {
     setSendResult(
       await api.gatewaySend({
-        platform: "local",
-        target: "Research Desk",
+        platform: gatewayForm.platform,
+        target: gatewayForm.target,
+        user_id: gatewayForm.user_id,
+        session_id: gatewayForm.session_id,
         message: draft,
         deliver_mode: "intent_preview"
       })
@@ -327,8 +411,7 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
   }
 
   function firstPlatform(): string {
-    const first = platformRows[0];
-    return String(first?.platform || first?.name || first?.id || "local");
+    return gatewayForm.platform || "local";
   }
 
   async function refreshDirectory() {
@@ -359,11 +442,22 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
     await platforms.reload();
   }
 
+  async function createPairing() {
+    const result = await api.gatewayPairingCreate({
+      platform: firstPlatform(),
+      user_id: gatewayForm.user_id,
+      session_id: gatewayForm.session_id
+    });
+    setPairingResult(result);
+    setPreviewAction(null);
+    await pairing.reload();
+  }
+
   return (
     <PageShell
       title="Gateway / Webhooks"
-      description="统一管理跨平台投递、消息目录、daemon、平台健康和 webhook；所有外部动作都明确标注为受控操作。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="外部投递 / 平台控制" />}
+      description="Manage outbound delivery, pairing status, message directory, daemon state, platforms, and webhooks."
+      badge={<GatedNotice controlAvailable={controlAvailable} action="external delivery / platform control" />}
       metrics={[
         metric("Gateway", statusData.mode || statusData.status || "unknown", statusTone(statusData.mode || statusData.status)),
         metric("Daemon", daemonData.running ? "running" : "stopped", daemonData.running ? "success" : "warning"),
@@ -371,39 +465,101 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
         metric("Webhooks", list(webhooks.data).length, "info")
       ]}
     >
-      <div className="grid-2">
-        <Panel title="投递预览">
+      <Panel title="Gateway Configuration">
+        <div className="form-grid">
           <label className="field">
-            <span>消息内容</span>
-            <textarea data-testid="gateway-message" value={draft} onChange={(event) => setDraft(event.target.value)} />
-            <small>按钮只会创建受控投递请求；缺少 control token 时保持禁用。</small>
+            <span>Platform</span>
+            <select
+              data-testid="gateway-platform"
+              value={gatewayForm.platform}
+              onChange={(event) => setGatewayForm({ ...gatewayForm, platform: event.target.value })}
+            >
+              <option value="local">local</option>
+              <option value="feishu">feishu</option>
+              <option value="wecom">wecom</option>
+              <option value="discord">discord</option>
+            </select>
           </label>
-          <Button data-testid="gateway-send-local" icon={<Send size={16} />} disabled={!controlAvailable} onClick={() => setPreviewAction("send")}>
-            创建投递请求
-          </Button>
+          <label className="field">
+            <span>User</span>
+            <input data-testid="gateway-user" value={gatewayForm.user_id} onChange={(event) => setGatewayForm({ ...gatewayForm, user_id: event.target.value })} />
+          </label>
+          <label className="field">
+            <span>Session</span>
+            <input
+              data-testid="gateway-session"
+              value={gatewayForm.session_id}
+              onChange={(event) => setGatewayForm({ ...gatewayForm, session_id: event.target.value })}
+            />
+          </label>
+          <label className="field">
+            <span>Target</span>
+            <input data-testid="gateway-target" value={gatewayForm.target} onChange={(event) => setGatewayForm({ ...gatewayForm, target: event.target.value })} />
+          </label>
+        </div>
+      </Panel>
+
+      <div className="grid-2">
+        <Panel title="Pairing status">
+          <div data-testid="gateway-pairing-panel">
+            <div className="form-grid">
+              <div className="field">
+                <span>Platform</span>
+                <strong>{valueOf(pairingData, ["platform"], "local")}</strong>
+              </div>
+              <div className="field">
+                <span>User</span>
+                <strong>{valueOf(pairingData, ["user_id"], settings?.userId || "-")}</strong>
+              </div>
+              <div className="field">
+                <span>Session</span>
+                <strong>{valueOf(pairingData, ["session_id"], "-")}</strong>
+              </div>
+              <div className="field">
+                <span>Configured</span>
+                <StatusBadge tone={pairingData.configured ? "success" : "warning"}>{pairingData.configured ? "true" : "false"}</StatusBadge>
+              </div>
+            </div>
+            <div className="page-actions">
+              <Button data-testid="gateway-pairing-refresh" onClick={() => void pairing.reload()}>
+                Refresh pairing
+              </Button>
+              <Button data-testid="gateway-pairing-create" disabled={!controlAvailable} onClick={() => setPreviewAction("pair-create")}>
+                Create pairing
+              </Button>
+            </div>
+            {pairingResult ? <JsonPanel data={pairingResult} title="Pairing result" /> : null}
+          </div>
         </Panel>
 
-        <Panel title="平台状态">
-          <DataTable
-            items={platformRows}
-            columns={[
-              { key: "platform", header: "平台" },
-              { key: "configured", header: "已配置" },
-              { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }
-            ]}
-          />
+        <Panel title="Delivery Preview">
+          <label className="field">
+            <span>Message</span>
+            <textarea data-testid="gateway-message" value={draft} onChange={(event) => setDraft(event.target.value)} />
+            <small>Creates a controlled delivery request rather than sending directly.</small>
+          </label>
+          <Button data-testid="gateway-send-local" disabled={!controlAvailable} onClick={() => setPreviewAction("send")}>
+            Create delivery intent
+          </Button>
         </Panel>
       </div>
 
       <div className="grid-3">
-        <Panel title="消息">
-          <DataTable items={messageRows} columns={[{ key: "platform", header: "平台" }, { key: "direction", header: "方向" }, { key: "status", header: "状态" }]} />
+        <Panel title="Platforms">
+          <DataTable
+            items={platformRows}
+            columns={[
+              { key: "platform", header: "Platform" },
+              { key: "configured", header: "Configured" },
+              { key: "status", header: "Status", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }
+            ]}
+          />
         </Panel>
-        <Panel title="目录">
-          <DataTable items={list(directory.data)} columns={[{ key: "platform", header: "平台" }, { key: "kind", header: "类型" }, { key: "name", header: "名称" }]} />
+        <Panel title="Messages">
+          <DataTable items={messageRows} columns={[{ key: "platform", header: "Platform" }, { key: "direction", header: "Direction" }, { key: "status", header: "Status" }]} />
         </Panel>
-        <Panel title="Webhooks">
-          <DataTable items={list(webhooks.data)} columns={[{ key: "platform", header: "平台" }, { key: "status", header: "状态" }, { key: "verified", header: "验签" }]} />
+        <Panel title="Directory / Webhooks">
+          <DataTable items={[...list(directory.data), ...list(webhooks.data)]} columns={[{ key: "platform", header: "Platform" }, { key: "kind", header: "Kind" }, { key: "name", header: "Name" }]} />
         </Panel>
       </div>
 
@@ -428,11 +584,19 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
 
         {previewAction ? (
           <DryRunPreview
-            title="Gateway 动作预览"
+            title="Gateway preview"
             changes={[
-              { label: "动作", after: previewAction },
-              { label: "平台", after: firstPlatform() },
-              { label: "说明", after: previewAction === "send" ? draft : "通过 Agent route 发起受控动作" }
+              { label: "Action", after: previewAction },
+              { label: "Platform", after: firstPlatform() },
+              {
+                label: "Detail",
+                after:
+                  previewAction === "send"
+                    ? draft
+                    : previewAction === "pair-create"
+                      ? `pair ${settings?.userId || "local-user"} to ${firstPlatform()}`
+                      : "Controlled Agent route action"
+              }
             ]}
             onCancel={() => setPreviewAction(null)}
             onConfirm={() => {
@@ -448,15 +612,19 @@ function GatewayWebhooksPage({ api, controlAvailable }: PageProps) {
                 void retryFirstMessage();
                 return;
               }
+              if (previewAction === "pair-create") {
+                void createPairing();
+                return;
+              }
               void platformAction(previewAction === "start" ? "start" : "stop");
             }}
           />
         ) : null}
       </Panel>
 
-      <JsonPanel data={{ status: status.data, daemon: daemon.data, send_result: sendResult }} title="Gateway evidence" />
-      <Panel title="成熟方案约束" action={<Radio size={18} />}>
-        <p>Webhook 验签、目录刷新、daemon start/stop 和外部投递全部由 Agent route 控制，前端只展示状态和受控入口。</p>
+      <JsonPanel data={{ status: status.data, daemon: daemon.data, pairing: pairing.data, send_result: sendResult }} title="Gateway evidence" />
+      <Panel title="Boundary" action={<Radio size={18} />}>
+        <p>Outbound delivery, pairing, daemon control, directory refresh, and platform actions stay behind Agent HTTP routes and visible control gates.</p>
       </Panel>
     </PageShell>
   );

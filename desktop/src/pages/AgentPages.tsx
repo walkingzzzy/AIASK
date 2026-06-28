@@ -1,8 +1,15 @@
-import { Play, Save, Send, ShieldCheck } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { Archive, Play, Save, Send } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { ApprovalQueue, DryRunPreview, GatedActionButton, type ActionIntent } from "../components/IntentComponents";
+import { DraggableDataTable } from "../components/DraggableDataTable";
+import { FileUploadButton } from "../components/FileUpload";
+import { MessageContent } from "../components/MessageContent";
+import { ModelSelector } from "../components/ModelSelector";
+import { NewThreadButton } from "../components/NewThreadDialog";
+import { SearchBar, FilterPanel } from "../components/SearchAndFilter";
 import { EmptyState as SharedEmptyState, MockDataNotice } from "../components/StateComponents";
+import { StatusLight, inferStatusFromData } from "../components/StatusLight";
 import {
   Button,
   DataTable,
@@ -16,9 +23,11 @@ import {
   StatusBadge
 } from "../components/ui";
 import { useAsyncResource } from "../hooks/useAsyncResource";
+import { useWebSocket } from "../hooks/useWebSocket";
 import { mockMessages } from "../mock/mockData";
-import type { RunEvent, UnknownRecord, WorkbenchMessage } from "../types";
+import type { UnknownRecord, WorkbenchMessage } from "../types";
 import { dataObject, firstArray, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
+import { UserProfilePage } from "./UserProfilePage";
 
 export function AgentPages(props: PageProps) {
   switch (props.view) {
@@ -28,6 +37,8 @@ export function AgentPages(props: PageProps) {
       return <ModelsPage {...props} />;
     case "projects-contexts":
       return <ProjectsContextsPage {...props} />;
+    case "user-profile":
+      return <UserProfilePage {...props} />;
     case "sessions-runs":
       return <SessionsRunsPage {...props} />;
     case "tools-approvals":
@@ -59,34 +70,149 @@ function normalizeIntent(item: UnknownRecord): ActionIntent {
   };
 }
 
+function uploadRows(payload: unknown): UnknownRecord[] {
+  const direct = list(payload);
+  if (direct.length) return direct;
+  const record = dataObject(payload, {});
+  return firstArray(record, ["files", "items", "uploads"]);
+}
+
+function normalizeAttachment(file: UnknownRecord): UnknownRecord {
+  return {
+    id: String(file.id || file.file_id || file.name || file.filename || ""),
+    name: String(file.name || file.filename || file.id || "attachment"),
+    mime_type: String(file.mime_type || file.type || "application/octet-stream"),
+    size: Number(file.size || 0),
+    parse_status: String(file.parse_status || file.status || "uploaded"),
+    text_preview: typeof file.text_preview === "string" ? file.text_preview : undefined
+  };
+}
+
+function extractTextPart(part: unknown): string {
+  if (typeof part === "string") return part;
+  if (!part || typeof part !== "object") return "";
+  const record = part as UnknownRecord;
+  if (typeof record.text === "string") return record.text;
+  if (typeof record.content === "string") return record.content;
+  if (typeof record.output_text === "string") return record.output_text;
+  if (record.text && typeof record.text === "object") {
+    return extractTextPart(record.text);
+  }
+  return "";
+}
+
+function extractResponseText(record: UnknownRecord): string {
+  const response = dataObject<UnknownRecord>(record.response, {});
+  const direct = response.content ?? record.output_text ?? record.text ?? record.content;
+  if (typeof direct === "string" && direct.trim()) return direct;
+  if (Array.isArray(direct)) {
+    const joined = direct.map(extractTextPart).filter(Boolean).join("\n\n");
+    if (joined) return joined;
+  }
+  if (Array.isArray(response.output)) {
+    const joined = response.output.map(extractTextPart).filter(Boolean).join("\n\n");
+    if (joined) return joined;
+  }
+  return "Agent 已返回响应，请查看证据面板。";
+}
+
+function mergeMessages(serverMessages: WorkbenchMessage[], localMessages: WorkbenchMessage[]) {
+  if (!serverMessages.length) return [...mockMessages, ...localMessages];
+  const seen = new Set(serverMessages.map((message) => message.id));
+  return [...serverMessages, ...localMessages.filter((message) => !seen.has(message.id))];
+}
+
 function WorkbenchPage({
   api,
   settings,
   controlAvailable,
   workbench,
   reloadWorkbench,
+  setSelectedThreadId,
   setSelectedRunId,
   setSelectedMessageId,
   setSelectedArtifactId,
-  setSelectedApprovalId,
   setSelectedReviewTab
 }: PageProps) {
   const summary = useAsyncResource(() => api.workbenchSummary(), [api]);
   const aiStatus = useAsyncResource(() => api.aiStatus(), [api]);
+  const aiModels = useAsyncResource(() => api.aiModels(), [api]);
   const [prompt, setPrompt] = useState("请检查当前线程的上下文、运行状态和证据链，然后给出下一步建议。");
   const [busy, setBusy] = useState(false);
+  const [modelBusy, setModelBusy] = useState(false);
   const [responseEvidence, setResponseEvidence] = useState<unknown>(null);
   const [localMessages, setLocalMessages] = useState<WorkbenchMessage[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UnknownRecord[]>([]);
+  const [dragActive, setDragActive] = useState(false);
 
+  const selectedThreadId = workbench?.selectedThreadId || "";
   const summaryData = dataObject(summary.data, {});
   const stats = dataObject<UnknownRecord>(summaryData.stats, {});
-  const recentRuns = list(workbench?.availableRuns);
   const recentSessions = workbench?.availableThreads || [];
-  const messages = useMemo(() => {
-    const threadMessages = workbench?.selectedSessionMessages || [];
-    if (threadMessages.length) return [...threadMessages, ...localMessages];
-    return [...mockMessages, ...localMessages];
-  }, [localMessages, workbench?.selectedSessionMessages]);
+  const serverMessages = workbench?.selectedSessionMessages || [];
+  const messages = useMemo(() => mergeMessages(serverMessages, localMessages), [localMessages, serverMessages]);
+
+  useEffect(() => {
+    setLocalMessages([]);
+    setUploadedFiles([]);
+    setResponseEvidence(null);
+  }, [selectedThreadId]);
+
+  async function handleCreateThread(data: { title: string; description?: string; initial_context?: string }) {
+    try {
+      const created = dataObject(await api.hermesSessionCreate({ ...data, user_id: settings?.userId }), {});
+      const createdSession = dataObject(created.data, created);
+      const nextThreadId = String(createdSession.session_id || createdSession.id || "");
+      if (nextThreadId) {
+        setSelectedThreadId?.(nextThreadId);
+      }
+      await reloadWorkbench?.();
+    } catch (error) {
+      console.error("create thread failed:", error);
+      setResponseEvidence({ error: "create_thread_failed", detail: String(error) });
+    }
+  }
+
+  // 工作台 header 快速切换模型:复用 ModelsPage 的契约,保存后 reload 状态与模型列表
+  async function handleModelChange(option: { provider: string; model: string; base_url?: string }) {
+    setModelBusy(true);
+    try {
+      const statusItem = dataObject(aiStatus.data, {});
+      const nextBaseUrl = option.base_url || String(statusItem.base_url || "");
+      setResponseEvidence(
+        await api.aiConfigSave({
+          provider: option.provider,
+          model: option.model,
+          base_url: nextBaseUrl
+        })
+      );
+      await Promise.all([aiStatus.reload(), aiModels.reload()]);
+    } catch (error) {
+      console.error("switch model failed:", error);
+      setResponseEvidence({ error: "model_switch_failed", detail: String(error) });
+    } finally {
+      setModelBusy(false);
+    }
+  }
+
+  async function handleFileUpload(files: File[]) {
+    try {
+      const result = await api.fileUpload(files, {
+        session_id: workbench?.selectedThreadId,
+        thread_id: workbench?.selectedThreadId
+      });
+      const uploaded = uploadRows(result);
+      if (uploaded.length) {
+        setUploadedFiles((current) => [...uploaded, ...current].slice(0, 12));
+      }
+      setResponseEvidence(result);
+      await reloadWorkbench?.();
+    } catch (error) {
+      console.error("file upload failed:", error);
+      setResponseEvidence({ error: "file_upload_failed", detail: String(error) });
+      throw error;
+    }
+  }
 
   async function submitPrompt() {
     if (!prompt.trim()) return;
@@ -102,48 +228,100 @@ function WorkbenchPage({
     setSelectedMessageId?.(userMessage.id);
 
     try {
+      const attachments = uploadedFiles.map(normalizeAttachment);
+      const attachmentContext =
+        attachments.length > 0
+          ? {
+              uploaded_files: attachments
+            }
+          : undefined;
+      const selectedModel = String(statusItem.model || "");
       const result = await api.response({
         prompt,
+        input: prompt,
+        model: selectedModel || undefined,
+        attachments,
         user_id: settings?.userId,
         session_id: workbench?.selectedThreadId,
         context: {
           source: "desktop_workbench",
-          selected_run_id: workbench?.selectedRunId
+          selected_run_id: workbench?.selectedRunId,
+          ...attachmentContext
         }
       });
       const record = dataObject(result, {});
-      const response = dataObject<UnknownRecord>(record.response, {});
+      const metadata = dataObject<UnknownRecord>(record.metadata, {});
       const nextMessage: WorkbenchMessage = {
-        id: String(record.id || `assistant_${Date.now()}`),
+        id: String(record.id || metadata.response_id || `assistant_${Date.now()}`),
         role: "assistant",
-        content: String(response.content || record.output_text || "Agent 已返回响应，请查看证据面板。"),
+        content: extractResponseText(record),
         created_at: new Date().toISOString(),
-        status: String(dataObject<UnknownRecord>(record.run, {}).status || "completed")
+        status: String(dataObject<UnknownRecord>(record.run, {}).status || record.status || "completed")
       };
       setLocalMessages((current) => [...current, nextMessage]);
       setSelectedMessageId?.(nextMessage.id);
       setResponseEvidence(result);
 
-      const runId = String(dataObject<UnknownRecord>(record.run, {}).id || "");
+      const runPayload = dataObject<UnknownRecord>(record.run, {});
+      const sessionPayload = dataObject<UnknownRecord>(record.session, {});
+      const runId = String(runPayload.id || runPayload.run_id || metadata.run_id || "");
+      const sessionId = String(sessionPayload.id || sessionPayload.session_id || record.session_id || metadata.session_id || "");
+
+      if (sessionId) {
+        setSelectedThreadId?.(sessionId);
+      }
       if (runId) {
         setSelectedRunId?.(runId);
       }
+
       await Promise.all([summary.reload(), reloadWorkbench?.() || Promise.resolve()]);
+    } catch (error) {
+      console.error("submit prompt failed:", error);
+      setResponseEvidence({ error: "response_failed", detail: String(error) });
     } finally {
       setBusy(false);
     }
   }
 
+  const statusItem = dataObject(aiStatus.data, {});
+  const modelRows = list(aiModels.data);
+
   return (
     <PageShell
       title="AI 任务工作台"
-      description="以线程为中心组织消息、运行事件、产物、审批和复核入口。中间区始终围绕当前线程展开。"
+      description="以线程为中心组织消息、运行事件、产物、审批和复核入口。主流程支持新建会话、上传文件、发送任务与查看证据。"
       badge={<StatusBadge tone={settings?.mode === "mock" ? "warning" : "success"}>{settings?.mode === "mock" ? "Mock 模式" : "Live Agent"}</StatusBadge>}
+      actions={
+        <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+          <ModelSelector
+            current={{ provider: String(statusItem.provider || ""), model: String(statusItem.model || "") }}
+            available={modelRows.map((item) => ({
+              id: String(item.id || item.model || ""),
+              provider: String(item.provider || ""),
+              model: String(item.id || item.model || ""),
+              base_url: String(item.base_url || ""),
+              name: String(item.name || item.id || item.model || "")
+            }))}
+            onChange={handleModelChange}
+            disabled={modelBusy || settings?.mode === "mock"}
+          />
+          <FileUploadButton onUpload={handleFileUpload} accept=".txt,.md,.json,.csv,.pdf,.doc,.docx" disabled={busy} />
+          <NewThreadButton onCreateThread={handleCreateThread} />
+        </div>
+      }
       metrics={[
         metric("活跃会话", stats.active_sessions ?? recentSessions.length, "info"),
-        metric("当前运行", workbench?.currentRun ? valueOf(workbench.currentRun, ["status"]) : "未选择", workbench?.currentRun ? statusTone(workbench.currentRun.status) : "warning"),
+        metric(
+          "当前运行",
+          workbench?.currentRun ? valueOf(workbench.currentRun, ["status"]) : "未选择",
+          workbench?.currentRun ? statusTone(workbench.currentRun.status) : "warning"
+        ),
         metric("待审批", list(workbench?.approvals).length, list(workbench?.approvals).length ? "warning" : "neutral"),
-        metric("当前产物", workbench?.selectedRunArtifacts.length || 0, workbench?.selectedRunArtifacts.length ? "success" : "neutral")
+        metric(
+          "当前产物",
+          workbench?.selectedRunArtifacts.length || 0,
+          workbench?.selectedRunArtifacts.length ? "success" : "neutral"
+        )
       ]}
     >
       {settings?.mode === "mock" ? <MockDataNotice /> : null}
@@ -170,13 +348,63 @@ function WorkbenchPage({
           </Panel>
 
           <Panel title="Composer" action={<GatedNotice controlAvailable={controlAvailable} action="发送任务" />}>
-            <div className="composer">
+            <div
+              className={`composer ${dragActive ? "drag-active" : ""}`}
+              onDragEnter={(event) => {
+                event.preventDefault();
+                setDragActive(true);
+              }}
+              onDragOver={(event) => {
+                event.preventDefault();
+                if (!dragActive) setDragActive(true);
+              }}
+              onDragLeave={(event) => {
+                event.preventDefault();
+                if (event.currentTarget === event.target) {
+                  setDragActive(false);
+                }
+              }}
+              onDrop={(event) => {
+                event.preventDefault();
+                setDragActive(false);
+                const dropped = Array.from(event.dataTransfer.files || []);
+                if (dropped.length) {
+                  void handleFileUpload(dropped);
+                }
+              }}
+            >
               <label className="field">
                 <span>Prompt</span>
-                <textarea data-testid="workbench-prompt" value={prompt} onChange={(event) => setPrompt(event.target.value)} />
-                <small>真实请求只通过 `/v1/responses` 发出，并携带当前线程与运行上下文。</small>
+                <textarea
+                  data-testid="workbench-prompt"
+                  value={prompt}
+                  onChange={(event) => setPrompt(event.target.value)}
+                  disabled={busy}
+                />
+                <small>真实请求只通过 `/v1/responses` 发出，并携带当前线程、运行和附件上下文。</small>
               </label>
-              <Button data-testid="workbench-submit" tone="success" icon={<Send size={16} />} busy={busy} onClick={() => void submitPrompt()}>
+
+              {uploadedFiles.length ? (
+                <div className="tool-chips" data-testid="workbench-uploaded-files">
+                  {uploadedFiles.map((file, index) => (
+                    <span className="tool-chip" key={String(file.id || file.name || file.filename || `file_${index}`)}>
+                      {String(file.name || file.filename || file.id || "file")}
+                    </span>
+                  ))}
+                </div>
+              ) : null}
+
+              <small>
+                {dragActive ? "松开即可上传文件到当前线程。" : "可直接拖拽文件到这里，或使用上方上传按钮补充上下文。"}
+              </small>
+
+              <Button
+                data-testid="workbench-submit"
+                tone="success"
+                icon={<Send size={16} />}
+                busy={busy}
+                onClick={() => void submitPrompt()}
+              >
                 发送任务
               </Button>
             </div>
@@ -195,7 +423,22 @@ function WorkbenchPage({
                       <span>{message.role === "user" ? "用户" : message.role === "assistant" ? "AIASK" : "System"}</span>
                       <span>{message.status || "ready"}</span>
                     </div>
-                    <div>{message.content}</div>
+                    <MessageContent
+                      content={message.content}
+                      role={message.role}
+                      onSaveCode={async (content, filename) => {
+                        const saved = await api.fileSave({ content, filename, path: "./" });
+                        const savedRecord = dataObject<UnknownRecord>(saved, {});
+                        const artifact = normalizeAttachment({
+                          ...savedRecord,
+                          mime_type: "text/plain",
+                          parse_status: "saved_artifact"
+                        });
+                        setUploadedFiles((current) => [artifact, ...current.filter((file) => String(file.id || "") !== String(artifact.id || ""))].slice(0, 12));
+                        setResponseEvidence(saved);
+                        await reloadWorkbench?.();
+                      }}
+                    />
                   </article>
                 ))}
               </div>
@@ -227,7 +470,7 @@ function WorkbenchPage({
               const item = dataObject(data, {});
               return (
                 <div className="stack">
-                  <StatusBadge tone={item.configured ? "success" : "warning"}>{item.configured ? "已配置" : "缺少配置"}</StatusBadge>
+                  <StatusLight status={item.configured ? "connected" : "degraded"} label={item.configured ? "已配置" : "缺少配置"} />
                   <DataTable
                     items={[item]}
                     columns={[
@@ -251,10 +494,12 @@ function WorkbenchPage({
                   key: "id",
                   header: "查看",
                   render: (item) => (
-                    <Button onClick={() => {
-                      setSelectedArtifactId?.(String(item.id || item.artifact_id || ""));
-                      setSelectedReviewTab?.("artifacts");
-                    }}>
+                    <Button
+                      onClick={() => {
+                        setSelectedArtifactId?.(String(item.id || item.artifact_id || ""));
+                        setSelectedReviewTab?.("artifacts");
+                      }}
+                    >
                       审阅
                     </Button>
                   )
@@ -275,6 +520,7 @@ function WorkbenchPage({
           <JsonPanel
             data={{
               response_evidence: responseEvidence,
+              uploaded_files: uploadedFiles,
               thread: workbench?.currentThread,
               run: workbench?.currentRun,
               raw_events: workbench?.selectedRunEvents,
@@ -300,6 +546,7 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
   const statusItem = dataObject(status.data, {});
   const configItem = dataObject(config.data, {});
   const modelRows = list(models.data);
+  const currentModelStatus = inferStatusFromData(statusItem.configured ? statusItem : configItem);
 
   useEffect(() => {
     setForm((current) => {
@@ -336,11 +583,48 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
     }
   }
 
+  async function handleModelChange(option: { provider: string; model: string; base_url?: string }) {
+    setBusy(true);
+    try {
+      const nextBaseUrl = option.base_url || form.base_url;
+      setResult(
+        await api.aiConfigSave({
+          provider: option.provider,
+          model: option.model,
+          base_url: nextBaseUrl
+        })
+      );
+      setForm((current) => ({
+        ...current,
+        provider: option.provider,
+        model: option.model,
+        base_url: nextBaseUrl
+      }));
+      await Promise.all([status.reload(), config.reload(), models.reload()]);
+    } finally {
+      setBusy(false);
+    }
+  }
+
   return (
     <PageShell
       title="模型配置与 Readiness"
-      description="统一展示 provider、model、base URL、密钥配置状态，以及 smoke 测试与模型可用性。"
-      badge={<StatusBadge tone={statusItem.configured ? "success" : "warning"}>{statusItem.configured ? "模型可用" : "需要配置"}</StatusBadge>}
+      description="统一展示 provider、model、base URL、密钥配置状态，并提供快速模型切换、保存与 smoke 测试。"
+      badge={<StatusLight status={currentModelStatus} label={statusItem.configured ? "模型可用" : "需要配置"} />}
+      actions={
+        <ModelSelector
+          current={{ provider: String(statusItem.provider || ""), model: String(statusItem.model || "") }}
+          available={modelRows.map((item) => ({
+            id: String(item.id || item.model || ""),
+            provider: String(item.provider || ""),
+            model: String(item.id || item.model || ""),
+            base_url: String(item.base_url || ""),
+            name: String(item.name || item.id || item.model || "")
+          }))}
+          onChange={handleModelChange}
+          disabled={busy}
+        />
+      }
       metrics={[
         metric("Provider", statusItem.provider || configItem.provider, "info"),
         metric("Model", statusItem.model || configItem.model, "success"),
@@ -374,9 +658,15 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
             </label>
             <label className="field">
               <span>API Key</span>
-              <input type="password" value={form.api_key} onChange={(event) => setForm({ ...form, api_key: event.target.value })} placeholder="仅发送，不回显" />
+              <input
+                type="password"
+                value={form.api_key}
+                onChange={(event) => setForm({ ...form, api_key: event.target.value })}
+                placeholder="仅发送，不回显"
+              />
             </label>
           </div>
+
           <div className="page-actions">
             <Button data-testid="model-save-config" icon={<Save size={16} />} disabled={!controlAvailable} busy={busy} onClick={() => void saveConfig()}>
               保存配置
@@ -397,12 +687,13 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
               }
             ]}
           />
         </Panel>
       </div>
+
       <JsonPanel data={{ status: status.data, config: config.data, last_result: result }} title="模型证据" />
     </PageShell>
   );
@@ -457,6 +748,7 @@ function ProjectsContextsPage({ api, settings, workbench }: PageProps) {
 
 function SessionsRunsPage({
   api,
+  settings,
   controlAvailable,
   workbench,
   setSelectedThreadId,
@@ -466,14 +758,78 @@ function SessionsRunsPage({
   const [controlResult, setControlResult] = useState<unknown>(null);
   const [showPreview, setShowPreview] = useState<null | "cancel" | "stop" | "steer">(null);
   const [steerInstruction, setSteerInstruction] = useState("请总结当前运行状态，并只继续安全动作。");
+  const [searchKeyword, setSearchKeyword] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  const [batchArchiving, setBatchArchiving] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [orderVersion, setOrderVersion] = useState(0);
+  const lastWsReloadRef = useRef(0);
+
   const selectedRunId = workbench?.selectedRunId || "";
-  const sessionRows = (workbench?.availableThreads || []).map((thread) => ({
+  const allSessionRows = (workbench?.availableThreads || []).map((thread) => ({
     id: thread.id,
     title: thread.title,
     status: thread.status,
     message_count: thread.messageCount,
-    updated_at: thread.updatedAt
+    updated_at: thread.updatedAt,
+    archived: Boolean(thread.archived) || thread.status === "archived"
   }));
+
+  // 会话本地排序:后端无 reorder 路由,用 localStorage 持久化自定义顺序。
+  // 未在记录里的会话(新建)按 updated_at desc 兜底排到已排序项之后。
+  const SESSION_ORDER_KEY = "aiask.desktop.sessions.order.v1";
+  const sessionOrder = useMemo(() => {
+    let saved: string[] = [];
+    try {
+      const raw = localStorage.getItem(SESSION_ORDER_KEY);
+      if (raw) saved = JSON.parse(raw) as string[];
+    } catch {
+      saved = [];
+    }
+    void orderVersion; // 拖拽后自增以触发重算
+    const savedSet = new Set(saved);
+    const ordered = saved
+      .map((id) => allSessionRows.find((row) => row.id === id))
+      .filter((row): row is (typeof allSessionRows)[number] => Boolean(row));
+    const rest = allSessionRows
+      .filter((row) => !savedSet.has(row.id))
+      .sort((a, b) => String(b.updated_at || "").localeCompare(String(a.updated_at || "")));
+    return [...ordered, ...rest];
+  }, [allSessionRows, SESSION_ORDER_KEY, orderVersion]);
+
+  const filtering = Boolean(searchKeyword.trim()) || statusFilter !== "all";
+  const sessionRows = (filtering ? allSessionRows : sessionOrder).filter((session) => {
+    const keyword = searchKeyword.trim().toLowerCase();
+    const matchKeyword = !keyword || session.title.toLowerCase().includes(keyword) || session.id.toLowerCase().includes(keyword);
+    const matchStatus =
+      statusFilter === "all" ||
+      (statusFilter === "archived" ? session.archived : String(session.status || "").toLowerCase() === statusFilter);
+    return matchKeyword && matchStatus;
+  });
+
+  // WebSocket:实时订阅当前 run 事件,收到后节流触发 reloadWorkbench
+  const wsUrl =
+    settings?.mode === "live" && settings?.baseUrl && selectedRunId
+      ? `${settings.baseUrl.replace(/^http/, "ws").replace(/\/+$/, "")}/ws?run_id=${encodeURIComponent(selectedRunId)}&token=${encodeURIComponent(settings.apiToken || "")}`
+      : "";
+  const handleWsMessage = useCallback(() => {
+    const now = Date.now();
+    // 500ms 节流,避免高频事件触发过多 reload
+    if (now - lastWsReloadRef.current < 500) return;
+    lastWsReloadRef.current = now;
+    void reloadWorkbench?.();
+  }, [reloadWorkbench]);
+  useWebSocket({
+    url: wsUrl,
+    enabled: Boolean(wsUrl),
+    onMessage: (msg) => {
+      if (msg.type === "run_event") handleWsMessage();
+    },
+    onConnect: () => setWsConnected(true),
+    onDisconnect: () => setWsConnected(false)
+  });
+
   const runRows = workbench?.availableRuns || [];
 
   async function controlRun(action: "cancel" | "stop" | "steer") {
@@ -489,10 +845,50 @@ function SessionsRunsPage({
     await reloadWorkbench?.();
   }
 
+  async function archiveSession(sessionId: string) {
+    try {
+      await api.sessionArchive(sessionId, {});
+      await reloadWorkbench?.();
+    } catch (error) {
+      console.error("archive session failed:", error);
+      setControlResult({ error: "session_archive_failed", detail: String(error), session_id: sessionId });
+    }
+  }
+
+  async function batchArchiveSessions() {
+    const ids = Array.from(selectedSessionIds);
+    if (!ids.length) return;
+    setBatchArchiving(true);
+    try {
+      await api.sessionBatchArchive({
+        session_ids: ids,
+        reason: "desktop batch archive",
+        actor: settings?.userId
+      });
+      setSelectedSessionIds(new Set());
+      await reloadWorkbench?.();
+    } catch (error) {
+      console.error("batch archive failed:", error);
+      setControlResult({ error: "batch_archive_failed", detail: String(error) });
+    } finally {
+      setBatchArchiving(false);
+    }
+  }
+
+  // 会话拖拽排序回调:仅本地持久化,不调后端
+  function persistSessionOrder(nextIds: string[]) {
+    try {
+      localStorage.setItem(SESSION_ORDER_KEY, JSON.stringify(nextIds));
+    } catch {
+      /* localStorage 不可用时静默降级为内存排序 */
+    }
+    setOrderVersion((n) => n + 1);
+  }
+
   return (
     <PageShell
       title="Runs 工作面"
-      description="用会话、运行、事件、产物、来源和工具调用组成联动式工作面，默认跟随当前线程。"
+      description="用会话、运行、事件、产物、来源和工具调用组成联动式工作面，并补齐搜索、筛选与归档动作。"
       metrics={[
         metric("会话", sessionRows.length, "info"),
         metric("运行", runRows.length, "success"),
@@ -501,29 +897,84 @@ function SessionsRunsPage({
       ]}
     >
       <div className="grid-2">
-        <Panel title="会话列表">
-          <DataTable
+        <Panel
+          title={`会话列表${wsConnected ? "  ●" : ""}`}
+          action={
+            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+              <SearchBar value={searchKeyword} onChange={setSearchKeyword} placeholder="搜索会话..." />
+              <FilterPanel
+                filters={[
+                  {
+                    label: "状态",
+                    key: "status",
+                    value: statusFilter,
+                    options: [
+                      { label: "全部", value: "all" },
+                      { label: "active", value: "active" },
+                      { label: "completed", value: "completed" },
+                      { label: "archived", value: "archived" }
+                    ]
+                  }
+                ]}
+                onChange={(key, value) => {
+                  if (key === "status") setStatusFilter(value);
+                }}
+                onReset={() => {
+                  setStatusFilter("all");
+                  setSearchKeyword("");
+                }}
+              />
+            </div>
+          }
+        >
+          <DraggableDataTable
             items={sessionRows}
+            getRowId={(item) => String(item.id || "")}
+            onReorder={persistSessionOrder}
+            dragEnabled={!filtering && controlAvailable}
+            selectedIds={selectedSessionIds}
+            onSelectionChange={setSelectedSessionIds}
+            batchActions={
+              <Button
+                data-testid="batch-archive-sessions"
+                tone="warning"
+                icon={<Archive size={14} />}
+                busy={batchArchiving}
+                disabled={!controlAvailable || batchArchiving}
+                onClick={() => void batchArchiveSessions()}
+              >
+                批量归档
+              </Button>
+            }
             columns={[
               { key: "title", header: "标题" },
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
               },
               { key: "message_count", header: "消息" },
               {
                 key: "id",
-                header: "联动",
+                header: "操作",
                 render: (item) => (
-                  <Button onClick={() => setSelectedThreadId?.(String(item.id || ""))}>
-                    选中线程
-                  </Button>
+                  <div style={{ display: "flex", gap: "0.5rem" }}>
+                    <Button onClick={() => setSelectedThreadId?.(String(item.id || ""))}>选中线程</Button>
+                    <Button
+                      tone="neutral"
+                      icon={<Archive size={14} />}
+                      onClick={() => void archiveSession(String(item.id || ""))}
+                      disabled={!controlAvailable || Boolean(item.archived)}
+                    >
+                      归档
+                    </Button>
+                  </div>
                 )
               }
             ]}
             empty="暂无会话"
           />
+          {filtering ? <small style={{ color: "var(--text-muted)" }}>筛选中:拖拽排序在无筛选时可用。</small> : null}
         </Panel>
 
         <Panel title="运行列表">
@@ -534,7 +985,7 @@ function SessionsRunsPage({
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
               },
               { key: "toolset", header: "Toolset" },
               {
@@ -602,7 +1053,11 @@ function SessionsRunsPage({
           </label>
           <label className="field">
             <span>Steer instruction</span>
-            <input data-testid="run-steer-instruction" value={steerInstruction} onChange={(event) => setSteerInstruction(event.target.value)} />
+            <input
+              data-testid="run-steer-instruction"
+              value={steerInstruction}
+              onChange={(event) => setSteerInstruction(event.target.value)}
+            />
           </label>
         </div>
 
@@ -663,6 +1118,10 @@ function ToolsApprovalsPage({
   const approvalRows = list(approvals.data);
   const normalizedIntents = intentRows.map(normalizeIntent);
 
+  async function refreshQueues() {
+    await Promise.all([tools.reload(), intents.reload(), approvals.reload(), reloadWorkbench?.() || Promise.resolve()]);
+  }
+
   async function createSafeIntent() {
     const result = await api.createIntent({
       title: "V1 safe data sync dry-run intent",
@@ -676,7 +1135,7 @@ function ToolsApprovalsPage({
     setPendingIntentId(String(intent.intent_id || intent.id || ""));
     setActionResult(result);
     setPreviewIntent(intent);
-    await Promise.all([intents.reload(), reloadWorkbench?.() || Promise.resolve()]);
+    await refreshQueues();
   }
 
   async function decideFirstIntent(decision: "confirm" | "deny") {
@@ -686,7 +1145,7 @@ function ToolsApprovalsPage({
     const result = decision === "confirm" ? await api.intentConfirm(intentId) : await api.intentDeny(intentId);
     setPendingIntentId("");
     setActionResult(result);
-    await Promise.all([intents.reload(), reloadWorkbench?.() || Promise.resolve()]);
+    await refreshQueues();
   }
 
   async function decideFirstApproval(decision: "approve" | "deny") {
@@ -696,7 +1155,7 @@ function ToolsApprovalsPage({
     setSelectedApprovalId?.(approvalId);
     const result = await api.approvalDecision(approvalId, decision);
     setActionResult(result);
-    await Promise.all([approvals.reload(), reloadWorkbench?.() || Promise.resolve()]);
+    await refreshQueues();
   }
 
   return (
@@ -714,8 +1173,9 @@ function ToolsApprovalsPage({
           controlAvailable={controlAvailable}
           requiresApproval
           riskLevel="medium"
+          buttonTestId="create-safe-intent"
         >
-          <span data-testid="create-safe-intent">创建诊断意图</span>
+          创建诊断意图
         </GatedActionButton>
       }
       metrics={[
@@ -735,7 +1195,7 @@ function ToolsApprovalsPage({
               {
                 key: "side_effect",
                 header: "副作用",
-                render: (item) => <StatusBadge tone={statusTone(item.side_effect)}>{valueOf(item, ["side_effect"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item.side_effect)} label={valueOf(item, ["side_effect"])} />
               }
             ]}
           />
@@ -744,12 +1204,16 @@ function ToolsApprovalsPage({
         <Panel title="Pending Intents">
           <ApprovalQueue
             intents={normalizedIntents}
-            onApprove={(id) => api.intentConfirm(id).then((result) => {
+            onApprove={async (id) => {
+              const result = await api.intentConfirm(id);
               setActionResult(result);
-            })}
-            onDeny={(id) => api.intentDeny(id).then((result) => {
+              await refreshQueues();
+            }}
+            onDeny={async (id) => {
+              const result = await api.intentDeny(id);
               setActionResult(result);
-            })}
+              await refreshQueues();
+            }}
             canManage={controlAvailable}
           />
         </Panel>
@@ -762,7 +1226,7 @@ function ToolsApprovalsPage({
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge>
+                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
               },
               { key: "risk", header: "风险" },
               {
@@ -781,17 +1245,35 @@ function ToolsApprovalsPage({
 
       <Panel title="决策结果与风险说明">
         <div className="page-actions">
-          <span className="muted" data-testid="pending-intent-id">{pendingIntentId || "none"}</span>
-          <Button data-testid="intent-confirm-first" disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)} onClick={() => void decideFirstIntent("confirm")}>
+          <span className="muted" data-testid="pending-intent-id">
+            {pendingIntentId || "none"}
+          </span>
+          <Button
+            data-testid="intent-confirm-first"
+            disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)}
+            onClick={() => void decideFirstIntent("confirm")}
+          >
             Confirm first intent
           </Button>
-          <Button data-testid="intent-deny-first" disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)} onClick={() => void decideFirstIntent("deny")}>
+          <Button
+            data-testid="intent-deny-first"
+            disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)}
+            onClick={() => void decideFirstIntent("deny")}
+          >
             Deny first intent
           </Button>
-          <Button data-testid="approval-approve-first" disabled={!controlAvailable || !approvalRows.length} onClick={() => void decideFirstApproval("approve")}>
+          <Button
+            data-testid="approval-approve-first"
+            disabled={!controlAvailable || !approvalRows.length}
+            onClick={() => void decideFirstApproval("approve")}
+          >
             Approve first approval
           </Button>
-          <Button data-testid="approval-deny-first" disabled={!controlAvailable || !approvalRows.length} onClick={() => void decideFirstApproval("deny")}>
+          <Button
+            data-testid="approval-deny-first"
+            disabled={!controlAvailable || !approvalRows.length}
+            onClick={() => void decideFirstApproval("deny")}
+          >
             Deny first approval
           </Button>
         </div>

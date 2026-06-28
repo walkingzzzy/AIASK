@@ -398,6 +398,7 @@ test.describe('P0-P4 Component Completeness', () => {
     const routes = [
       "/tools-approvals",
       "/sessions-runs",
+      "/profile",
       "/mcp",
       "/connectors",
       "/skills",

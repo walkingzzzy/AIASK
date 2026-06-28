@@ -1,0 +1,17 @@
+README.md
+database.py
+main.py
+models.py
+pyproject.toml
+desktop_api.egg-info/PKG-INFO
+desktop_api.egg-info/SOURCES.txt
+desktop_api.egg-info/dependency_links.txt
+desktop_api.egg-info/requires.txt
+desktop_api.egg-info/top_level.txt
+routes/__init__.py
+routes/files.py
+routes/mcp_servers.py
+routes/skills.py
+routes/stock_pools.py
+routes/strategies.py
+routes/threads.py

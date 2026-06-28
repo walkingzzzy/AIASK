@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
@@ -59,6 +60,39 @@ from .route_auth import (
     control_token_configured as _control_token_configured,
     hermes_full_enabled as _hermes_full_enabled,
 )
+
+_UPLOAD_TEXT_PREVIEW_LIMIT = 4_000
+_UPLOAD_TEXT_MIME_TYPES = {"application/json", "application/csv", "application/xml", "application/x-ndjson"}
+_UPLOAD_TEXT_EXTENSIONS = (".txt", ".md", ".markdown", ".json", ".csv", ".xml", ".log", ".py", ".ts", ".tsx", ".js", ".jsx", ".css", ".html")
+
+
+def _upload_text_preview(filename: str, content_type: str, content: bytes) -> dict[str, Any]:
+    is_text_like = content_type.startswith("text/") or content_type in _UPLOAD_TEXT_MIME_TYPES or filename.lower().endswith(_UPLOAD_TEXT_EXTENSIONS)
+    if not is_text_like:
+        return {"parse_status": "uploaded_unparsed"}
+    try:
+        return {
+            "parse_status": "parsed_text_preview",
+            "text_preview": content[:_UPLOAD_TEXT_PREVIEW_LIMIT].decode("utf-8", errors="replace"),
+        }
+    except Exception:
+        return {"parse_status": "text_decode_failed"}
+
+
+def _merge_upload_previews(payload: Any, previews: list[dict[str, Any]]) -> Any:
+    if not previews:
+        return payload
+    if isinstance(payload, list):
+        return [{**dict(item), **previews[index]} if isinstance(item, dict) and index < len(previews) else item for index, item in enumerate(payload)]
+    if isinstance(payload, dict):
+        next_payload = dict(payload)
+        for key in ("data", "files", "items", "uploads"):
+            value = next_payload.get(key)
+            if isinstance(value, list):
+                next_payload[key] = _merge_upload_previews(value, previews)
+                return next_payload
+        return {**next_payload, **previews[0]}
+    return payload
 from .routes.tools_catalog import build_tool_catalog_payload
 from .run_payloads import (
     _artifact_content_payload,
@@ -77,6 +111,7 @@ from .streaming_payloads import (
     response_sse_stream as _response_sse_stream,
     sse_events_stream as _sse_events_stream,
 )
+from .gateway.http_client import _json_request, _multipart_request
 from .tool_registry import SAFE_TOOL_CATALOG
 from .tool_risk import metadata_is_read_only
 from .tools.policy import GENERAL_FULL_TOOLSET
@@ -346,6 +381,58 @@ class AppRouteCallbackFactory:
             ),
         }
 
+    def hermes_session_create_payload(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        body = dict(payload or {})
+        user_id = str(body.get("user_id") or "local").strip() or "local"
+        title = str(body.get("title") or "").strip() or None
+        description = str(body.get("description") or "").strip() or None
+        initial_context = str(body.get("initial_context") or "").strip() or None
+        metadata: dict[str, Any] = {}
+        if description:
+            metadata["description"] = description
+        if initial_context:
+            metadata["initial_context"] = initial_context
+
+        session_id = self.runtime.session_store.create_session(user_id=user_id, title=title, metadata=metadata or None)
+
+        if initial_context:
+            self.runtime.session_store.append_message(
+                session_id,
+                {
+                    "role": "system",
+                    "name": "desktop_initial_context",
+                    "content": initial_context,
+                    "metadata": {"source": "desktop_create_session"},
+                },
+            )
+
+        session = self.runtime.session_store.get_session(session_id)
+        assert session is not None
+        summary = _session_summary_payload(
+            self.runtime,
+            intent_store=self.intent_executor.store,
+            user_id=user_id,
+            limit=200,
+            include_archived=True,
+        )
+        created = next((item for item in summary if str(item.get("session_id") or "") == session_id), None)
+        return {
+            "object": "aiask.session",
+            "implementation": "aiask_native",
+            "success": True,
+            "data": created or {
+                "session_id": session_id,
+                "title": session.get("title") or session_id,
+                "user_id": user_id,
+                "created_at": session.get("created_at"),
+                "updated_at": session.get("updated_at"),
+                "message_count": self.runtime.session_store.count_session_messages(session_id),
+                "status": "idle",
+                "archived": False,
+                "metadata": dict(session.get("metadata") or {}),
+            },
+        }
+
     def hermes_handoffs_payload(
         self,
         *,
@@ -440,6 +527,86 @@ class AppRouteCallbackFactory:
     def broker_analytics_payload(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         return _broker_analytics_payload_for_runtime(self.runtime, payload)
 
+    async def desktop_asset_call(self, method: str, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        base_url = str(os.getenv("AIASK_DESKTOP_API_BASE_URL", "http://127.0.0.1:8001")).rstrip("/")
+        url = f"{base_url}{path}"
+        response = await asyncio.to_thread(_json_request, method, url, payload, timeout=20.0)
+        if not response.get("ok"):
+            body = response.get("body")
+            detail = body.get("detail") if isinstance(body, dict) else response.get("error") or "desktop-api request failed"
+            status_code = int(response.get("status_code") or 0)
+            error_code = "DESKTOP_API_REQUEST_FAILED"
+            if status_code == 404:
+                error_code = "DESKTOP_API_NOT_FOUND"
+            elif status_code == 401:
+                error_code = "DESKTOP_API_UNAUTHORIZED"
+            elif status_code == 0:
+                error_code = "DESKTOP_API_UPSTREAM_UNAVAILABLE"
+            return {
+                "object": "desktop.asset",
+                "success": False,
+                "data": None,
+                "error": detail,
+                "error_code": error_code,
+                "secrets_redacted": True,
+            }
+        return {
+            "object": "desktop.asset",
+            "success": True,
+            "data": response.get("body"),
+            "error": None,
+            "error_code": None,
+            "secrets_redacted": True,
+        }
+
+    async def desktop_file_upload(self, files: list[Any], context: dict[str, Any] | None = None) -> dict[str, Any]:
+        base_url = str(os.getenv("AIASK_DESKTOP_API_BASE_URL", "http://127.0.0.1:8001")).rstrip("/")
+        fields = {key: value for key, value in dict(context or {}).items() if value not in {None, ""}}
+        multipart_files: list[tuple[str, tuple[str, bytes, str]]] = []
+        previews: list[dict[str, Any]] = []
+        for index, file in enumerate(files):
+            filename = str(getattr(file, "filename", f"upload_{index}"))
+            content_type = str(getattr(file, "content_type", "application/octet-stream") or "application/octet-stream")
+            content = await file.read()
+            previews.append(_upload_text_preview(filename, content_type, content))
+            multipart_files.append(
+                (
+                    "files",
+                    (
+                        filename,
+                        content,
+                        content_type,
+                    ),
+                )
+            )
+        response = await asyncio.to_thread(
+            _multipart_request,
+            "POST",
+            f"{base_url}/v1/files/upload",
+            fields=fields,
+            files=multipart_files,
+            timeout=30.0,
+        )
+        if not response.get("ok"):
+            body = response.get("body")
+            detail = body.get("detail") if isinstance(body, dict) else response.get("error") or "desktop-api upload failed"
+            return {
+                "object": "desktop.file_upload",
+                "success": False,
+                "data": None,
+                "error": detail,
+                "error_code": "DESKTOP_API_UPLOAD_FAILED",
+                "secrets_redacted": True,
+            }
+        return {
+            "object": "desktop.file_upload",
+            "success": True,
+            "data": _merge_upload_previews(response.get("body"), previews),
+            "error": None,
+            "error_code": None,
+            "secrets_redacted": True,
+        }
+
     def route_assembly(self, *, daemon_getter: Callable[[], Any]) -> AgentRouteAssembly:
         return AgentRouteAssembly(
             runtime=self.runtime,
@@ -477,6 +644,8 @@ class AppRouteCallbackFactory:
             broker_sync_payload=self.broker_sync_payload,
             broker_accounts_payload=self.broker_accounts_payload,
             broker_analytics_payload=self.broker_analytics_payload,
+            desktop_asset_call=self.desktop_asset_call,
+            desktop_file_upload=self.desktop_file_upload,
             workbench_summary_payload=self.workbench_summary_payload,
             ai_status_payload=self.ai_status_payload,
             ai_config_payload=self.ai_config_payload,
@@ -503,6 +672,7 @@ class AppRouteCallbackFactory:
             hermes_toolsets_payload=self.hermes_toolsets_payload,
             hermes_config_payload=self.hermes_config_payload,
             hermes_sessions_payload=self.hermes_sessions_payload,
+            hermes_session_create_payload=self.hermes_session_create_payload,
             hermes_handoffs_payload=self.hermes_handoffs_payload,
             hermes_resume_context_payload=self.hermes_resume_context_payload,
             full_tool_call=self.full_tool_call,

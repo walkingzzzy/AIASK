@@ -1,11 +1,14 @@
 import { Play, Save, ShieldCheck } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 
 import { DryRunPreview } from "../components/IntentComponents";
+import { StatusLight, inferStatusFromData } from "../components/StatusLight";
 import { useAsyncResource } from "../hooks/useAsyncResource";
-import { Button, DataTable, GatedNotice, JsonPanel, LinkCard, PageShell, Panel, StatusBadge } from "../components/ui";
+import { Button, DataTable, GatedNotice, JsonPanel, LinkCard, PageShell, Panel } from "../components/ui";
 import type { ConnectionSettings } from "../types";
 import { dataObject, firstArray, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
+import { viewToRoute } from "../routes";
 
 export function OpsPages(props: PageProps) {
   switch (props.view) {
@@ -31,60 +34,114 @@ export function OpsPages(props: PageProps) {
 function AutomationPage({ api, controlAvailable }: PageProps) {
   const jobs = useAsyncResource(() => api.jobs(), [api]);
   const [result, setResult] = useState<unknown>(null);
-  const [previewAction, setPreviewAction] = useState<null | "run-first" | "create" | "disable" | "delete">(null);
+  const [previewAction, setPreviewAction] = useState<null | "create" | "run" | "toggle" | "delete">(null);
+  const [targetJob, setTargetJob] = useState<Record<string, unknown> | null>(null);
+  const [form, setForm] = useState({
+    name: "",
+    prompt: "",
+    schedule: "interval",
+    interval_seconds: "3600",
+    enabled: true,
+    template: "generic",
+    symbol: "600519",
+    query: "",
+    condition: "price_change_pct > 3",
+    channel: "local",
+    dry_run: true
+  });
   const rows = list(jobs.data);
-  const sampleJobName = useMemo(() => `desktop-v1-smoke-job-${Date.now().toString(36)}`, []);
   const enabledRows = rows.filter((job) => Boolean(job.enabled));
   const scheduledRows = rows.filter((job) => !String(job.schedule || "").includes("manual"));
   const manualRows = rows.filter((job) => String(job.schedule || "").includes("manual"));
 
-  function jobId(job: Record<string, unknown> | undefined) {
+  function jobId(job: Record<string, unknown> | undefined | null) {
     return String(job?.id || job?.job_id || "");
   }
 
-  async function runFirstJob() {
-    const first = rows[0];
-    const targetId = jobId(first);
+  function jobName(job: Record<string, unknown> | undefined | null) {
+    return String(job?.name || job?.id || job?.job_id || "job");
+  }
+
+  function buildPayload() {
+    const isWatch = form.template === "watch";
+    const interval = Number(form.interval_seconds || 0);
+    return {
+      name: form.name.trim() || (isWatch ? `Watch ${form.symbol || form.query}` : "Desktop automation job"),
+      prompt: isWatch
+        ? `Watch ${form.symbol || form.query}: ${form.condition}. Notify ${form.channel}. Dry run: ${form.dry_run}.`
+        : form.prompt.trim(),
+      schedule: form.schedule,
+      interval_seconds: form.schedule === "interval" && Number.isFinite(interval) && interval > 0 ? interval : undefined,
+      enabled: form.enabled,
+      dry_run: form.dry_run,
+      source: "desktop_v1",
+      template: isWatch ? "market_watch" : "generic_prompt",
+      watch: isWatch
+        ? {
+            symbol: form.symbol.trim(),
+            query: form.query.trim(),
+            condition: form.condition.trim(),
+            channel: form.channel,
+            dry_run: form.dry_run
+          }
+        : undefined
+    };
+  }
+
+  async function createJobFromForm() {
+    setResult(await api.createJob(buildPayload()));
+    setPreviewAction(null);
+    await jobs.reload();
+  }
+
+  async function runJob(job: Record<string, unknown>) {
+    const targetId = jobId(job);
     if (!targetId) return;
     setResult(await api.runJob(targetId));
     setPreviewAction(null);
     await jobs.reload();
   }
 
-  async function createSampleJob() {
-    setResult(await api.createJob({ name: sampleJobName, prompt: "AIASK Desktop V1 smoke job", interval_seconds: 3600, enabled: false }));
-    setPreviewAction(null);
-    await jobs.reload();
-  }
-
-  async function disableSampleJob() {
-    const target = rows.find((job) => String(job.name || "") === sampleJobName);
-    const targetId = jobId(target);
+  async function toggleJob(job: Record<string, unknown>) {
+    const targetId = jobId(job);
     if (!targetId) return;
-    setResult(await api.updateJob(targetId, { enabled: false }));
+    setResult(await api.updateJob(targetId, { enabled: !Boolean(job.enabled) }));
     setPreviewAction(null);
     await jobs.reload();
   }
 
-  async function deleteSampleJob() {
-    const target = rows.find((job) => String(job.name || "") === sampleJobName);
-    const targetId = jobId(target);
+  async function deleteJob(job: Record<string, unknown>) {
+    const targetId = jobId(job);
     if (!targetId) return;
     setResult(await api.deleteJob(targetId));
     setPreviewAction(null);
     await jobs.reload();
   }
 
+  function openJobPreview(action: "run" | "toggle" | "delete", job: Record<string, unknown>) {
+    setTargetJob(job);
+    setPreviewAction(action);
+  }
+
+  const previewChanges =
+    previewAction === "create"
+      ? [
+          { label: "Action", after: "create job" },
+          { label: "Name", after: String(buildPayload().name) },
+          { label: "Template", after: String(buildPayload().template) },
+          { label: "Control", after: "Agent /v1/jobs with control token gate" }
+        ]
+      : [
+          { label: "Action", after: String(previewAction || "") },
+          { label: "Target", after: jobName(targetJob) },
+          { label: "Control", after: "Agent Jobs API controlled route" }
+        ];
+
   return (
     <PageShell
-      title="Automation Triage"
-      description="以 triage / inbox 语义重排 jobs、历史 runs、计划任务和 workflow 入口，保留受控动作但不再只是 jobs 表格。"
-      badge={<GatedNotice controlAvailable={controlAvailable} action="创建 / 触发任务" />}
-      actions={
-        <Button icon={<Play size={16} />} disabled={!controlAvailable || !rows.length} onClick={() => setPreviewAction("run-first")}>
-          触发首个任务
-        </Button>
-      }
+      title="Automation"
+      description="Create, run, disable, and delete controlled Agent jobs from explicit forms and dry-run previews."
+      badge={<GatedNotice controlAvailable={controlAvailable} action="create / run jobs" />}
       metrics={[
         metric("Jobs", rows.length, "info"),
         metric("Enabled", enabledRows.length, "success"),
@@ -93,71 +150,145 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
       ]}
     >
       <div className="grid-2">
-        <Panel title="Triage Inbox">
-          <DataTable
-            items={rows}
-            columns={[
-              { key: "name", header: "任务" },
-              { key: "enabled", header: "启用" },
-              { key: "schedule", header: "计划" },
-              { key: "toolset", header: "Toolset" }
-            ]}
-          />
+        <Panel title="Create Job">
+          <div className="form-grid">
+            <label className="field">
+              <span>Template</span>
+              <select data-testid="job-template" value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
+                <option value="generic">Prompt job</option>
+                <option value="watch">Market watch</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Name</span>
+              <input data-testid="job-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Daily market brief" />
+            </label>
+            <label className="field">
+              <span>Schedule</span>
+              <select value={form.schedule} onChange={(event) => setForm({ ...form, schedule: event.target.value })}>
+                <option value="interval">Interval</option>
+                <option value="manual">Manual</option>
+              </select>
+            </label>
+            <label className="field">
+              <span>Interval seconds</span>
+              <input data-testid="job-interval" type="number" min="60" value={form.interval_seconds} onChange={(event) => setForm({ ...form, interval_seconds: event.target.value })} disabled={form.schedule === "manual"} />
+            </label>
+            {form.template === "watch" ? (
+              <>
+                <label className="field">
+                  <span>Symbol</span>
+                  <input data-testid="job-watch-symbol" value={form.symbol} onChange={(event) => setForm({ ...form, symbol: event.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Query</span>
+                  <input value={form.query} onChange={(event) => setForm({ ...form, query: event.target.value })} placeholder="optional topic" />
+                </label>
+                <label className="field">
+                  <span>Condition</span>
+                  <input data-testid="job-watch-condition" value={form.condition} onChange={(event) => setForm({ ...form, condition: event.target.value })} />
+                </label>
+                <label className="field">
+                  <span>Channel</span>
+                  <select value={form.channel} onChange={(event) => setForm({ ...form, channel: event.target.value })}>
+                    <option value="local">Local</option>
+                    <option value="feishu">Feishu</option>
+                    <option value="wecom">WeCom</option>
+                    <option value="discord">Discord</option>
+                  </select>
+                </label>
+              </>
+            ) : (
+              <label className="field" style={{ gridColumn: "1 / -1" }}>
+                <span>Prompt</span>
+                <textarea data-testid="job-prompt" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} rows={4} />
+              </label>
+            )}
+            <label className="field">
+              <span>Enabled</span>
+              <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
+            </label>
+            <label className="field">
+              <span>Dry run</span>
+              <input type="checkbox" checked={form.dry_run} onChange={(event) => setForm({ ...form, dry_run: event.target.checked })} />
+            </label>
+          </div>
+          <div className="page-actions">
+            <Button data-testid="job-create" icon={<Save size={16} />} tone="success" disabled={!controlAvailable} onClick={() => setPreviewAction("create")}>
+              Preview create
+            </Button>
+          </div>
         </Panel>
 
-        <Panel title="Finding / 下一步动作">
+        <Panel title="Job Findings">
           <JsonPanel
             data={{
               jobs: rows,
               enabled_count: enabledRows.length,
               scheduled_count: scheduledRows.length,
-              manual_count: manualRows.length
+              manual_count: manualRows.length,
+              form_payload: buildPayload()
             }}
             title="Automation findings"
           />
         </Panel>
       </div>
 
-      <Panel title="Job Actions">
-        <div className="page-actions">
-          <Button data-testid="job-create-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("create")}>
-            Create sample job
-          </Button>
-          <Button data-testid="job-disable-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("disable")}>
-            Disable sample job
-          </Button>
-          <Button data-testid="job-delete-sample" disabled={!controlAvailable} onClick={() => setPreviewAction("delete")}>
-            Delete sample job
-          </Button>
-        </div>
-
-        {previewAction ? (
-          <DryRunPreview
-            title="Automation 动作预览"
-            changes={[
-              { label: "动作", after: previewAction },
-              { label: "目标", after: previewAction === "run-first" ? String(rows[0]?.name || rows[0]?.id || "-") : sampleJobName },
-              { label: "约束", after: "通过 Agent Jobs API 发起受控动作" }
-            ]}
-            onCancel={() => setPreviewAction(null)}
-            onConfirm={() => {
-              if (previewAction === "run-first") {
-                void runFirstJob();
-                return;
-              }
-              if (previewAction === "create") {
-                void createSampleJob();
-                return;
-              }
-              if (previewAction === "disable") {
-                void disableSampleJob();
-                return;
-              }
-              void deleteSampleJob();
-            }}
-          />
-        ) : null}
+      <Panel title="Jobs">
+        <DataTable
+          items={rows}
+          columns={[
+            { key: "name", header: "Job" },
+            { key: "enabled", header: "Enabled" },
+            { key: "schedule", header: "Schedule" },
+            { key: "toolset", header: "Toolset" },
+            {
+              key: "id",
+              header: "Actions",
+              render: (job) => (
+                <div className="page-actions">
+                  <Button data-testid={`job-run-${jobId(job)}`} icon={<Play size={14} />} disabled={!controlAvailable} onClick={() => openJobPreview("run", job)}>
+                    Run
+                  </Button>
+                  <Button data-testid={`job-toggle-${jobId(job)}`} icon={<ShieldCheck size={14} />} disabled={!controlAvailable} onClick={() => openJobPreview("toggle", job)}>
+                    {job.enabled ? "Disable" : "Enable"}
+                  </Button>
+                  <Button data-testid={`job-delete-${jobId(job)}`} tone="danger" disabled={!controlAvailable} onClick={() => openJobPreview("delete", job)}>
+                    Delete
+                  </Button>
+                </div>
+              )
+            }
+          ]}
+        />
       </Panel>
+
+      {previewAction ? (
+        <DryRunPreview
+          title="Automation preview"
+          changes={previewChanges}
+          onCancel={() => {
+            setPreviewAction(null);
+            setTargetJob(null);
+          }}
+          onConfirm={() => {
+            if (previewAction === "create") {
+              void createJobFromForm();
+              return;
+            }
+            if (!targetJob) return;
+            if (previewAction === "run") {
+              void runJob(targetJob);
+              return;
+            }
+            if (previewAction === "toggle") {
+              void toggleJob(targetJob);
+              return;
+            }
+            void deleteJob(targetJob);
+          }}
+        />
+      ) : null}
 
       <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="Automation evidence" />
     </PageShell>
@@ -217,7 +348,7 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
     <PageShell
       title="Settings"
       description="集中管理 Agent HTTP base、API token、control token、mock / live 模式和用户上下文，保留 secret 脱敏。"
-      badge={<StatusBadge tone={controlAvailable ? "success" : "gated"}>{controlAvailable ? "Control token 已输入" : "Control token 缺失"}</StatusBadge>}
+      badge={<StatusLight status={controlAvailable ? "connected" : "disconnected"} label={controlAvailable ? "Control token 已输入" : "Control token 缺失"} />}
       metrics={[
         metric("Mode", local.mode, local.mode === "mock" ? "warning" : "info"),
         metric("API Token", local.apiToken ? "已输入" : "空", local.apiToken ? "success" : "warning"),
@@ -267,7 +398,7 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
           columns={[
             { key: "area", header: "区域" },
             { key: "rule", header: "规则" },
-            { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }
+            { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }
           ]}
         />
       </Panel>
@@ -300,10 +431,10 @@ function ReadinessHealthPage({ api }: PageProps) {
     >
       <div className="grid-3">
         <Panel title="Required Gates">
-          <DataTable items={requiredGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }]} />
+          <DataTable items={requiredGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
         </Panel>
         <Panel title="Optional Gates">
-          <DataTable items={optionalGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusBadge tone={statusTone(item.status)}>{valueOf(item, ["status"])}</StatusBadge> }]} />
+          <DataTable items={optionalGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
         </Panel>
         <Panel title="Next Actions">
           <DataTable items={nextActions} columns={[{ key: "name", header: "建议" }]} />
@@ -316,6 +447,7 @@ function ReadinessHealthPage({ api }: PageProps) {
 }
 
 function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
+  const navigate = useNavigate();
   const profile = useAsyncResource(() => api.localProfile(), [api]);
   const activity = useAsyncResource(() => api.userActivity(settings?.userId || "local-user"), [api, settings?.userId]);
   const policy = useAsyncResource(() => api.userDataPolicy(settings?.userId || "local-user"), [api, settings?.userId]);
@@ -354,7 +486,10 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
     >
       <div className="grid-2">
         <Panel title="本地画像">
-          <JsonPanel data={profile.data} title="Profile" />
+          <div className="stack">
+            <JsonPanel data={profile.data} title="Profile" />
+            <Button onClick={() => navigate(viewToRoute("user-profile"))}>Open full profile editor</Button>
+          </div>
         </Panel>
         <Panel title="活动与策略">
           <JsonPanel data={{ activity: activity.data, policy: policy.data }} title="Activity / Policy" />

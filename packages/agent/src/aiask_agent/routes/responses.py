@@ -22,6 +22,14 @@ def create_responses_router(
 ) -> APIRouter:
     router = APIRouter()
 
+    def _attachments(body: dict[str, Any]) -> list[dict[str, Any]]:
+        try:
+            from aiask_agent.response_payloads import normalize_response_attachments
+
+            return normalize_response_attachments(body)
+        except Exception:
+            return []
+
     @router.post("/v1/responses")
     async def responses(request: Request) -> Any:
         require_api(request)
@@ -37,6 +45,8 @@ def create_responses_router(
         model = str(body.get("model") or selected.model)
         response = responses_payload(result, model=model)
         response["metadata"]["mode"] = mode
+        response["metadata"]["attachments"] = _attachments(body)
+        response["metadata"]["attachment_count"] = len(response["metadata"]["attachments"])
         if bool(body.get("stream", False)):
             return StreamingResponse(response_sse(result, model=model), media_type="text/event-stream")
         return response

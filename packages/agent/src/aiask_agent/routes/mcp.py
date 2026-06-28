@@ -24,7 +24,70 @@ def create_mcp_router(
     @router.get("/v1/mcp/servers")
     async def mcp_servers(request: Request, all: bool = False) -> dict[str, Any]:
         require_api(request)
-        return {"object": "list", "data": mcp_aggregator_factory().servers_summary(include_all=all)}
+        rows = []
+        for item in mcp_aggregator_factory().servers_summary(include_all=all):
+            row = dict(item)
+            row.setdefault("id", str(row.get("name") or ""))
+            row.setdefault("enabled", bool(row.get("enabled", True)))
+            rows.append(row)
+        return {"object": "list", "data": rows}
+
+    @router.post("/v1/mcp/servers")
+    async def mcp_server_create(request: Request) -> dict[str, Any]:
+        require_full(request)
+        payload = dict(await request.json() or {})
+        aggregator = mcp_aggregator_factory()
+        data = aggregator.register_client_server(
+            name=str(payload.get("name") or ""),
+            transport=payload.get("transport") or ("stdio" if payload.get("command") else "streamable_http"),
+            url=payload.get("url"),
+            command=payload.get("command"),
+            args=payload.get("args"),
+            domain=payload.get("domain"),
+            tools=payload.get("tools"),
+            resources=payload.get("resources"),
+            prompts=payload.get("prompts"),
+            oauth=payload.get("oauth"),
+            headers_from_env=payload.get("headers_from_env"),
+            enabled=bool(payload.get("enabled", True)),
+            description=payload.get("description"),
+        )
+        refresh_mcp_runtime()
+        return {"object": "mcp.server", "success": True, "data": data, "error": None, "error_code": None}
+
+    @router.patch("/v1/mcp/servers/{name}")
+    async def mcp_server_update(request: Request, name: str) -> dict[str, Any]:
+        require_full(request)
+        payload = dict(await request.json() or {})
+        aggregator = mcp_aggregator_factory()
+        current = dict(aggregator._server_by_name(name))
+        merged = {**current, **payload, "name": name}
+        data = aggregator.register_client_server(
+            name=str(merged.get("name") or name),
+            transport=merged.get("transport"),
+            url=merged.get("url"),
+            command=merged.get("command"),
+            args=merged.get("args"),
+            domain=merged.get("domain"),
+            tools=merged.get("tools"),
+            resources=merged.get("resources"),
+            prompts=merged.get("prompts"),
+            oauth=merged.get("oauth"),
+            headers_from_env=merged.get("headers_from_env"),
+            enabled=bool(merged.get("enabled", True)),
+            description=merged.get("description"),
+        )
+        refresh_mcp_runtime()
+        return {"object": "mcp.server", "success": True, "data": data, "error": None, "error_code": None}
+
+    @router.delete("/v1/mcp/servers/{name}")
+    async def mcp_server_delete(request: Request, name: str) -> dict[str, Any]:
+        require_full(request)
+        removed = mcp_aggregator_factory().remove_server(name)
+        refresh_mcp_runtime()
+        if not removed:
+            raise HTTPException(404, detail=f"server not found: {name}")
+        return {"object": "mcp.server", "success": True, "data": {"id": name, "deleted": True}, "error": None, "error_code": None}
 
     @router.get("/v1/mcp/tools")
     async def mcp_tools(request: Request, all: bool = False) -> dict[str, Any]:

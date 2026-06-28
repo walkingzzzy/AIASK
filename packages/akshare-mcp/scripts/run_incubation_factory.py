@@ -110,12 +110,12 @@ async def _run_once(args: argparse.Namespace) -> None:
     from strategy_factory.runtime.incubation import build_incubation_runtime
 
     ensure_default_runtime_services()
-    runtime = build_incubation_runtime(
-        run_time=_parse_time(args.run_time),
+    runtime = build_incubation_runtime()
+
+    result = await runtime.run_once(
+        trigger="manual",
         dry_run=args.dry_run,
     )
-
-    result = await runtime.run_once()
 
     # 输出结果
     print("\n" + "=" * 60)
@@ -161,18 +161,21 @@ async def _run_daemon(args: argparse.Namespace) -> None:
     from strategy_factory.runtime.incubation import build_incubation_runtime
 
     ensure_default_runtime_services()
-    runtime = build_incubation_runtime(
-        run_time=_parse_time(args.run_time),
-        dry_run=args.dry_run,
-    )
+    runtime = build_incubation_runtime()
 
     print(f"孵化工厂守护进程启动 (运行时间: {args.run_time}, dry_run: {args.dry_run})")
     print("按 Ctrl+C 停止")
+    print("\n注意: daemon 模式暂不支持，请使用 cron 定时调用 run_once")
+    print("示例: crontab -e")
+    print("      30 18 * * * cd /path/to/aiask && python packages/akshare-mcp/scripts/run_incubation_factory.py")
 
-    try:
-        await runtime.run_daemon()
-    except KeyboardInterrupt:
-        print("\n孵化工厂守护进程已停止")
+    # TODO: 实现真正的 daemon 模式，需要在 runtime 层添加 scheduler
+    # For now, just run once
+    result = await runtime.run_once(
+        trigger="daemon",
+        dry_run=args.dry_run,
+    )
+    print(f"\n单次运行完成，状态: {result.get('status')}")
 
 
 async def _show_status(args: argparse.Namespace) -> None:

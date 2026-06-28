@@ -349,7 +349,26 @@ export const mockApiPayloads: Record<string, unknown> = {
   },
   "/v1/desktop/users/local-profile": {
     object: "aiask.local_profile",
-    data: { user_id: "local-user", display_name: "AIASK User", preferences: { language: "zh-CN" }, secrets_redacted: true }
+    data: {
+      user_id: "local-user",
+      profile_name: "AIASK User",
+      preferences: {
+        language: "zh-CN",
+        investment_style: "balanced",
+        risk_tolerance: 3,
+        preferred_sectors: ["白酒", "新能源", "半导体"],
+        investment_horizon: "medium",
+        experience_level: "intermediate",
+        tags: ["research", "swing"]
+      },
+      behavior: {
+        frequent_queries: ["市场温度", "股票雷达", "组合风险"],
+        preferred_models: ["gpt-4.1-compatible"],
+        active_hours: [9, 10, 14],
+        common_stocks: ["600519", "300750", "000858"]
+      },
+      secrets_redacted: true
+    }
   },
   "/v1/learning/status": { object: "learning.status", data: { enabled: true, proposals_pending: 2, last_review_at: now } },
   "/v1/learning/review": { object: "list", data: [{ id: "proposal_001", title: "优化数据预检提示", status: "pending", risk: "low" }] },
@@ -380,6 +399,54 @@ export const mockApiPayloads: Record<string, unknown> = {
 };
 
 export function mockToolResponse(toolName: string, body: unknown): unknown {
+  if (toolName === "agent_stock_live_quote") {
+    const payload = (body && typeof body === "object" ? (body as Record<string, unknown>) : {}) || {};
+    const code = String(payload.code || payload.symbol || payload.stock_code || payload.ticker || "600519");
+    return {
+      success: true,
+      data: {
+        code,
+        symbol: code,
+        name: code === "300750" ? "宁德时代" : code === "000858" ? "五粮液" : "贵州茅台",
+        price: code === "300750" ? 203.4 : code === "000858" ? 131.8 : 1688.6,
+        change: code === "300750" ? 4.7 : code === "000858" ? -1.3 : 23.6,
+        change_pct: code === "300750" ? 2.37 : code === "000858" ? -0.98 : 1.42,
+        provider: "mock-feed",
+        data_timestamp: now,
+        quote: {
+          volume: code === "300750" ? 2280000 : 965000,
+          amount: code === "300750" ? 468000000 : 191000000,
+          source_chain: ["mock", "agent_stock_live_quote"]
+        }
+      },
+      meta: {
+        source_chain: ["mock", "agent_stock_live_quote"],
+        side_effect: { level: "read_only", target: "market_quote", confirmation_required: false, idempotent: true }
+      },
+      error: null
+    };
+  }
+  if (toolName === "agent_stock_news_digest") {
+    const payload = (body && typeof body === "object" ? (body as Record<string, unknown>) : {}) || {};
+    const code = String(payload.code || "600519");
+    return {
+      success: true,
+      data: {
+        code,
+        items: [
+          { id: "news_001", title: `${code} 盘后资金面回暖，机构关注度提升`, source: "AIASK Mock Wire", published_at: now, url: "https://example.invalid/news/1" },
+          { id: "news_002", title: `行业景气度与 ${code} 相关性增强`, source: "AIASK Mock Wire", published_at: now, url: "https://example.invalid/news/2" },
+          { id: "news_003", title: `市场温度回升推动 ${code} 所在板块修复`, source: "AIASK Mock Wire", published_at: now, url: "https://example.invalid/news/3" }
+        ],
+        source_chain: ["mock", "agent_stock_news_digest"]
+      },
+      meta: {
+        source_chain: ["mock", "agent_stock_news_digest"],
+        side_effect: { level: "read_only", target: "news_digest", confirmation_required: false, idempotent: true }
+      },
+      error: null
+    };
+  }
   if (toolName === "agent_market_temperature_snapshot") {
     return {
       object: "tool_result",
@@ -400,6 +467,75 @@ export function mockToolResponse(toolName: string, body: unknown): unknown {
       object: "tool_result",
       success: true,
       data: { ready: false, status: "stale", blockers: ["cache_stale"], warnings: ["refresh recommended"] }
+    };
+  }
+  if (toolName === "agent_market_temperature_cache_history") {
+    return {
+      success: true,
+      data: {
+        count: 3,
+        items: [
+          {
+            as_of: "2026-06-21",
+            market_temperature: 62.4,
+            market_state: "warm",
+            stock_count: 4180,
+            industry_count: 6,
+            quality_status: "healthy",
+            snapshot: {
+              as_of: "2026-06-21",
+              market: { temperature: 62.4, state: "warm" },
+              industries: [
+                { name: "白酒", temperature: 76.2, stock_count: 16, change: 1.8 },
+                { name: "新能源", temperature: 69.5, stock_count: 24, change: 1.2 },
+                { name: "半导体", temperature: 66.3, stock_count: 18, change: 0.9 },
+                { name: "地产", temperature: 28.4, stock_count: 14, change: -1.6 }
+              ]
+            }
+          },
+          {
+            as_of: "2026-06-20",
+            market_temperature: 58.1,
+            market_state: "neutral",
+            stock_count: 4102,
+            industry_count: 6,
+            quality_status: "healthy",
+            snapshot: {
+              as_of: "2026-06-20",
+              market: { temperature: 58.1, state: "neutral" },
+              industries: [
+                { name: "白酒", temperature: 70.8, stock_count: 16, change: 1.1 },
+                { name: "新能源", temperature: 61.4, stock_count: 24, change: 0.6 },
+                { name: "半导体", temperature: 52.2, stock_count: 18, change: 0.2 },
+                { name: "地产", temperature: 31.9, stock_count: 14, change: -1.2 }
+              ]
+            }
+          },
+          {
+            as_of: "2026-06-19",
+            market_temperature: 47.6,
+            market_state: "cool",
+            stock_count: 4030,
+            industry_count: 6,
+            quality_status: "degraded",
+            snapshot: {
+              as_of: "2026-06-19",
+              market: { temperature: 47.6, state: "cool" },
+              industries: [
+                { name: "白酒", temperature: 61.5, stock_count: 16, change: 0.3 },
+                { name: "新能源", temperature: 49.7, stock_count: 24, change: -0.4 },
+                { name: "半导体", temperature: 43.1, stock_count: 18, change: -0.7 },
+                { name: "地产", temperature: 26.4, stock_count: 14, change: -1.9 }
+              ]
+            }
+          }
+        ]
+      },
+      meta: {
+        source_chain: ["mock", "agent_market_temperature_cache_history"],
+        side_effect: { level: "read_only", target: "market_temperature_history", confirmation_required: false, idempotent: true }
+      },
+      error: null
     };
   }
   return { object: "tool_result", success: true, data: { echoed_tool: toolName, body, mock: true } };
@@ -432,3 +568,129 @@ export function mockRunToolInvocationsPayload(runId: string) {
     data: mockToolInvocationsByRun[runId] || []
   };
 }
+
+mockMessages.splice(
+  0,
+  mockMessages.length,
+  {
+    id: "msg_user_001",
+    role: "user",
+    content: "检查今天的数据状态，并给出可以继续研究的股票方向。",
+    created_at: now,
+    status: "sent"
+  },
+  {
+    id: "msg_ai_001",
+    role: "assistant",
+    content: "数据源目前部分降级，股票雷达候选仍可用于只读研究；建议先刷新 TDX / Tushare，再进入量化报告流程。",
+    created_at: now,
+    status: "completed",
+    sources: [{ type: "data_status", freshness: "stale", source: "mock" }]
+  }
+);
+
+if (Array.isArray(mockSessionMessages.sess_research_001)) {
+  mockSessionMessages.sess_research_001 = [
+    ...mockMessages,
+    {
+      id: "msg_ai_002",
+      role: "assistant",
+      content: "当前线程已经生成数据预检报告和雷达摘要，可以继续查看结果，并决定是否进入审批流。",
+      created_at: now,
+      status: "completed"
+    }
+  ];
+}
+
+if (Array.isArray(mockSessionMessages.sess_ops_001)) {
+  mockSessionMessages.sess_ops_001 = [
+    {
+      id: "msg_ops_user_001",
+      role: "user",
+      content: "检查 Gateway readiness，并确认是否需要外部投递审批。",
+      created_at: now,
+      status: "sent"
+    },
+    {
+      id: "msg_ops_ai_001",
+      role: "assistant",
+      content: "Gateway 当前工作在 dry-run 模式，平台健康可读，但外部投递仍需审批。",
+      created_at: now,
+      status: "completed"
+    }
+  ];
+}
+
+mockRuns[0].title = "金融研究预检";
+mockSessions[0].title = "金融研究工作台";
+mockSessions[1].title = "集成与运维巡检";
+
+mockApiPayloads["/v1/desktop/stock-radar/candidates"] = {
+  object: "tool_result",
+  success: true,
+  data: {
+    candidates: [
+      { symbol: "600519", name: "贵州茅台", tier: "A", score: 87, reason: "趋势稳定，数据完整。", risk: "估值敏感" },
+      { symbol: "300750", name: "宁德时代", tier: "B", score: 79, reason: "行业温度回升。", risk: "波动较高" },
+      { symbol: "000858", name: "五粮液", tier: "B", score: 74, reason: "资金面修复。", risk: "消费复苏待确认" }
+    ]
+  }
+};
+
+mockApiPayloads["/v1/desktop/stock-radar/digest"] = {
+  object: "tool_result",
+  success: true,
+  data: {
+    digest: "今日雷达候选以消费和新能源龙头为主，建议先完成数据刷新，再做只读复核。",
+    channels: ["local", "preview"],
+    delivery_intent_required: true
+  }
+};
+
+mockApiPayloads["/v1/desktop/quant/presets"] = {
+  object: "list",
+  data: [
+    { id: "momentum_research", name: "动量研究", risk: "read_only", default_universe: "A-share liquid" },
+    { id: "breadth_rotation", name: "市场广度轮动", risk: "read_only", default_universe: "industry" }
+  ]
+};
+
+mockApiPayloads["/v1/desktop/financial-manager/catalog"] = {
+  object: "list",
+  data: [
+    { id: "portfolio_review", name: "组合复核", side_effect: "read_only" },
+    { id: "broker_snapshot", name: "券商快照", side_effect: "read_only" }
+  ]
+};
+
+mockApiPayloads["/v1/jobs"] = {
+  object: "list",
+  data: [
+    { id: "job_data_preflight", name: "数据预检", enabled: true, schedule: "weekday 08:45", toolset: "finance_safe" },
+    { id: "job_gateway_digest", name: "投递摘要预览", enabled: false, schedule: "manual", toolset: "ops_safe" }
+  ]
+};
+
+mockApiPayloads["/v1/desktop/users/local-profile"] = {
+  object: "aiask.local_profile",
+  data: {
+    user_id: "local-user",
+    profile_name: "AIASK User",
+    preferences: {
+      language: "zh-CN",
+      investment_style: "balanced",
+      risk_tolerance: 3,
+      preferred_sectors: ["白酒", "新能源", "半导体"],
+      investment_horizon: "medium",
+      experience_level: "intermediate",
+      tags: ["research", "swing"]
+    },
+    behavior: {
+      frequent_queries: ["市场温度", "股票雷达", "组合风险"],
+      preferred_models: ["gpt-4.1-compatible"],
+      active_hours: [9, 10, 14],
+      common_stocks: ["600519", "300750", "000858"]
+    },
+    secrets_redacted: true
+  }
+};

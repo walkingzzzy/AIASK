@@ -544,3 +544,60 @@ def test_desktop_stock_radar_routes_use_agent_read_facades(tmp_path, monkeypatch
         ("_load_candidates_handler", {"run_id": "radar_1", "tier": "alert", "symbol": "600000", "min_score": 80.0, "limit": 3}),
         ("_load_digest_handler", {"run_id": "radar_1", "limit": 20, "channels": ["wecom", "telegram"]}),
     ]
+
+
+def test_gateway_pairing_routes_proxy_agent_tool(tmp_path, monkeypatch) -> None:
+    calls: list[tuple[str, dict]] = []
+
+    async def fake_call_tool(tool_name: str, arguments: dict[str, object]) -> dict[str, object]:
+        calls.append((tool_name, dict(arguments)))
+        return {
+            "success": True,
+            "data": {
+                "action": arguments.get("action"),
+                "platform": arguments.get("platform"),
+                "user_id": arguments.get("user_id"),
+                "session_id": arguments.get("session_id"),
+                "configured": True,
+            },
+            "error": None,
+            "meta": {"side_effect": {"level": "stateful" if arguments.get("action") == "create" else "read_only"}},
+        }
+
+    monkeypatch.setattr("aiask_agent.app_route_callbacks.AppRouteCallbackFactory.full_tool_call", lambda self, request, tool_name, arguments: fake_call_tool(tool_name, arguments))
+    client = _client(tmp_path, monkeypatch)
+
+    status = client.get(
+        "/v1/gateway/pairing?platform=feishu&user_id=user-1&session_id=sess-1",
+        headers={"Authorization": "Bearer secret"},
+    )
+    created = client.post(
+        "/v1/gateway/pairing",
+        headers={"Authorization": "Bearer secret"},
+        json={"platform": "discord", "user_id": "user-2", "session_id": "sess-2"},
+    )
+
+    assert status.status_code == 200
+    assert status.json()["object"] == "gateway.pairing"
+    assert status.json()["success"] is True
+    assert status.json()["data"]["action"] == "status"
+    assert status.json()["data"]["platform"] == "feishu"
+    assert status.json()["secrets_redacted"] is True
+
+    assert created.status_code == 200
+    assert created.json()["object"] == "gateway.pairing"
+    assert created.json()["success"] is True
+    assert created.json()["data"]["action"] == "create"
+    assert created.json()["data"]["platform"] == "discord"
+    assert created.json()["secrets_redacted"] is True
+
+    assert calls == [
+        (
+            "agent_gateway_pairing",
+            {"action": "status", "platform": "feishu", "user_id": "user-1", "session_id": "sess-1"},
+        ),
+        (
+            "agent_gateway_pairing",
+            {"action": "create", "platform": "discord", "user_id": "user-2", "session_id": "sess-2"},
+        ),
+    ]

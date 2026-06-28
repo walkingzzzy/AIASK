@@ -1,35 +1,20 @@
 """Canonical incubation runtime owned by Strategy Factory.
 
-This module provides the runtime wrapper and lifecycle management.
-The actual phase orchestration logic has been migrated to the application layer.
+Phase 2B complete: Orchestration logic now lives in application layer.
 """
 
 from __future__ import annotations
 
-from datetime import date
 from typing import Any
 
-
-class IncubationOrchestrator:
-    """Temporary stub orchestrator until application layer is ready."""
-
-    def __init__(self, support: Any):
-        self._support = support
-
-    async def run_cycle(self, **kwargs) -> dict[str, Any]:
-        """Stub implementation matching expected interface."""
-        return {"success": True, "intake_accepted": 0, "signals_generated": 0}
-
-    async def run_full_cycle(self, **kwargs) -> dict[str, Any]:
-        """Stub implementation."""
-        return await self.run_cycle(**kwargs)
+from ..application.incubation import IncubationOrchestrator
+from ..infrastructure.runtime_services import get_incubation_runtime_support_factory
 
 
 class IncubationRuntime:
     """Host-neutral incubation runtime with Strategy Factory-owned orchestration.
 
-    This class now delegates to the application-layer orchestrator for actual
-    phase execution logic. The support object is wrapped as a provider.
+    Phase 2B: Delegates to application-layer orchestrator for cycle coordination.
     """
 
     def __init__(self, support: Any):
@@ -40,58 +25,52 @@ class IncubationRuntime:
         return {
             "available": self._support is not None,
             "runtime_type": type(self._support).__name__ if self._support is not None else None,
+            "orchestrator_ready": self._orchestrator is not None,
         }
 
     def status(self) -> dict[str, Any]:
-        if self._orchestrator is None:
-            return {"error": "incubation_support_missing"}
-        return self._orchestrator.status()
+        status = getattr(self._support, "status", None)
+        if callable(status):
+            return dict(status() or {})
+        return self.preflight()
 
     async def start(self) -> None:
-        """Start paper runtime engines."""
-        if self._orchestrator:
-            await self._orchestrator.start()
+        """Start paper runtime engines (MatchingEngine + NavEngine)."""
+        start_method = getattr(self._support, "_start_paper_trading_daemons", None)
+        if callable(start_method):
+            await start_method()
 
     async def stop(self) -> None:
         """Stop paper runtime engines."""
-        if self._orchestrator:
-            await self._orchestrator.stop()
+        stop_method = getattr(self._support, "_stop_paper_trading_daemons", None)
+        if callable(stop_method):
+            await stop_method()
 
     async def run_once(
         self,
         *,
-        as_of: date | None = None,
-        limit: int = 500,
+        trigger: str = "scheduled",
+        dry_run: bool = False,
     ) -> dict[str, Any]:
         """Execute one complete incubation cycle.
 
-        Now delegates to the application-layer orchestrator which owns the
-        phase 1-9 execution logic.
+        Phase 2B: Delegates to application-layer orchestrator.
         """
         if self._orchestrator is None:
             return {
                 "success": False,
                 "error": "incubation_support_missing",
-                "intake_accepted": 0,
-                "intake_rejected": 0,
-                "signals_generated": 0,
-                "verification_completed": 0,
-                "metrics_recorded": 0,
-                "orders_settled": 0,
-                "pipeline_transitions": 0,
-                "auto_promotions": 0,
-                "auto_terminations": 0,
-                "phase_results": {},
-                "errors": ["incubation_support_missing"],
-                "runtime_universe": {"strategies": 0},
-                "elapsed_seconds": 0.0,
+                "trigger": trigger,
             }
 
-        return await self._orchestrator.run_cycle(as_of=as_of, limit=limit)
+        return await self._orchestrator.run_cycle(
+            trigger=trigger,
+            dry_run=dry_run,
+        )
 
 
 def build_incubation_runtime(*, support: Any | None = None) -> IncubationRuntime:
-    resolved_support = support or get_incubation_support_factory()()
+    resolved_support = support or get_incubation_runtime_support_factory()()
     return IncubationRuntime(resolved_support)
 
 

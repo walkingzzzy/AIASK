@@ -1,0 +1,114 @@
+/* EditableCodeBlock.css */
+.editable-code-block {
+  position: relative;
+  margin: 16px 0;
+}
+
+.editable-code-block .edit-code-btn {
+  position: absolute;
+  top: 8px;
+  right: 60px;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 12px;
+  background: #3c5a78;
+  color: white;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+  z-index: 10;
+}
+
+.editable-code-block .edit-code-btn:hover {
+  background: #2e4760;
+}
+
+.editable-code-block.editing {
+  border: 2px solid #3c5a78;
+  border-radius: 8px;
+  padding: 16px;
+  background: #f7f5f1;
+}
+
+.save-controls {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+  gap: 16px;
+}
+
+.save-filename-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+}
+
+.save-filename-group label {
+  font-size: 14px;
+  font-weight: 500;
+  color: #1e2227;
+}
+
+.filename-input {
+  flex: 1;
+  max-width: 300px;
+  padding: 8px 12px;
+  border: 1px solid #e7e3da;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: monospace;
+}
+
+.filename-input:focus {
+  outline: none;
+  border-color: #3c5a78;
+  box-shadow: 0 0 0 3px rgba(60, 90, 120, 0.1);
+}
+
+.save-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.save-actions button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.save-actions .btn-cancel {
+  background: white;
+  color: #6b7077;
+  border: 1px solid #e7e3da;
+}
+
+.save-actions .btn-cancel:hover {
+  background: #f7f5f1;
+  border-color: #d0ccc3;
+}
+
+.save-actions .btn-save {
+  background: #3c5a78;
+  color: white;
+}
+
+.save-actions .btn-save:hover:not(:disabled) {
+  background: #2e4760;
+}
+
+.save-actions .btn-save:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}

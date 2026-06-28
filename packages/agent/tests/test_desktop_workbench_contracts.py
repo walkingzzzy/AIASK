@@ -81,6 +81,49 @@ def test_desktop_workbench_summary_contract_includes_session_run_flags(tmp_path,
     assert run["has_errors"] is True
 
 
+def test_responses_contract_accepts_model_and_attachment_context(tmp_path, monkeypatch) -> None:
+    client, store, _intent_store = _client_with_state(tmp_path, monkeypatch)
+
+    response = client.post(
+        "/v1/responses",
+        json={
+            "input": "Summarize the attached release note.",
+            "model": "desktop-selected-model",
+            "user_id": "local",
+            "session_id": "sess_attachment_contract",
+            "attachments": [
+                {
+                    "id": "file_contract",
+                    "name": "release-note.txt",
+                    "mime_type": "text/plain",
+                    "size": 42,
+                    "text_preview": "attachment text for contract test",
+                },
+                {
+                    "id": "file_binary",
+                    "name": "diagram.png",
+                    "mime_type": "image/png",
+                    "size": 1024,
+                },
+            ],
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["model"] == "desktop-selected-model"
+    assert payload["metadata"]["attachment_count"] == 2
+    attachments = payload["metadata"]["attachments"]
+    assert attachments[0]["name"] == "release-note.txt"
+    assert attachments[0]["parse_status"] == "parsed_text_preview"
+    assert attachments[0]["text_preview"] == "attachment text for contract test"
+    assert attachments[1]["parse_status"] == "uploaded_unparsed"
+
+    messages = store.list_session_messages("sess_attachment_contract")
+    assert any("Desktop attachments supplied" in str(message.get("content") or "") for message in messages)
+    assert any("release-note.txt" in str(message.get("content") or "") for message in messages)
+
+
 def test_desktop_runs_and_hermes_sessions_contracts_are_backward_compatible(tmp_path, monkeypatch) -> None:
     client, store, intent_store = _client_with_state(tmp_path, monkeypatch)
     run_id = _seed_main_chain(store, intent_store)

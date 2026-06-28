@@ -6,6 +6,7 @@ import {
   FolderKanban,
   Loader2,
   MessageSquarePlus,
+  MonitorDot,
   PanelRightClose,
   PanelRightOpen,
   RefreshCw,
@@ -19,16 +20,22 @@ import { useEffect, useMemo, useState } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation, useNavigate } from "react-router-dom";
 
 import { Button, JsonPanel, StatusBadge } from "./components/ui";
+import { FinanceContextBody, FinanceContextPanel } from "./components/FinanceContextPanel";
+import { TerminalPanel } from "./components/TerminalPanel";
 import { useAsyncResource } from "./hooks/useAsyncResource";
 import { useConnectionSettings } from "./hooks/useConnectionSettings";
+import { useSSE } from "./hooks/useWebSocket";
 import { AgentPages } from "./pages/AgentPages";
 import { FinancePages } from "./pages/FinancePages";
 import { IntegrationPages } from "./pages/IntegrationPages";
 import { OpsPages } from "./pages/OpsPages";
+import { MyStrategyPage } from "./pages/MyStrategyPage";
+import { MyStocksPage } from "./pages/MyStocksPage";
 import { dataObject, list, valueOf } from "./pages/pageUtils";
 import { routeToView, V1_COMPATIBLE_ALIASES, viewToRoute } from "./routes";
 import { AiaskApi } from "./services/aiaskApi";
 import type {
+  ApiProblem,
   ConnectionSettings,
   UnknownRecord,
   ViewId,
@@ -49,13 +56,30 @@ function isSettingsView(view: ViewId) {
   return view === "settings-security";
 }
 
+function isFinanceView(view: ViewId) {
+  return (
+    view === "finance-lab" ||
+    view === "stock-data-sources" ||
+    view === "data-sync" ||
+    view === "stock-radar" ||
+    view === "market-temperature" ||
+    view === "quant-research" ||
+    view === "financial-manager" ||
+    view === "my-strategy" ||
+    view === "my-stocks"
+  );
+}
+
 function primaryNavViews() {
   const ids: ViewId[] = [
     "workbench",
     "projects-contexts",
+    "user-profile",
     "sessions-runs",
     "tools-approvals",
     "finance-lab",
+    "my-strategy",
+    "my-stocks",
     "integrations",
     "automation",
     "readiness-health"
@@ -72,6 +96,7 @@ function detectRailMode(width = window.innerWidth): RailMode {
 function viewSectionLabel(view: ViewId) {
   if (view === "workbench") return "Task Workspace";
   if (view === "projects-contexts" || view === "models") return "Projects & Models";
+  if (view === "user-profile") return "Projects & Models";
   if (view === "sessions-runs") return "Runs";
   if (view === "tools-approvals") return "Approvals";
   if (
@@ -104,9 +129,11 @@ function viewSectionLabel(view: ViewId) {
 function viewTabs(view: ViewId) {
   switch (view) {
     case "projects-contexts":
+    case "user-profile":
     case "models":
       return [
         { label: "Projects", to: viewToRoute("projects-contexts"), active: view === "projects-contexts" },
+        { label: "Profile", to: viewToRoute("user-profile"), active: view === "user-profile" },
         { label: "Models", to: viewToRoute("models"), active: view === "models" }
       ];
     case "finance-lab":
@@ -207,6 +234,17 @@ function threadMessages(payload: unknown): WorkbenchMessage[] {
   }));
 }
 
+function detectPrimaryStockCode(payload: unknown) {
+  const codePattern = /\b(?:SH|SZ)?\s?(60\d{4}|68\d{4}|30\d{4}|00\d{4})\b/i;
+  for (const message of threadMessages(payload)) {
+    const match = String(message.content || "").match(codePattern);
+    if (match?.[1]) {
+      return match[1];
+    }
+  }
+  return "";
+}
+
 function threadApprovals(payload: unknown, threadId: string, runId: string) {
   const allApprovals = list(payload);
   if (!threadId && !runId) return allApprovals;
@@ -232,7 +270,14 @@ function ViewRenderer({
   setSelectedReviewTab: (tab: WorkbenchContext["selectedReviewTab"]) => void;
   reloadWorkbench: () => Promise<void>;
 }) {
-  if (view === "workbench" || view === "models" || view === "projects-contexts" || view === "sessions-runs" || view === "tools-approvals") {
+  if (
+    view === "workbench" ||
+    view === "models" ||
+    view === "projects-contexts" ||
+    view === "user-profile" ||
+    view === "sessions-runs" ||
+    view === "tools-approvals"
+  ) {
     return <AgentPages view={view} {...connection} />;
   }
 
@@ -246,6 +291,14 @@ function ViewRenderer({
     view === "financial-manager"
   ) {
     return <FinancePages view={view} {...connection} />;
+  }
+
+  if (view === "my-strategy") {
+    return <MyStrategyPage view={view} {...connection} />;
+  }
+
+  if (view === "my-stocks") {
+    return <MyStocksPage view={view} {...connection} />;
   }
 
   if (view === "integrations" || view === "mcp-connectors" || view === "plugins-skills" || view === "gateway-webhooks") {
@@ -292,7 +345,9 @@ function ThreadRail({
           <FolderKanban size={16} />
         </div>
         <button
-          className={`context-switch-card ${activeView === "projects-contexts" || activeView === "models" ? "active" : ""}`}
+          className={`context-switch-card ${
+            activeView === "projects-contexts" || activeView === "user-profile" || activeView === "models" ? "active" : ""
+          }`}
           onClick={() => navigate(viewToRoute("projects-contexts"))}
           type="button"
         >
@@ -447,7 +502,10 @@ function Topbar({
   onRefresh,
   showRailToggle,
   railOpen,
-  onToggleRail
+  onToggleRail,
+  showTerminalToggle,
+  terminalVisible,
+  onToggleTerminal
 }: {
   active: (typeof V1_VIEWS)[number];
   settings: ConnectionShape["settings"];
@@ -457,6 +515,9 @@ function Topbar({
   showRailToggle: boolean;
   railOpen: boolean;
   onToggleRail: () => void;
+  showTerminalToggle: boolean;
+  terminalVisible: boolean;
+  onToggleTerminal: () => void;
 }) {
   const isLive = settings.mode === "live";
   const tabs = viewTabs(active.id);
@@ -477,6 +538,17 @@ function Topbar({
             onClick={onToggleRail}
           >
             {railOpen ? "Hide right rail" : "Show right rail"}
+          </Button>
+        ) : null}
+
+        {showTerminalToggle ? (
+          <Button
+            data-testid="terminal-toggle"
+            icon={<MonitorDot size={16} />}
+            onClick={onToggleTerminal}
+            tone={terminalVisible ? "info" : "neutral"}
+          >
+            {terminalVisible ? "Hide terminal" : "Show terminal"}
           </Button>
         ) : null}
 
@@ -516,12 +588,26 @@ function WorkbenchInspector({
   workbench,
   summary,
   activeView,
-  onSelectReviewTab
+  onSelectReviewTab,
+  quotePayload,
+  newsPayload,
+  snapshotPayload,
+  realtimeConnected,
+  financeLoading,
+  financeError,
+  onRefreshFinance
 }: {
   workbench: WorkbenchContext;
   summary: UnknownRecord;
   activeView: ViewId;
   onSelectReviewTab: (tab: WorkbenchContext["selectedReviewTab"]) => void;
+  quotePayload: unknown;
+  newsPayload: unknown;
+  snapshotPayload: unknown;
+  realtimeConnected: boolean;
+  financeLoading: boolean;
+  financeError: ApiProblem | null;
+  onRefreshFinance: () => void;
 }) {
   const reviewTabs: Array<{ id: WorkbenchContext["selectedReviewTab"]; label: string }> = [
     { id: "overview", label: "Overview" },
@@ -595,6 +681,22 @@ function WorkbenchInspector({
             tools: workbench.selectedRunTools,
             approvals: approvalList
           }}
+        />
+
+        <section className="rail-card">
+          <span className="rail-card-title">Finance extension</span>
+          <p>Stock mentions, linked quote, market heat, and related news for the current thread.</p>
+        </section>
+
+        <FinanceContextBody
+          workbench={workbench}
+          quotePayload={quotePayload}
+          newsPayload={newsPayload}
+          snapshotPayload={snapshotPayload}
+          realtimeConnected={realtimeConnected}
+          loading={financeLoading}
+          error={financeError}
+          onRefresh={onRefreshFinance}
         />
       </div>
     </aside>
@@ -694,7 +796,7 @@ export function App() {
   const active = V1_VIEWS.find((view) => view.id === activeView) ?? V1_VIEWS[0];
   const health = useAsyncResource(() => connection.api.health(), [connection.api]);
   const summary = useAsyncResource(() => connection.api.workbenchSummary(), [connection.api, connection.settings.userId]);
-  const sessions = useAsyncResource(() => connection.api.sessions(), [connection.api, connection.settings.userId]);
+  const sessions = useAsyncResource(() => connection.api.sessions({ include_archived: true }), [connection.api, connection.settings.userId]);
   const approvals = useAsyncResource(() => connection.api.approvals(), [connection.api, connection.settings.userId]);
   const [selectedThreadId, setSelectedThreadId] = useState("");
   const [selectedRunId, setSelectedRunId] = useState("");
@@ -704,6 +806,20 @@ export function App() {
   const [selectedReviewTab, setSelectedReviewTab] = useState<WorkbenchContext["selectedReviewTab"]>("overview");
   const [railMode, setRailMode] = useState<RailMode>(() => detectRailMode());
   const [railOpen, setRailOpen] = useState(false);
+  const [terminalVisible, setTerminalVisible] = useState(false);
+
+  const selectedRunIdForStream = selectedRunId || "";
+  const eventStreamUrl =
+    connection.settings.mode === "live" && selectedRunIdForStream
+      ? `${connection.settings.baseUrl.replace(/\/+$/, "")}/v1/runs/${encodeURIComponent(selectedRunIdForStream)}/events/stream`
+      : "";
+  const liveRunEvents = useSSE({
+    url: eventStreamUrl,
+    enabled: Boolean(eventStreamUrl),
+    onMessage: () => {
+      void Promise.all([runEvents.reload(), runArtifacts.reload(), runSources.reload(), runTools.reload()]);
+    }
+  });
 
   const summaryData = dataObject(summary.data, {});
   const threads = useMemo(() => {
@@ -736,6 +852,22 @@ export function App() {
     () => (selectedRunId ? connection.api.runToolInvocations(selectedRunId) : Promise.resolve([])),
     [connection.api, selectedRunId]
   );
+  const primaryStockCode = useMemo(() => {
+    const fromSession = detectPrimaryStockCode(sessionMessages.data);
+    if (fromSession) return fromSession;
+    return detectPrimaryStockCode(summaryData.messages);
+  }, [sessionMessages.data, summaryData.messages]);
+  const marketQuote = useAsyncResource(
+    () => (primaryStockCode ? connection.api.stockLiveQuote(primaryStockCode) : Promise.resolve(null)),
+    [connection.api, primaryStockCode]
+  );
+  const relatedNews = useAsyncResource(
+    () => (primaryStockCode ? connection.api.stockNewsDigest(primaryStockCode, 5) : Promise.resolve(null)),
+    [connection.api, primaryStockCode]
+  );
+  const temperatureHistory = useAsyncResource(() => connection.api.marketTemperatureHistory(7, true), [connection.api]);
+  const terminalBackends = useAsyncResource(() => connection.api.terminalBackends(), [connection.api]);
+  const terminalSessions = useAsyncResource(() => connection.api.terminalSessions(), [connection.api]);
 
   const availableRuns = useMemo(() => threadRuns(runs.data || summaryData.runs, selectedThreadId), [runs.data, selectedThreadId, summaryData.runs]);
   const selectedSessionMessages = useMemo(() => threadMessages(sessionMessages.data), [sessionMessages.data]);
@@ -806,6 +938,12 @@ export function App() {
     setRailOpen(false);
   }, [active.id]);
 
+  useEffect(() => {
+    if (!isWorkbenchView(active.id)) {
+      setTerminalVisible(false);
+    }
+  }, [active.id]);
+
   const currentThread = threads.find((thread) => thread.id === selectedThreadId) || threads[0] || null;
   const currentRun = availableRuns.find((run) => findRunId(run) === selectedRunId) || availableRuns[0] || null;
   const workbench: WorkbenchContext = {
@@ -837,7 +975,12 @@ export function App() {
       runEvents.reload(),
       runArtifacts.reload(),
       runSources.reload(),
-      runTools.reload()
+      runTools.reload(),
+      marketQuote.reload(),
+      relatedNews.reload(),
+      temperatureHistory.reload(),
+      terminalBackends.reload(),
+      terminalSessions.reload()
     ]);
   }
 
@@ -856,6 +999,28 @@ export function App() {
         summary={summaryData}
         activeView={active.id}
         onSelectReviewTab={setSelectedReviewTab}
+        quotePayload={marketQuote.data}
+        newsPayload={relatedNews.data}
+        snapshotPayload={temperatureHistory.data}
+        realtimeConnected={liveRunEvents.connected}
+        financeLoading={marketQuote.loading || relatedNews.loading || temperatureHistory.loading}
+        financeError={marketQuote.error || relatedNews.error || temperatureHistory.error}
+        onRefreshFinance={() => {
+          void Promise.all([marketQuote.reload(), relatedNews.reload(), temperatureHistory.reload()]);
+        }}
+      />
+    ) : isFinanceView(active.id) ? (
+      <FinanceContextPanel
+        workbench={workbench}
+        quotePayload={marketQuote.data}
+        newsPayload={relatedNews.data}
+        snapshotPayload={temperatureHistory.data}
+        realtimeConnected={liveRunEvents.connected}
+        loading={marketQuote.loading || relatedNews.loading || temperatureHistory.loading}
+        error={marketQuote.error || relatedNews.error || temperatureHistory.error}
+        onRefresh={() => {
+          void Promise.all([marketQuote.reload(), relatedNews.reload(), temperatureHistory.reload()]);
+        }}
       />
     ) : (
       <PageContextDrawer active={active} settings={connection.settings} health={health} api={connection.api} workbench={workbench} />
@@ -885,6 +1050,9 @@ export function App() {
           showRailToggle={showRailToggle}
           railOpen={railOpen}
           onToggleRail={() => setRailOpen((current) => !current)}
+          showTerminalToggle={isWorkbenchView(active.id)}
+          terminalVisible={terminalVisible}
+          onToggleTerminal={() => setTerminalVisible((current) => !current)}
         />
 
         <main className="page-host" id="main-content">
@@ -916,6 +1084,21 @@ export function App() {
 
             <Route path="*" element={<Navigate to={viewToRoute("workbench")} replace />} />
           </Routes>
+
+          {isWorkbenchView(active.id) ? (
+            <TerminalPanel
+              visible={terminalVisible}
+              controlAvailable={Boolean(connection.settings.controlToken) || connection.settings.mode === "mock"}
+              backends={terminalBackends.data}
+              sessions={terminalSessions.data}
+              loading={terminalBackends.loading || terminalSessions.loading}
+              error={terminalBackends.error || terminalSessions.error}
+              onRefresh={() => {
+                void Promise.all([terminalBackends.reload(), terminalSessions.reload()]);
+              }}
+              onExecute={(payload) => connection.api.terminalExecute(payload)}
+            />
+          ) : null}
         </main>
       </div>
 

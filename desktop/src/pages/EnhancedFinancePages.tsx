@@ -1,6 +1,6 @@
 import { AlertTriangle } from "lucide-react";
 
-import { LinkCard, PageShell, Panel, StatusBadge } from "../components/ui";
+import { LinkCard, PageShell, Panel } from "../components/ui";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { FinancePages } from "./FinancePages";
 import { dataObject, metric, type PageProps } from "./pageUtils";

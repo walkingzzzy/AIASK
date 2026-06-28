@@ -1,24 +1,19 @@
-/**
- * FinancialChart - 金融图表组件
- * 使用 lightweight-charts 实现高性能K线和指标图表
- */
-
+import { AlertTriangle } from "lucide-react";
 import {
   AreaSeries,
   CandlestickSeries,
   createChart,
   HistogramSeries,
-  IChartApi,
-  ISeriesApi,
+  type IChartApi,
+  type ISeriesApi,
   LineSeries,
   LineStyle,
-  UTCTimestamp
+  type UTCTimestamp
 } from "lightweight-charts";
 import { useEffect, useRef, useState } from "react";
-import { AlertTriangle } from "lucide-react";
 
 export interface CandlestickData {
-  time: string | number; // YYYY-MM-DD or timestamp
+  time: string | number;
   open: number;
   high: number;
   low: number;
@@ -46,23 +41,10 @@ export interface FinancialChartProps {
   showGrid?: boolean;
 }
 
-/**
- * 金融图表组件 - K线、折线、面积图
- *
- * @example
- * <FinancialChart
- *   type="candlestick"
- *   data={klineData}
- *   height={400}
- *   title="600519 日K线"
- *   indicators={[
- *     { name: 'MA5', data: ma5Data, color: '#2962FF' },
- *     { name: 'MA20', data: ma20Data, color: '#FF6D00' }
- *   ]}
- *   volumeData={volumeData}
- *   showLegend
- * />
- */
+function toUtcTimestamp(value: string | number) {
+  return (typeof value === "string" ? new Date(value).getTime() / 1000 : value) as UTCTimestamp;
+}
+
 export function FinancialChart({
   type,
   data,
@@ -82,10 +64,9 @@ export function FinancialChart({
     if (!chartContainerRef.current || data.length === 0) return;
 
     try {
-      // 创建图表
       const chart = createChart(chartContainerRef.current, {
         width: chartContainerRef.current.clientWidth,
-        height: height,
+        height,
         layout: {
           background: { color: "#ffffff" },
           textColor: "#18202c"
@@ -95,7 +76,7 @@ export function FinancialChart({
           horzLines: { visible: showGrid, color: "#e0e3e7" }
         },
         crosshair: {
-          mode: 1, // Normal
+          mode: 1,
           vertLine: {
             width: 1,
             color: "#758696",
@@ -119,7 +100,6 @@ export function FinancialChart({
 
       chartRef.current = chart;
 
-      // 添加主系列
       let mainSeries: ISeriesApi<any>;
 
       if (type === "candlestick") {
@@ -132,49 +112,46 @@ export function FinancialChart({
           wickDownColor: "#26a69a"
         });
 
-        // 转换时间格式
-        const candleData = (data as CandlestickData[]).map((d) => ({
-          time: (typeof d.time === "string" ? new Date(d.time).getTime() / 1000 : d.time) as UTCTimestamp,
-          open: d.open,
-          high: d.high,
-          low: d.low,
-          close: d.close
-        }));
-
-        mainSeries.setData(candleData);
+        mainSeries.setData(
+          (data as CandlestickData[]).map((item) => ({
+            time: toUtcTimestamp(item.time),
+            open: item.open,
+            high: item.high,
+            low: item.low,
+            close: item.close
+          }))
+        );
       } else if (type === "line") {
         mainSeries = chart.addSeries(LineSeries, {
           color: "#2962FF",
           lineWidth: 2
         });
 
-        const lineData = (data as LineData[]).map((d) => ({
-          time: (typeof d.time === "string" ? new Date(d.time).getTime() / 1000 : d.time) as UTCTimestamp,
-          value: d.value
-        }));
-
-        mainSeries.setData(lineData);
+        mainSeries.setData(
+          (data as LineData[]).map((item) => ({
+            time: toUtcTimestamp(item.time),
+            value: item.value
+          }))
+        );
       } else {
-        // area
         mainSeries = chart.addSeries(AreaSeries, {
           topColor: "rgba(41, 98, 255, 0.4)",
-          bottomColor: "rgba(41, 98, 255, 0.0)",
+          bottomColor: "rgba(41, 98, 255, 0)",
           lineColor: "#2962FF",
           lineWidth: 2
         });
 
-        const areaData = (data as LineData[]).map((d) => ({
-          time: (typeof d.time === "string" ? new Date(d.time).getTime() / 1000 : d.time) as UTCTimestamp,
-          value: d.value
-        }));
-
-        mainSeries.setData(areaData);
+        mainSeries.setData(
+          (data as LineData[]).map((item) => ({
+            time: toUtcTimestamp(item.time),
+            value: item.value
+          }))
+        );
       }
 
       mainSeriesRef.current = mainSeries;
 
-        // 添加指标线
-      if (indicators && indicators.length > 0) {
+      if (indicators?.length) {
         indicators.forEach((indicator) => {
           const lineSeries = chart.addSeries(LineSeries, {
             color: indicator.color,
@@ -182,17 +159,16 @@ export function FinancialChart({
             title: indicator.name
           });
 
-          const indicatorData = indicator.data.map((d) => ({
-            time: (typeof d.time === "string" ? new Date(d.time).getTime() / 1000 : d.time) as UTCTimestamp,
-            value: d.value
-          }));
-
-          lineSeries.setData(indicatorData);
+          lineSeries.setData(
+            indicator.data.map((item) => ({
+              time: toUtcTimestamp(item.time),
+              value: item.value
+            }))
+          );
         });
       }
 
-      // 添加成交量（副图）
-      if (volumeData && volumeData.length > 0) {
+      if (volumeData?.length) {
         const volumeSeries = chart.addSeries(HistogramSeries, {
           color: "#26a69a",
           priceFormat: {
@@ -201,13 +177,13 @@ export function FinancialChart({
           priceScaleId: "volume"
         });
 
-        const volData = volumeData.map((d) => ({
-          time: (typeof d.time === "string" ? new Date(d.time).getTime() / 1000 : d.time) as UTCTimestamp,
-          value: d.value,
-          color: d.value > 0 ? "#26a69a80" : "#ef535080"
-        }));
-
-        volumeSeries.setData(volData);
+        volumeSeries.setData(
+          volumeData.map((item) => ({
+            time: toUtcTimestamp(item.time),
+            value: item.value,
+            color: item.value > 0 ? "#26a69a80" : "#ef535080"
+          }))
+        );
 
         chart.priceScale("volume").applyOptions({
           scaleMargins: {
@@ -217,10 +193,8 @@ export function FinancialChart({
         });
       }
 
-      // 自适应时间范围
       chart.timeScale().fitContent();
 
-      // 响应式调整
       const handleResize = () => {
         if (chartContainerRef.current && chartRef.current) {
           chartRef.current.applyOptions({
@@ -241,7 +215,7 @@ export function FinancialChart({
       console.error("Chart initialization error:", err);
       setError(err instanceof Error ? err.message : "图表初始化失败");
     }
-  }, [type, data, height, indicators, volumeData, showGrid]);
+  }, [data, height, indicators, showGrid, type, volumeData]);
 
   if (error) {
     return (
@@ -263,32 +237,29 @@ export function FinancialChart({
 
   return (
     <div className="financial-chart">
-      {title && showLegend && (
+      {title && showLegend ? (
         <div className="financial-chart-header">
           <h3>{title}</h3>
-          {indicators && indicators.length > 0 && (
+          {indicators?.length ? (
             <div className="financial-chart-legend">
-              {indicators.map((ind) => (
-                <span key={ind.name} className="legend-item">
-                  <span className="legend-color" style={{ backgroundColor: ind.color }} />
-                  {ind.name}
+              {indicators.map((indicator) => (
+                <span key={indicator.name} className="legend-item">
+                  <span className="legend-color" style={{ backgroundColor: indicator.color }} />
+                  {indicator.name}
                 </span>
               ))}
             </div>
-          )}
+          ) : null}
         </div>
-      )}
+      ) : null}
       <div ref={chartContainerRef} className="financial-chart-container" />
     </div>
   );
 }
 
-/**
- * 简化的市场温度热力图
- */
 export interface HeatmapData {
   industry: string;
-  temperature: number; // 0-100
+  temperature: number;
   stocks: number;
   avgChange: number;
 }
@@ -302,12 +273,12 @@ export function MarketHeatmap({ data }: { data: HeatmapData[] }) {
     );
   }
 
-  const getTemperatureColor = (temp: number) => {
-    if (temp >= 80) return "#ef5350"; // 极热 - 红色
-    if (temp >= 60) return "#ff9800"; // 偏热 - 橙色
-    if (temp >= 40) return "#ffeb3b"; // 中性 - 黄色
-    if (temp >= 20) return "#2196f3"; // 偏冷 - 蓝色
-    return "#9c27b0"; // 极冷 - 紫色
+  const getTemperatureColor = (temperature: number) => {
+    if (temperature >= 80) return "#ef5350";
+    if (temperature >= 60) return "#ff9800";
+    if (temperature >= 40) return "#ffeb3b";
+    if (temperature >= 20) return "#2196f3";
+    return "#9c27b0";
   };
 
   return (
@@ -320,12 +291,15 @@ export function MarketHeatmap({ data }: { data: HeatmapData[] }) {
             backgroundColor: getTemperatureColor(item.temperature),
             flex: `${item.stocks} 1 auto`
           }}
-          title={`${item.industry}: 温度${item.temperature}, ${item.stocks}只, 平均${item.avgChange > 0 ? "+" : ""}${item.avgChange.toFixed(2)}%`}
+          title={`${item.industry}: 温度 ${item.temperature}，${item.stocks} 只，平均涨跌 ${item.avgChange > 0 ? "+" : ""}${item.avgChange.toFixed(2)}%`}
         >
           <div className="heatmap-cell-content">
             <strong>{item.industry}</strong>
             <span className="heatmap-temp">{item.temperature.toFixed(0)}</span>
-            <span className="heatmap-change">{item.avgChange > 0 ? "+" : ""}{item.avgChange.toFixed(2)}%</span>
+            <span className="heatmap-change">
+              {item.avgChange > 0 ? "+" : ""}
+              {item.avgChange.toFixed(2)}%
+            </span>
           </div>
         </div>
       ))}
