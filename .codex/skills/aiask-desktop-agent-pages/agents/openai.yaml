@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIASK Desktop Agent Pages"
+  short_description: "Work on AIASK Desktop Agent control pages"
+  default_prompt: "Use $aiask-desktop-agent-pages to update AIASK Desktop Sessions, Runs, Tools, Gateway, Readiness, MCP, or plugin pages."

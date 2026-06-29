@@ -1,0 +1,4 @@
+interface:
+  display_name: "AIASK Desktop Workbench"
+  short_description: "Build AIASK desktop workbench flows"
+  default_prompt: "Use $aiask-desktop-workbench to work on the AIASK React, Vite, and Tauri desktop app."
