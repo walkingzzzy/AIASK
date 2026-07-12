@@ -170,16 +170,15 @@ test.describe('P0-P4 Component Completeness', () => {
     await page.goto('/finance-lab');
     await page.waitForTimeout(500);
 
-    // 验证 V1 边界说明
+    // 验证四工厂受控入口已开放
     const boundaryNotice = page.locator('.v1-boundary-notice');
     if (await boundaryNotice.isVisible({ timeout: 2000 }).catch(() => false)) {
       await expect(boundaryNotice).toContainText('V1 边界说明');
       await expect(boundaryNotice).toContainText('Strategy Factory');
     }
 
-    // 验证没有四工厂卡片
     const strategyFactoryCard = page.locator('a[href*="strategy-factory"]');
-    await expect(strategyFactoryCard).toHaveCount(0);
+    await expect(strategyFactoryCard).toHaveCount(1);
 
     // 验证 V1 卡片存在
     const dataSourcesCard = page.locator('a[href="/stock-data-sources"]');

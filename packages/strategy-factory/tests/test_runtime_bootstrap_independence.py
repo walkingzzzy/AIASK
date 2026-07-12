@@ -92,3 +92,13 @@ def test_canonical_bootstrap_skips_akshare_import_when_runtime_services_ready() 
 
     assert completed.returncode == 0, completed.stderr
     assert "ok" in completed.stdout
+
+
+def test_canonical_bootstrap_has_no_akshare_default_host_binding() -> None:
+    from strategy_factory.runtime.default_bootstrap import (
+        DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR,
+        RUNTIME_PROVIDER_ENTRY_POINT_GROUP,
+    )
+
+    assert DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR is None
+    assert RUNTIME_PROVIDER_ENTRY_POINT_GROUP == "aiask.strategy_factory.runtime"

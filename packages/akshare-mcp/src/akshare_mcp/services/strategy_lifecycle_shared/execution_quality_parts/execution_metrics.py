@@ -672,8 +672,10 @@ def _build_signal_quality_snapshot(signal_quality: Optional[dict[str, Any]]) -> 
         primary_effective_n >= 60
         and coverage_ratio >= 0.75
         and (recent_primary_skill_lcb or 0.0) > 0.0
-        and (stability_gap is None or stability_gap <= 0.05)
+        and stability_gap is not None
+        and stability_gap <= 0.05
     ):
+        # Align with promotion_ready: missing stability_gap is fail-closed.
         status = "strong"
     else:
         status = "candidate"

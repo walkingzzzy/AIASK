@@ -72,6 +72,10 @@ export type ViewId =
   | "stock-radar"
   | "market-temperature"
   | "quant-research"
+  | "strategy-factory"
+  | "factor-factory"
+  | "incubation"
+  | "factory-events"
   | "financial-manager"
   | "my-strategy"
   | "my-stocks"
@@ -83,11 +87,7 @@ export type ViewId =
   | "learning-rl"
   | "native-diagnostics";
 
-export type DeferredViewId =
-  | "strategy-factory"
-  | "factor-factory"
-  | "incubation"
-  | "factory-events";
+export type DeferredViewId = never;
 
 export interface ViewDefinition {
   id: ViewId;

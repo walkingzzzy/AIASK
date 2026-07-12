@@ -36,7 +36,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
       onClose();
     } catch (error) {
       console.error("Add skill failed:", error);
-      alert(`Add skill failed: ${error}`);
+      alert(`添加技能失败：${error}`);
     } finally {
       setBusy(false);
     }
@@ -82,7 +82,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
         >
           <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <Plus size={20} />
-            <h2 style={{ fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>Add Skill</h2>
+            <h2 style={{ fontSize: "1.125rem", fontWeight: 600, margin: 0 }}>添加技能</h2>
           </div>
           <button
             onClick={onClose}
@@ -103,7 +103,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
           <div className="form-grid" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
             <label className="field">
               <span style={{ fontSize: "0.875rem", fontWeight: 500, marginBottom: "0.25rem", display: "block" }}>
-                Name <span style={{ color: "#ef4444" }}>*</span>
+                名称 <span style={{ color: "#ef4444" }}>*</span>
               </span>
               <input
                 data-testid="skill-name"
@@ -122,7 +122,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
 
             <label className="field">
               <span style={{ fontSize: "0.875rem", fontWeight: 500, marginBottom: "0.25rem", display: "block" }}>
-                Type
+                类型
               </span>
               <select
                 data-testid="skill-type"
@@ -135,14 +135,14 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
                   borderRadius: "0.375rem"
                 }}
               >
-                <option value="local">local</option>
-                <option value="remote">remote</option>
+                <option value="local">本地</option>
+                <option value="remote">远程</option>
               </select>
             </label>
 
             <label className="field">
               <span style={{ fontSize: "0.875rem", fontWeight: 500, marginBottom: "0.25rem", display: "block" }}>
-                Path / URL <span style={{ color: "#ef4444" }}>*</span>
+                路径 / URL <span style={{ color: "#ef4444" }}>*</span>
               </span>
               <input
                 data-testid="skill-path"
@@ -157,7 +157,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
                 }}
               />
               <small style={{ fontSize: "0.75rem", color: "#6b7280" }}>
-                Use a local file path for `local`, or a URL for `remote`.
+                本地技能填写文件路径，远程技能填写 URL。
               </small>
             </label>
           </div>
@@ -174,7 +174,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
           }}
         >
           <Button onClick={onClose} tone="neutral" disabled={busy}>
-            Cancel
+            取消
           </Button>
           <Button
             data-testid="skill-submit"
@@ -183,7 +183,7 @@ export function SkillAddDialog({ onAdd, onClose }: SkillAddDialogProps) {
             disabled={!form.name.trim() || !form.path.trim() || busy}
             busy={busy}
           >
-            Add Skill
+            添加技能
           </Button>
         </div>
       </div>
@@ -201,7 +201,7 @@ export function SkillAddButton({ onAdd }: SkillAddButtonProps) {
   return (
     <>
       <Button data-testid="add-skill-button" onClick={() => setShowDialog(true)} tone="success" icon={<Plus size={16} />}>
-        Add Skill
+        添加技能
       </Button>
       {showDialog ? <SkillAddDialog onAdd={onAdd} onClose={() => setShowDialog(false)} /> : null}
     </>

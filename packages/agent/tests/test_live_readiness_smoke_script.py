@@ -119,6 +119,24 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
                 "error": None,
                 "meta": {"side_effect": {"level": "read_only"}},
             }
+        if path == "/v1/tools/agent_factory_formal_diagnostics":
+            assert method == "POST"
+            assert body == {"top_n": 10, "_timeout_seconds": 8}
+            return 200, {
+                "success": True,
+                "data": {
+                    "object": "aiask.factory_formal_diagnostics",
+                    "ok": True,
+                    "formal_count": 0,
+                    "observe_count": 2,
+                    "signal_id_coverage": 1.0,
+                    "hard_gate_histogram": {"passed": 0, "missing": 1, "bootstrap_pending": 1},
+                    "exit_funnel": {"open_positions": 1, "closed": 0},
+                    "top_blockers": [{"code": "execution_audit_missing", "count": 2}],
+                },
+                "error": None,
+                "meta": {"side_effect": {"level": "read_only"}},
+            }
         if path == "/v1/tools/agent_market_temperature_cache_readiness":
             assert method == "POST"
             assert body == {"max_stale_days": 1}
@@ -180,7 +198,7 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
     )
 
     assert payload["passed"] is True
-    assert payload["summary"] == {"total": 16, "passed": 16, "failed": 0}
+    assert payload["summary"] == {"total": 17, "passed": 17, "failed": 0}
     assert {item["name"]: item["status"] for item in payload["results"]}["workbench_summary"] == "ready"
     assert {item["name"]: item["status"] for item in payload["results"]}["memory_status"] == "ready"
     assert {item["name"]: item["status"] for item in payload["results"]}["session_search"] == "ready"
@@ -188,6 +206,7 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
     assert {item["name"]: item["status"] for item in payload["results"]}["financial_manager_query"] == "ready"
     assert {item["name"]: item["status"] for item in payload["results"]}["data_status"] == "blocked"
     assert {item["name"]: item["status"] for item in payload["results"]}["factory_status"] == "ready"
+    assert {item["name"]: item["status"] for item in payload["results"]}["factory_formal_diagnostics"] == "ready"
     factory = next(item for item in payload["results"] if item["name"] == "factory_status")
     assert factory["data"]["runtime_enabled"] is True
     assert factory["data"]["event_runtime_mode"] == "readonly"
@@ -206,6 +225,7 @@ def test_live_readiness_smoke_contract_accepts_explicitly_blocked_data_state() -
     assert ("POST", "/v1/tools/agent_memory_search", "api-token", {"query": "AIASK", "limit": 5}) in calls
     assert any(call[0] == "POST" and call[1] == "/v1/desktop/financial-manager/query" for call in calls)
     assert ("POST", "/v1/tools/agent_factory_status", "api-token", {"recent_run_limit": 5, "_timeout_seconds": 5}) in calls
+    assert ("POST", "/v1/tools/agent_factory_formal_diagnostics", "api-token", {"top_n": 10, "_timeout_seconds": 8}) in calls
     assert ("POST", "/v1/tools/agent_market_temperature_cache_readiness", "api-token", {"max_stale_days": 1}) in calls
     assert any(call[0] == "POST" and call[1] == "/v1/tools/agent_market_temperature_forward_validation" for call in calls)
     assert ("GET", "/v1/mcp/servers?all=true", "control-token", None) in calls
@@ -226,11 +246,13 @@ def test_live_readiness_smoke_plan_is_offline_and_matches_checklist() -> None:
     assert "--self-test --pretty" in payload["self_test_command"]
     assert "--endpoint http://127.0.0.1:9999 --pretty" in payload["live_command"]
     assert "FastAPI/pandas" in payload["environment_note"]
-    assert payload["summary"] == {"total": 16}
+    assert payload["summary"] == {"total": 17}
     checks = {item["name"]: item for item in payload["checks"]}
     assert checks["workbench_summary"]["path"] == "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"
     assert checks["mcp_servers"]["path"] == "/v1/mcp/servers?all=true"
     assert checks["mcp_tools"]["path"] == "/v1/mcp/tools?all=true"
     assert "runtime_enabled" in checks["factory_status"]["observes"]
     assert "daily_run_count" in checks["factory_status"]["observes"]
+    assert "signal_id_coverage" in checks["factory_formal_diagnostics"]["observes"]
+    assert "exit_funnel" in checks["factory_formal_diagnostics"]["observes"]
     assert payload["side_effects"].startswith("none")

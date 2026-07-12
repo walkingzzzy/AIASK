@@ -20,6 +20,12 @@ from strategy_factory.api.constants import (
     STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_ENABLED,
     STRATEGY_FACTORY_PROMOTION_CROSS_REGIME_MIN_N,
 )
+from .state_machine import (
+    LIFECYCLE_TRANSITIONS,
+    normalize_status_alias,
+    update_status,
+    validate_transition,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -82,40 +88,6 @@ def evaluate_cross_regime_skill(
 
 def _execution_audit_enabled() -> bool:
     return bool(STRATEGY_FACTORY_EXECUTION_AUDIT_ENABLED)
-
-# ── Lifecycle state machine ──────────────────────────────────────────────────
-
-LIFECYCLE_TRANSITIONS: dict[str, list[str]] = {
-    "draft": ["submitted"],
-    "submitted": ["incubating", "rejected"],
-    "rejected": ["draft"],
-    "incubating": ["listed", "deprecated", "suspended"],
-    "listed": ["deprecated", "suspended", "archived"],
-    "suspended": ["listed", "deprecated", "incubating"],
-    "deprecated": [],
-    "published": ["deprecated", "suspended", "archived", "listed"],
-    "archived": [],
-}
-
-
-def normalize_status_alias(status: str | None) -> str:
-    normalized = str(status or "").strip().lower()
-    return "listed" if normalized == "published" else normalized
-
-
-def validate_transition(current: str, target: str) -> bool:
-    current_normalized = normalize_status_alias(current)
-    target_normalized = normalize_status_alias(target)
-    return target_normalized in LIFECYCLE_TRANSITIONS.get(current_normalized, [])
-
-
-async def update_status(db, strategy_id: str, status: str, **kwargs) -> None:
-    normalized = normalize_status_alias(status)
-    try:
-        await db.update_strategy_status(strategy_id, normalized, **kwargs)
-    except TypeError:
-        await db.update_strategy_status(strategy_id, normalized)
-
 
 # ── Quality report helpers ───────────────────────────────────────────────────
 
@@ -198,4 +170,3 @@ def _contract_version_stable(value: Any, explicit_flag: Any = None) -> bool:
         return False
     unstable_tokens = ("draft", "unstable", "experimental", "preview", "beta", "alpha")
     return not any(token in version for token in unstable_tokens)
-

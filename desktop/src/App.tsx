@@ -64,6 +64,10 @@ function isFinanceView(view: ViewId) {
     view === "stock-radar" ||
     view === "market-temperature" ||
     view === "quant-research" ||
+    view === "strategy-factory" ||
+    view === "factor-factory" ||
+    view === "incubation" ||
+    view === "factory-events" ||
     view === "financial-manager" ||
     view === "my-strategy" ||
     view === "my-stocks"
@@ -94,11 +98,11 @@ function detectRailMode(width = window.innerWidth): RailMode {
 }
 
 function viewSectionLabel(view: ViewId) {
-  if (view === "workbench") return "Task Workspace";
-  if (view === "projects-contexts" || view === "models") return "Projects & Models";
-  if (view === "user-profile") return "Projects & Models";
-  if (view === "sessions-runs") return "Runs";
-  if (view === "tools-approvals") return "Approvals";
+  if (view === "workbench") return "任务工作台";
+  if (view === "projects-contexts" || view === "models") return "项目与模型";
+  if (view === "user-profile") return "项目与模型";
+  if (view === "sessions-runs") return "运行记录";
+  if (view === "tools-approvals") return "审批";
   if (
     view === "finance-lab" ||
     view === "stock-data-sources" ||
@@ -106,24 +110,28 @@ function viewSectionLabel(view: ViewId) {
     view === "stock-radar" ||
     view === "market-temperature" ||
     view === "quant-research" ||
+    view === "strategy-factory" ||
+    view === "factor-factory" ||
+    view === "incubation" ||
+    view === "factory-events" ||
     view === "financial-manager"
   ) {
-    return "Finance Lab";
+    return "金融研究";
   }
   if (view === "integrations" || view === "mcp-connectors" || view === "plugins-skills" || view === "gateway-webhooks") {
-    return "Integrations";
+    return "集成连接";
   }
-  if (view === "automation" || view === "workflows") return "Automations";
+  if (view === "automation" || view === "workflows") return "自动化";
   if (
     view === "readiness-health" ||
     view === "local-user-memory" ||
     view === "learning-rl" ||
     view === "native-diagnostics"
   ) {
-    return "Operations";
+    return "运维";
   }
-  if (view === "settings-security") return "Settings";
-  return "Workbench";
+  if (view === "settings-security") return "设置";
+  return "工作台";
 }
 
 function viewTabs(view: ViewId) {
@@ -132,9 +140,9 @@ function viewTabs(view: ViewId) {
     case "user-profile":
     case "models":
       return [
-        { label: "Projects", to: viewToRoute("projects-contexts"), active: view === "projects-contexts" },
-        { label: "Profile", to: viewToRoute("user-profile"), active: view === "user-profile" },
-        { label: "Models", to: viewToRoute("models"), active: view === "models" }
+        { label: "项目", to: viewToRoute("projects-contexts"), active: view === "projects-contexts" },
+        { label: "个人资料", to: viewToRoute("user-profile"), active: view === "user-profile" },
+        { label: "模型", to: viewToRoute("models"), active: view === "models" }
       ];
     case "finance-lab":
     case "stock-data-sources":
@@ -142,44 +150,52 @@ function viewTabs(view: ViewId) {
     case "stock-radar":
     case "market-temperature":
     case "quant-research":
+    case "strategy-factory":
+    case "factor-factory":
+    case "incubation":
+    case "factory-events":
     case "financial-manager":
       return [
-        { label: "Overview", to: viewToRoute("finance-lab"), active: view === "finance-lab" },
+        { label: "总览", to: viewToRoute("finance-lab"), active: view === "finance-lab" },
         {
-          label: "Data",
+          label: "数据",
           to: viewToRoute("stock-data-sources"),
           active: view === "stock-data-sources" || view === "data-sync"
         },
-        { label: "Radar", to: viewToRoute("stock-radar"), active: view === "stock-radar" },
-        { label: "Temperature", to: viewToRoute("market-temperature"), active: view === "market-temperature" },
-        { label: "Quant", to: viewToRoute("quant-research"), active: view === "quant-research" },
-        { label: "Manager", to: viewToRoute("financial-manager"), active: view === "financial-manager" }
+        { label: "雷达", to: viewToRoute("stock-radar"), active: view === "stock-radar" },
+        { label: "市场温度", to: viewToRoute("market-temperature"), active: view === "market-temperature" },
+        { label: "量化", to: viewToRoute("quant-research"), active: view === "quant-research" },
+        { label: "策略工厂", to: viewToRoute("strategy-factory"), active: view === "strategy-factory" },
+        { label: "因子工厂", to: viewToRoute("factor-factory"), active: view === "factor-factory" },
+        { label: "孵化", to: viewToRoute("incubation"), active: view === "incubation" },
+        { label: "工厂事件", to: viewToRoute("factory-events"), active: view === "factory-events" },
+        { label: "金融管理", to: viewToRoute("financial-manager"), active: view === "financial-manager" }
       ];
     case "integrations":
     case "mcp-connectors":
     case "plugins-skills":
     case "gateway-webhooks":
       return [
-        { label: "Overview", to: viewToRoute("integrations"), active: view === "integrations" },
-        { label: "MCP / Connectors", to: viewToRoute("mcp-connectors"), active: view === "mcp-connectors" },
-        { label: "Plugins / Skills", to: viewToRoute("plugins-skills"), active: view === "plugins-skills" },
-        { label: "Gateway", to: viewToRoute("gateway-webhooks"), active: view === "gateway-webhooks" }
+        { label: "总览", to: viewToRoute("integrations"), active: view === "integrations" },
+        { label: "MCP 连接", to: viewToRoute("mcp-connectors"), active: view === "mcp-connectors" },
+        { label: "插件与技能", to: viewToRoute("plugins-skills"), active: view === "plugins-skills" },
+        { label: "消息网关", to: viewToRoute("gateway-webhooks"), active: view === "gateway-webhooks" }
       ];
     case "automation":
     case "workflows":
       return [
-        { label: "Triage Inbox", to: viewToRoute("automation"), active: view === "automation" },
-        { label: "Workflow", to: viewToRoute("workflows"), active: view === "workflows" }
+        { label: "待处理", to: viewToRoute("automation"), active: view === "automation" },
+        { label: "流程", to: viewToRoute("workflows"), active: view === "workflows" }
       ];
     case "readiness-health":
     case "local-user-memory":
     case "learning-rl":
     case "native-diagnostics":
       return [
-        { label: "Readiness", to: viewToRoute("readiness-health"), active: view === "readiness-health" },
-        { label: "Memory", to: viewToRoute("local-user-memory"), active: view === "local-user-memory" },
-        { label: "Learning / RL", to: viewToRoute("learning-rl"), active: view === "learning-rl" },
-        { label: "Native Diagnostics", to: viewToRoute("native-diagnostics"), active: view === "native-diagnostics" }
+        { label: "健康检查", to: viewToRoute("readiness-health"), active: view === "readiness-health" },
+        { label: "本地记忆", to: viewToRoute("local-user-memory"), active: view === "local-user-memory" },
+        { label: "学习训练", to: viewToRoute("learning-rl"), active: view === "learning-rl" },
+        { label: "本机诊断", to: viewToRoute("native-diagnostics"), active: view === "native-diagnostics" }
       ];
     default:
       return [];
@@ -189,7 +205,7 @@ function viewTabs(view: ViewId) {
 function normalizeThreads(payload: unknown): WorkbenchThreadSummary[] {
   return list(payload).map((item, index) => ({
     id: String(item.id || item.session_id || `thread_${index}`),
-    title: valueOf(item, ["title", "name"], `Thread ${index + 1}`),
+    title: valueOf(item, ["title", "name"], `会话 ${index + 1}`),
     status: valueOf(item, ["status"], "idle"),
     updatedAt: valueOf(item, ["updated_at", "created_at"], "-"),
     messageCount: Number(item.message_count || item.messages || 0)
@@ -197,7 +213,7 @@ function normalizeThreads(payload: unknown): WorkbenchThreadSummary[] {
 }
 
 function formatTime(value: string) {
-  if (!value || value === "-") return "Not updated";
+  if (!value || value === "-") return "未更新";
   const parsed = new Date(value);
   if (Number.isNaN(parsed.getTime())) return value;
   return parsed.toLocaleString("zh-CN", {
@@ -206,6 +222,22 @@ function formatTime(value: string) {
     hour: "2-digit",
     minute: "2-digit"
   });
+}
+
+function modeLabel(mode: ConnectionSettings["mode"]) {
+  return mode === "mock" ? "演示模式" : "真实连接";
+}
+
+function threadStatusLabel(status: string) {
+  const labels: Record<string, string> = {
+    active: "进行中",
+    idle: "空闲",
+    completed: "已完成",
+    failed: "失败",
+    pending: "待处理",
+    archived: "已归档"
+  };
+  return labels[status] || status || "未知";
 }
 
 function findRunId(value: UnknownRecord) {
@@ -269,6 +301,7 @@ function ViewRenderer({
   setSelectedArtifactId: (artifactId: string) => void;
   setSelectedReviewTab: (tab: WorkbenchContext["selectedReviewTab"]) => void;
   reloadWorkbench: () => Promise<void>;
+  realtimeConnected: boolean;
 }) {
   if (
     view === "workbench" ||
@@ -288,6 +321,10 @@ function ViewRenderer({
     view === "stock-radar" ||
     view === "market-temperature" ||
     view === "quant-research" ||
+    view === "strategy-factory" ||
+    view === "factor-factory" ||
+    view === "incubation" ||
+    view === "factory-events" ||
     view === "financial-manager"
   ) {
     return <FinancePages view={view} {...connection} />;
@@ -341,7 +378,7 @@ function ThreadRail({
     <>
       <section className="sidebar-section sidebar-context-switcher">
         <div className="sidebar-section-header">
-          <span className="sidebar-eyebrow">Project / Context</span>
+          <span className="sidebar-eyebrow">项目与上下文</span>
           <FolderKanban size={16} />
         </div>
         <button
@@ -353,42 +390,42 @@ function ThreadRail({
         >
           <div>
             <strong>{settings.userId || "local-user"}</strong>
-            <p>Current API: {settings.baseUrl}</p>
+            <p>当前服务：{settings.baseUrl}</p>
           </div>
-          <StatusBadge tone={settings.mode === "mock" ? "warning" : "info"}>{settings.mode === "mock" ? "Mock" : "Live"}</StatusBadge>
+          <StatusBadge tone={settings.mode === "mock" ? "warning" : "info"}>{modeLabel(settings.mode)}</StatusBadge>
         </button>
       </section>
 
       <section className="sidebar-section sidebar-thread-rail">
         <div className="sidebar-section-header">
-          <span className="sidebar-eyebrow">New Task + Threads</span>
+          <span className="sidebar-eyebrow">新任务与会话</span>
           <Button
             type="button"
             className="thread-create-button"
             icon={<MessageSquarePlus size={16} />}
             onClick={() => navigate(viewToRoute("workbench"))}
           >
-            New Task
+            新建任务
           </Button>
         </div>
 
-        <label className="thread-search" aria-label="Thread search">
+        <label className="thread-search" aria-label="搜索会话">
           <Search size={14} />
-          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search threads or session IDs" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索会话标题或 ID" />
         </label>
 
-        <div className="thread-list" role="list" aria-label="Thread list">
+        <div className="thread-list" role="list" aria-label="会话列表">
           {loading ? (
             <div className="thread-list-empty">
               <Loader2 size={16} className="spin" />
-              <span>Loading threads</span>
+              <span>正在加载会话</span>
             </div>
           ) : null}
 
           {!loading && filteredThreads.length === 0 ? (
             <div className="thread-list-empty">
               <FileSearch size={16} />
-              <span>No matching threads</span>
+              <span>没有匹配的会话</span>
             </div>
           ) : null}
 
@@ -406,11 +443,11 @@ function ThreadRail({
             >
               <div className="thread-card-top">
                 <strong>{thread.title}</strong>
-                <StatusBadge tone={thread.status === "active" ? "success" : "neutral"}>{thread.status}</StatusBadge>
+                <StatusBadge tone={thread.status === "active" ? "success" : "neutral"}>{threadStatusLabel(thread.status)}</StatusBadge>
               </div>
               <p>{thread.id}</p>
               <div className="thread-card-meta">
-                <span>{thread.messageCount} messages</span>
+                <span>{thread.messageCount} 条消息</span>
                 <span>{formatTime(thread.updatedAt)}</span>
               </div>
             </button>
@@ -438,12 +475,12 @@ function Sidebar({
 }) {
   const primaryViews = primaryNavViews();
   return (
-    <aside className="sidebar app-sidebar" aria-label="AIASK navigation">
+    <aside className="sidebar app-sidebar" aria-label="AIASK 导航">
       <div className="brand">
         <div className="brand-mark">AI</div>
         <div>
           <strong>AIASK</strong>
-          <span>Desktop Workbench</span>
+          <span>智能工作台</span>
         </div>
       </div>
 
@@ -458,7 +495,7 @@ function Sidebar({
 
       <section className="sidebar-section sidebar-primary-nav">
         <div className="sidebar-section-header">
-          <span className="sidebar-eyebrow">Primary Navigation</span>
+          <span className="sidebar-eyebrow">主导航</span>
           <Activity size={16} />
         </div>
         <nav className="primary-nav">
@@ -481,13 +518,13 @@ function Sidebar({
         <NavLink className="nav-link settings-link" to={viewToRoute("settings-security")}>
           <Settings size={18} aria-hidden="true" />
           <div>
-            <strong>Settings</strong>
-            <span>Connection, token, mode, theme, shortcuts</span>
+            <strong>设置</strong>
+            <span>连接、权限、模式、主题</span>
           </div>
         </NavLink>
         <div className="sidebar-status">
-          <span>Boundary</span>
-          <strong>Desktop to Agent HTTP</strong>
+          <span>边界</span>
+          <strong>桌面端仅通过 Agent HTTP</strong>
         </div>
       </div>
     </aside>
@@ -537,7 +574,7 @@ function Topbar({
             icon={railOpen ? <PanelRightClose size={16} /> : <PanelRightOpen size={16} />}
             onClick={onToggleRail}
           >
-            {railOpen ? "Hide right rail" : "Show right rail"}
+            {railOpen ? "收起右侧信息" : "展开右侧信息"}
           </Button>
         ) : null}
 
@@ -548,31 +585,31 @@ function Topbar({
             onClick={onToggleTerminal}
             tone={terminalVisible ? "info" : "neutral"}
           >
-            {terminalVisible ? "Hide terminal" : "Show terminal"}
+            {terminalVisible ? "隐藏终端" : "显示终端"}
           </Button>
         ) : null}
 
-        <div className="segmented" aria-label="API mode">
+        <div className="segmented" aria-label="连接模式">
           <button className={!isLive ? "active" : ""} onClick={() => updateSettings({ mode: "mock" })}>
-            Mock
+            演示
           </button>
           <button className={isLive ? "active" : ""} onClick={() => updateSettings({ mode: "live" })}>
-            Live
+            真实
           </button>
         </div>
 
         <StatusBadge tone={health.error ? "danger" : health.loading ? "warning" : "success"}>
           {health.error ? <WifiOff size={14} /> : <Wifi size={14} />}
-          {health.error ? "Agent offline" : health.loading ? "Checking" : "Agent healthy"}
+          {health.error ? "服务离线" : health.loading ? "检查中" : "服务正常"}
         </StatusBadge>
 
         <Button icon={<RefreshCw size={16} />} onClick={onRefresh}>
-          Refresh
+          刷新
         </Button>
       </div>
 
       {tabs.length > 0 ? (
-        <div className="page-tabs" role="tablist" aria-label={`${active.shortLabel} tabs`}>
+        <div className="page-tabs" role="tablist" aria-label={`${active.shortLabel}标签页`}>
           {tabs.map((tab) => (
             <NavLink key={tab.to} to={tab.to} className={`page-tab ${tab.active ? "active" : ""}`}>
               {tab.label}
@@ -610,40 +647,40 @@ function WorkbenchInspector({
   onRefreshFinance: () => void;
 }) {
   const reviewTabs: Array<{ id: WorkbenchContext["selectedReviewTab"]; label: string }> = [
-    { id: "overview", label: "Overview" },
-    { id: "artifacts", label: "Artifacts" },
-    { id: "approvals", label: "Approvals" },
-    { id: "review", label: "Review" },
-    { id: "diagnostics", label: "Diagnostics" }
+    { id: "overview", label: "总览" },
+    { id: "artifacts", label: "产物" },
+    { id: "approvals", label: "审批" },
+    { id: "review", label: "复核" },
+    { id: "diagnostics", label: "诊断" }
   ];
   const approvalList = threadApprovals(workbench.approvals, workbench.selectedThreadId, workbench.selectedRunId);
 
   return (
-    <aside className="right-rail workbench-inspector" data-testid="workbench-inspector" aria-label="Workbench inspector">
+    <aside className="right-rail workbench-inspector" data-testid="workbench-inspector" aria-label="工作台检查面板">
       <div className="rail-header">
-        <h3>InspectorPanel</h3>
-        <p>Overview / Artifacts / Approvals / Review / Diagnostics</p>
+        <h3>检查面板</h3>
+        <p>总览 / 产物 / 审批 / 复核 / 诊断</p>
       </div>
 
       <div className="rail-stack">
         <section className="rail-card">
-          <span className="rail-card-title">Current thread</span>
-          <strong>{workbench.currentThread?.title || "No thread selected"}</strong>
+          <span className="rail-card-title">当前会话</span>
+          <strong>{workbench.currentThread?.title || "未选择会话"}</strong>
           <p>
             {activeView === "workbench"
-              ? "The timeline and composer are focused on this thread."
-              : "Return to Workbench to continue from this thread."}
+              ? "对话时间线和输入框会围绕这个会话继续。"
+              : "回到工作台即可从这个会话继续。"}
           </p>
         </section>
 
         <section className="rail-card">
-          <span className="rail-card-title">Current run</span>
-          <strong>{valueOf(workbench.currentRun || {}, ["title", "id", "run_id"], "No active run")}</strong>
-          <p>{valueOf(workbench.currentRun || {}, ["status"], "Not started yet")}</p>
+          <span className="rail-card-title">当前运行</span>
+          <strong>{valueOf(workbench.currentRun || {}, ["title", "id", "run_id"], "暂无运行")}</strong>
+          <p>{valueOf(workbench.currentRun || {}, ["status"], "尚未开始")}</p>
         </section>
 
         <section className="rail-card">
-          <span className="rail-card-title">Review focus</span>
+          <span className="rail-card-title">复核焦点</span>
           <div className="rail-tab-strip">
             {reviewTabs.map((tab) => (
               <button
@@ -659,17 +696,17 @@ function WorkbenchInspector({
         </section>
 
         <section className="rail-card">
-          <span className="rail-card-title">Artifacts and approvals</span>
-          <strong>{workbench.selectedRunArtifacts.length} artifact(s)</strong>
+          <span className="rail-card-title">产物与审批</span>
+          <strong>{workbench.selectedRunArtifacts.length} 个产物</strong>
           <p>
             {approvalList.length
-              ? `There are ${approvalList.length} approval item(s) linked to the current focus.`
-              : "There are no pending approvals for the current focus."}
+              ? `当前焦点关联 ${approvalList.length} 个审批项。`
+              : "当前焦点没有待处理审批。"}
           </p>
         </section>
 
         <JsonPanel
-          title="Workbench evidence"
+          title="工作台证据"
           data={{
             summary,
             current_thread: workbench.currentThread,
@@ -684,8 +721,8 @@ function WorkbenchInspector({
         />
 
         <section className="rail-card">
-          <span className="rail-card-title">Finance extension</span>
-          <p>Stock mentions, linked quote, market heat, and related news for the current thread.</p>
+          <span className="rail-card-title">金融扩展</span>
+          <p>展示当前会话涉及的股票、行情、市场热度和相关新闻。</p>
         </section>
 
         <FinanceContextBody
@@ -719,40 +756,40 @@ function PageContextDrawer({
   const settingsStatus = useAsyncResource(() => api.settingsStatus(), [api]);
 
   return (
-    <aside className="right-rail page-context-drawer" data-testid="page-context-drawer" aria-label="Page context drawer">
+    <aside className="right-rail page-context-drawer" data-testid="page-context-drawer" aria-label="页面信息抽屉">
       <div className="rail-header">
-        <h3>Context Drawer</h3>
+        <h3>当前信息</h3>
         <p>{viewSectionLabel(active.id)}</p>
       </div>
 
       <div className="rail-stack">
         <section className="rail-card">
-          <span className="rail-card-title">Current page</span>
+          <span className="rail-card-title">当前页面</span>
           <strong>{active.shortLabel}</strong>
           <p>{active.description}</p>
         </section>
 
         <section className="rail-card">
-          <span className="rail-card-title">Current context</span>
+          <span className="rail-card-title">当前上下文</span>
           <strong>{settings.userId}</strong>
           <p>{settings.baseUrl}</p>
           <StatusBadge tone={settings.mode === "mock" ? "warning" : "info"}>
-            {settings.mode === "mock" ? "Mock validation" : "Live Agent"}
+            {settings.mode === "mock" ? "演示验证" : "真实 Agent"}
           </StatusBadge>
         </section>
 
         <section className="rail-card">
-          <span className="rail-card-title">Thread focus</span>
-          <strong>{workbench.currentThread?.title || "No thread selected"}</strong>
+          <span className="rail-card-title">会话焦点</span>
+          <strong>{workbench.currentThread?.title || "未选择会话"}</strong>
           <p>
             {workbench.currentRun
-              ? `Linked run: ${valueOf(workbench.currentRun, ["title", "id", "run_id"])}`
-              : "This page is not currently linked to an active run."}
+              ? `关联运行：${valueOf(workbench.currentRun, ["title", "id", "run_id"])}`
+              : "当前页面尚未关联正在运行的任务。"}
           </p>
         </section>
 
         <JsonPanel
-          title="Page context evidence"
+          title="页面上下文证据"
           data={{
             health: health.data || health.error || { status: "loading" },
             settings_status: settingsStatus.data,
@@ -783,7 +820,7 @@ function ResponsiveRightRail({
 
   return (
     <div className={`right-rail-layer ${mode} ${open ? "open" : ""}`}>
-      <button className="right-rail-backdrop" type="button" aria-label="Close right rail" onClick={onClose} />
+      <button className="right-rail-backdrop" type="button" aria-label="关闭右侧信息" onClick={onClose} />
       <div className={`right-rail-floating ${mode}`}>{children}</div>
     </div>
   );
@@ -866,8 +903,16 @@ export function App() {
     [connection.api, primaryStockCode]
   );
   const temperatureHistory = useAsyncResource(() => connection.api.marketTemperatureHistory(7, true), [connection.api]);
-  const terminalBackends = useAsyncResource(() => connection.api.terminalBackends(), [connection.api]);
-  const terminalSessions = useAsyncResource(() => connection.api.terminalSessions(), [connection.api]);
+  const terminalControlAvailable = Boolean(connection.settings.controlToken) || connection.settings.mode === "mock";
+  const gatedTerminalList = { object: "list", data: [], gated: true, reason: "control_token_required" };
+  const terminalBackends = useAsyncResource(
+    () => (terminalControlAvailable ? connection.api.terminalBackends() : Promise.resolve(gatedTerminalList)),
+    [connection.api, terminalControlAvailable]
+  );
+  const terminalSessions = useAsyncResource(
+    () => (terminalControlAvailable ? connection.api.terminalSessions() : Promise.resolve(gatedTerminalList)),
+    [connection.api, terminalControlAvailable]
+  );
 
   const availableRuns = useMemo(() => threadRuns(runs.data || summaryData.runs, selectedThreadId), [runs.data, selectedThreadId, summaryData.runs]);
   const selectedSessionMessages = useMemo(() => threadMessages(sessionMessages.data), [sessionMessages.data]);
@@ -1073,6 +1118,7 @@ export function App() {
                     setSelectedArtifactId={setSelectedArtifactId}
                     setSelectedReviewTab={setSelectedReviewTab}
                     reloadWorkbench={reloadWorkbench}
+                    realtimeConnected={liveRunEvents.connected}
                   />
                 }
               />
@@ -1088,7 +1134,7 @@ export function App() {
           {isWorkbenchView(active.id) ? (
             <TerminalPanel
               visible={terminalVisible}
-              controlAvailable={Boolean(connection.settings.controlToken) || connection.settings.mode === "mock"}
+              controlAvailable={terminalControlAvailable}
               backends={terminalBackends.data}
               sessions={terminalSessions.data}
               loading={terminalBackends.loading || terminalSessions.loading}

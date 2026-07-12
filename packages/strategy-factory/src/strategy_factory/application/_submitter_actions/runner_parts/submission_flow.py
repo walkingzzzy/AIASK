@@ -118,6 +118,7 @@
                 description += f"收益 {metrics.get('total_return', 0):.1%} | "
                 description += f"回撤 {metrics.get('max_drawdown', 0):.1%}"
 
+            description = ""
             existing_params = dict(existing.get("params") or {})
             normalized_task = _normalize_research_task_contract(candidate.get("research_task") or existing_params.get("research_task") or {})
             candidate_provenance = cls._candidate_provenance(candidate, existing)
@@ -343,6 +344,40 @@
                 stored_params["selection_logic"] = list(candidate.get("selection_logic") or existing_params.get("selection_logic") or [])
             if candidate.get("incubation_budget"):
                 stored_params["incubation_budget"] = dict(candidate.get("incubation_budget") or {})
+            strategy_explanation = build_strategy_explanation(
+                {
+                    **existing,
+                    **dict(candidate or {}),
+                    "id": strategy_id,
+                    "strategy_id": strategy_id,
+                    "name": name,
+                    "strategy_type": candidate["strategy_type"],
+                    "params": dict(stored_params),
+                    "tags": list(
+                        dict.fromkeys(
+                            [
+                                *(existing.get("tags") or []),
+                                "auto_generated",
+                                "factory",
+                                candidate["strategy_type"],
+                                *(candidate.get("tags") or []),
+                            ]
+                        )
+                    ),
+                },
+                metrics=metrics,
+                existing=existing,
+                source="strategy_factory_submit",
+            )
+            if strategy_explanation:
+                stored_params["strategy_explanation"] = strategy_explanation
+                description = render_strategy_description(
+                    name,
+                    strategy_explanation,
+                    metrics=metrics,
+                )
+            if not description:
+                description = f"{name}\nGenerated reason: {candidate.get('spawn_reason', '')}"
             contract_source = {
                 **existing,
                 **dict(candidate or {}),
@@ -423,7 +458,16 @@
                 "completion_issues": list(stored_params.get("completion_issues") or []),
                 "hard_failures": list(stored_params.get("hard_failures") or []),
                 "tags": list(
-                    dict.fromkeys([*(existing.get("tags") or []), "auto_generated", "factory", candidate["strategy_type"], *(candidate.get("tags") or [])])
+                    dict.fromkeys(
+                        [
+                            *(existing.get("tags") or []),
+                            "auto_generated",
+                            "factory",
+                            candidate["strategy_type"],
+                            *(candidate.get("tags") or []),
+                            *(strategy_explanation.get("labels") or []),
+                        ]
+                    )
                 ),
             }
 

@@ -136,11 +136,51 @@ def test_three_factory_supervisor_writes_ingest_startup_manifest(tmp_path) -> No
 
     assert planned_names == ["market_event_ingest"]
     assert manifest["market_event_ingest_enabled"] is True
+    assert manifest["topology"] == {
+        "contract_version": "aiask.factory_topology.v1",
+        "runtime_profile": None,
+        "expected_factories": [
+            "strategy_factory",
+            "factor_mining_factory",
+            "incubation_factory",
+            "market_event_ingest",
+        ],
+        "selected_factories": ["market_event_ingest"],
+        "disabled_factories": [
+            {"name": "strategy_factory", "reason": "cli_disabled"},
+            {"name": "factor_mining_factory", "reason": "cli_disabled"},
+            {"name": "incubation_factory", "reason": "cli_disabled"},
+        ],
+        "complete": False,
+        "paper_trading_owner": None,
+        "paper_trading_enabled": False,
+    }
     assert manifest["factories"][0]["log"].endswith("market_event_ingest.log")
     assert (tmp_path / "market_event_ingest.log").exists()
     assert "supervisor planned market_event_ingest" in (
         tmp_path / "market_event_ingest.log"
     ).read_text(encoding="utf-8")
+
+
+def test_three_factory_supervisor_locks_production_runtime_contract(monkeypatch) -> None:
+    supervisor = _load_script_module(
+        "_aiask_test_run_three_factories_contract",
+        "scripts/factories/run_three_factories.py",
+    )
+    monkeypatch.setenv("FACTOR_MINING_FACTORY_ENABLED", "0")
+    monkeypatch.setenv("STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED", "0")
+    monkeypatch.setenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "false")
+
+    env = supervisor._child_env()
+    args = supervisor.parse_args(["--python", "python"])
+    topology = supervisor._build_topology_contract(args, env, supervisor._build_specs(args, env))
+
+    assert env["FACTOR_MINING_FACTORY_ENABLED"] == "1"
+    assert env["STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED"] == "1"
+    assert env["INCUBATION_FACTORY_OWNS_PAPER_TRADING"] == "true"
+    assert env["AIASK_FACTORY_PAPER_OWNER"] == "incubation_factory"
+    assert topology["complete"] is True
+    assert topology["selected_factories"] == list(supervisor.SUPERVISED_FACTORY_NAMES)
 
 
 def test_three_factory_supervisor_prefers_current_interpreter_by_default(monkeypatch) -> None:

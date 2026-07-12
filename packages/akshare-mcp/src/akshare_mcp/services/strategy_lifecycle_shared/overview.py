@@ -52,6 +52,7 @@ from .prediction_trace import (
     _extract_semantic_lineage,
     _load_prediction_trace_entity_chain,
 )
+from strategy_factory.contracts.promotion_ready import evaluate_promotion_ready
 from .overview_helpers import (
     _CLOSURE_SNAPSHOT_DROP_FIELDS,
     _persist_and_finalize_overview,
@@ -847,26 +848,28 @@ async def build_incubation_overview(
     else:
         strict_live_alignment_status = "unknown"
 
-    promotion_ready = (
-        primary_effective_n >= 60
-        and secondary_effective_n >= 30
-        and (primary_skill_lcb or 0.0) > 0.0
-        and (secondary_skill_lcb or 0.0) > 0.0
-        and (recent_primary_skill_lcb or 0.0) > 0.0
-        and coverage_ratio >= 0.75
-        and (stability_gap is None or stability_gap <= 0.05)
-        and execution_hard_gate_passed
-        and risk_hard_gate_status == "passed"
-        and not blockers
-    )
-    # INVERT-DESIGN P3 改动B：晋升额外要求"跨主要 regime 都有正 skill"（默认 OFF，零变化）。
+    # Pure promotion_ready floors owned by strategy_factory.contracts.promotion_ready.
+    # INVERT-DESIGN P3 改动B：跨 regime skill 仍为 opt-in（默认 OFF）。
     cross_regime_skill = evaluate_cross_regime_skill(signal_stats.get("hit_rate_by_regime"))
-    if _promotion_cross_regime_enabled() and promotion_ready and not cross_regime_skill["passed"]:
-        promotion_ready = False
-        for tag in cross_regime_skill["negative_labels"]:
-            reason = f"cross_regime_skill_lcb_non_positive:{tag}"
-            if reason not in blockers:
-                blockers.append(reason)
+    _promotion_verdict = evaluate_promotion_ready(
+        primary_effective_n=primary_effective_n,
+        secondary_effective_n=secondary_effective_n,
+        primary_skill_lcb=primary_skill_lcb,
+        secondary_skill_lcb=secondary_skill_lcb,
+        recent_primary_skill_lcb=recent_primary_skill_lcb,
+        coverage_ratio=coverage_ratio,
+        stability_gap=stability_gap,
+        execution_hard_gate_passed=execution_hard_gate_passed,
+        risk_hard_gate_status=risk_hard_gate_status,
+        blockers=blockers,
+        cross_regime_enabled=_promotion_cross_regime_enabled(),
+        cross_regime_passed=bool(cross_regime_skill.get("passed")),
+        cross_regime_negative_labels=list(cross_regime_skill.get("negative_labels") or []),
+    )
+    promotion_ready = bool(_promotion_verdict.get("promotion_ready"))
+    for reason in list(_promotion_verdict.get("blockers") or []):
+        if reason not in blockers:
+            blockers.append(reason)
     if not execution_hard_gate_passed and execution_audit_gate_status in {
         "missing",
         "bootstrap_pending",

@@ -60,6 +60,9 @@ ALLOWED_ACTIONS.update(
         "gateway.send_message": {"tool": "gateway", "action": "send_message"},
         "gateway.direct_deliver": {"tool": "gateway", "action": "direct_deliver"},
         "webhook.trigger": {"tool": "webhook", "action": "trigger"},
+        # P2 soak / ops (read-only; dry-run defaults inside executor)
+        "ops.db_soak": {"tool": "ops", "action": "db_soak"},
+        "factory.soak_check": {"tool": "ops", "action": "db_soak"},
     }
 )
 

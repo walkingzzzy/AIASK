@@ -466,7 +466,7 @@ export class AiaskApi {
       }
 
       if (path === "/v1/skills") {
-        return { object: "list", data: clone(store.skills), meta: { count: store.skills.length } } as T;
+        return { object: "list", data: { skills: clone(store.skills), count: store.skills.length }, meta: { count: store.skills.length } } as T;
       }
 
       if (path === "/v1/plugins") {
@@ -1556,6 +1556,39 @@ export class AiaskApi {
   marketTemperatureReadiness = () => this.callTool("agent_market_temperature_cache_readiness", {});
   marketTemperatureHistory = (limit = 30, includeSnapshot = false) =>
     this.callTool("agent_market_temperature_cache_history", { limit, include_snapshot: includeSnapshot });
+  strategyFactoryStatus = (recentRunLimit = 5) =>
+    this.callTool("agent_factory_status", { recent_run_limit: recentRunLimit, _timeout_seconds: 10 });
+  strategyFactoryRuns = (limit = 10) => this.callTool("agent_factory_runs", { limit });
+  strategyFactoryFormalDiagnostics = (topN = 15) =>
+    this.callTool("agent_factory_formal_diagnostics", { top_n: topN, _timeout_seconds: 12 });
+  strategyDomainEvents = (limit = 20) => this.callTool("agent_strategy_domain_events", { limit });
+  factorFactoryStatus = (limit = 20) => this.get("/v1/desktop/factor-factory/status", { limit });
+  incubationFactoryStatus = () => this.callTool("agent_incubation_factory_status", {});
+  factoryEventList = (query?: { event_id?: string; source?: string; status?: string; event_type?: string; limit?: number }) =>
+    this.callTool("agent_factory_event_list", { limit: 20, ...query });
+  factoryEventPreviewTasks = (eventId: string, limit = 20) =>
+    this.callTool("agent_factory_event_preview_tasks", { event_id: eventId, limit });
+  factoryEventLineage = (query?: { event_id?: string; strategy_id?: string; limit?: number }) =>
+    this.callTool("agent_factory_event_lineage", { limit: 20, ...query });
+  factoryThemeExposureStatus = (query?: { theme?: string; limit?: number }) =>
+    this.callTool("agent_factory_theme_exposure_status", { limit: 20, ...query });
+  factoryEventOutboxStatus = (query?: { status?: string; limit?: number }) =>
+    this.callTool("agent_factory_event_outbox_status", { limit: 20, ...query });
+  tradePredictionStatus = (query?: { strategy_id?: string; stock_code?: string; limit?: number }) =>
+    this.get("/v1/desktop/trade-predictions/status", query);
+  tradePredictionOutcomes = (query?: {
+    prediction_id?: string;
+    strategy_id?: string;
+    stock_code?: string;
+    score_version?: string;
+    score_status?: string;
+    data_quality_status?: string;
+    actual_trading_date_lte?: string;
+    actual_trading_date_gte?: string;
+    limit?: number;
+  }) => this.get("/v1/desktop/trade-predictions/outcomes", query);
+  tradePredictionMatrix = (query?: { strategy_id?: string; stock_code?: string; score_version?: string; dimensions?: string; limit?: number }) =>
+    this.get("/v1/desktop/trade-predictions/matrix", query);
   quantPresets = () => this.get("/v1/desktop/quant/presets");
   quantRun = (body: unknown) => this.post("/v1/desktop/quant/research-runs", body);
   quantRunGet = (researchId: string) => this.get(`/v1/desktop/quant/research-runs/${encodeURIComponent(researchId)}`);

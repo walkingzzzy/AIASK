@@ -4,7 +4,7 @@ import type { ReactNode } from "react";
 import type { ApiProblem } from "../types";
 import { Button } from "./ui";
 
-export function LoadingState({ label = "Loading", preserveData }: { label?: string; preserveData?: boolean }) {
+export function LoadingState({ label = "加载中", preserveData }: { label?: string; preserveData?: boolean }) {
   return (
     <div className={`state state-loading ${preserveData ? "overlay" : ""}`} role="status">
       <Loader2 className="spin" size={24} />
@@ -28,10 +28,10 @@ export function FilterEmptyState({ onClear }: { onClear: () => void }) {
   return (
     <div className="state state-filter-empty">
       <Filter size={32} />
-      <strong>No results for the current filters</strong>
-      <p>Adjust the filters or clear them to see more records.</p>
+      <strong>当前筛选条件下没有结果</strong>
+      <p>请调整筛选条件，或清空筛选后查看更多记录。</p>
       <Button icon={<RefreshCw size={16} />} onClick={onClear}>
-        Clear filters
+        清空筛选
       </Button>
     </div>
   );
@@ -42,16 +42,16 @@ export function ErrorState({ error, onRetry }: { error: ApiProblem; onRetry?: ()
     <div className="state state-error" role="alert">
       <XCircle size={32} />
       <strong>{error.title}</strong>
-      <p>{error.detail || "The request failed. Check the Agent HTTP connection or token settings."}</p>
+      <p>{error.detail || "请求失败，请检查 Agent HTTP 连接或权限设置。"}</p>
       {error.code ? (
         <div className="error-meta">
           <code>{error.code}</code>
-          {error.trace_id ? <small>trace: {error.trace_id}</small> : null}
+          {error.trace_id ? <small>追踪：{error.trace_id}</small> : null}
         </div>
       ) : null}
       {onRetry ? (
         <Button icon={<RefreshCw size={16} />} onClick={onRetry}>
-          Retry
+          重试
         </Button>
       ) : null}
     </div>
@@ -70,10 +70,10 @@ export function DegradedState({
   return (
     <div className="state state-degraded">
       <AlertTriangle size={32} />
-      <strong>Some capabilities are degraded</strong>
+      <strong>部分能力处于降级状态</strong>
       <div className="degraded-detail">
         <div>
-          <small>Still available:</small>
+          <small>仍可使用：</small>
           <ul>
             {available.map((item) => (
               <li key={item}>{item}</li>
@@ -81,7 +81,7 @@ export function DegradedState({
           </ul>
         </div>
         <div>
-          <small>Currently unavailable:</small>
+          <small>当前不可用：</small>
           <ul>
             {unavailable.map((item) => (
               <li key={item}>{item}</li>
@@ -106,10 +106,10 @@ export function GatedState({
   return (
     <div className="state state-gated">
       <LockKeyhole size={32} />
-      <strong>Authorization required</strong>
+      <strong>需要授权</strong>
       <p>{reason}</p>
       <div className="gated-requirements">
-        <small>Required before continuing:</small>
+        <small>继续前需要满足：</small>
         <ul>
           {requirements.map((requirement) => (
             <li key={requirement}>{requirement}</li>
@@ -125,10 +125,10 @@ export function BlockedState({ reason, policy }: { reason: string; policy?: stri
   return (
     <div className="state state-blocked">
       <ShieldAlert size={32} />
-      <strong>Action blocked</strong>
+      <strong>操作已被阻止</strong>
       <p>{reason}</p>
-      {policy ? <small className="policy-ref">Policy: {policy}</small> : null}
-      <p className="blocked-notice">This restriction is enforced by backend policy and the desktop will not bypass it.</p>
+      {policy ? <small className="policy-ref">策略：{policy}</small> : null}
+      <p className="blocked-notice">该限制由后端策略强制执行，桌面端不会绕过。</p>
     </div>
   );
 }
@@ -145,13 +145,13 @@ export function StaleState({
   return (
     <div className="state state-stale">
       <Database size={32} />
-      <strong>Data is stale</strong>
+      <strong>数据已过期</strong>
       <p>
-        Last updated: {asOf}. Stale for {staleDays} day{staleDays === 1 ? "" : "s"}.
+        最近更新：{asOf}。已过期 {staleDays} 天。
       </p>
       {onSync ? (
         <Button icon={<RefreshCw size={16} />} onClick={onSync}>
-          Open data sync
+          打开数据同步
         </Button>
       ) : null}
     </div>
@@ -162,7 +162,7 @@ export function MockDataNotice() {
   return (
     <div className="mock-notice" role="note">
       <Info size={14} />
-      <span>You are in mock mode. These records are for UI validation and do not represent live backend capability.</span>
+      <span>当前是演示模式。这些记录用于界面验证，不代表真实后端能力。</span>
     </div>
   );
 }
@@ -179,9 +179,9 @@ export function DataSourceBadge({
   return (
     <div className="data-source-badge">
       <small>
-        Data source: <strong>{source}</strong>
-        {mock ? " (Mock)" : ""}
-        {asOf ? ` | Updated: ${asOf}` : ""}
+        数据来源：<strong>{source}</strong>
+        {mock ? "（演示）" : ""}
+        {asOf ? ` | 更新时间：${asOf}` : ""}
       </small>
     </div>
   );
@@ -216,7 +216,7 @@ export function SmartStateHandler({
   if (error) return <ErrorState error={error} onRetry={onRetry} />;
   if (blocked) return <BlockedState reason={blocked.reason} policy={blocked.policy} />;
   if (gated) return <GatedState reason={gated.reason} requirements={gated.requirements} />;
-  if (empty) return <EmptyState title="No data yet" detail="There are no records for the current state." action={emptyAction} />;
+  if (empty) return <EmptyState title="暂无数据" detail="当前状态下没有记录。" action={emptyAction} />;
   if (degraded) {
     return (
       <DegradedState available={degraded.available} unavailable={degraded.unavailable}>

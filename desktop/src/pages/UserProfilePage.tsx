@@ -56,6 +56,33 @@ function buildForm(profile: UnknownRecord): UserProfileForm {
   };
 }
 
+function styleLabel(value: string) {
+  const labels: Record<string, string> = {
+    aggressive: "积极",
+    balanced: "均衡",
+    conservative: "稳健"
+  };
+  return labels[value] || value;
+}
+
+function horizonLabel(value: string) {
+  const labels: Record<string, string> = {
+    short: "短期",
+    medium: "中期",
+    long: "长期"
+  };
+  return labels[value] || value;
+}
+
+function experienceLabel(value: string) {
+  const labels: Record<string, string> = {
+    beginner: "新手",
+    intermediate: "有经验",
+    advanced: "资深"
+  };
+  return labels[value] || value;
+}
+
 export function UserProfilePage({ api, settings }: PageProps) {
   const profile = useAsyncResource(() => api.localProfile(), [api]);
   const [form, setForm] = useState<UserProfileForm>({
@@ -113,47 +140,47 @@ export function UserProfilePage({ api, settings }: PageProps) {
 
   return (
     <PageShell
-      title="User Profile"
-      description="Manage local investment profile, sector preferences, behavior memory, and reusable context for the workbench."
+      title="个人资料"
+      description="管理本地投资画像、行业偏好、行为记忆和工作台可复用上下文。"
       badge={
         <StatusBadge tone={profile.error ? "danger" : profile.loading ? "warning" : "success"}>
           <UserRound size={14} />
-          {profile.error ? "Profile degraded" : profile.loading ? "Loading profile" : "Profile ready"}
+          {profile.error ? "资料降级" : profile.loading ? "正在加载资料" : "资料已就绪"}
         </StatusBadge>
       }
       actions={
         <Button icon={<Save size={16} />} tone="success" onClick={() => void saveProfile()} busy={saving}>
-          Save profile
+          保存资料
         </Button>
       }
       metrics={[
-        metric("User", form.user_id || "-", "info"),
-        metric("Style", form.investment_style, statusTone(form.investment_style)),
-        metric("Risk", form.risk_tolerance, form.risk_tolerance >= 4 ? "warning" : "success"),
-        metric("Sectors", splitCsv(form.preferred_sectors).length, "info")
+        metric("用户", form.user_id || "-", "info"),
+        metric("风格", styleLabel(form.investment_style), statusTone(form.investment_style)),
+        metric("风险", form.risk_tolerance, form.risk_tolerance >= 4 ? "warning" : "success"),
+        metric("行业", splitCsv(form.preferred_sectors).length, "info")
       ]}
     >
       <div className="grid-2">
-        <Panel title="Profile preferences">
+        <Panel title="投资偏好">
           <div className="form-grid">
             <label className="field">
-              <span>User ID</span>
+              <span>用户 ID</span>
               <input value={form.user_id} onChange={(event) => setForm({ ...form, user_id: event.target.value })} />
             </label>
             <label className="field">
-              <span>Profile name</span>
+              <span>资料名称</span>
               <input value={form.profile_name} onChange={(event) => setForm({ ...form, profile_name: event.target.value })} />
             </label>
             <label className="field">
-              <span>Investment style</span>
+              <span>投资风格</span>
               <select value={form.investment_style} onChange={(event) => setForm({ ...form, investment_style: event.target.value })}>
-                <option value="aggressive">aggressive</option>
-                <option value="balanced">balanced</option>
-                <option value="conservative">conservative</option>
+                <option value="aggressive">积极</option>
+                <option value="balanced">均衡</option>
+                <option value="conservative">稳健</option>
               </select>
             </label>
             <label className="field">
-              <span>Risk tolerance</span>
+              <span>风险承受度</span>
               <select
                 value={String(form.risk_tolerance)}
                 onChange={(event) => setForm({ ...form, risk_tolerance: Number(event.target.value) })}
@@ -166,48 +193,48 @@ export function UserProfilePage({ api, settings }: PageProps) {
               </select>
             </label>
             <label className="field">
-              <span>Preferred sectors</span>
+              <span>偏好行业</span>
               <input
                 value={form.preferred_sectors}
                 onChange={(event) => setForm({ ...form, preferred_sectors: event.target.value })}
-                placeholder="AI, semiconductors, liquor"
+                placeholder="人工智能、半导体、白酒"
               />
             </label>
             <label className="field">
-              <span>Investment horizon</span>
+              <span>投资周期</span>
               <select value={form.investment_horizon} onChange={(event) => setForm({ ...form, investment_horizon: event.target.value })}>
-                <option value="short">short</option>
-                <option value="medium">medium</option>
-                <option value="long">long</option>
+                <option value="short">{horizonLabel("short")}</option>
+                <option value="medium">{horizonLabel("medium")}</option>
+                <option value="long">{horizonLabel("long")}</option>
               </select>
             </label>
             <label className="field">
-              <span>Experience level</span>
+              <span>经验水平</span>
               <select value={form.experience_level} onChange={(event) => setForm({ ...form, experience_level: event.target.value })}>
-                <option value="beginner">beginner</option>
-                <option value="intermediate">intermediate</option>
-                <option value="advanced">advanced</option>
+                <option value="beginner">{experienceLabel("beginner")}</option>
+                <option value="intermediate">{experienceLabel("intermediate")}</option>
+                <option value="advanced">{experienceLabel("advanced")}</option>
               </select>
             </label>
             <label className="field">
-              <span>Tags</span>
-              <input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="swing, macro, valuation" />
+              <span>标签</span>
+              <input value={form.tags} onChange={(event) => setForm({ ...form, tags: event.target.value })} placeholder="波段、宏观、估值" />
             </label>
           </div>
         </Panel>
 
-        <Panel title="Behavior memory">
+        <Panel title="行为记忆">
           <div className="form-grid">
             <label className="field">
-              <span>Frequent queries</span>
+              <span>常用问题</span>
               <textarea
                 value={form.frequent_queries}
                 onChange={(event) => setForm({ ...form, frequent_queries: event.target.value })}
-                placeholder="market breadth, stock radar, data readiness"
+                placeholder="市场广度、股票雷达、数据可用性"
               />
             </label>
             <label className="field">
-              <span>Preferred models</span>
+              <span>偏好模型</span>
               <textarea
                 value={form.preferred_models}
                 onChange={(event) => setForm({ ...form, preferred_models: event.target.value })}
@@ -215,11 +242,11 @@ export function UserProfilePage({ api, settings }: PageProps) {
               />
             </label>
             <label className="field">
-              <span>Active hours</span>
+              <span>活跃时间</span>
               <textarea value={form.active_hours} onChange={(event) => setForm({ ...form, active_hours: event.target.value })} placeholder="9, 10, 14" />
             </label>
             <label className="field">
-              <span>Common stocks</span>
+              <span>常看股票</span>
               <textarea
                 value={form.common_stocks}
                 onChange={(event) => setForm({ ...form, common_stocks: event.target.value })}
@@ -230,7 +257,7 @@ export function UserProfilePage({ api, settings }: PageProps) {
         </Panel>
       </div>
 
-      <JsonPanel title="Profile evidence" data={{ loaded: profile.data, saved: result }} />
+      <JsonPanel title="资料证据" data={{ loaded: profile.data, saved: result }} />
     </PageShell>
   );
 }

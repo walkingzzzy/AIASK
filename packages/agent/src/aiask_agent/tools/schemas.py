@@ -181,6 +181,11 @@ TOOL_SCHEMAS: dict[str, dict[str, Any]] = {
             "include_samples": {"type": "boolean", "default": False},
         }
     ),
+        "agent_factory_formal_diagnostics": schema(
+        {
+            "top_n": {"type": "integer", "minimum": 1, "maximum": 50},
+        }
+    ),
     "agent_factory_status": schema(
         {
             "recent_run_limit": {"type": "integer", "minimum": 1, "maximum": 10},

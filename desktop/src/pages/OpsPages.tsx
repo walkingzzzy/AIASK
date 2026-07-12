@@ -6,9 +6,32 @@ import { DryRunPreview } from "../components/IntentComponents";
 import { StatusLight, inferStatusFromData } from "../components/StatusLight";
 import { useAsyncResource } from "../hooks/useAsyncResource";
 import { Button, DataTable, GatedNotice, JsonPanel, LinkCard, PageShell, Panel } from "../components/ui";
-import type { ConnectionSettings } from "../types";
+import type { ConnectionSettings, UnknownRecord } from "../types";
 import { dataObject, firstArray, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
 import { viewToRoute } from "../routes";
+
+function compactValue(value: unknown, fallback = "-") {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  if (value === undefined || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return value.length ? value.join(", ") : fallback;
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function SummaryFields({ items }: { items: { label: string; value: unknown; tone?: "muted" | "strong" }[] }) {
+  return (
+    <div className="form-grid factory-summary-grid">
+      {items.map((item) => (
+        <div className="field factory-summary-field" key={item.label}>
+          <span>{item.label}</span>
+          <strong className={item.tone === "muted" ? "muted-value" : undefined}>{compactValue(item.value)}</strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 
 export function OpsPages(props: PageProps) {
   switch (props.view) {
@@ -29,6 +52,50 @@ export function OpsPages(props: PageProps) {
     default:
       return null;
   }
+}
+
+function gatedListPayload(area: string): UnknownRecord {
+  return {
+    object: "list",
+    data: [],
+    gated: true,
+    status: "control_required",
+    error_code: "control_token_required",
+    message: `${area} requires a control token`
+  };
+}
+
+function gatedStatusPayload(area: string): UnknownRecord {
+  return {
+    object: "gated.status",
+    gated: true,
+    status: "control_required",
+    error_code: "control_token_required",
+    message: `${area} requires a control token`
+  };
+}
+
+function useControlGatedResource<T>(controlAvailable: boolean, loader: () => Promise<T>, fallback: T, deps: unknown[] = []) {
+  return useAsyncResource(() => (controlAvailable ? loader() : Promise.resolve(fallback)), [controlAvailable, ...deps]);
+}
+
+function primitiveText(value: unknown): string | null {
+  if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+    const text = String(value).trim();
+    return text ? text : null;
+  }
+  return null;
+}
+
+function readableActionText(action: unknown, index: number) {
+  const direct = primitiveText(action);
+  if (direct) return direct;
+  const record = dataObject(action, {});
+  for (const key of ["title", "name", "label", "action", "message", "detail", "description"]) {
+    const text = primitiveText(record[key]);
+    if (text) return text;
+  }
+  return `建议 ${index + 1}`;
 }
 
 function AutomationPage({ api, controlAvailable }: PageProps) {
@@ -126,101 +193,101 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
   const previewChanges =
     previewAction === "create"
       ? [
-          { label: "Action", after: "create job" },
-          { label: "Name", after: String(buildPayload().name) },
-          { label: "Template", after: String(buildPayload().template) },
-          { label: "Control", after: "Agent /v1/jobs with control token gate" }
+          { label: "操作", after: "创建作业" },
+          { label: "名称", after: String(buildPayload().name) },
+          { label: "模板", after: String(buildPayload().template) },
+          { label: "控制方式", after: "通过 Agent /v1/jobs 和控制权限门禁执行" }
         ]
       : [
-          { label: "Action", after: String(previewAction || "") },
-          { label: "Target", after: jobName(targetJob) },
-          { label: "Control", after: "Agent Jobs API controlled route" }
+          { label: "操作", after: String(previewAction || "") },
+          { label: "目标", after: jobName(targetJob) },
+          { label: "控制方式", after: "通过 Agent 作业 API 受控路由执行" }
         ];
 
   return (
     <PageShell
-      title="Automation"
-      description="Create, run, disable, and delete controlled Agent jobs from explicit forms and dry-run previews."
-      badge={<GatedNotice controlAvailable={controlAvailable} action="create / run jobs" />}
+      title="自动化"
+      description="通过明确表单和预览创建、运行、停用或删除受控 Agent 作业。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建或运行作业" />}
       metrics={[
-        metric("Jobs", rows.length, "info"),
-        metric("Enabled", enabledRows.length, "success"),
-        metric("Scheduled", scheduledRows.length, "info"),
-        metric("Manual", manualRows.length, "warning")
+        metric("作业", rows.length, "info"),
+        metric("已启用", enabledRows.length, "success"),
+        metric("已排程", scheduledRows.length, "info"),
+        metric("手动", manualRows.length, "warning")
       ]}
     >
       <div className="grid-2">
-        <Panel title="Create Job">
+        <Panel title="创建作业">
           <div className="form-grid">
             <label className="field">
-              <span>Template</span>
+              <span>模板</span>
               <select data-testid="job-template" value={form.template} onChange={(event) => setForm({ ...form, template: event.target.value })}>
-                <option value="generic">Prompt job</option>
-                <option value="watch">Market watch</option>
+                <option value="generic">提示词作业</option>
+                <option value="watch">市场监控</option>
               </select>
             </label>
             <label className="field">
-              <span>Name</span>
-              <input data-testid="job-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Daily market brief" />
+              <span>名称</span>
+              <input data-testid="job-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="每日市场简报" />
             </label>
             <label className="field">
-              <span>Schedule</span>
+              <span>排程</span>
               <select value={form.schedule} onChange={(event) => setForm({ ...form, schedule: event.target.value })}>
-                <option value="interval">Interval</option>
-                <option value="manual">Manual</option>
+                <option value="interval">按间隔执行</option>
+                <option value="manual">手动执行</option>
               </select>
             </label>
             <label className="field">
-              <span>Interval seconds</span>
+              <span>间隔秒数</span>
               <input data-testid="job-interval" type="number" min="60" value={form.interval_seconds} onChange={(event) => setForm({ ...form, interval_seconds: event.target.value })} disabled={form.schedule === "manual"} />
             </label>
             {form.template === "watch" ? (
               <>
                 <label className="field">
-                  <span>Symbol</span>
+                  <span>股票代码</span>
                   <input data-testid="job-watch-symbol" value={form.symbol} onChange={(event) => setForm({ ...form, symbol: event.target.value })} />
                 </label>
                 <label className="field">
-                  <span>Query</span>
-                  <input value={form.query} onChange={(event) => setForm({ ...form, query: event.target.value })} placeholder="optional topic" />
+                  <span>主题</span>
+                  <input value={form.query} onChange={(event) => setForm({ ...form, query: event.target.value })} placeholder="可选主题" />
                 </label>
                 <label className="field">
-                  <span>Condition</span>
+                  <span>触发条件</span>
                   <input data-testid="job-watch-condition" value={form.condition} onChange={(event) => setForm({ ...form, condition: event.target.value })} />
                 </label>
                 <label className="field">
-                  <span>Channel</span>
+                  <span>通知渠道</span>
                   <select value={form.channel} onChange={(event) => setForm({ ...form, channel: event.target.value })}>
-                    <option value="local">Local</option>
-                    <option value="feishu">Feishu</option>
-                    <option value="wecom">WeCom</option>
+                    <option value="local">本地</option>
+                    <option value="feishu">飞书</option>
+                    <option value="wecom">企业微信</option>
                     <option value="discord">Discord</option>
                   </select>
                 </label>
               </>
             ) : (
               <label className="field" style={{ gridColumn: "1 / -1" }}>
-                <span>Prompt</span>
+                <span>提示词</span>
                 <textarea data-testid="job-prompt" value={form.prompt} onChange={(event) => setForm({ ...form, prompt: event.target.value })} rows={4} />
               </label>
             )}
             <label className="field">
-              <span>Enabled</span>
+              <span>启用</span>
               <input type="checkbox" checked={form.enabled} onChange={(event) => setForm({ ...form, enabled: event.target.checked })} />
             </label>
             <label className="field">
-              <span>Dry run</span>
+              <span>只预演</span>
               <input type="checkbox" checked={form.dry_run} onChange={(event) => setForm({ ...form, dry_run: event.target.checked })} />
             </label>
           </div>
           <div className="page-actions">
             <Button data-testid="job-create" icon={<Save size={16} />} tone="success" disabled={!controlAvailable} onClick={() => setPreviewAction("create")}>
-              Preview create
+              预览创建
             </Button>
           </div>
         </Panel>
 
-        <Panel title="Job Findings">
+        <Panel title="作业检查">
           <JsonPanel
             data={{
               jobs: rows,
@@ -229,32 +296,32 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
               manual_count: manualRows.length,
               form_payload: buildPayload()
             }}
-            title="Automation findings"
+            title="自动化检查"
           />
         </Panel>
       </div>
 
-      <Panel title="Jobs">
+      <Panel title="作业">
         <DataTable
           items={rows}
           columns={[
             { key: "name", header: "Job" },
-            { key: "enabled", header: "Enabled" },
+            { key: "enabled", header: "启用状态" },
             { key: "schedule", header: "Schedule" },
             { key: "toolset", header: "Toolset" },
             {
               key: "id",
-              header: "Actions",
+              header: "操作",
               render: (job) => (
                 <div className="page-actions">
                   <Button data-testid={`job-run-${jobId(job)}`} icon={<Play size={14} />} disabled={!controlAvailable} onClick={() => openJobPreview("run", job)}>
-                    Run
+                    运行
                   </Button>
                   <Button data-testid={`job-toggle-${jobId(job)}`} icon={<ShieldCheck size={14} />} disabled={!controlAvailable} onClick={() => openJobPreview("toggle", job)}>
-                    {job.enabled ? "Disable" : "Enable"}
+                    {job.enabled ? "停用" : "启用"}
                   </Button>
                   <Button data-testid={`job-delete-${jobId(job)}`} tone="danger" disabled={!controlAvailable} onClick={() => openJobPreview("delete", job)}>
-                    Delete
+                    删除
                   </Button>
                 </div>
               )
@@ -265,7 +332,7 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
 
       {previewAction ? (
         <DryRunPreview
-          title="Automation preview"
+          title="自动化操作预览"
           changes={previewChanges}
           onCancel={() => {
             setPreviewAction(null);
@@ -290,7 +357,7 @@ function AutomationPage({ api, controlAvailable }: PageProps) {
         />
       ) : null}
 
-      <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="Automation evidence" />
+      <JsonPanel data={{ jobs: jobs.data, last_result: result }} title="自动化证据" />
     </PageShell>
   );
 }
@@ -346,39 +413,39 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
 
   return (
     <PageShell
-      title="Settings"
+      title="设置"
       description="集中管理 Agent HTTP base、API token、control token、mock / live 模式和用户上下文，保留 secret 脱敏。"
-      badge={<StatusLight status={controlAvailable ? "connected" : "disconnected"} label={controlAvailable ? "Control token 已输入" : "Control token 缺失"} />}
+      badge={<StatusLight status={controlAvailable ? "connected" : "disconnected"} label={controlAvailable ? "控制权限已输入" : "控制权限缺失"} />}
       metrics={[
-        metric("Mode", local.mode, local.mode === "mock" ? "warning" : "info"),
+        metric("模式", local.mode === "mock" ? "演示" : "真实", local.mode === "mock" ? "warning" : "info"),
         metric("API Token", local.apiToken ? "已输入" : "空", local.apiToken ? "success" : "warning"),
-        metric("Control", local.controlToken ? "已输入" : "空", local.controlToken ? "success" : "gated"),
-        metric("User", local.userId, "info")
+        metric("控制权限", local.controlToken ? "已输入" : "空", local.controlToken ? "success" : "gated"),
+        metric("用户", local.userId, "info")
       ]}
     >
       <Panel title="连接设置">
         <div className="form-grid">
           <label className="field">
-            <span>Agent Base URL</span>
+            <span>Agent 服务地址</span>
             <input value={local.baseUrl} onChange={(event) => setLocal({ ...local, baseUrl: event.target.value })} />
           </label>
           <label className="field">
-            <span>Mode</span>
+            <span>模式</span>
             <select value={local.mode} onChange={(event) => setLocal({ ...local, mode: event.target.value as ConnectionSettings["mode"] })}>
-              <option value="mock">mock</option>
-              <option value="live">live</option>
+              <option value="mock">演示</option>
+              <option value="live">真实</option>
             </select>
           </label>
           <label className="field">
-            <span>API Token</span>
+            <span>API 令牌</span>
             <input type="password" value={local.apiToken} onChange={(event) => setLocal({ ...local, apiToken: event.target.value })} />
           </label>
           <label className="field">
-            <span>Control Token</span>
+            <span>控制权限令牌</span>
             <input type="password" value={local.controlToken} onChange={(event) => setLocal({ ...local, controlToken: event.target.value })} />
           </label>
           <label className="field">
-            <span>User ID</span>
+            <span>用户 ID</span>
             <input value={local.userId} onChange={(event) => setLocal({ ...local, userId: event.target.value })} />
           </label>
         </div>
@@ -393,7 +460,7 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
             { area: "Desktop boundary", rule: "仅通过 Agent HTTP", status: "enforced" },
             { area: "Secrets", rule: "页面 / JSON 脱敏", status: "enforced" },
             { area: "Side effects", rule: "Intent / Approval / control token", status: controlAvailable ? "ready" : "gated" },
-            { area: "Live trading", rule: "V1 不开放", status: "blocked" }
+            { area: "实盘交易", rule: "V1 不开放", status: "blocked" }
           ]}
           columns={[
             { key: "area", header: "区域" },
@@ -406,42 +473,322 @@ function SettingsSecurityPage({ settings, updateSettings, controlAvailable }: Pa
   );
 }
 
-function ReadinessHealthPage({ api }: PageProps) {
+function ReadinessHealthPage({ api, controlAvailable }: PageProps) {
   const health = useAsyncResource(() => api.healthDetailed(), [api]);
   const hermes = useAsyncResource(() => api.hermesReadiness(), [api]);
   const financial = useAsyncResource(() => api.financialReadiness(), [api]);
   const capabilities = useAsyncResource(() => api.capabilities(), [api]);
   const parity = useAsyncResource(() => api.parity(), [api]);
+  const factoryFormal = useAsyncResource(() => api.strategyFactoryFormalDiagnostics(15), [api]);
+  const intents = useAsyncResource(() => api.intents(), [api]);
+  const [opsResult, setOpsResult] = useState<unknown>(null);
+  const [opsBusy, setOpsBusy] = useState(false);
+  const [previewAction, setPreviewAction] = useState<null | "dry_run" | "run_once" | "maintenance" | "factor_run">(null);
   const healthData = dataObject(health.data, {});
   const financialData = dataObject(financial.data, {});
   const requiredGates = firstArray(financialData, ["required_gates"]);
   const optionalGates = firstArray(financialData, ["optional_gates"]);
-  const nextActions = Array.isArray(financialData.next_actions) ? financialData.next_actions.map((name) => ({ name })) : [];
+  const nextActions = Array.isArray(financialData.next_actions)
+    ? financialData.next_actions.map((action, index) => ({ id: `action-${index}`, name: readableActionText(action, index) }))
+    : [];
+  // Prefer dedicated diagnostics tool; fall back to readiness embed.
+  const factoryDiagRaw = dataObject(factoryFormal.data, {});
+  const factoryDiagFromTool = dataObject(factoryDiagRaw.data || factoryDiagRaw, {});
+  const factoryDiag =
+    factoryDiagFromTool.object === "aiask.factory_formal_diagnostics" || factoryDiagFromTool.formal_count != null
+      ? factoryDiagFromTool
+      : dataObject(financialData.factory_diagnostics, {});
+  const hardHist = dataObject(factoryDiag.hard_gate_histogram, {});
+  const exitFunnel = dataObject(factoryDiag.exit_funnel, {});
+  const exitGap = dataObject(factoryDiag.exit_gap, {});
+  const evidenceGapRows = Array.isArray(factoryDiag.evidence_gaps)
+    ? factoryDiag.evidence_gaps.map((item: any, index: number) => ({
+        id: `eg-${index}`,
+        code: item?.code,
+        count: item?.count,
+        coverage: item?.coverage
+      }))
+    : [];
+  const factoryNextRows = Array.isArray(factoryDiag.next_actions)
+    ? factoryDiag.next_actions.map((item: any, index: number) => ({
+        id: `fna-${index}`,
+        code: item?.code,
+        detail: item?.detail
+      }))
+    : [];
+  const factoryIntentRows = list(intents.data)
+    .filter((item) => {
+      const action = String(item.action || item.target_tool || "");
+      return action.includes("incubation_factory") || action.includes("factor_factory");
+    })
+    .slice(0, 25)
+    .map((item, index) => ({
+      id: String(item.intent_id || item.id || `ops-intent-${index}`),
+      action: String(item.action || item.target_action || "-"),
+      status: String(item.status || "-"),
+      updated_at: String(item.updated_at || item.created_at || "-"),
+      error: String(item.error || "")
+    }));
+
+  async function refreshFactoryOps() {
+    await Promise.all([financial.reload(), factoryFormal.reload(), intents.reload(), health.reload()]);
+  }
+
+  async function createFactoryOpsIntent(action: "dry_run" | "run_once" | "maintenance" | "factor_run") {
+    setOpsBusy(true);
+    try {
+      const map: Record<string, { title: string; action: string; params: Record<string, unknown> }> = {
+        dry_run: {
+          title: "Factory Ops: incubation dry-run",
+          action: "incubation_factory.dry_run",
+          params: { dry_run: true, source: "desktop_factory_ops" }
+        },
+        run_once: {
+          title: "Factory Ops: incubation run_once",
+          action: "incubation_factory.run_once",
+          params: { dry_run: false, source: "desktop_factory_ops", _timeout_seconds: 600 }
+        },
+        maintenance: {
+          title: "Factory Ops: incubation maintenance",
+          action: "incubation_factory.maintenance",
+          params: { dry_run: true, source: "desktop_factory_ops" }
+        },
+        factor_run: {
+          title: "Factory Ops: factor dry-run",
+          action: "factor_factory.run_once",
+          params: { dry_run: true, limit: 20, source: "desktop_factory_ops" }
+        }
+      };
+      const cfg = map[action];
+      const result = await api.createIntent({
+        title: cfg.title,
+        action: cfg.action,
+        params: cfg.params,
+        rationale: "Desktop Factory Ops 受控运维动作"
+      });
+      setOpsResult(result);
+      setPreviewAction(null);
+      await intents.reload();
+    } finally {
+      setOpsBusy(false);
+    }
+  }
+
+  async function confirmFactoryIntent(intentId: string) {
+    if (!intentId) return;
+    setOpsBusy(true);
+    try {
+      setOpsResult(await api.intentConfirm(intentId));
+      await refreshFactoryOps();
+    } finally {
+      setOpsBusy(false);
+    }
+  }
+
+  async function denyFactoryIntent(intentId: string) {
+    if (!intentId) return;
+    setOpsBusy(true);
+    try {
+      setOpsResult(await api.intentDeny(intentId, "denied from factory ops"));
+      await intents.reload();
+    } finally {
+      setOpsBusy(false);
+    }
+  }
+
+  const previewLabel =
+    previewAction === "run_once"
+      ? "incubation_factory.run_once"
+      : previewAction === "maintenance"
+        ? "incubation_factory.maintenance"
+        : previewAction === "factor_run"
+          ? "factor_factory.run_once"
+          : "incubation_factory.dry_run";
 
   return (
     <PageShell
       title="Readiness / Health"
-      description="统一展示当前环境、门禁、capabilities parity、financial readiness 与下一步动作。"
+      description="统一展示环境门禁、financial readiness、Factory Formal/证据/Exit 漏斗，以及 Intent 化工厂运维（默认 dry-run）。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建工厂运维意图" />}
+      actions={
+        <Button icon={<Play size={16} />} onClick={() => void refreshFactoryOps()}>
+          刷新健康与工厂诊断
+        </Button>
+      }
       metrics={[
         metric("Agent", healthData.status || "-", statusTone(healthData.status)),
         metric("Tools", dataObject(dataObject(healthData.tools, {}), {}).count || "-", "info"),
         metric("Financial", financialData.production_ready ? "ready" : "not ready", financialData.production_ready ? "success" : "warning"),
+        metric("Formal", factoryDiag.formal_count ?? "-", "info"),
+        metric("SignalID%", factoryDiag.signal_id_coverage != null ? `${Math.round(Number(factoryDiag.signal_id_coverage) * 100)}%` : "-", Number(factoryDiag.signal_id_coverage) >= 0.95 ? "success" : "warning"),
         metric("Parity", dataObject(dataObject(parity.data, {}), {}).parity_ratio || "-", "info")
       ]}
     >
       <div className="grid-3">
-        <Panel title="Required Gates">
-          <DataTable items={requiredGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
+        <Panel title="必需门禁">
+          <DataTable items={requiredGates} columns={[{ key: "name", header: "门禁" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
         </Panel>
-        <Panel title="Optional Gates">
-          <DataTable items={optionalGates} columns={[{ key: "name", header: "Gate" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
+        <Panel title="可选门禁">
+          <DataTable items={optionalGates} columns={[{ key: "name", header: "门禁" }, { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }]} />
         </Panel>
-        <Panel title="Next Actions">
+        <Panel title="建议动作">
           <DataTable items={nextActions} columns={[{ key: "name", header: "建议" }]} />
         </Panel>
       </div>
 
-      <JsonPanel data={{ health: health.data, hermes: hermes.data, financial: financial.data, capabilities: capabilities.data, parity: parity.data }} title="Readiness evidence" />
+      <div className="grid-3">
+        <Panel title="Factory production probes">
+          <SummaryFields
+            items={[
+              { label: "formal_count", value: factoryDiag.formal_count },
+              { label: "observe_count", value: factoryDiag.observe_count },
+              { label: "signal_id_coverage", value: factoryDiag.signal_id_coverage },
+              { label: "open_positions", value: exitFunnel.open_positions },
+              { label: "closed_positions", value: exitFunnel.closed },
+              { label: "hard_gate.passed", value: hardHist.passed },
+              { label: "hard_gate.missing", value: hardHist.missing },
+              { label: "hard_gate.bootstrap_pending", value: hardHist.bootstrap_pending }
+            ]}
+          />
+        </Panel>
+        <Panel title="Top formal blockers">
+          <DataTable
+            items={Array.isArray(factoryDiag.top_blockers) ? factoryDiag.top_blockers.map((item: any, index: number) => ({ id: `blocker-${index}`, code: item?.code, count: item?.count })) : []}
+            columns={[
+              { key: "code", header: "blocker" },
+              { key: "count", header: "count" }
+            ]}
+          />
+        </Panel>
+        <Panel title="Exit gap">
+          <SummaryFields
+            items={[
+              { label: "exit_signals", value: exitGap.exit_signals },
+              { label: "no_exit_order_strategies", value: exitGap.strategies_with_exit_signal_no_order },
+              { label: "in_universe", value: exitGap.exit_signals_in_execution_universe },
+              { label: "universe_size", value: exitGap.execution_universe_size },
+              {
+                label: "likely_causes",
+                value: Array.isArray(exitGap.likely_causes) ? (exitGap.likely_causes as unknown[]).join(", ") : exitGap.likely_causes
+              }
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="Evidence gaps">
+          <DataTable
+            items={evidenceGapRows}
+            columns={[
+              { key: "code", header: "gap" },
+              { key: "count", header: "count" },
+              { key: "coverage", header: "coverage" }
+            ]}
+          />
+        </Panel>
+        <Panel title="Factory next actions">
+          <DataTable
+            items={factoryNextRows}
+            columns={[
+              { key: "code", header: "action" },
+              { key: "detail", header: "detail" }
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <Panel title="Factory Ops（Intent 化）">
+        <p className="muted-value">默认 dry-run；run_once 需 control token 并在下方 Intent 审计表确认。不直连 DB，不绕过 hard gate。</p>
+        <div className="page-actions">
+          <Button
+            data-testid="factory-ops-dry-run"
+            icon={<ShieldCheck size={16} />}
+            disabled={!controlAvailable || opsBusy}
+            onClick={() => setPreviewAction("dry_run")}
+          >
+            incubation dry-run
+          </Button>
+          <Button
+            data-testid="factory-ops-run-once"
+            icon={<Play size={16} />}
+            disabled={!controlAvailable || opsBusy}
+            onClick={() => setPreviewAction("run_once")}
+          >
+            incubation run_once
+          </Button>
+          <Button
+            data-testid="factory-ops-maintenance"
+            icon={<ShieldCheck size={16} />}
+            disabled={!controlAvailable || opsBusy}
+            onClick={() => setPreviewAction("maintenance")}
+          >
+            incubation maintenance
+          </Button>
+          <Button
+            data-testid="factory-ops-factor-run"
+            icon={<ShieldCheck size={16} />}
+            disabled={!controlAvailable || opsBusy}
+            onClick={() => setPreviewAction("factor_run")}
+          >
+            factor dry-run
+          </Button>
+        </div>
+        {previewAction ? (
+          <DryRunPreview
+            title="Factory Ops 意图预览"
+            busy={opsBusy}
+            changes={[
+              { label: "动作", after: previewLabel },
+              {
+                label: "模式",
+                after: previewAction === "run_once" ? "真实 run_once（paper/observe，非实盘）" : "dry-run / 预演"
+              },
+              { label: "门禁", after: "control token + Intent confirm" },
+              { label: "审计", after: "写入 action_intents，可在下方回放" }
+            ]}
+            onCancel={() => setPreviewAction(null)}
+            onConfirm={() => void createFactoryOpsIntent(previewAction)}
+          />
+        ) : null}
+        {opsResult ? <JsonPanel data={opsResult} title="Factory Ops 意图结果" /> : null}
+      </Panel>
+
+      <Panel title="Intent / Audit 回放（factory ops）">
+        <DataTable
+          items={factoryIntentRows}
+          columns={[
+            { key: "id", header: "intent_id" },
+            { key: "action", header: "action" },
+            {
+              key: "status",
+              header: "status",
+              render: (item) => <StatusLight status={inferStatusFromData(item)} label={String(item.status || "-")} />
+            },
+            { key: "updated_at", header: "updated" },
+            {
+              key: "ops",
+              header: "ops",
+              render: (item) => {
+                const pending = /awaiting|pending/i.test(String(item.status || ""));
+                if (!pending || !controlAvailable) return <span className="muted-value">{String(item.error || "-")}</span>;
+                return (
+                  <div className="page-actions">
+                    <Button tone="success" disabled={opsBusy} onClick={() => void confirmFactoryIntent(String(item.id))}>
+                      确认
+                    </Button>
+                    <Button tone="danger" disabled={opsBusy} onClick={() => void denyFactoryIntent(String(item.id))}>
+                      拒绝
+                    </Button>
+                  </div>
+                );
+              }
+            }
+          ]}
+        />
+      </Panel>
+
+      <JsonPanel data={{ health: health.data, hermes: hermes.data, financial: financial.data, factory_formal: factoryFormal.data, capabilities: capabilities.data, parity: parity.data }} title="健康检查证据" />
     </PageShell>
   );
 }
@@ -475,37 +822,37 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="Local User Memory"
+      title="本地用户记忆"
       description="承接本地画像、活动摘要、数据策略、导出、删除预览和治理状态，所有动作都通过 Agent route。"
       metrics={[
-        metric("User", profileData.user_id || userId, "info"),
+        metric("用户", profileData.user_id || userId, "info"),
         metric("活动", activityRows.length, "success"),
-        metric("Policy", policy.data ? "loaded" : "pending", policy.data ? "success" : "warning"),
-        metric("Secrets", "Redacted", "success")
+        metric("策略", policy.data ? "已加载" : "待加载", policy.data ? "success" : "warning"),
+        metric("敏感信息", "已隐藏", "success")
       ]}
     >
       <div className="grid-2">
         <Panel title="本地画像">
           <div className="stack">
-            <JsonPanel data={profile.data} title="Profile" />
-            <Button onClick={() => navigate(viewToRoute("user-profile"))}>Open full profile editor</Button>
+            <JsonPanel data={profile.data} title="个人资料" />
+            <Button onClick={() => navigate(viewToRoute("user-profile"))}>打开完整资料编辑器</Button>
           </div>
         </Panel>
         <Panel title="活动与策略">
-          <JsonPanel data={{ activity: activity.data, policy: policy.data }} title="Activity / Policy" />
+          <JsonPanel data={{ activity: activity.data, policy: policy.data }} title="活动与策略" />
         </Panel>
       </div>
 
-      <Panel title="User Data Actions">
+      <Panel title="用户数据操作">
         <div className="page-actions">
           <Button data-testid="user-export-data" disabled={!controlAvailable} onClick={() => setPreviewAction("export")}>
-            Export data
+            导出数据
           </Button>
           <Button data-testid="user-delete-dry-run" disabled={!controlAvailable} onClick={() => setPreviewAction("delete")}>
-            Preview delete dry-run
+            预览删除
           </Button>
           <Button data-testid="user-save-policy" disabled={!controlAvailable} onClick={() => setPreviewAction("save-policy")}>
-            Save safe policy
+            保存安全策略
           </Button>
         </div>
 
@@ -515,7 +862,7 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
             changes={[
               { label: "动作", after: previewAction },
               { label: "用户", after: userId },
-              { label: "说明", after: previewAction === "delete" ? "只执行 dry-run 预览" : "通过 Agent user data route 执行" }
+              { label: "说明", after: previewAction === "delete" ? "只执行预演，不会真正删除" : "通过 Agent 用户数据路由执行" }
             ]}
             onCancel={() => setPreviewAction(null)}
             onConfirm={() => {
@@ -539,10 +886,10 @@ function LocalUserMemoryPage({ api, settings, controlAvailable }: PageProps) {
 }
 
 function LearningRlPage({ api, controlAvailable }: PageProps) {
-  const learning = useAsyncResource(() => api.learningStatus(), [api]);
-  const review = useAsyncResource(() => api.learningReview(), [api]);
-  const envs = useAsyncResource(() => api.rlEnvironments(), [api]);
-  const runs = useAsyncResource(() => api.rlRuns(), [api]);
+  const learning = useControlGatedResource(controlAvailable, () => api.learningStatus(), gatedStatusPayload("learning status"), [api]);
+  const review = useControlGatedResource(controlAvailable, () => api.learningReview(), gatedListPayload("learning review"), [api]);
+  const envs = useControlGatedResource(controlAvailable, () => api.rlEnvironments(), gatedListPayload("RL environments"), [api]);
+  const runs = useControlGatedResource(controlAvailable, () => api.rlRuns(), gatedListPayload("RL runs"), [api]);
   const [actionResult, setActionResult] = useState<unknown>(null);
   const [previewAction, setPreviewAction] = useState<null | "apply" | "start" | "stop">(null);
   const learningData = dataObject(learning.data, {});
@@ -590,10 +937,10 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
       description="承接学习状态、review proposals、RL environments / runs 和结果诊断，动作继续受 control 门禁约束。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="应用学习建议 / RL 运行" />}
       metrics={[
-        metric("Learning", learningData.enabled ? "enabled" : "disabled", learningData.enabled ? "success" : "warning"),
+        metric("学习", learningData.enabled ? "已启用" : "已停用", learningData.enabled ? "success" : "warning"),
         metric("Proposals", reviewRows.length, "warning"),
         metric("Envs", envRows.length, "info"),
-        metric("Runs", runRows.length, "success")
+        metric("运行", runRows.length, "success")
       ]}
     >
       <div className="grid-3">
@@ -603,12 +950,12 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
         <Panel title="RL Environments">
           <DataTable items={envRows} columns={[{ key: "id", header: "环境" }, { key: "status", header: "状态" }, { key: "side_effect", header: "副作用" }]} />
         </Panel>
-        <Panel title="RL Runs">
+        <Panel title="训练运行">
           <DataTable items={runRows} columns={[{ key: "id", header: "运行" }, { key: "environment", header: "环境" }, { key: "status", header: "状态" }]} />
         </Panel>
       </div>
 
-      <Panel title="Learning / RL Actions">
+      <Panel title="学习训练操作">
         <div className="page-actions">
           <Button data-testid="learning-apply-first" disabled={!controlAvailable || !reviewRows.length} onClick={() => setPreviewAction("apply")}>
             Apply first proposal
@@ -617,7 +964,7 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
             Start first environment
           </Button>
           <Button data-testid="rl-stop-first" disabled={!controlAvailable || !runRows.length} onClick={() => setPreviewAction("stop")}>
-            Stop first run
+            停止第一条运行
           </Button>
           <Button data-testid="rl-load-results" disabled={!controlAvailable || !runRows.length} onClick={() => void runAction("results")}>
             Load results
@@ -641,7 +988,7 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
                       ? String(envRows[0]?.id || envRows[0]?.environment || "-")
                       : String(runRows[0]?.id || runRows[0]?.run_id || "-")
               },
-              { label: "模式", after: previewAction === "start" ? "dry-run" : "受控动作" }
+              { label: "模式", after: previewAction === "start" ? "预演" : "受控动作" }
             ]}
             onCancel={() => setPreviewAction(null)}
             onConfirm={() => {
@@ -661,16 +1008,17 @@ function LearningRlPage({ api, controlAvailable }: PageProps) {
         {actionResult ? <JsonPanel data={actionResult} title="Learning / RL action result" /> : null}
       </Panel>
 
-      <JsonPanel data={{ learning: learning.data, review: review.data, envs: envs.data, runs: runs.data }} title="Learning capability evidence" />
+      <JsonPanel data={{ learning: learning.data, review: review.data, envs: envs.data, runs: runs.data }} title="学习能力证据" />
     </PageShell>
   );
 }
 
 function NativeDiagnosticsPage({ api, controlAvailable }: PageProps) {
-  const processes = useAsyncResource(() => api.processes(), [api]);
-  const backends = useAsyncResource(() => api.terminalBackends(), [api]);
-  const terminalSessions = useAsyncResource(() => api.terminalSessions(), [api]);
-  const browserSessions = useAsyncResource(() => api.browserSessions(), [api]);
+  const gatedNativeList = { object: "list", data: [], gated: true, reason: "control_token_required" };
+  const processes = useAsyncResource(() => (controlAvailable ? api.processes() : Promise.resolve(gatedNativeList)), [api, controlAvailable]);
+  const backends = useAsyncResource(() => (controlAvailable ? api.terminalBackends() : Promise.resolve(gatedNativeList)), [api, controlAvailable]);
+  const terminalSessions = useAsyncResource(() => (controlAvailable ? api.terminalSessions() : Promise.resolve(gatedNativeList)), [api, controlAvailable]);
+  const browserSessions = useAsyncResource(() => (controlAvailable ? api.browserSessions() : Promise.resolve(gatedNativeList)), [api, controlAvailable]);
 
   return (
     <PageShell

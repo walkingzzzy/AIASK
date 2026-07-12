@@ -159,6 +159,13 @@ async def _call_db_facade(
         return _unavailable_factory(exc)
 
 
+
+def _load_factory_formal_diagnostics_handler():
+    from akshare_mcp.services.factory_diagnostics import handle_factory_formal_diagnostics
+
+    return handle_factory_formal_diagnostics
+
+
 def _load_factory_status_handler():
     from akshare_mcp.tools.managers.strategy_mgr_lifecycle import handle_factory_status
 
@@ -303,6 +310,13 @@ def _load_trade_prediction_matrix_handler():
         return _trade_prediction_envelope("agent_trade_prediction_matrix", payload)
 
     return handler
+
+
+
+async def factory_formal_diagnostics(arguments: dict[str, Any]) -> dict[str, Any]:
+    """P0-C: read-only formal/evidence/hard-gate/exit funnel diagnostics."""
+    result = await _call_db_facade(_load_factory_formal_diagnostics_handler, arguments)
+    return _read_only_fallback("factory_formal_diagnostics", result)
 
 
 async def factory_status(arguments: dict[str, Any]) -> dict[str, Any]:

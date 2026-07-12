@@ -3,15 +3,15 @@ import { describe, expect, it } from "vitest";
 import { isDeferredView, routeToView, V1_DEFERRED_VIEWS, V1_ROUTES } from "./routes";
 
 describe("V1 route scope", () => {
-  it("keeps deferred views out of product routes", () => {
-    expect(V1_DEFERRED_VIEWS).toEqual(["strategy-factory", "factor-factory", "incubation", "factory-events"]);
-    for (const view of V1_DEFERRED_VIEWS) {
-      expect(isDeferredView(view)).toBe(true);
-      expect(Object.keys(V1_ROUTES)).not.toContain(view);
+  it("promotes factory views into product routes", () => {
+    expect(V1_DEFERRED_VIEWS).toEqual([]);
+    for (const view of ["strategy-factory", "factor-factory", "incubation", "factory-events"]) {
+      expect(isDeferredView(view)).toBe(false);
+      expect(Object.keys(V1_ROUTES)).toContain(view);
     }
   });
 
-  it("aliases deferred paths back to finance lab", () => {
+  it("aliases compatibility paths to current pages", () => {
     expect(routeToView("/approvals")).toBe("tools-approvals");
     expect(routeToView("/mcp")).toBe("mcp-connectors");
     expect(routeToView("/connectors")).toBe("mcp-connectors");
@@ -20,10 +20,14 @@ describe("V1 route scope", () => {
     expect(routeToView("/gateway")).toBe("gateway-webhooks");
     expect(routeToView("/finance-lab")).toBe("finance-lab");
     expect(routeToView("/user")).toBe("local-user-memory");
-    expect(routeToView("/strategy-factory")).toBe("finance-lab");
-    expect(routeToView("/factor-factory")).toBe("finance-lab");
-    expect(routeToView("/incubation")).toBe("finance-lab");
-    expect(routeToView("/factory-events")).toBe("finance-lab");
+    expect(routeToView("/strategy-factory")).toBe("strategy-factory");
+    expect(routeToView("/factor-factory")).toBe("factor-factory");
+    expect(routeToView("/incubation")).toBe("incubation");
+    expect(routeToView("/factory-events")).toBe("factory-events");
+    expect(routeToView("/finance/strategy")).toBe("strategy-factory");
+    expect(routeToView("/finance/factor")).toBe("factor-factory");
+    expect(routeToView("/finance/incubation")).toBe("incubation");
+    expect(routeToView("/finance/events")).toBe("factory-events");
   });
 
   it("resolves visible V1 pages", () => {

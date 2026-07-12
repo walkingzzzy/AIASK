@@ -247,6 +247,97 @@ def _build_position_id(strategy_id: str, account_id: str, code: str, signal_id: 
     return f"pos_{uuid5(NAMESPACE_URL, seed).hex[:16]}"
 
 
+
+def _normalize_lineage_token(value) -> str:
+    return str(value or "").strip()
+
+
+def _order_lineage_gap_codes(
+    *,
+    strategy_id: object = None,
+    signal_id: object = None,
+    position_id: object = None,
+    require_strategy_id: bool = True,
+) -> list[str]:
+    """Return ordered gap codes for missing paper-order lineage fields."""
+    gaps: list[str] = []
+    if require_strategy_id and not _normalize_lineage_token(strategy_id):
+        gaps.append("missing_strategy_id")
+    if not _normalize_lineage_token(signal_id):
+        gaps.append("missing_signal_id")
+    if not _normalize_lineage_token(position_id):
+        gaps.append("missing_position_id")
+    return gaps
+
+
+def fail_closed_signal_id_enabled() -> bool:
+    """Mirror of INCUBATION_FAIL_CLOSED_SIGNAL_ID (default ON)."""
+    try:
+        from akshare_mcp.config._strategy_factory_toggles import fail_closed_signal_id_enabled as _enabled
+        return bool(_enabled())
+    except Exception:
+        raw = os.getenv("INCUBATION_FAIL_CLOSED_SIGNAL_ID")
+        if raw is None:
+            return True
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _require_order_lineage(
+    *,
+    strategy_id: object = None,
+    signal_id: object = None,
+    position_id: object = None,
+    require_strategy_id: bool = True,
+    context: str = "paper_order",
+) -> Optional[str]:
+    """Fail-closed lineage gate.
+
+    Returns primary gap code when the order must be rejected; otherwise None.
+    When the toggle is OFF, missing lineage only logs a warning.
+    """
+    gaps = _order_lineage_gap_codes(
+        strategy_id=strategy_id,
+        signal_id=signal_id,
+        position_id=position_id,
+        require_strategy_id=require_strategy_id,
+    )
+    if not gaps:
+        return None
+    primary = gaps[0]
+    if fail_closed_signal_id_enabled():
+        logger.warning(
+            "order lineage fail-closed reject context=%s gaps=%s strategy_id=%s signal_id=%s position_id=%s",
+            context,
+            ",".join(gaps),
+            strategy_id,
+            signal_id,
+            position_id,
+        )
+        return primary
+    logger.warning(
+        "order lineage incomplete (fail-closed OFF) context=%s gaps=%s strategy_id=%s signal_id=%s position_id=%s",
+        context,
+        ",".join(gaps),
+        strategy_id,
+        signal_id,
+        position_id,
+    )
+    return None
+
+
+def order_requires_signal_lineage(order: dict | None) -> bool:
+    """Whether a paper order should enforce signal/position lineage under fail-closed."""
+    if not fail_closed_signal_id_enabled():
+        return False
+    payload = dict(order or {})
+    if _normalize_lineage_token(payload.get("strategy_id")):
+        return True
+    source = _normalize_lineage_token(payload.get("source")).lower()
+    if source and source not in {"manual", "user", "ui"}:
+        return True
+    return False
+
+
 def _resolve_strategy_target_codes(strategy: dict) -> set[str]:
     payload = dict(strategy or {})
     params = dict(payload.get("params") or {})

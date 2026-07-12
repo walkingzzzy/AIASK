@@ -36,7 +36,7 @@ export interface DraggableDataTableProps<T extends UnknownRecord = UnknownRecord
 export function DraggableDataTable<T extends UnknownRecord = UnknownRecord>({
   items,
   columns,
-  empty = "No data",
+  empty = "暂无数据",
   getRowId,
   onReorder,
   dragEnabled = false,
@@ -65,7 +65,7 @@ export function DraggableDataTable<T extends UnknownRecord = UnknownRecord>({
   }, [someSelected]);
 
   if (!items.length) {
-    return <EmptyState title={empty} detail="There are no records for the current state." />;
+    return <EmptyState title={empty} detail="当前状态下没有记录。" />;
   }
 
   function toggleOne(id: string) {

@@ -501,6 +501,7 @@ def build_default_tool_registry(
         ("agent_market_temperature_industry_history", akshare_adapter.market_temperature_industry_history),
         ("agent_market_temperature_industry_constituents", akshare_adapter.market_temperature_industry_constituents),
         ("agent_market_temperature_forward_validation", akshare_adapter.market_temperature_forward_validation),
+        ("agent_factory_formal_diagnostics", strategy_factory_adapter.factory_formal_diagnostics),
         ("agent_factory_status", strategy_factory_adapter.factory_status),
         ("agent_factory_runs", strategy_factory_adapter.factory_runs),
         ("agent_strategy_review_snapshot", strategy_factory_adapter.strategy_review_snapshot),

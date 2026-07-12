@@ -30,6 +30,20 @@ function normalizeRadarFilters(filters: RadarFilters) {
   };
 }
 
+function radarCandidateRowId(item: UnknownRecord, index: number) {
+  const explicit = item.id || item.candidate_id || item.row_id || item.event_id;
+  if (explicit) return String(explicit);
+  return [
+    item.symbol || item.code || "unknown",
+    item.tier || "tier",
+    item.score || "score",
+    item.name || "name",
+    index
+  ]
+    .map((value) => String(value).replace(/\s+/g, "-"))
+    .join("__");
+}
+
 function summarizeError(error: ApiProblem | null) {
   if (!error) return null;
   return error.detail || error.title;
@@ -45,6 +59,78 @@ function analyticsRecord(payload: unknown) {
   const envelope = dataObject(payload, {});
   const data = dataObject(envelope.data, envelope);
   return dataObject<UnknownRecord>(data.analytics, {});
+}
+
+const WRAPPER_KEYS = new Set([
+  "object",
+  "success",
+  "data",
+  "error",
+  "error_code",
+  "meta",
+  "source",
+  "cached",
+  "timestamp",
+  "source_chain",
+  "quality_flags",
+  "fallback_used",
+  "degraded",
+  "read_only",
+  "secrets_redacted"
+]);
+
+function unwrapEnvelopeData(payload: unknown): UnknownRecord {
+  let current = dataObject(payload, {});
+  for (let index = 0; index < 3; index += 1) {
+    const nested = current.data;
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) break;
+    const nonWrapperKeys = Object.keys(current).filter((key) => !WRAPPER_KEYS.has(key));
+    if (nonWrapperKeys.length > 0 && current.success === undefined) break;
+    current = nested as UnknownRecord;
+  }
+  return current;
+}
+
+function rowsFrom(record: UnknownRecord, keys: string[]): UnknownRecord[] {
+  return firstArray(record, keys);
+}
+
+function compactValue(value: unknown, fallback = "-") {
+  if (value === true) return "是";
+  if (value === false) return "否";
+  if (value === undefined || value === null || value === "") return fallback;
+  if (Array.isArray(value)) return value.length ? value.join(", ") : fallback;
+  if (typeof value === "object") return JSON.stringify(value);
+  return String(value);
+}
+
+function countFrom(record: UnknownRecord, keys: string[], fallback = 0) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+    if (Array.isArray(value)) return value.length;
+  }
+  return fallback;
+}
+
+function sideEffectLevel(payload: unknown) {
+  const envelope = dataObject(payload, {});
+  const meta = dataObject(envelope.meta, {});
+  const sideEffect = dataObject(meta.side_effect || envelope.side_effect, {});
+  return valueOf(sideEffect, ["level"], valueOf(envelope, ["side_effect"], "read_only"));
+}
+
+function SummaryFields({ items }: { items: { label: string; value: unknown; tone?: "muted" | "strong" }[] }) {
+  return (
+    <div className="form-grid factory-summary-grid">
+      {items.map((item) => (
+        <div className="field factory-summary-field" key={item.label}>
+          <span>{item.label}</span>
+          <strong className={item.tone === "muted" ? "muted-value" : undefined}>{compactValue(item.value)}</strong>
+        </div>
+      ))}
+    </div>
+  );
 }
 
 function candidateDetailFields(candidate: PairLikeRecord) {
@@ -72,6 +158,14 @@ export function FinancePages(props: PageProps) {
       return <MarketTemperaturePage {...props} />;
     case "quant-research":
       return <QuantResearchPage {...props} />;
+    case "strategy-factory":
+      return <StrategyFactoryPage {...props} />;
+    case "factor-factory":
+      return <FactorFactoryPage {...props} />;
+    case "incubation":
+      return <IncubationFactoryPage {...props} />;
+    case "factory-events":
+      return <FactoryEventsPage {...props} />;
     case "financial-manager":
       return <FinancialManagerPage {...props} />;
     default:
@@ -136,11 +230,11 @@ function StockDataSourcesPage({ api, controlAvailable, settings }: PageProps) {
               </select>
             </label>
             <label className="field">
-              <span>Base URL / Path</span>
+              <span>服务地址 / 路径</span>
               <input data-testid="stock-source-base-url" value={form.base_url} onChange={(event) => setForm({ ...form, base_url: event.target.value })} />
             </label>
             <label className="field">
-              <span>API Key</span>
+              <span>API 密钥</span>
               <input data-testid="stock-source-api-key" type="password" value={form.api_key} onChange={(event) => setForm({ ...form, api_key: event.target.value })} />
             </label>
             <label className="field">
@@ -184,7 +278,7 @@ function DataSyncPage({ api }: PageProps) {
   return (
     <PageShell
       title="数据状态与同步计划"
-      description="总览数据库、freshness、缺失项与 dry-run 同步计划；实际执行仍由后端 intent 和 control token 约束。"
+      description="总览数据库、数据新鲜度、缺失项和同步预案；实际执行仍由后端审批意图和控制权限约束。"
       metrics={[
         metric("Database", valueOf(dataObject(statusData.database, {}), ["status"]), statusTone(dataObject(statusData.database, {}).status)),
         metric("Freshness", freshness.status || "-", statusTone(freshness.status)),
@@ -194,7 +288,7 @@ function DataSyncPage({ api }: PageProps) {
     >
       <div className="grid-2">
         <ResourcePanel title="数据状态" resource={status}>
-          {(data) => <JsonPanel data={data} title="Data status payload" />}
+          {(data) => <JsonPanel data={data} title="数据状态内容" />}
         </ResourcePanel>
 
         <Panel title="同步计划">
@@ -239,21 +333,25 @@ function FinanceLabPage({ api, workbench }: PageProps) {
 
   return (
     <PageShell
-      title="Finance Lab"
-      description="按总览、数据、雷达、温度、量化、经理台六个分区组织金融工作面，并保持更高级能力只作为内部能力承接。"
+      title="金融研究"
+      description="按数据、雷达、市场、量化、四工厂和经理台组织金融工作面；工厂能力通过 Agent 安全 facade 和受控意图开放。"
       metrics={[
         metric("数据状态", valueOf(dataObject(data.database, {}), ["status"]), statusTone(dataObject(data.database, {}).status)),
         metric("雷达候选", radarData.candidate_count || "-", "success"),
         metric("经理台", managerData.ready ? "ready" : "degraded", managerData.ready ? "success" : "warning"),
-        metric("券商", brokerData.read_only ? "read-only" : "blocked", brokerData.read_only ? "info" : "warning")
+        metric("券商", brokerData.read_only ? "只读" : "阻止", brokerData.read_only ? "info" : "warning")
       ]}
     >
       <div className="grid-3">
-        <LinkCard to="/finance" title="总览" detail="承接金融研究总览、当前线程上下文与关键 readiness。" tone="info" />
-        <LinkCard to="/stock-data-sources" title="数据" detail="数据源、同步计划、freshness 和缺失项。" tone="success" />
+        <LinkCard to="/finance" title="总览" detail="承接金融研究总览、当前会话上下文与关键就绪状态。" tone="info" />
+        <LinkCard to="/stock-data-sources" title="数据" detail="数据源、同步计划、数据新鲜度和缺失项。" tone="success" />
         <LinkCard to="/stock-radar" title="雷达" detail="候选股、摘要、受控动作与推送意图。" tone="warning" />
-        <LinkCard to="/market-temperature" title="温度" detail="市场广度、行业冷热和缓存 readiness。" />
-        <LinkCard to="/quant-research" title="量化" detail="Preset、研究运行、报告与证据。" />
+        <LinkCard to="/market-temperature" title="温度" detail="市场广度、行业冷热和缓存就绪状态。" />
+        <LinkCard to="/quant-research" title="量化" detail="研究模板、研究运行、报告与证据。" />
+        <LinkCard to="/strategy-factory" title="策略工厂" detail="状态、运行、领域事件和交易预测只读证据。" tone="info" />
+        <LinkCard to="/factor-factory" title="因子工厂" detail="因子挖掘状态、活跃池、引擎健康和 dry-run 意图。" tone="success" />
+        <LinkCard to="/incubation" title="孵化工厂" detail="孵化 runner、编排器、观察通道和 dry-run 意图。" tone="warning" />
+        <LinkCard to="/factory-events" title="工厂事件" detail="事件列表、任务预览、血缘、主题暴露和 outbox。" tone="gated" />
         <LinkCard to="/financial-manager" title="经理台" detail="只读查询、受控意图与券商只读信息。" tone="gated" />
       </div>
 
@@ -266,12 +364,12 @@ function FinanceLabPage({ api, workbench }: PageProps) {
               data_status: dataStatus.data,
               radar: radar.data
             }}
-            title="Finance lab context"
+            title="金融研究上下文"
           />
         </Panel>
         <Panel title="产品边界">
-          <p>更高级的工厂能力继续隐藏为内部能力入口，仅保留承接关系，不作为直接产品主入口。</p>
-          <JsonPanel data={{ broker: broker.data, manager: manager.data }} title="Broker / Manager readiness" />
+          <p>四工厂页面只调用只读安全工具或创建受控 dry-run 意图；交易、提交、审批通过和外部投递仍由后端门禁约束。</p>
+          <JsonPanel data={{ broker: broker.data, manager: manager.data }} title="券商与管理器就绪状态" />
         </Panel>
       </div>
     </PageShell>
@@ -300,9 +398,14 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
     [api, latestRunId, query.limit]
   );
 
-  const candidateRows = firstArray(dataObject(candidates.data, {}), ["candidates", "data"]);
+  const candidateRows: Array<UnknownRecord & { __row_id: string }> = firstArray(dataObject(candidates.data, {}), ["candidates", "data"]).map(
+    (item, index) => ({
+      ...item,
+      __row_id: radarCandidateRowId(item, index)
+    })
+  );
   const poolRows = list(pools.data);
-  const selectedCandidateRows = candidateRows.filter((item) => selectedCandidateIds.has(String(item.symbol || item.code || "")));
+  const selectedCandidateRows = candidateRows.filter((item) => selectedCandidateIds.has(String(item.__row_id || "")));
   const statusData = dataObject(status.data, {});
   const digestData = dataObject(digest.data, {});
   const selectedCandidate =
@@ -405,14 +508,14 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="Stock Radar"
+      title="股票雷达"
       description="承接股票发现、候选池、摘要、风险说明和受控动作意图。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="运行 / 推送雷达意图" />}
       metrics={[
         metric("最新运行", statusData.latest_run_id || "-", "info"),
         metric("候选数", candidateRows.length || statusData.candidate_count || 0, "success"),
-        metric("摘要", digestData.digest ? "ready" : "empty", digestData.digest ? "success" : "warning"),
-        metric("投递", digestData.delivery_intent_required ? "intent" : "read-only", digestData.delivery_intent_required ? "gated" : "success")
+        metric("摘要", digestData.digest ? "已生成" : "暂无", digestData.digest ? "success" : "warning"),
+        metric("投递", digestData.delivery_intent_required ? "需要审批" : "只读预览", digestData.delivery_intent_required ? "gated" : "success")
       ]}
     >
       <FilterBar
@@ -437,7 +540,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
 
       <div className="grid-2">
         <Panel title="候选股">
-          {candidates.loading ? <SharedEmptyState title="Loading..." detail="正在加载雷达候选。" /> : null}
+          {candidates.loading ? <SharedEmptyState title="加载中..." detail="正在加载雷达候选。" /> : null}
           {candidateError ? <SharedErrorState error={candidateError} onRetry={() => void candidates.reload()} /> : null}
           {noCandidates ? (
             hasActiveFilters ? (
@@ -449,7 +552,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
           {!candidates.loading && !candidateError && candidateRows.length ? (
             <DraggableDataTable
               items={candidateRows}
-              getRowId={(item) => String(item.symbol || item.code || "")}
+              getRowId={(item) => String(item.__row_id || item.symbol || item.code || "")}
               selectedIds={selectedCandidateIds}
               onSelectionChange={setSelectedCandidateIds}
               batchActions={
@@ -460,7 +563,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
                     onChange={(event) => setTargetPoolId(event.target.value)}
                     disabled={!controlAvailable}
                   >
-                    <option value="">Select pool</option>
+                    <option value="">选择股票池</option>
                     {poolRows.map((pool) => (
                       <option key={String(pool.id || "")} value={String(pool.id || "")}>
                         {valueOf(pool, ["name"], String(pool.id || ""))}
@@ -474,7 +577,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
                     disabled={!controlAvailable || !targetPoolId || !selectedCandidateRows.length}
                     onClick={() => void addSelectedToPool()}
                   >
-                    Add to pool
+                    加入股票池
                   </Button>
                 </>
               }
@@ -486,7 +589,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
                     <button
                       type="button"
                       className="table-link-button"
-                      data-testid={`stock-radar-candidate-${String(item.symbol || "")}`}
+                      data-testid={`stock-radar-candidate-${String(item.__row_id || item.symbol || "")}`}
                       onClick={() => setSelectedSymbol(String(item.symbol || ""))}
                     >
                       {String(item.symbol || "-")}
@@ -510,7 +613,7 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
                   <strong>{valueOf(selectedCandidate, ["name"], valueOf(selectedCandidate, ["symbol"], "-"))}</strong>
                   <div style={{ color: "var(--text-muted)", fontSize: 13 }}>{valueOf(selectedCandidate, ["symbol"], "-")}</div>
                 </div>
-                <StatusBadge tone={Number(selectedCandidate.score ?? 0) >= 80 ? "success" : "warning"}>Score {valueOf(selectedCandidate, ["score"], "-")}</StatusBadge>
+                <StatusBadge tone={Number(selectedCandidate.score ?? 0) >= 80 ? "success" : "warning"}>分数 {valueOf(selectedCandidate, ["score"], "-")}</StatusBadge>
               </div>
               <div className="form-grid">
                 {candidateDetailFields(selectedCandidate).map((field) => (
@@ -529,10 +632,10 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
 
       <div className="grid-2">
         <Panel title="摘要与动作">
-          {digest.loading ? <SharedEmptyState title="Loading..." detail="正在加载雷达摘要。" /> : null}
+          {digest.loading ? <SharedEmptyState title="加载中..." detail="正在加载雷达摘要。" /> : null}
           {digest.error ? <SharedErrorState error={digest.error} onRetry={() => void digest.reload()} /> : null}
           {!digest.loading && !digest.error ? (
-            digestData.digest ? <p data-testid="stock-radar-digest">{String(digestData.digest)}</p> : <EmptyState title="暂无摘要" detail="当前没有可展示的 digest。" />
+            digestData.digest ? <p data-testid="stock-radar-digest">{String(digestData.digest)}</p> : <EmptyState title="暂无摘要" detail="当前没有可展示的摘要。" />
           ) : null}
           <div className="page-actions">
             <Button data-testid="stock-radar-run-intent" icon={<Play size={16} />} disabled={!controlAvailable} onClick={() => void createRadarIntent("run")}>
@@ -543,16 +646,16 @@ function StockRadarPage({ api, controlAvailable }: PageProps) {
             </Button>
           </div>
           {actionError ? <p role="alert">{actionError}</p> : null}
-          {actionResult ? <JsonPanel data={actionResult} title="Radar intent result" /> : null}
+          {actionResult ? <JsonPanel data={actionResult} title="雷达动作结果" /> : null}
         </Panel>
 
         <Panel title="筛选说明">
           <p>当前页面会把 `tier`、`symbol`、`min_score`、`limit` 直接透传到雷达候选接口，不再无条件全量拉取。</p>
-          <JsonPanel data={{ filters: query, status: status.data }} title="Radar query evidence" />
+          <JsonPanel data={{ filters: query, status: status.data }} title="雷达查询依据" />
         </Panel>
       </div>
 
-      <JsonPanel data={{ status: status.data, candidates: candidates.data, digest: digest.data }} title="Stock radar evidence" />
+      <JsonPanel data={{ status: status.data, candidates: candidates.data, digest: digest.data }} title="股票雷达原始依据" />
     </PageShell>
   );
 }
@@ -598,7 +701,7 @@ function MarketTemperaturePage({ api }: PageProps) {
 
   return (
     <PageShell
-      title="Market Temperature"
+      title="市场温度"
       description="通过 `agent_market_temperature_*` 只读工具展示市场广度、行业冷热、缓存新鲜度与诊断信息。"
       metrics={[
         metric("温度", market.temperature || "-", statusTone(market.state)),
@@ -608,21 +711,21 @@ function MarketTemperaturePage({ api }: PageProps) {
       ]}
     >
       <Panel
-        title="Heatmap"
+        title="热力图"
         action={
           <label className="field" style={{ minWidth: 140 }}>
-            <span>History window</span>
+            <span>历史窗口</span>
             <select data-testid="market-history-window" value={historyWindow} onChange={(event) => setHistoryWindow(event.target.value)}>
-              <option value="3">3 days</option>
-              <option value="7">7 days</option>
-              <option value="14">14 days</option>
-              <option value="30">30 days</option>
+              <option value="3">3 天</option>
+              <option value="7">7 天</option>
+              <option value="14">14 天</option>
+              <option value="30">30 天</option>
             </select>
           </label>
         }
       >
         <div data-testid="market-heatmap-panel">
-          {heatmapLoading ? <SharedEmptyState title="Loading..." detail="Loading market temperature snapshot and history." /> : null}
+          {heatmapLoading ? <SharedEmptyState title="加载中..." detail="正在加载市场温度快照和历史记录。" /> : null}
           {heatmapError ? (
             <SharedErrorState
               error={heatmapError}
@@ -638,7 +741,7 @@ function MarketTemperaturePage({ api }: PageProps) {
             </div>
           ) : null}
           {!heatmapLoading && !heatmapError && !heatmapData.length ? (
-            <EmptyState title="No heatmap data" detail="No market temperature industries are available for the selected history window." />
+            <EmptyState title="暂无热力图数据" detail="所选历史窗口内没有可展示的市场温度行业数据。" />
           ) : null}
         </div>
       </Panel>
@@ -652,16 +755,16 @@ function MarketTemperaturePage({ api }: PageProps) {
         </Panel>
       </div>
 
-      <Panel title="Snapshot history">
+      <Panel title="快照历史">
         <DataTable
           items={historyItems}
           columns={[
-            { key: "as_of", header: "Date" },
-            { key: "market_temperature", header: "Temperature" },
-            { key: "market_state", header: "State" },
-            { key: "quality_status", header: "Quality" }
+            { key: "as_of", header: "日期" },
+            { key: "market_temperature", header: "温度" },
+            { key: "market_state", header: "状态" },
+            { key: "quality_status", header: "质量" }
           ]}
-          empty="No cached history"
+          empty="暂无缓存历史"
         />
       </Panel>
 
@@ -697,10 +800,10 @@ function QuantResearchPage({ api }: PageProps) {
   const runInner = dataObject(runData.data || runData, {});
   return (
     <PageShell
-      title="Quant Research"
-      description="由 preset、参数、研究运行与报告构成量化分区，保持 dry-run 与证据链清晰可见。"
+      title="量化研究"
+      description="由研究模板、参数、研究运行与报告构成量化分区，保持预演和证据链清晰可见。"
       metrics={[
-        metric("Presets", rows.length, "success"),
+        metric("模板", rows.length, "success"),
         metric("当前 preset", preset, "info"),
         metric("运行状态", runInner.status || "未运行", statusTone(runInner.status)),
         metric("报告", run ? "ready" : "pending", run ? "success" : "warning")
@@ -729,7 +832,7 @@ function QuantResearchPage({ api }: PageProps) {
               创建研究运行
             </Button>
             <Button data-testid="quant-load-report" disabled={!run} onClick={() => void loadReport()}>
-              Load report
+              加载报告
             </Button>
           </div>
         </Panel>
@@ -740,6 +843,884 @@ function QuantResearchPage({ api }: PageProps) {
       </div>
 
       {run ? <JsonPanel data={{ run, report }} title="研究报告 / 运行证据" /> : null}
+    </PageShell>
+  );
+}
+
+function StrategyFactoryPage({ api }: PageProps) {
+  const status = useAsyncResource(() => api.strategyFactoryStatus(), [api]);
+  const runs = useAsyncResource(() => api.strategyFactoryRuns(10), [api]);
+  const events = useAsyncResource(() => api.strategyDomainEvents(20), [api]);
+  const formalDiagnostics = useAsyncResource(() => api.strategyFactoryFormalDiagnostics(15), [api]);
+  const predictionStatus = useAsyncResource(() => api.tradePredictionStatus({ limit: 100 }), [api]);
+  const predictionOutcomes = useAsyncResource(() => api.tradePredictionOutcomes({ limit: 20 }), [api]);
+  const predictionMatrix = useAsyncResource(() => api.tradePredictionMatrix({ dimensions: "family", limit: 100 }), [api]);
+
+  const statusData = unwrapEnvelopeData(status.data);
+  const runData = unwrapEnvelopeData(runs.data);
+  const eventData = unwrapEnvelopeData(events.data);
+  const formalDiagData = unwrapEnvelopeData(formalDiagnostics.data);
+  const predictionData = unwrapEnvelopeData(predictionStatus.data);
+  const outcomeData = unwrapEnvelopeData(predictionOutcomes.data);
+  const matrixData = unwrapEnvelopeData(predictionMatrix.data);
+  const formalDiag = dataObject(formalDiagData, {});
+  const hardHist = dataObject(formalDiag.hard_gate_histogram, {});
+  const exitFunnel = dataObject(formalDiag.exit_funnel, {});
+  const exitGap = dataObject(formalDiag.exit_gap, {});
+  const blockerRows = Array.isArray(formalDiag.top_blockers)
+    ? formalDiag.top_blockers.map((item: any, index: number) => ({ id: `fb-${index}`, code: item?.code, count: item?.count }))
+    : [];
+  const evidenceGapRows = Array.isArray(formalDiag.evidence_gaps)
+    ? formalDiag.evidence_gaps.map((item: any, index: number) => ({
+        id: `eg-${index}`,
+        code: item?.code,
+        count: item?.count,
+        coverage: item?.coverage
+      }))
+    : [];
+  const exitGapSampleRows = Array.isArray(exitGap.sample_strategies)
+    ? exitGap.sample_strategies.map((item: any, index: number) => ({
+        id: `egs-${index}`,
+        strategy_id: String(item?.strategy_id || "").slice(0, 12),
+        status: item?.status || item?.incubating || "-",
+        exit_signal_count: item?.exit_signal_count,
+        open_positions: item?.open_positions
+      }))
+    : [];
+  const nextActionRows = Array.isArray(formalDiag.next_actions)
+    ? formalDiag.next_actions.map((item: any, index: number) => ({
+        id: `na-${index}`,
+        code: item?.code,
+        detail: item?.detail
+      }))
+    : [];
+  const runRows = rowsFrom(runData, ["runs", "items", "data"]);
+  const eventRows = rowsFrom(eventData, ["events", "items", "data"]);
+  const outcomeRows = rowsFrom(outcomeData, ["outcomes", "items", "data"]);
+  const matrixRows = rowsFrom(matrixData, ["rows", "matrix", "items", "data"]);
+
+  async function refreshAll() {
+    await Promise.all([
+      status.reload(),
+      runs.reload(),
+      events.reload(),
+      formalDiagnostics.reload(),
+      predictionStatus.reload(),
+      predictionOutcomes.reload(),
+      predictionMatrix.reload()
+    ]);
+  }
+
+  return (
+    <PageShell
+      title="策略工厂"
+      description="通过 Agent 安全工具读取策略工厂调度、Formal 阻塞、证据链、Exit 漏斗与 exit gap 调查；不提供实盘交易或直接生命周期推进。"
+      actions={
+        <Button data-testid="strategy-factory-refresh" icon={<RefreshCw size={16} />} onClick={() => void refreshAll()}>
+          刷新工厂证据
+        </Button>
+      }
+      metrics={[
+        metric("运行时", statusData.runtime_enabled ? "启用" : "未启用", statusData.runtime_enabled ? "success" : "warning"),
+        metric("事件模式", statusData.event_runtime_mode || statusData.schedule_mode || "-", statusTone(statusData.event_runtime_mode || statusData.schedule_mode)),
+        metric("今日运行", statusData.daily_run_count ?? "-", "info"),
+        metric("交易预测", predictionData.prediction_count ?? countFrom(predictionData, ["predictions", "items"], 0), "success")
+      ]}
+    >
+            <div className="grid-3">
+        <Panel title="Formal / Evidence">
+          {formalDiagnostics.loading ? <SharedEmptyState title="loading..." detail="factory formal diagnostics" /> : null}
+          {formalDiagnostics.error ? <SharedErrorState error={formalDiagnostics.error} onRetry={() => void formalDiagnostics.reload()} /> : null}
+          {!formalDiagnostics.loading && !formalDiagnostics.error ? (
+            <SummaryFields
+              items={[
+                { label: "formal_count", value: formalDiag.formal_count },
+                { label: "observe_count", value: formalDiag.observe_count },
+                { label: "signal_id_coverage", value: formalDiag.signal_id_coverage },
+                { label: "orders_with_signal_id", value: formalDiag.orders_with_signal_id },
+                { label: "orders_total", value: formalDiag.orders_total },
+                { label: "trades_total", value: formalDiag.trades_total }
+              ]}
+            />
+          ) : null}
+        </Panel>
+        <Panel title="Exit funnel">
+          {!formalDiagnostics.loading && !formalDiagnostics.error ? (
+            <SummaryFields
+              items={[
+                { label: "open_positions", value: exitFunnel.open_positions },
+                { label: "with_exit_signal", value: exitFunnel.with_exit_signal },
+                { label: "with_exit_order", value: exitFunnel.with_exit_order },
+                { label: "closed", value: exitFunnel.closed },
+                { label: "exit_order_conversion", value: exitFunnel.exit_order_conversion }
+              ]}
+            />
+          ) : null}
+        </Panel>
+        <Panel title="Hard gate histogram">
+          {!formalDiagnostics.loading && !formalDiagnostics.error ? (
+            <SummaryFields
+              items={[
+                { label: "missing", value: hardHist.missing },
+                { label: "bootstrap_pending", value: hardHist.bootstrap_pending },
+                { label: "insufficient_samples", value: hardHist.insufficient_samples },
+                { label: "failed_metrics", value: hardHist.failed_metrics },
+                { label: "bootstrap_ready", value: hardHist.bootstrap_ready },
+                { label: "passed", value: hardHist.passed }
+              ]}
+            />
+          ) : null}
+        </Panel>
+      </div>
+
+      <Panel title="Top formal blockers">
+        <DataTable
+          items={blockerRows}
+          columns={[
+            { key: "code", header: "blocker" },
+            { key: "count", header: "count" }
+          ]}
+        />
+      </Panel>
+
+      <div className="grid-3">
+        <Panel title="Evidence gaps">
+          <DataTable
+            items={evidenceGapRows}
+            columns={[
+              { key: "code", header: "gap" },
+              { key: "count", header: "count" },
+              { key: "coverage", header: "coverage" }
+            ]}
+          />
+        </Panel>
+        <Panel title="Exit gap investigation">
+          {!formalDiagnostics.loading && !formalDiagnostics.error ? (
+            <SummaryFields
+              items={[
+                { label: "exit_signals", value: exitGap.exit_signals },
+                { label: "no_exit_order_strategies", value: exitGap.strategies_with_exit_signal_no_order },
+                { label: "in_execution_universe", value: exitGap.exit_signals_in_execution_universe },
+                { label: "execution_universe_size", value: exitGap.execution_universe_size },
+                {
+                  label: "likely_causes",
+                  value: Array.isArray(exitGap.likely_causes) ? (exitGap.likely_causes as unknown[]).join(", ") : exitGap.likely_causes
+                }
+              ]}
+            />
+          ) : null}
+          <DataTable
+            items={exitGapSampleRows}
+            columns={[
+              { key: "strategy_id", header: "strategy" },
+              { key: "status", header: "status" },
+              { key: "exit_signal_count", header: "exit_sigs" },
+              { key: "open_positions", header: "open" }
+            ]}
+          />
+        </Panel>
+        <Panel title="Recommended next actions">
+          <DataTable
+            items={nextActionRows}
+            columns={[
+              { key: "code", header: "action" },
+              { key: "detail", header: "detail" }
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="工厂状态">
+          {status.loading ? <SharedEmptyState title="加载中..." detail="正在读取策略工厂状态。" /> : null}
+          {status.error ? <SharedErrorState error={status.error} onRetry={() => void status.reload()} /> : null}
+          {!status.loading && !status.error ? (
+            <SummaryFields
+              items={[
+                { label: "运行时启用", value: statusData.runtime_enabled },
+                { label: "调度模式", value: statusData.schedule_mode },
+                { label: "事件模式", value: statusData.event_runtime_mode },
+                { label: "执行模式", value: statusData.execution_mode },
+                { label: "循环次数", value: statusData.cycle_count },
+                { label: "只读级别", value: sideEffectLevel(status.data) }
+              ]}
+            />
+          ) : null}
+        </Panel>
+
+        <Panel title="交易预测只读诊断">
+          {predictionStatus.loading ? <SharedEmptyState title="加载中..." detail="正在读取交易预测状态。" /> : null}
+          {predictionStatus.error ? <SharedErrorState error={predictionStatus.error} onRetry={() => void predictionStatus.reload()} /> : null}
+          {!predictionStatus.loading && !predictionStatus.error ? (
+            <SummaryFields
+              items={[
+                { label: "预测数", value: predictionData.prediction_count },
+                { label: "结果数", value: predictionData.outcome_count },
+                { label: "待评估", value: predictionData.pending_count },
+                { label: "已评估", value: predictionData.evaluated_count },
+                { label: "状态", value: predictionData.status },
+                { label: "已配置", value: predictionData.configured }
+              ]}
+            />
+          ) : null}
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="最近运行">
+          <DataTable
+            items={runRows}
+            columns={[
+              { key: "id", header: "运行 ID", render: (item) => valueOf(item, ["id", "run_id"], "-") },
+              { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> },
+              { key: "execution_mode", header: "模式", render: (item) => valueOf(item, ["execution_mode", "mode"], "-") },
+              { key: "accepted", header: "通过", render: (item) => valueOf(item, ["accepted", "accepted_count"], "-") }
+            ]}
+            empty="暂无策略工厂运行"
+            mobileCard={(item) => ({
+              title: valueOf(item, ["id", "run_id"], "运行"),
+              subtitle: valueOf(item, ["status"], "未知状态"),
+              details: [
+                { label: "模式", value: valueOf(item, ["execution_mode", "mode"], "-") },
+                { label: "通过", value: valueOf(item, ["accepted", "accepted_count"], "-") }
+              ]
+            })}
+          />
+        </Panel>
+
+        <Panel title="领域事件">
+          <DataTable
+            items={eventRows}
+            columns={[
+              { key: "id", header: "事件", render: (item) => valueOf(item, ["id", "event_id"], "-") },
+              { key: "event_type", header: "类型", render: (item) => valueOf(item, ["event_type", "type"], "-") },
+              { key: "strategy_id", header: "策略", render: (item) => valueOf(item, ["strategy_id"], "-") },
+              { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }
+            ]}
+            empty="暂无领域事件"
+            mobileCard={(item) => ({
+              title: valueOf(item, ["event_type", "type"], "事件"),
+              subtitle: valueOf(item, ["id", "event_id"], "-"),
+              details: [
+                { label: "策略", value: valueOf(item, ["strategy_id"], "-") },
+                { label: "状态", value: valueOf(item, ["status"], "-") }
+              ]
+            })}
+          />
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="预测结果样本">
+          <DataTable
+            items={outcomeRows}
+            columns={[
+              { key: "prediction_id", header: "预测", render: (item) => valueOf(item, ["prediction_id", "id"], "-") },
+              { key: "stock_code", header: "股票", render: (item) => valueOf(item, ["stock_code", "symbol"], "-") },
+              { key: "score", header: "评分", render: (item) => valueOf(item, ["score", "prediction_score"], "-") },
+              { key: "data_quality_status", header: "质量", render: (item) => valueOf(item, ["data_quality_status", "quality_status"], "-") }
+            ]}
+            empty="暂无预测结果"
+          />
+        </Panel>
+        <Panel title="预测贡献矩阵">
+          <DataTable
+            items={matrixRows}
+            columns={[
+              { key: "family", header: "维度", render: (item) => valueOf(item, ["family", "stage", "regime", "dimension"], "-") },
+              { key: "prediction_count", header: "样本", render: (item) => valueOf(item, ["prediction_count", "count", "sample_n"], "-") },
+              { key: "hit_rate", header: "命中率", render: (item) => valueOf(item, ["hit_rate", "rate"], "-") },
+              { key: "contribution", header: "贡献", render: (item) => valueOf(item, ["contribution", "weight"], "-") }
+            ]}
+            empty="暂无预测矩阵"
+          />
+        </Panel>
+      </div>
+
+      <JsonPanel
+        data={{
+          status: status.data,
+          runs: runs.data,
+          events: events.data,
+          trade_prediction_status: predictionStatus.data,
+          trade_prediction_outcomes: predictionOutcomes.data,
+          trade_prediction_matrix: predictionMatrix.data
+        }}
+        title="策略工厂只读证据"
+      />
+    </PageShell>
+  );
+}
+
+function FactorFactoryPage({ api, controlAvailable }: PageProps) {
+  const status = useAsyncResource(() => api.factorFactoryStatus(20), [api]);
+  const [previewAction, setPreviewAction] = useState<null | "run_once" | "maintenance">(null);
+  const [intentResult, setIntentResult] = useState<unknown>(null);
+  const statusData = dataObject(status.data, {});
+  const factory = dataObject(statusData.factory, {});
+  const poolHealth = dataObject(statusData.pool_health, {});
+  const engineHealth = dataObject(statusData.engine_health, {});
+  const activeFactors = rowsFrom(statusData, ["active_factors", "factors", "data"]);
+  const engineRows = rowsFrom(engineHealth, ["engines", "items", "data"]);
+
+  async function createFactorIntent(action: "run_once" | "maintenance") {
+    const result = await api.createIntent({
+      title: action === "run_once" ? "因子工厂 dry-run 运行" : "因子工厂维护预演",
+      action: action === "run_once" ? "factor_factory.run_once" : "factor_factory.maintenance",
+      params: { dry_run: true, limit: 20, source: "desktop_factory_page" },
+      rationale: "Desktop 因子工厂受控预演"
+    });
+    setIntentResult(result);
+    setPreviewAction(null);
+  }
+
+  return (
+    <PageShell
+      title="因子工厂"
+      description="读取因子挖掘工厂状态、引擎健康、活跃因子池；运行和维护只通过 ActionIntent dry-run 预演。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建因子工厂意图" />}
+      actions={
+        <Button data-testid="factor-factory-refresh" icon={<RefreshCw size={16} />} onClick={() => void status.reload()}>
+          刷新状态
+        </Button>
+      }
+      metrics={[
+        metric("状态", statusData.status || "-", statusTone(statusData.status)),
+        metric("已配置", statusData.configured ? "是" : "否", statusData.configured ? "success" : "warning"),
+        metric("活跃因子", activeFactors.length, "success"),
+        metric("池大小", factory.pool_size ?? poolHealth.active_promoted_count ?? "-", "info")
+      ]}
+    >
+      <div className="grid-2">
+        <Panel title="工厂摘要">
+          {status.loading ? <SharedEmptyState title="加载中..." detail="正在读取因子工厂状态。" /> : null}
+          {status.error ? <SharedErrorState error={status.error} onRetry={() => void status.reload()} /> : null}
+          {!status.loading && !status.error ? (
+            <SummaryFields
+              items={[
+                { label: "初始化", value: factory.initialized },
+                { label: "运行次数", value: factory.run_count },
+                { label: "最近运行", value: factory.last_run_at },
+                { label: "DB 池", value: factory.pool_loaded_from_db },
+                { label: "可研究因子", value: poolHealth.research_consumable_count },
+                { label: "证据不足", value: poolHealth.evidence_insufficient_count }
+              ]}
+            />
+          ) : null}
+        </Panel>
+
+        <Panel title="受控动作">
+          <p>这里不会直接启动长循环；按钮只创建后端 ActionIntent，参数固定为 dry-run/预演。</p>
+          <div className="page-actions">
+            <Button
+              data-testid="factor-factory-run-intent"
+              icon={<ShieldAlert size={16} />}
+              disabled={!controlAvailable}
+              onClick={() => setPreviewAction("run_once")}
+            >
+              创建运行意图
+            </Button>
+            <Button
+              data-testid="factor-factory-maintenance-intent"
+              icon={<ShieldAlert size={16} />}
+              disabled={!controlAvailable}
+              onClick={() => setPreviewAction("maintenance")}
+            >
+              创建维护意图
+            </Button>
+          </div>
+          {previewAction ? (
+            <DryRunPreview
+              title="因子工厂意图预览"
+              changes={[
+                { label: "动作", after: previewAction === "run_once" ? "factor_factory.run_once" : "factor_factory.maintenance" },
+                { label: "模式", after: "dry-run / 预演" },
+                { label: "限制", after: "limit=20，不进入调度长循环" }
+              ]}
+              onCancel={() => setPreviewAction(null)}
+              onConfirm={() => void createFactorIntent(previewAction)}
+            />
+          ) : null}
+          {intentResult ? <JsonPanel data={intentResult} title="因子工厂意图结果" /> : null}
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="活跃因子池">
+          <DataTable
+            items={activeFactors}
+            columns={[
+              { key: "id", header: "因子", render: (item) => valueOf(item, ["name", "id", "factor_id"], "-") },
+              { key: "family", header: "族群", render: (item) => valueOf(item, ["family", "factor_family"], "-") },
+              { key: "engine", header: "引擎", render: (item) => valueOf(item, ["engine", "source"], "-") },
+              { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> },
+              { key: "ic", header: "IC", render: (item) => valueOf(item, ["ic", "recent_ic", "ic_mean"], "-") }
+            ]}
+            empty="暂无活跃因子"
+            mobileCard={(item) => ({
+              title: valueOf(item, ["name", "id", "factor_id"], "因子"),
+              subtitle: valueOf(item, ["family", "factor_family"], "-"),
+              details: [
+                { label: "引擎", value: valueOf(item, ["engine", "source"], "-") },
+                { label: "状态", value: valueOf(item, ["status"], "-") },
+                { label: "IC", value: valueOf(item, ["ic", "recent_ic", "ic_mean"], "-") }
+              ]
+            })}
+          />
+        </Panel>
+
+        <Panel title="引擎健康">
+          <DataTable
+            items={engineRows}
+            columns={[
+              { key: "name", header: "引擎", render: (item) => valueOf(item, ["name", "engine"], "-") },
+              { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> },
+              { key: "candidates", header: "候选", render: (item) => valueOf(item, ["candidates", "candidate_count"], "-") },
+              { key: "accepted", header: "入池", render: (item) => valueOf(item, ["accepted", "accepted_count"], "-") }
+            ]}
+            empty="暂无引擎健康记录"
+          />
+        </Panel>
+      </div>
+
+      <JsonPanel data={status.data} title="因子工厂状态证据" />
+    </PageShell>
+  );
+}
+
+function IncubationFactoryPage({ api, controlAvailable }: PageProps) {
+  const status = useAsyncResource(() => api.incubationFactoryStatus(), [api]);
+  const formalDiagnostics = useAsyncResource(() => api.strategyFactoryFormalDiagnostics(15), [api]);
+  const intents = useAsyncResource(() => api.intents(), [api]);
+  const [previewAction, setPreviewAction] = useState<null | "dry_run" | "run_once" | "maintenance">(null);
+  const [intentResult, setIntentResult] = useState<unknown>(null);
+  const [intentBusy, setIntentBusy] = useState(false);
+  const statusData = unwrapEnvelopeData(status.data);
+  const lanes = dataObject(statusData.lanes, {});
+  const lastRun = dataObject(statusData.last_run, {});
+  const formalDiag = dataObject(unwrapEnvelopeData(formalDiagnostics.data), {});
+  const exitFunnel = dataObject(formalDiag.exit_funnel, {});
+  const exitGap = dataObject(formalDiag.exit_gap, {});
+  const intentRows = list(intents.data)
+    .filter((item) => String(item.action || item.target_tool || "").includes("incubation_factory"))
+    .slice(0, 20)
+    .map((item, index) => ({
+      id: String(item.intent_id || item.id || `inc-intent-${index}`),
+      action: String(item.action || item.target_action || "-"),
+      status: String(item.status || "-"),
+      updated_at: String(item.updated_at || item.created_at || "-"),
+      error: String(item.error || "")
+    }));
+
+  async function refreshAll() {
+    await Promise.all([status.reload(), formalDiagnostics.reload(), intents.reload()]);
+  }
+
+  async function createIncubationIntent(action: "dry_run" | "run_once" | "maintenance") {
+    setIntentBusy(true);
+    try {
+      const actionToken =
+        action === "dry_run"
+          ? "incubation_factory.dry_run"
+          : action === "run_once"
+            ? "incubation_factory.run_once"
+            : "incubation_factory.maintenance";
+      const title =
+        action === "dry_run"
+          ? "孵化工厂 dry-run 观察"
+          : action === "run_once"
+            ? "孵化工厂 run_once（需确认）"
+            : "孵化工厂维护预演";
+      const result = await api.createIntent({
+        title,
+        action: actionToken,
+        params: {
+          dry_run: action !== "run_once",
+          source: "desktop_incubation_page",
+          _timeout_seconds: action === "run_once" ? 600 : 300
+        },
+        rationale:
+          action === "run_once"
+            ? "Desktop 孵化工厂真实 run_once；需 control token 确认后执行，不进入实盘"
+            : "Desktop 孵化工厂受控预演"
+      });
+      setIntentResult(result);
+      setPreviewAction(null);
+      await intents.reload();
+    } finally {
+      setIntentBusy(false);
+    }
+  }
+
+  async function confirmIntent(intentId: string) {
+    if (!intentId) return;
+    setIntentBusy(true);
+    try {
+      const result = await api.intentConfirm(intentId);
+      setIntentResult(result);
+      await refreshAll();
+    } finally {
+      setIntentBusy(false);
+    }
+  }
+
+  async function denyIntent(intentId: string) {
+    if (!intentId) return;
+    setIntentBusy(true);
+    try {
+      const result = await api.intentDeny(intentId, "denied from incubation factory page");
+      setIntentResult(result);
+      await intents.reload();
+    } finally {
+      setIntentBusy(false);
+    }
+  }
+
+  const previewActionLabel =
+    previewAction === "run_once"
+      ? "incubation_factory.run_once"
+      : previewAction === "maintenance"
+        ? "incubation_factory.maintenance"
+        : "incubation_factory.dry_run";
+
+  return (
+    <PageShell
+      title="孵化工厂"
+      description="读取 runner 状态与 Formal/Exit 诊断；dry-run 默认，run_once 需 control token + Intent 确认；结果可在意图审计表回放。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建孵化工厂意图" />}
+      actions={
+        <Button data-testid="incubation-factory-refresh" icon={<RefreshCw size={16} />} onClick={() => void refreshAll()}>
+          刷新状态
+        </Button>
+      }
+      metrics={[
+        metric("可用", statusData.available ? "是" : "否", statusData.available ? "success" : "warning"),
+        metric("编排器", statusData.orchestrator_ready ? "就绪" : "未就绪", statusData.orchestrator_ready ? "success" : "warning"),
+        metric("Formal", formalDiag.formal_count ?? "-", "info"),
+        metric("Open pos", exitFunnel.open_positions ?? "-", Number(exitFunnel.open_positions) > 0 ? "warning" : "success")
+      ]}
+    >
+      <div className="grid-3">
+        <Panel title="孵化状态">
+          {status.loading ? <SharedEmptyState title="加载中..." detail="正在读取孵化工厂状态。" /> : null}
+          {status.error ? <SharedErrorState error={status.error} onRetry={() => void status.reload()} /> : null}
+          {!status.loading && !status.error ? (
+            <SummaryFields
+              items={[
+                { label: "可用", value: statusData.available },
+                { label: "Runtime", value: statusData.runtime_type },
+                { label: "编排器就绪", value: statusData.orchestrator_ready },
+                { label: "状态", value: statusData.status },
+                { label: "最近运行", value: valueOf(lastRun, ["status", "id"], "-") },
+                { label: "错误数", value: statusData.error_count }
+              ]}
+            />
+          ) : null}
+        </Panel>
+
+        <Panel title="Exit / Evidence 摘要">
+          {formalDiagnostics.loading ? <SharedEmptyState title="loading..." detail="factory formal diagnostics" /> : null}
+          {formalDiagnostics.error ? (
+            <SharedErrorState error={formalDiagnostics.error} onRetry={() => void formalDiagnostics.reload()} />
+          ) : null}
+          {!formalDiagnostics.loading && !formalDiagnostics.error ? (
+            <SummaryFields
+              items={[
+                { label: "formal_count", value: formalDiag.formal_count },
+                { label: "observe_count", value: formalDiag.observe_count },
+                { label: "signal_id_coverage", value: formalDiag.signal_id_coverage },
+                { label: "open_positions", value: exitFunnel.open_positions },
+                { label: "with_exit_signal", value: exitFunnel.with_exit_signal },
+                { label: "closed", value: exitFunnel.closed },
+                { label: "exit_gap.no_order", value: exitGap.strategies_with_exit_signal_no_order }
+              ]}
+            />
+          ) : null}
+        </Panel>
+
+        <Panel title="观察通道 / 受控动作">
+          <SummaryFields
+            items={[
+              { label: "诊断观察", value: lanes.diagnostic },
+              { label: "纸面观察", value: lanes.paper },
+              { label: "待复核", value: lanes.ready_for_review },
+              { label: "实盘边界", value: "不在此页开放" }
+            ]}
+          />
+          <div className="page-actions">
+            <Button
+              data-testid="incubation-dry-run-intent"
+              icon={<ShieldAlert size={16} />}
+              disabled={!controlAvailable || intentBusy}
+              onClick={() => setPreviewAction("dry_run")}
+            >
+              创建 dry-run 意图
+            </Button>
+            <Button
+              data-testid="incubation-run-once-intent"
+              icon={<Play size={16} />}
+              disabled={!controlAvailable || intentBusy}
+              onClick={() => setPreviewAction("run_once")}
+            >
+              创建 run_once 意图
+            </Button>
+            <Button
+              data-testid="incubation-maintenance-intent"
+              icon={<ShieldAlert size={16} />}
+              disabled={!controlAvailable || intentBusy}
+              onClick={() => setPreviewAction("maintenance")}
+            >
+              创建维护意图
+            </Button>
+          </div>
+          {previewAction ? (
+            <DryRunPreview
+              title="孵化工厂意图预览"
+              busy={intentBusy}
+              changes={[
+                { label: "动作", after: previewActionLabel },
+                {
+                  label: "模式",
+                  after: previewAction === "run_once" ? "真实 run_once（paper/observe，非实盘）" : "dry-run / 预演"
+                },
+                {
+                  label: "门禁",
+                  after: previewAction === "run_once" ? "control token + Intent confirm 后执行" : "创建意图后需在审计表确认/拒绝"
+                },
+                { label: "边界", after: "不触发实盘交易，不绕过 hard gate" }
+              ]}
+              onCancel={() => setPreviewAction(null)}
+              onConfirm={() => void createIncubationIntent(previewAction)}
+            />
+          ) : null}
+          {intentResult ? <JsonPanel data={intentResult} title="孵化工厂意图结果" /> : null}
+        </Panel>
+      </div>
+
+      <Panel title="Intent / Audit 回放（incubation_factory）">
+        <DataTable
+          items={intentRows}
+          columns={[
+            { key: "id", header: "intent_id" },
+            { key: "action", header: "action" },
+            {
+              key: "status",
+              header: "status",
+              render: (item) => <StatusLight status={inferStatusFromData(item)} label={String(item.status || "-")} />
+            },
+            { key: "updated_at", header: "updated" },
+            {
+              key: "ops",
+              header: "ops",
+              render: (item) => {
+                const pending = /awaiting|pending/i.test(String(item.status || ""));
+                if (!pending || !controlAvailable) return <span className="muted-value">{String(item.error || "-")}</span>;
+                return (
+                  <div className="page-actions">
+                    <Button
+                      data-testid={`incubation-intent-confirm-${item.id}`}
+                      tone="success"
+                      disabled={intentBusy}
+                      onClick={() => void confirmIntent(String(item.id))}
+                    >
+                      确认
+                    </Button>
+                    <Button
+                      data-testid={`incubation-intent-deny-${item.id}`}
+                      tone="danger"
+                      disabled={intentBusy}
+                      onClick={() => void denyIntent(String(item.id))}
+                    >
+                      拒绝
+                    </Button>
+                  </div>
+                );
+              }
+            }
+          ]}
+        />
+      </Panel>
+
+      <JsonPanel data={status.data} title="孵化工厂状态证据" />
+    </PageShell>
+  );
+}
+
+function FactoryEventsPage({ api, controlAvailable }: PageProps) {
+  const eventList = useAsyncResource(() => api.factoryEventList({ limit: 20 }), [api]);
+  const outbox = useAsyncResource(() => api.factoryEventOutboxStatus({ limit: 20 }), [api]);
+  const exposure = useAsyncResource(() => api.factoryThemeExposureStatus({ limit: 20 }), [api]);
+  const [eventId, setEventId] = useState("evt_mock_001");
+  const [theme, setTheme] = useState("");
+  const [result, setResult] = useState<unknown>(null);
+  const [previewIntent, setPreviewIntent] = useState(false);
+  const eventData = unwrapEnvelopeData(eventList.data);
+  const outboxData = unwrapEnvelopeData(outbox.data);
+  const exposureData = unwrapEnvelopeData(exposure.data);
+  const eventRows = rowsFrom(eventData, ["events", "items", "data"]);
+  const exposureRows = rowsFrom(exposureData, ["themes", "items", "data"]);
+
+  async function refreshAll() {
+    await Promise.all([eventList.reload(), outbox.reload(), exposure.reload()]);
+  }
+
+  async function previewTasks() {
+    setResult(await api.factoryEventPreviewTasks(eventId, 20));
+  }
+
+  async function loadLineage() {
+    setResult(await api.factoryEventLineage({ event_id: eventId, limit: 20 }));
+  }
+
+  async function refreshTheme() {
+    setResult(await api.factoryThemeExposureStatus({ theme: theme || undefined, limit: 20 }));
+    await exposure.reload();
+  }
+
+  async function createEventIntent() {
+    const eventTheme = theme || "desktop_probe";
+    setResult(
+      await api.createIntent({
+        title: "工厂事件 bootstrap dry-run",
+        action: "strategy_manager.factory_event_bootstrap",
+        params: {
+          dry_run: true,
+          source: "desktop_factory_events",
+          event_type: "desktop_probe",
+          theme: eventTheme,
+          payload: { theme: eventTheme, reason: "desktop controlled preview" }
+        },
+        rationale: "Desktop 工厂事件受控预演"
+      })
+    );
+    setPreviewIntent(false);
+  }
+
+  return (
+    <PageShell
+      title="工厂事件"
+      description="通过 Agent 只读 facade 查看工厂事件列表、任务预览、血缘、主题暴露和 outbox；事件写入只创建受控 dry-run 意图。"
+      badge={<GatedNotice controlAvailable={controlAvailable} action="创建工厂事件意图" />}
+      actions={
+        <Button data-testid="factory-events-refresh" icon={<RefreshCw size={16} />} onClick={() => void refreshAll()}>
+          刷新事件证据
+        </Button>
+      }
+      metrics={[
+        metric("事件数", eventRows.length || eventData.count || 0, "info"),
+        metric("Outbox", outboxData.status || "-", statusTone(outboxData.status)),
+        metric("待发送", outboxData.pending_count ?? outboxData.pending ?? "-", "warning"),
+        metric("主题", exposureRows.length || exposureData.count || 0, "success")
+      ]}
+    >
+      <div className="grid-2">
+        <Panel title="事件列表">
+          {eventList.loading ? <SharedEmptyState title="加载中..." detail="正在读取工厂事件列表。" /> : null}
+          {eventList.error ? <SharedErrorState error={eventList.error} onRetry={() => void eventList.reload()} /> : null}
+          {!eventList.loading && !eventList.error ? (
+            <DataTable
+              items={eventRows}
+              columns={[
+                {
+                  key: "event_id",
+                  header: "事件",
+                  render: (item) => (
+                    <button
+                      type="button"
+                      className="table-link-button"
+                      data-testid={`factory-event-${valueOf(item, ["event_id", "id"], "unknown")}`}
+                      onClick={() => setEventId(valueOf(item, ["event_id", "id"], ""))}
+                    >
+                      {valueOf(item, ["event_id", "id"], "-")}
+                    </button>
+                  )
+                },
+                { key: "event_type", header: "类型", render: (item) => valueOf(item, ["event_type", "type"], "-") },
+                { key: "source", header: "来源", render: (item) => valueOf(item, ["source"], "-") },
+                { key: "status", header: "状态", render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} /> }
+              ]}
+              empty="暂无工厂事件"
+              mobileCard={(item) => ({
+                title: valueOf(item, ["event_id", "id"], "事件"),
+                subtitle: valueOf(item, ["event_type", "type"], "-"),
+                details: [
+                  { label: "来源", value: valueOf(item, ["source"], "-") },
+                  { label: "状态", value: valueOf(item, ["status"], "-") }
+                ]
+              })}
+            />
+          ) : null}
+        </Panel>
+
+        <Panel title="事件只读操作">
+          <div className="form-grid">
+            <label className="field">
+              <span>事件 ID</span>
+              <input data-testid="factory-event-id" value={eventId} onChange={(event) => setEventId(event.target.value)} />
+            </label>
+            <label className="field">
+              <span>主题</span>
+              <input data-testid="factory-event-theme" value={theme} onChange={(event) => setTheme(event.target.value)} placeholder="可选" />
+            </label>
+          </div>
+          <div className="page-actions">
+            <Button data-testid="factory-event-preview-tasks" icon={<Search size={16} />} disabled={!eventId} onClick={() => void previewTasks()}>
+              预览任务
+            </Button>
+            <Button data-testid="factory-event-lineage" icon={<Search size={16} />} disabled={!eventId} onClick={() => void loadLineage()}>
+              查看血缘
+            </Button>
+            <Button data-testid="factory-theme-refresh" icon={<RefreshCw size={16} />} onClick={() => void refreshTheme()}>
+              查询主题暴露
+            </Button>
+            <Button data-testid="factory-event-intent" icon={<ShieldAlert size={16} />} disabled={!controlAvailable} onClick={() => setPreviewIntent(true)}>
+              创建事件意图
+            </Button>
+          </div>
+          {previewIntent ? (
+            <DryRunPreview
+              title="工厂事件意图预览"
+              changes={[
+                { label: "动作", after: "strategy_manager.factory_event_bootstrap" },
+                { label: "模式", after: "dry-run / 预演" },
+                { label: "主题", after: theme || "desktop_probe" }
+              ]}
+              onCancel={() => setPreviewIntent(false)}
+              onConfirm={() => void createEventIntent()}
+            />
+          ) : null}
+          {result ? <JsonPanel data={result} title="事件操作结果" /> : null}
+        </Panel>
+      </div>
+
+      <div className="grid-2">
+        <Panel title="主题暴露">
+          <DataTable
+            items={exposureRows}
+            columns={[
+              { key: "theme", header: "主题", render: (item) => valueOf(item, ["theme", "name"], "-") },
+              { key: "exposure", header: "暴露", render: (item) => valueOf(item, ["exposure", "weight"], "-") },
+              { key: "strategy_count", header: "策略数", render: (item) => valueOf(item, ["strategy_count", "count"], "-") },
+              { key: "risk", header: "风险", render: (item) => valueOf(item, ["risk", "risk_level"], "-") }
+            ]}
+            empty="暂无主题暴露"
+          />
+        </Panel>
+        <Panel title="Outbox 状态">
+          <SummaryFields
+            items={[
+              { label: "状态", value: outboxData.status },
+              { label: "待发送", value: outboxData.pending_count ?? outboxData.pending },
+              { label: "失败", value: outboxData.failed_count ?? outboxData.failed },
+              { label: "最近 drain", value: outboxData.last_drain_at },
+              { label: "dry-run", value: outboxData.dry_run_supported },
+              { label: "只读级别", value: sideEffectLevel(outbox.data) }
+            ]}
+          />
+        </Panel>
+      </div>
+
+      <JsonPanel data={{ events: eventList.data, outbox: outbox.data, exposure: exposure.data, result }} title="工厂事件证据" />
     </PageShell>
   );
 }
@@ -798,14 +1779,14 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="Financial Manager / Broker 只读"
+      title="金融管理与券商只读"
       description="统一承接 manager catalog、status、只读 query、受控 intent 与 broker 只读信息，不暴露交易按钮。"
       badge={<GatedNotice controlAvailable={controlAvailable} action="受控金融意图" />}
       metrics={[
-        metric("Manager", statusData.ready ? "ready" : "degraded", statusData.ready ? "success" : "warning"),
-        metric("Broker", brokerData.read_only ? "read-only" : "blocked", brokerData.read_only ? "info" : "warning"),
-        metric("Live Trading", brokerData.live_trading_enabled ? "enabled" : "disabled", brokerData.live_trading_enabled ? "danger" : "success"),
-        metric("Catalog", list(catalog.data).length, "info")
+        metric("管理器", statusData.ready ? "就绪" : "降级", statusData.ready ? "success" : "warning"),
+        metric("券商", brokerData.read_only ? "只读" : "阻止", brokerData.read_only ? "info" : "warning"),
+        metric("实盘交易", brokerData.live_trading_enabled ? "已启用" : "未启用", brokerData.live_trading_enabled ? "danger" : "success"),
+        metric("目录", list(catalog.data).length, "info")
       ]}
     >
       <div className="grid-2">
@@ -822,19 +1803,19 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
               创建受控意图
             </Button>
             <Button data-testid="broker-analytics-run" disabled={!controlAvailable} onClick={() => setPreviewAction("broker-run")}>
-              Broker analytics dry-run
+              券商分析预演
             </Button>
             <Button data-testid="broker-analytics-latest" disabled={!controlAvailable} onClick={() => void loadBrokerAnalytics()}>
-              Latest broker analytics
+              最新券商分析
             </Button>
           </div>
 
           {previewAction ? (
             <DryRunPreview
-              title={previewAction === "intent" ? "金融意图预览" : "Broker analytics dry-run 预览"}
+              title={previewAction === "intent" ? "金融意图预览" : "券商分析预演"}
               changes={[
                 { label: "动作", after: previewAction === "intent" ? "portfolio_manager.create" : "broker.analytics.run" },
-                { label: "模式", after: "read-only / dry-run" },
+                { label: "模式", after: "只读 / 预演" },
                 { label: "说明", after: query }
               ]}
               onCancel={() => setPreviewAction(null)}
@@ -843,7 +1824,7 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
           ) : null}
         </Panel>
 
-        <Panel title="Catalog">
+        <Panel title="目录">
           <DataTable items={list(catalog.data)} columns={[{ key: "name", header: "能力" }, { key: "side_effect", header: "副作用" }]} />
         </Panel>
       </div>
@@ -852,7 +1833,7 @@ function FinancialManagerPage({ api, controlAvailable }: PageProps) {
         <div className="grid-2">
           <div>
             <h3 style={{ marginBottom: 12 }}>账户</h3>
-            <DataTable items={accountRows} columns={[{ key: "provider", header: "Provider" }, { key: "account_id", header: "账户" }, { key: "read_only", header: "只读" }]} />
+            <DataTable items={accountRows} columns={[{ key: "provider", header: "供应方" }, { key: "account_id", header: "账户" }, { key: "read_only", header: "只读" }]} />
           </div>
           <div>
             <h3 style={{ marginBottom: 12 }}>最新分析</h3>

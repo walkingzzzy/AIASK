@@ -32,7 +32,7 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
 
   const poolRows = orderedPools.map((item) => ({
     id: String(item.id || ""),
-    name: valueOf(item, ["name"], "Untitled pool"),
+    name: valueOf(item, ["name"], "未命名股票池"),
     stocks_count: Array.isArray(item.stocks) ? item.stocks.length : 0,
     created_at: valueOf(item, ["created_at"], "-")
   }));
@@ -80,7 +80,7 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
   }
 
   async function handleDeletePool(id: string) {
-    if (!window.confirm("Delete this stock pool?")) return;
+    if (!window.confirm("确认删除这个股票池？")) return;
     try {
       await api.stockPoolDelete(id);
       await pools.reload();
@@ -112,7 +112,7 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
 
   async function handleRemoveStock(code: string) {
     if (!selectedPoolId) return;
-    if (!window.confirm(`Remove ${code} from this pool?`)) return;
+    if (!window.confirm(`确认从这个股票池移除 ${code}？`)) return;
 
     try {
       await api.stockPoolRemoveStock(selectedPoolId, code);
@@ -124,7 +124,7 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
 
   async function handleBatchRemoveStocks() {
     if (!selectedPoolId || !selectedVisibleStockCodes.length) return;
-    if (!window.confirm(`Remove ${selectedVisibleStockCodes.length} selected stocks from this pool?`)) return;
+    if (!window.confirm(`确认从这个股票池移除已选择的 ${selectedVisibleStockCodes.length} 只股票？`)) return;
 
     try {
       const result = await api.stockPoolBatchRemove(selectedPoolId, selectedVisibleStockCodes);
@@ -139,8 +139,8 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="My Stocks"
-      description="Manage personal stock pools with tags and notes."
+      title="我的股票"
+      description="管理个人股票池、标签和备注。"
       actions={
         <Button
           data-testid="new-pool-button"
@@ -149,52 +149,52 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
           icon={<Plus size={16} />}
           disabled={!controlAvailable}
         >
-          {showPoolForm ? "Cancel" : "New Pool"}
+          {showPoolForm ? "取消" : "新建股票池"}
         </Button>
       }
       metrics={[
-        metric("Pools", poolRows.length, "info"),
+        metric("股票池", poolRows.length, "info"),
         metric(
-          "Total Stocks",
+          "股票总数",
           poolRows.reduce((sum, row) => sum + row.stocks_count, 0),
           "success"
         ),
-        metric("Current Pool", selectedPool ? valueOf(selectedPool as Record<string, unknown>, ["name"]) : "None", selectedPool ? "info" : "neutral")
+        metric("当前股票池", selectedPool ? valueOf(selectedPool as Record<string, unknown>, ["name"]) : "未选择", selectedPool ? "info" : "neutral")
       ]}
     >
       <div className="grid-2">
         <div className="stack">
           {showPoolForm ? (
-            <Panel title="Create Stock Pool">
+            <Panel title="创建股票池">
               <div className="form-grid">
                 <label className="field">
-                  <span>Name *</span>
+                  <span>名称 *</span>
                   <input
                     data-testid="pool-name"
                     value={poolForm.name}
                     onChange={(event) => setPoolForm({ ...poolForm, name: event.target.value })}
-                    placeholder="Core Holdings"
+                    placeholder="核心持仓"
                   />
                 </label>
                 <label className="field">
-                  <span>Description</span>
+                  <span>说明</span>
                   <textarea value={poolForm.description} onChange={(event) => setPoolForm({ ...poolForm, description: event.target.value })} rows={2} />
                 </label>
               </div>
               <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem" }}>
                 <Button data-testid="pool-submit" onClick={() => void handleCreatePool()} tone="success" disabled={!poolForm.name.trim()}>
-                  Create
+                  创建
                 </Button>
                 <Button onClick={() => setShowPoolForm(false)} tone="neutral">
-                  Cancel
+                  取消
                 </Button>
               </div>
             </Panel>
           ) : null}
 
-          <Panel title="Stock Pools">
+          <Panel title="股票池">
             {poolRows.length === 0 ? (
-              <EmptyState title="No stock pools yet" detail="Create your first stock pool from the top-right action." />
+              <EmptyState title="暂无股票池" detail="点击右上角操作创建第一个股票池。" />
             ) : (
               <DraggableDataTable
                 items={poolRows}
@@ -202,18 +202,18 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
                 onReorder={handlePoolReorder}
                 dragEnabled={controlAvailable}
                 columns={[
-                  { key: "name", header: "Name" },
-                  { key: "stocks_count", header: "Stocks" },
+                  { key: "name", header: "名称" },
+                  { key: "stocks_count", header: "股票数" },
                   {
                     key: "id",
-                    header: "Actions",
+                    header: "操作",
                     render: (item) => (
                       <div style={{ display: "flex", gap: "0.5rem" }}>
                         <Button onClick={() => setSelectedPoolId(item.id)} tone={selectedPoolId === item.id ? "info" : "neutral"}>
-                          {selectedPoolId === item.id ? "Selected" : "Open"}
+                          {selectedPoolId === item.id ? "已选择" : "打开"}
                         </Button>
                         <Button onClick={() => void handleDeletePool(item.id)} tone="danger" icon={<Trash2 size={14} />} disabled={!controlAvailable}>
-                          Delete
+                          删除
                         </Button>
                       </div>
                     )
@@ -228,10 +228,10 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
           {selectedPoolId ? (
             <>
               {showStockForm ? (
-                <Panel title="Add Stock">
+                <Panel title="添加股票">
                   <div className="form-grid">
                     <label className="field">
-                      <span>Code *</span>
+                      <span>代码 *</span>
                       <input
                         data-testid="stock-code"
                         value={stockForm.code}
@@ -240,42 +240,42 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
                       />
                     </label>
                     <label className="field">
-                      <span>Name</span>
-                      <input value={stockForm.name} onChange={(event) => setStockForm({ ...stockForm, name: event.target.value })} placeholder="Kweichow Moutai" />
+                      <span>名称</span>
+                      <input value={stockForm.name} onChange={(event) => setStockForm({ ...stockForm, name: event.target.value })} placeholder="贵州茅台" />
                     </label>
                     <label className="field">
-                      <span>Tags</span>
-                      <input value={stockForm.tags} onChange={(event) => setStockForm({ ...stockForm, tags: event.target.value })} placeholder="core, liquor" />
+                      <span>标签</span>
+                      <input value={stockForm.tags} onChange={(event) => setStockForm({ ...stockForm, tags: event.target.value })} placeholder="核心、白酒" />
                     </label>
                     <label className="field">
-                      <span>Note</span>
+                      <span>备注</span>
                       <textarea value={stockForm.notes} onChange={(event) => setStockForm({ ...stockForm, notes: event.target.value })} rows={2} />
                     </label>
                   </div>
                   <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem" }}>
                     <Button data-testid="stock-submit" onClick={() => void handleAddStock()} tone="success" disabled={!stockForm.code.trim()}>
-                      Add
+                      添加
                     </Button>
                     <Button onClick={() => setShowStockForm(false)} tone="neutral">
-                      Cancel
+                      取消
                     </Button>
                   </div>
                 </Panel>
               ) : null}
 
               <Panel
-                title={`Stocks - ${selectedPool ? valueOf(selectedPool as Record<string, unknown>, ["name"]) : "Unknown"}`}
+                title={`股票 - ${selectedPool ? valueOf(selectedPool as Record<string, unknown>, ["name"]) : "未知"}`}
                 action={
                   <div style={{ display: "flex", gap: "0.5rem" }}>
-                    <SearchBar value={searchKeyword} onChange={setSearchKeyword} placeholder="Search stocks..." />
+                    <SearchBar value={searchKeyword} onChange={setSearchKeyword} placeholder="搜索股票..." />
                     <Button onClick={() => setShowStockForm((current) => !current)} tone="success" icon={<Plus size={16} />} disabled={!controlAvailable}>
-                      {showStockForm ? "Cancel" : "Add"}
+                      {showStockForm ? "取消" : "添加"}
                     </Button>
                   </div>
                 }
               >
                 {stockRows.length === 0 ? (
-                  <EmptyState title="No stocks yet" detail="Add a stock to this pool from the top-right action." />
+                  <EmptyState title="暂无股票" detail="点击右上角操作向这个股票池添加股票。" />
                 ) : (
                   <DraggableDataTable
                     items={stockRows}
@@ -290,20 +290,20 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
                         disabled={!controlAvailable || !selectedVisibleStockCodes.length}
                         onClick={() => void handleBatchRemoveStocks()}
                       >
-                        Remove selected
+                        移除已选
                       </Button>
                     }
                     columns={[
-                      { key: "code", header: "Code" },
-                      { key: "name", header: "Name" },
-                      { key: "tags", header: "Tags" },
-                      { key: "note", header: "Note" },
+                      { key: "code", header: "代码" },
+                      { key: "name", header: "名称" },
+                      { key: "tags", header: "标签" },
+                      { key: "note", header: "备注" },
                       {
                         key: "code",
-                        header: "Actions",
+                        header: "操作",
                         render: (item) => (
                           <Button onClick={() => void handleRemoveStock(item.code)} tone="danger" icon={<Trash2 size={14} />} disabled={!controlAvailable}>
-                            Remove
+                            移除
                           </Button>
                         )
                       }
@@ -311,10 +311,10 @@ export function MyStocksPage({ api, controlAvailable }: PageProps) {
                   />
                 )}
               </Panel>
-              {batchResult ? <JsonPanel data={batchResult} title="Batch remove result" /> : null}
+              {batchResult ? <JsonPanel data={batchResult} title="批量移除结果" /> : null}
             </>
           ) : (
-            <EmptyState title="Select a stock pool first" detail="Choose or create a stock pool from the left panel." />
+            <EmptyState title="请先选择股票池" detail="请在左侧选择或创建一个股票池。" />
           )}
         </div>
       </div>

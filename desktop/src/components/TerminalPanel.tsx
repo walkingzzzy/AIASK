@@ -36,25 +36,36 @@ function classifyTerminalResult(payload: UnknownRecord) {
   if (timedOut) {
     return {
       classification: "timeout",
-      hint: "The command exceeded the Agent timeout. Retry with a narrower command or shorter output."
+      hint: "命令超过 Agent 超时时间。请缩小命令范围，或减少输出内容后重试。"
     };
   }
   if (combined.includes("permission denied") || combined.includes("access is denied") || combined.includes("control token") || combined.includes("unauthorized")) {
     return {
       classification: "permission",
-      hint: "The Agent rejected the command or the OS denied access. Check full mode, control token, and path permissions."
+      hint: "Agent 或操作系统拒绝访问。请检查完整模式、控制权限和路径权限。"
     };
   }
   if (returncode !== null && returncode !== 0) {
     return {
       classification: "command_failed",
-      hint: "The command exited with a non-zero status. Review stderr and adjust the command."
+      hint: "命令返回了非零退出码。请查看错误输出并调整命令。"
     };
   }
   return {
     classification: returncode === null ? "background" : "completed",
-    hint: returncode === null ? "The command was accepted as a background process." : "The command completed successfully."
+    hint: returncode === null ? "命令已作为后台进程接收。" : "命令已成功完成。"
   };
+}
+
+function terminalClassificationLabel(classification: string) {
+  const labels: Record<string, string> = {
+    timeout: "超时",
+    permission: "权限不足",
+    command_failed: "命令失败",
+    background: "后台运行",
+    completed: "已完成"
+  };
+  return labels[classification] || classification;
 }
 
 export function TerminalPanel({
@@ -157,25 +168,25 @@ export function TerminalPanel({
         <div>
           <h2 style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <TerminalSquare size={18} />
-            Terminal
+            终端
           </h2>
           <p style={{ margin: "6px 0 0", color: "var(--text-muted)" }}>
-            Controlled command execution through Agent full-mode admin tools.
+            通过 Agent 完整模式管理工具执行受控命令。
           </p>
         </div>
         <div className="page-actions">
           <StatusBadge tone={controlAvailable ? "success" : "gated"}>
-            {controlAvailable ? "Full control ready" : "Control token required"}
+            {controlAvailable ? "完整控制已就绪" : "需要控制权限"}
           </StatusBadge>
           <Button onClick={onRefresh} busy={loading}>
-            Refresh
+            刷新
           </Button>
         </div>
       </div>
 
       <div className="terminal-toolbar">
         <label className="field">
-          <span>Backend</span>
+          <span>执行后端</span>
           <select value={backend} onChange={(event) => setBackend(event.target.value)}>
             {backendRows.map((item) => (
               <option key={String(item.name || "local")} value={String(item.name || "local")}>
@@ -185,7 +196,7 @@ export function TerminalPanel({
           </select>
         </label>
         <label className="field terminal-command-field">
-          <span>Command</span>
+          <span>命令</span>
           <input
             data-testid="terminal-command-input"
             value={command}
@@ -204,7 +215,7 @@ export function TerminalPanel({
                 moveHistory("down");
               }
             }}
-            placeholder="Run a safe command through agent_terminal"
+            placeholder="通过 agent_terminal 执行安全命令"
           />
         </label>
         <div className="page-actions terminal-actions">
@@ -216,7 +227,7 @@ export function TerminalPanel({
             busy={busy}
             onClick={() => void runCommand(command)}
           >
-            Run
+            运行
           </Button>
           <Button
             icon={<Trash2 size={16} />}
@@ -227,7 +238,7 @@ export function TerminalPanel({
               setCursor(null);
             }}
           >
-            Clear
+            清空
           </Button>
         </div>
       </div>
@@ -247,48 +258,48 @@ export function TerminalPanel({
                 <div className="terminal-output-head">
                   <strong>{item.command}</strong>
                   <StatusBadge tone={item.returncode === 0 || item.returncode === null ? "success" : "danger"}>
-                    {item.returncode === null ? "background" : `exit ${item.returncode}`}
+                    {item.returncode === null ? "后台运行" : `退出码 ${item.returncode}`}
                   </StatusBadge>
                   <StatusBadge tone={item.classification === "completed" || item.classification === "background" ? "success" : item.classification === "permission" ? "gated" : "warning"}>
-                    {item.classification}
+                    {terminalClassificationLabel(item.classification)}
                   </StatusBadge>
                 </div>
                 <div className="terminal-output-meta">
                   <span>{item.backend}</span>
                   <span>{displayTime(item.createdAt)}</span>
                 </div>
-                <pre className="terminal-output-block">{item.stdout || item.stderr || "(no output)"}</pre>
+                <pre className="terminal-output-block">{item.stdout || item.stderr || "（无输出）"}</pre>
                 {item.stderr && item.stdout ? <pre className="terminal-output-block error">{item.stderr}</pre> : null}
                 <p style={{ margin: "0.5rem 0 0", color: "var(--text-muted)", fontSize: 12 }}>{item.hint}</p>
               </article>
             ))
           ) : (
             <EmptyState
-              title="No terminal output yet"
-              detail="Run a command to start building command history. Arrow up and down reuse recent commands."
+              title="暂无终端输出"
+              detail="运行命令后会生成历史记录。可用上下方向键复用最近命令。"
             />
           )}
         </div>
 
         <div className="terminal-side">
           <div className="rail-card">
-            <span className="rail-card-title">Backends</span>
-            <strong>{backendRows.length || 0} available</strong>
+            <span className="rail-card-title">执行后端</span>
+            <strong>{backendRows.length || 0} 个可用</strong>
             <p>
               {backendRows.length
                 ? backendRows.map((item) => String(item.name || "local")).join(", ")
-                : "No backends reported by the Agent."}
+                : "Agent 尚未返回可用后端。"}
             </p>
           </div>
 
           <div className="rail-card">
-            <span className="rail-card-title">Managed sessions</span>
+            <span className="rail-card-title">受管会话</span>
             <strong>{sessionRows.length}</strong>
-            <p>{activeSession ? `Active session: ${valueOf(activeSession, ["session_id", "id"], "-")}` : "No active terminal sessions."}</p>
+            <p>{activeSession ? `当前会话：${valueOf(activeSession, ["session_id", "id"], "-")}` : "暂无活跃终端会话。"}</p>
           </div>
 
           <JsonPanel
-            title="Terminal evidence"
+            title="终端证据"
             data={{
               backend_rows: backendRows,
               session_rows: sessionRows,

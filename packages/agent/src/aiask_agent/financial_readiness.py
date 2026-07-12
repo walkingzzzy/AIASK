@@ -31,6 +31,7 @@ LIVE_SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
     {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
     {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
     {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "runtime_enabled", "event_runtime_mode", "daily_run_count", "cycle_count"]},
+    {"name": "factory_formal_diagnostics", "method": "POST", "path": "/v1/tools/agent_factory_formal_diagnostics", "observes": ["formal_count", "observe_count", "signal_id_coverage", "hard_gate_histogram", "exit_funnel", "top_blockers"]},
     {"name": "market_temperature_cache", "method": "POST", "path": "/v1/tools/agent_market_temperature_cache_readiness", "observes": ["ready", "status", "blockers", "warnings"]},
     {"name": "market_temperature_forward_validation", "method": "POST", "path": "/v1/tools/agent_market_temperature_forward_validation", "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"]},
     {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
@@ -291,6 +292,10 @@ async def financial_system_readiness(
         factory_status = await runtime.tool_registry.call_tool("agent_factory_status", {"recent_run_limit": 5, "_timeout_seconds": 5})
         factory_runs = await runtime.tool_registry.call_tool("agent_factory_runs", {"limit": 5, "_timeout_seconds": 5})
         review_snapshot = await runtime.tool_registry.call_tool("agent_strategy_review_snapshot", {"limit": 5, "_timeout_seconds": 5})
+        factory_diagnostics = await runtime.tool_registry.call_tool(
+            "agent_factory_formal_diagnostics",
+            {"top_n": 10, "_timeout_seconds": 8},
+        )
     finally:
         for key, value in db_env_snapshot.items():
             if value is None:
@@ -300,10 +305,91 @@ async def financial_system_readiness(
 
     factory_errors = [
         item
-        for item in (factory_status, factory_runs, review_snapshot)
+        for item in (factory_status, factory_runs, review_snapshot, factory_diagnostics)
         if item.get("success") is False and str(item.get("error_code") or "") not in {"STRATEGY_FACTORY_DATABASE_UNAVAILABLE", "STRATEGY_FACTORY_DATABASE_RECOVERY"}
     ]
-    factory_partial = any(item.get("success") is False for item in (factory_status, factory_runs, review_snapshot))
+    factory_partial = any(item.get("success") is False for item in (factory_status, factory_runs, review_snapshot, factory_diagnostics))
+
+    # P0-D: production factory probes (L2/L3). Mock infra-ready must not claim production_ready.
+    factory_diag_data = dict((factory_diagnostics or {}).get("data") or {}) if isinstance(factory_diagnostics, dict) else {}
+    formal_count = int(factory_diag_data.get("formal_count") or 0)
+    observe_count = int(factory_diag_data.get("observe_count") or 0)
+    incubating_count = int(factory_diag_data.get("incubating_count") or 0)
+    signal_id_coverage = factory_diag_data.get("signal_id_coverage")
+    orders_total = int(factory_diag_data.get("orders_total") or 0)
+    hard_hist = dict(factory_diag_data.get("hard_gate_histogram") or {})
+    exit_funnel = dict(factory_diag_data.get("exit_funnel") or {})
+    open_positions = int(exit_funnel.get("open_positions") or 0)
+    closed_positions = int(exit_funnel.get("closed") or 0)
+    top_blockers = list(factory_diag_data.get("top_blockers") or [])
+    evidence_gaps = list(factory_diag_data.get("evidence_gaps") or [])
+    diagnostics_ok = bool(factory_diagnostics.get("success")) and bool(factory_diag_data.get("ok", True))
+
+    def _probe_status_lineage() -> tuple[str, str]:
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        if orders_total <= 0:
+            return "degraded", "no paper orders yet; signal lineage coverage not measurable"
+        try:
+            cov = float(signal_id_coverage) if signal_id_coverage is not None else 0.0
+        except Exception:
+            cov = 0.0
+        if cov < 0.95:
+            return "blocked", f"order signal_id coverage={cov:.2%} below 95% floor"
+        return "ready", f"order signal_id coverage={cov:.2%}"
+
+    def _probe_exit_continuity() -> tuple[str, str]:
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        if open_positions <= 0 and closed_positions <= 0:
+            return "degraded", "no trade positions yet; exit continuity not measurable"
+        if open_positions > 0 and closed_positions == 0:
+            return "blocked", f"open_positions={open_positions} but closed=0 (exit pathway starved)"
+        return "ready", f"open={open_positions} closed={closed_positions}"
+
+    def _probe_hard_gate_health() -> tuple[str, str]:
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        missing = int(hard_hist.get("missing") or 0)
+        bootstrap = int(hard_hist.get("bootstrap_pending") or 0)
+        passed = int(hard_hist.get("passed") or 0)
+        pool = max(observe_count + formal_count, incubating_count, sum(int(v or 0) for v in hard_hist.values()))
+        if pool <= 0:
+            return "degraded", "no incubating/formal pool for hard-gate histogram"
+        if passed == 0 and (missing + bootstrap) >= max(pool, 1) and observe_count > 0:
+            return "blocked", "hard gate fully missing/bootstrap_pending with observe pool present"
+        if passed == 0 and observe_count > 0:
+            return "degraded", "hard gate has no passed strategies yet"
+        return "ready", f"hard_gate passed={passed} missing={missing} bootstrap_pending={bootstrap}"
+
+    def _probe_formal_pipeline() -> tuple[str, str]:
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        if formal_count > 0:
+            return "ready", f"formal_count={formal_count}"
+        if not top_blockers and observe_count > 0:
+            return "blocked", "formal=0 and blockers not exposed (unexplainable empty formal pool)"
+        if formal_count == 0 and observe_count > 0:
+            top = top_blockers[0] if top_blockers else {"code": "unknown", "count": 0}
+            return "degraded", f"formal=0; top_blocker={top.get('code')} count={top.get('count')}"
+        return "degraded", "formal pool empty (no observe/formal samples)"
+
+    def _probe_evidence_coverage() -> tuple[str, str]:
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        trades_total = int(factory_diag_data.get("trades_total") or 0)
+        signals_total = int(factory_diag_data.get("signals_total") or 0)
+        if trades_total <= 0 and signals_total <= 0 and orders_total <= 0 and (observe_count > 0 or incubating_count > 0):
+            return "blocked", "runtime pool present but signals/orders/trades are all zero"
+        if evidence_gaps:
+            return "degraded", f"evidence_gaps={len(evidence_gaps)}"
+        return "ready", f"signals={signals_total} orders={orders_total} trades={trades_total}"
+
+    lineage_status, lineage_detail = _probe_status_lineage()
+    exit_status, exit_detail = _probe_exit_continuity()
+    hard_status, hard_detail = _probe_hard_gate_health()
+    formal_status, formal_detail = _probe_formal_pipeline()
+    evidence_status, evidence_detail = _probe_evidence_coverage()
 
     required_gates = [
         _gate(
@@ -338,13 +424,60 @@ async def financial_system_readiness(
             "strategy_factory",
             "ready" if not factory_partial else "degraded" if db_ready and not factory_errors else "blocked",
             required=True,
-            detail="Strategy factory status, runs, and review snapshots are reachable" if not factory_partial else "Strategy factory is partially reachable or awaiting database/runtime availability",
+            detail="Strategy factory status, runs, review, and formal diagnostics are reachable" if not factory_partial else "Strategy factory is partially reachable or awaiting database/runtime availability",
             evidence={
                 "status_success": bool(factory_status.get("success")),
                 "runs_success": bool(factory_runs.get("success")),
                 "review_success": bool(review_snapshot.get("success")),
-                "error_codes": [str(item.get("error_code") or "") for item in (factory_status, factory_runs, review_snapshot) if item.get("success") is False],
+                "diagnostics_success": bool(factory_diagnostics.get("success")),
+                "error_codes": [str(item.get("error_code") or "") for item in (factory_status, factory_runs, review_snapshot, factory_diagnostics) if item.get("success") is False],
             },
+        ),
+        _gate(
+            "factory_evidence_coverage",
+            evidence_status,
+            required=True,
+            detail=evidence_detail,
+            evidence={
+                "formal_count": formal_count,
+                "observe_count": observe_count,
+                "orders_total": orders_total,
+                "trades_total": int(factory_diag_data.get("trades_total") or 0),
+                "signals_total": int(factory_diag_data.get("signals_total") or 0),
+                "evidence_gaps": evidence_gaps[:5],
+            },
+        ),
+        _gate(
+            "signal_lineage_coverage",
+            lineage_status,
+            required=True,
+            detail=lineage_detail,
+            evidence={
+                "signal_id_coverage": signal_id_coverage,
+                "orders_total": orders_total,
+                "orders_with_signal_id": int(factory_diag_data.get("orders_with_signal_id") or 0),
+            },
+        ),
+        _gate(
+            "exit_continuity",
+            exit_status,
+            required=True,
+            detail=exit_detail,
+            evidence=dict(exit_funnel),
+        ),
+        _gate(
+            "hard_gate_health",
+            hard_status,
+            required=True,
+            detail=hard_detail,
+            evidence={"hard_gate_histogram": hard_hist, "observe_count": observe_count, "formal_count": formal_count},
+        ),
+        _gate(
+            "formal_pipeline",
+            formal_status,
+            required=True,
+            detail=formal_detail,
+            evidence={"formal_count": formal_count, "observe_count": observe_count, "top_blockers": top_blockers[:5]},
         ),
         _gate(
             "semantic_search",
@@ -433,6 +566,9 @@ async def financial_system_readiness(
     blocked_required = [item for item in required_gates if item["status"] == "blocked"]
     degraded_required = [item for item in required_gates if item["status"] == "degraded"]
     status = "blocked" if blocked_required else "degraded" if degraded_required else "ready"
+    is_mock_ai = bool(ai.get("mock"))
+    # P0-D5: infrastructure "ready" under mock is never production_ready.
+    production_ready = status == "ready" and not is_mock_ai
     next_actions = _build_next_actions(
         required_gates=required_gates,
         optional_gates=optional_gates,
@@ -441,10 +577,48 @@ async def financial_system_readiness(
         control_token_configured=control_token_configured,
         status=status,
     )
+    if is_mock_ai:
+        next_actions = [
+            _next_action(
+                "replace_mock_model",
+                "Replace mock model before production",
+                "Mock e2e green does not mean Live production ready. Configure a real OpenAI-compatible provider.",
+                priority="critical",
+                target_page="settings",
+                env_vars=["AIASK_AGENT_MODEL_PROVIDER", "OPENAI_API_KEY", "OPENAI_BASE_URL"],
+                gate="ai_model",
+            ),
+            *next_actions,
+        ]
+    # surface factory next_actions from diagnostics
+    for item in list(factory_diag_data.get("next_actions") or [])[:5]:
+        code = str(item.get("code") or "factory_action")
+        detail = str(item.get("detail") or "")
+        if not detail:
+            continue
+        next_actions.append(
+            _next_action(
+                f"factory_{code}",
+                code.replace("_", " ").title(),
+                detail,
+                priority="recommended",
+                target_page="factory",
+                gate="formal_pipeline",
+            )
+        )
     return {
         "object": "aiask.financial_system_readiness",
         "status": status,
-        "production_ready": status == "ready",
+        "production_ready": production_ready,
+        "factory_diagnostics": {
+            "formal_count": formal_count,
+            "observe_count": observe_count,
+            "signal_id_coverage": signal_id_coverage,
+            "hard_gate_histogram": hard_hist,
+            "exit_funnel": exit_funnel,
+            "top_blockers": top_blockers[:10],
+            "ok": diagnostics_ok,
+        },
         "required_gates": required_gates,
         "optional_gates": optional_gates,
         "next_actions": next_actions,

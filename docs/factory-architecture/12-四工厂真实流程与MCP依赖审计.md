@@ -21,12 +21,12 @@
 
 ## 结论速览
 
-- `scripts/factories/run_three_factories.py` 当前实际监督 4 个运行体：`strategy_factory`、`factor_mining_factory`、`incubation_factory`、`market_event_ingest`。
+- `scripts/factories/run_three_factories.py` 当前默认监督最多 4 个运行体：`strategy_factory`、`factor_mining_factory`、`incubation_factory`、`market_event_ingest`；CLI/环境变量可裁剪到更少。
 - `SignalTracker` 是独立 sidecar，通过 `scripts/factories/run_signal_tracker.py` 单独运行，不在 supervisor 内。
 - `packages/strategy-factory` 当前不仅拥有领域编排骨架，也已拥有四工厂的 canonical runtime facade；`akshare-mcp` 侧主要保留 support/provider/integration/compat。
 - `akshare-mcp` 的 manager/runtime facade 与 `services/` 边界层当前已只依赖 `strategy_factory.api.*`、`strategy_factory.runtime.*` 和本地 bootstrap，不再直连 `strategy_factory` 根包 facade 或私有实现层。
 - Strategy Factory 的 host 依赖不能只按 FastMCP tool 数量估算。当前真实代码至少包含：
-  - `configure_strategy_factory_runtime_services()` 注入的 20 个 runtime provider 注册项。
+  - `configure_strategy_factory_runtime_services()` 注入的 host runtime provider 注册面；canonical bootstrap **必需 19 个**（`DEFAULT_REQUIRED_RUNTIME_PROVIDERS`）。历史“20 个/20+”口径不得再当作必需数。
   - `MCPRuntimeAdapters` 提供的 7 条 runtime adapter 通道；若只统计 gateway 通道，则是 6 条，再加 1 条 repository 通道。
   - `configure_akshare_storage_runtime_hooks()` 注入到共享存储层的额外 runtime hook。
 - 因子挖掘、孵化、SignalTracker、事件摄取当前仍大量依赖 `akshare-mcp` 的 support/provider/integration/service 代码，但其 canonical orchestration 已不再全部留在 `akshare-mcp`。

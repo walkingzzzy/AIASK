@@ -23,6 +23,27 @@ def _raise_http_error(result: dict[str, Any]) -> None:
     raise HTTPException(status_code=status, detail=detail)
 
 
+def _empty_asset_list(user_id: str, resource: str, result: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "object": "desktop.asset",
+        "success": True,
+        "data": [],
+        "error": None,
+        "error_code": None,
+        "meta": {
+            "user_id": user_id,
+            "resource": resource,
+            "degraded": True,
+            "reason": result.get("error_code") or result.get("error") or "desktop_asset_empty",
+        },
+        "secrets_redacted": True,
+    }
+
+
+def _is_missing_asset_collection(result: dict[str, Any]) -> bool:
+    return str(result.get("error_code") or "") in {"DESKTOP_API_NOT_FOUND", "DESKTOP_API_UPSTREAM_UNAVAILABLE"}
+
+
 def create_desktop_assets_router(
     *,
     require_api: Callable[[Request], None],
@@ -37,6 +58,8 @@ def create_desktop_assets_router(
         require_api(request)
         result = await desktop_asset_call("GET", f"/v1/users/{user_id}/strategies", None)
         if not result.get("success"):
+            if _is_missing_asset_collection(result):
+                return _empty_asset_list(user_id, "strategies", result)
             _raise_http_error(result)
         return result
 
@@ -77,6 +100,8 @@ def create_desktop_assets_router(
         require_api(request)
         result = await desktop_asset_call("GET", f"/v1/users/{user_id}/stock-pools", None)
         if not result.get("success"):
+            if _is_missing_asset_collection(result):
+                return _empty_asset_list(user_id, "stock_pools", result)
             _raise_http_error(result)
         return result
 

@@ -6,6 +6,8 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import uuid4
 
+from aiask_quant_core.strategy_explanation import build_strategy_explanation
+
 from akshare_mcp._fragment_loader import exec_block as _exec_block
 
 from . import constants as _constants

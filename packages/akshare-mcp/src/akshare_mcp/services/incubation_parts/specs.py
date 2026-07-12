@@ -155,6 +155,15 @@
         ) -> Optional[dict]:
             if shares <= 0:
                 return None
+            lineage_gap = _require_order_lineage(
+                strategy_id=strategy.get('id'),
+                signal_id=signal_id,
+                position_id=position_id,
+                context=f"sync_signals_to_orders:{source}:{code}:{direction}",
+            )
+            if lineage_gap:
+                _skip(lineage_gap)
+                return None
             order = {
                 'account_id': account_id,
                 'strategy_id': strategy['id'],
@@ -629,6 +638,14 @@
 
         created = []
         skipped = 0
+        skip_reason_counts: dict[str, int] = {}
+
+        def _skip_force(reason: str) -> None:
+            nonlocal skipped
+            skipped += 1
+            token = str(reason or "unknown").strip() or "unknown"
+            skip_reason_counts[token] = int(skip_reason_counts.get(token) or 0) + 1
+
         save_order_method = _get_async_db_method(db, 'save_paper_order')
 
         for code, position in list(positions.items()):
@@ -655,6 +672,15 @@
                 (open_position or {}).get('position_id')
                 or _build_position_id(strategy['id'], account_id, code, signal_id)
             )
+            lineage_gap = _require_order_lineage(
+                strategy_id=strategy.get('id'),
+                signal_id=signal_id,
+                position_id=position_id,
+                context=f"force_close_open_positions:{source}:{code}",
+            )
+            if lineage_gap:
+                _skip_force(lineage_gap)
+                continue
             order = {
                 'account_id': account_id,
                 'strategy_id': strategy['id'],
@@ -740,6 +766,7 @@
                     'signal_date': str(signal_date),
                     'created_count': len(created),
                     'skipped_count': skipped,
+                    'skip_reason_counts': dict(skip_reason_counts),
                     'reason': reason,
                     'requested_codes': sorted(allowed_codes),
                     'reconciled_before_close': reconciled_before_close,
@@ -754,6 +781,7 @@
             'account_id': account_id,
             'created_count': len(created),
             'skipped_count': skipped,
+            'skip_reason_counts': dict(skip_reason_counts),
             'requested_codes': sorted(allowed_codes),
             'reconciled_before_close': reconciled_before_close,
             'orders': created,

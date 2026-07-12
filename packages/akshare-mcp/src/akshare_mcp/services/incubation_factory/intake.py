@@ -5,9 +5,12 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
+
+from aiask_quant_core.strategy_explanation import build_strategy_explanation
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +39,70 @@ def _resolve_db_async_method(db: Any, name: str) -> Any:
 
 class IncubationIntake:
     """自动识别和接纳策略工厂产出的新策略。"""
+
+    @staticmethod
+    def _decode_mapping(value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return dict(value)
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except Exception:
+                return {}
+            return dict(parsed) if isinstance(parsed, dict) else {}
+        return {}
+
+    @classmethod
+    def _exit_policy_readiness(cls, strategy: dict[str, Any]) -> dict[str, Any]:
+        """P0-B2: exit_policy presence check for incubation intake readiness."""
+        payload = dict(strategy or {})
+        params = cls._decode_mapping(payload.get("params"))
+        runtime_playbook = cls._decode_mapping(
+            payload.get("runtime_playbook") or params.get("runtime_playbook")
+        )
+        exit_policy = cls._decode_mapping(runtime_playbook.get("exit_policy"))
+        holding_window = cls._decode_mapping(
+            payload.get("holding_window") or params.get("holding_window")
+        )
+        risk_rules = cls._decode_mapping(payload.get("risk_rules") or params.get("risk_rules"))
+        has_time_stop = False
+        for value in (
+            exit_policy.get("time_stop_days"),
+            exit_policy.get("max_holding_days"),
+            holding_window.get("max_days"),
+            risk_rules.get("max_holding_days"),
+        ):
+            try:
+                if int(float(value)) > 0:
+                    has_time_stop = True
+                    break
+            except Exception:
+                continue
+        has_exit_policy = bool(exit_policy) or has_time_stop
+        blockers: list[str] = []
+        if not has_exit_policy:
+            blockers.append("missing_exit_policy")
+        return {
+            "has_exit_policy": has_exit_policy,
+            "has_time_stop": has_time_stop,
+            "blockers": blockers,
+        }
+
+
+    def _strategy_explanation(
+        payload: dict[str, Any],
+        *,
+        source: str,
+        metrics: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        try:
+            return build_strategy_explanation(
+                payload,
+                metrics=metrics,
+                source=source,
+            )
+        except Exception:
+            return {}
 
     async def scan_and_accept(self, db: Any) -> dict[str, Any]:
         """
@@ -66,6 +133,8 @@ class IncubationIntake:
                 "accepted": 0,
                 "skipped": 0,
                 "errors": 0,
+                "exit_policy_blocker_count": 0,
+                "exit_policy_blocker_examples": [],
                 "details": [],
             }
             paper_candidates = await self._list_paper_observation_strategies(db)
@@ -105,6 +174,8 @@ class IncubationIntake:
         accepted: list[dict[str, Any]] = []
         skipped = 0
         errors = 0
+        exit_policy_blocker_count = 0
+        exit_policy_blocker_examples: list[dict[str, Any]] = []
 
         for strategy in incubating:
             sid = str(strategy.get("id") or "").strip()
@@ -122,6 +193,24 @@ class IncubationIntake:
                     skipped += 1
                     continue
 
+                # P0-B2: require exit_policy / time-stop before accepting into incubation
+                exit_ready = self._exit_policy_readiness(strategy)
+                if exit_ready.get("blockers"):
+                    exit_policy_blocker_count += 1
+                    skipped += 1
+                    if len(exit_policy_blocker_examples) < 20:
+                        exit_policy_blocker_examples.append({
+                            "strategy_id": sid,
+                            "strategy_name": strategy.get("name"),
+                            "blockers": list(exit_ready.get("blockers") or []),
+                        })
+                    logger.info(
+                        "IncubationIntake: skip %s due to exit_policy blockers=%s",
+                        sid,
+                        exit_ready.get("blockers"),
+                    )
+                    continue
+
                 # 自动创建孵化账户
                 ensure_result = await incubation_service.ensure_account(
                     db,
@@ -131,12 +220,17 @@ class IncubationIntake:
                 )
 
                 account = dict(ensure_result.get("account") or {})
+                explanation = self._strategy_explanation(
+                    strategy,
+                    source="incubation_factory_intake",
+                )
                 accepted.append({
                     "strategy_id": sid,
                     "strategy_name": strategy.get("name"),
                     "strategy_type": strategy.get("strategy_type"),
                     "account_id": account.get("account_id") or account.get("id"),
                     "accepted_at": datetime.now(timezone.utc).isoformat(),
+                    "strategy_explanation": explanation,
                 })
 
                 # 记录领域事件
@@ -161,6 +255,8 @@ class IncubationIntake:
             "accepted": len(accepted),
             "skipped": skipped,
             "errors": errors,
+            "exit_policy_blocker_count": exit_policy_blocker_count,
+            "exit_policy_blocker_examples": exit_policy_blocker_examples,
             "details": accepted,
         }
 
@@ -356,6 +452,13 @@ class IncubationIntake:
             candidates.append(
                 {
                     "candidate_id": candidate_id,
+                    "strategy_name": payload.get("strategy_name") or payload.get("name"),
+                    "strategy_type": payload.get("strategy_type"),
+                    "description": payload.get("description") or payload.get("hypothesis"),
+                    "tags": list(payload.get("tags") or []),
+                    "generation_reason": dict(payload.get("generation_reason") or {}),
+                    "research_task": dict(payload.get("research_task") or {}),
+                    "strategy_explanation": dict(payload.get("strategy_explanation") or {}),
                     "task_key": item.get("task_key"),
                     "event_id": item.get("event_id"),
                     "theme_code": item.get("theme_code"),
@@ -445,6 +548,22 @@ class IncubationIntake:
         candidate_id = str(candidate.get("candidate_id") or "").strip()
         if not candidate_id:
             return
+        explanation = dict(candidate.get("strategy_explanation") or {}) or self._strategy_explanation(
+            {
+                **dict(candidate or {}),
+                "id": candidate_id,
+                "name": candidate.get("strategy_name") or candidate_id,
+                "strategy_type": candidate.get("strategy_type") or "record_only_candidate",
+                "params": {
+                    "generation_reason": dict(candidate.get("generation_reason") or {}),
+                    "research_task": dict(candidate.get("research_task") or {}),
+                    "quality_summary": dict(candidate.get("quality_summary") or {}),
+                    "backtest_metrics": dict(candidate.get("backtest_metrics") or {}),
+                },
+            },
+            metrics=dict(candidate.get("backtest_metrics") or {}),
+            source="incubation_factory_gate3_record_only",
+        )
         try:
             await db.save_strategy_domain_event({
                 "strategy_id": None,
@@ -455,6 +574,11 @@ class IncubationIntake:
                 "severity": "info",
                 "payload": {
                     "candidate_id": candidate_id,
+                    "strategy_name": candidate.get("strategy_name"),
+                    "strategy_type": candidate.get("strategy_type"),
+                    "strategy_explanation": explanation,
+                    "strategy_explanation_summary": explanation.get("summary"),
+                    "strategy_explanation_labels": list(explanation.get("labels") or []),
                     "stage": "record_only_intake",
                     "record_only": True,
                     "action_boundary": "no_strategy_or_account_created",
@@ -489,6 +613,10 @@ class IncubationIntake:
         """
         if not hasattr(db, "save_strategy_domain_event"):
             return
+        explanation = self._strategy_explanation(
+            strategy,
+            source="incubation_factory_paper_intake",
+        )
         try:
             await db.save_strategy_domain_event({
                 "strategy_id": strategy.get("id"),
@@ -500,6 +628,9 @@ class IncubationIntake:
                 "payload": {
                     "strategy_name": strategy.get("name"),
                     "strategy_type": strategy.get("strategy_type"),
+                    "strategy_explanation": explanation,
+                    "strategy_explanation_summary": explanation.get("summary"),
+                    "strategy_explanation_labels": list(explanation.get("labels") or []),
                     "stage": "paper",
                 },
             })
@@ -513,6 +644,10 @@ class IncubationIntake:
     ) -> None:
         if not hasattr(db, "save_strategy_domain_event"):
             return
+        explanation = self._strategy_explanation(
+            strategy,
+            source="incubation_factory_diagnostic_intake",
+        )
         try:
             await db.save_strategy_domain_event({
                 "strategy_id": strategy.get("id"),
@@ -524,6 +659,9 @@ class IncubationIntake:
                 "payload": {
                     "strategy_name": strategy.get("name"),
                     "strategy_type": strategy.get("strategy_type"),
+                    "strategy_explanation": explanation,
+                    "strategy_explanation_summary": explanation.get("summary"),
+                    "strategy_explanation_labels": list(explanation.get("labels") or []),
                     "stage": "diagnostic",
                     "diagnostic_observation": True,
                 },
@@ -540,6 +678,10 @@ class IncubationIntake:
         """记录策略被孵化工厂接纳的领域事件。"""
         if not hasattr(db, "save_strategy_domain_event"):
             return
+        explanation = self._strategy_explanation(
+            strategy,
+            source="incubation_factory_intake",
+        )
         try:
             await db.save_strategy_domain_event({
                 "strategy_id": strategy.get("id"),
@@ -551,6 +693,9 @@ class IncubationIntake:
                 "payload": {
                     "strategy_name": strategy.get("name"),
                     "strategy_type": strategy.get("strategy_type"),
+                    "strategy_explanation": explanation,
+                    "strategy_explanation_summary": explanation.get("summary"),
+                    "strategy_explanation_labels": list(explanation.get("labels") or []),
                     "account_id": account.get("account_id") or account.get("id"),
                     "initial_stage": "warmup",
                 },

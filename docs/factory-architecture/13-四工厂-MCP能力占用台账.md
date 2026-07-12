@@ -38,7 +38,7 @@ evidence_paths: 代码证据路径
 
 ### Runtime provider surface
 
-当前 `configure_strategy_factory_runtime_services()` 注册 35 项 provider：
+当前 `configure_strategy_factory_runtime_services()` 注册较宽 host provider 面（下表为台账编号；**canonical bootstrap 必需仅 19 项**，见 `DEFAULT_REQUIRED_RUNTIME_PROVIDERS`）。host 注册数 ≠ 必需数：
 
 | 编号 | provider key | 当前实现来源 |
 | --- | --- | --- |

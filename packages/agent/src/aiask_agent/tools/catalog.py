@@ -126,6 +126,13 @@ FINANCE_SAFE_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
         "description": "Read PIT forward-validation matrix for cached market-temperature states.",
     },
     {
+        "name": "agent_factory_formal_diagnostics",
+        "capability": "factory_formal_diagnostics",
+        "category": "financial_read",
+        "side_effect": "read_only",
+        "description": "Read formal/observe counts, evidence coverage, hard-gate histogram, exit funnel, and top blockers.",
+    },
+    {
         "name": "agent_factory_status",
         "capability": "strategy_factory_status",
         "category": "financial_read",

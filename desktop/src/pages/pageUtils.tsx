@@ -23,6 +23,7 @@ export interface PageProps {
   setSelectedArtifactId?: (artifactId: string) => void;
   setSelectedReviewTab?: (tab: WorkbenchContext["selectedReviewTab"]) => void;
   reloadWorkbench?: () => Promise<void>;
+  realtimeConnected?: boolean;
 }
 
 export function list<T extends UnknownRecord = UnknownRecord>(payload: unknown): T[] {

@@ -113,6 +113,27 @@ def test_fastapi_native_full_management_surface(tmp_path, monkeypatch) -> None:
     assert created_skill.status_code == 200
     skills = client.get("/v1/skills", headers=_control_headers())
     assert any(item["name"] == "risk-review" for item in skills.json()["data"]["skills"])
+    assert skills.json()["data"]["count"] >= 1
+
+    disabled_skill = client.patch(
+        "/v1/skills/risk-review",
+        headers=_control_headers(),
+        json={"enabled": False},
+    )
+    assert disabled_skill.status_code == 200
+    skills = client.get("/v1/skills", headers=_control_headers())
+    risk_review = next(item for item in skills.json()["data"]["skills"] if item["name"] == "risk-review")
+    assert risk_review["enabled"] is False
+    assert risk_review["status"] == "disabled"
+
+    registered_skill = client.post(
+        "/v1/skills",
+        headers=_control_headers(),
+        json={"name": "registered-from-desktop", "type": "local", "path": "C:/skills/registered-from-desktop/SKILL.md"},
+    )
+    assert registered_skill.status_code == 200
+    skills = client.get("/v1/skills", headers=_control_headers())
+    assert any(item["name"] == "registered-from-desktop" for item in skills.json()["data"]["skills"])
 
     plugin = client.post(
         "/v1/plugins",
@@ -309,10 +330,11 @@ def test_financial_system_readiness_gate_reports_required_blockers(tmp_path, mon
         "session_search",
         "memory_search",
         "factory_status",
+        "factory_formal_diagnostics",
         "market_temperature_cache",
         "market_temperature_forward_validation",
     } <= smoke_checks
-    assert len(payload["live_smoke"]["checks"]) == 16
+    assert len(payload["live_smoke"]["checks"]) == 17
     smoke_check_details = {item["name"]: item for item in payload["live_smoke"]["checks"]}
     assert smoke_check_details["workbench_summary"]["path"] == "/v1/desktop/workbench/summary?session_limit=5&run_limit=5"
     assert "runtime_enabled" in smoke_check_details["factory_status"]["observes"]
@@ -344,11 +366,64 @@ def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp
     fake_module.strategy_manager = fake_strategy_manager
     monkeypatch.setitem(sys.modules, "akshare_mcp.tools.managers.strategy_manager", fake_module)
 
+    # P0-D: empty factory evidence must not claim production_ready; inject healthy diagnostics.
+    async def healthy_formal_diagnostics(arguments: dict | None = None) -> dict:
+        return {
+            "success": True,
+            "data": {
+                "object": "aiask.factory_formal_diagnostics",
+                "ok": True,
+                "formal_count": 2,
+                "observe_count": 5,
+                "incubating_count": 7,
+                "signal_id_coverage": 1.0,
+                "orders_total": 10,
+                "orders_with_signal_id": 10,
+                "trades_total": 8,
+                "signals_total": 12,
+                "evidence_gaps": [],
+                "top_blockers": [],
+                "hard_gate_histogram": {
+                    "missing": 0,
+                    "bootstrap_pending": 0,
+                    "insufficient_samples": 0,
+                    "failed_metrics": 0,
+                    "bootstrap_ready": 0,
+                    "passed": 5,
+                    "unknown": 0,
+                },
+                "exit_funnel": {
+                    "open_positions": 3,
+                    "with_exit_signal": 2,
+                    "with_exit_order": 1,
+                    "closed": 4,
+                    "exit_order_conversion": 0.5,
+                },
+                "next_actions": [{"code": "monitor", "detail": "ok"}],
+            },
+            "error": None,
+        }
+
+    from aiask_agent.adapters import strategy_factory as strategy_factory_adapter
+
+    monkeypatch.setattr(strategy_factory_adapter, "factory_formal_diagnostics", healthy_formal_diagnostics)
+
     runtime = AgentRuntime(
         model_client=MockModelClient(),
         session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
         max_iterations=2,
     )
+    # Registry captures handler refs at build time; rebind after monkeypatch for determinism.
+    tool = runtime.tool_registry.get("agent_factory_formal_diagnostics")
+    assert tool is not None
+    runtime.tool_registry._tools["agent_factory_formal_diagnostics"] = type(tool)(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+        handler=healthy_formal_diagnostics,
+        metadata=tool.metadata,
+    )
+
     client = TestClient(create_app(runtime=runtime))
 
     response = client.get("/v1/financial-system/readiness")
@@ -358,6 +433,16 @@ def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp
     assert payload["production_ready"] is True
     gates = {item["name"]: item for item in payload["required_gates"]}
     assert all(item["status"] == "ready" for item in gates.values())
+    for name in (
+        "factory_evidence_coverage",
+        "signal_lineage_coverage",
+        "exit_continuity",
+        "hard_gate_health",
+        "formal_pipeline",
+    ):
+        assert name in gates
+        assert gates[name]["status"] == "ready"
+    assert payload["factory_diagnostics"]["formal_count"] == 2
     optional_gates = {item["name"]: item for item in payload["optional_gates"]}
     assert optional_gates["vector_provider"]["status"] == "degraded"
     assert payload["summary"]["required_blocked"] == 0
@@ -365,4 +450,95 @@ def test_financial_system_readiness_can_reach_ready_with_core_runtime_config(tmp
     assert "run_live_financial_workflow" in actions
     assert actions["run_live_financial_workflow"]["target_page"] == "financial-manager"
     assert payload["live_smoke"]["status"] == "ready"
-    assert len(payload["live_smoke"]["checks"]) == 16
+    assert len(payload["live_smoke"]["checks"]) == 17
+
+
+def test_financial_system_readiness_empty_factory_evidence_is_not_production_ready(tmp_path, monkeypatch) -> None:
+    """P0-D: mock AI and empty formal/evidence pool must keep production_ready=false."""
+    monkeypatch.setenv("AIASK_AGENT_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("AIASK_AGENT_ENABLE_HERMES_FULL", "1")
+    monkeypatch.setenv("AIASK_AGENT_CONTROL_TOKEN", "secret")
+    monkeypatch.setenv("AIASK_AGENT_MODEL_PROVIDER", "mock")
+    monkeypatch.setenv("AKSHARE_MCP_SQLITE_PATH", str(tmp_path / "akshare_mcp.sqlite3"))
+
+    async def fake_strategy_manager(action: str, params: object = None, **_: object) -> dict:
+        if action == "factory_status":
+            return {"success": True, "data": {"status": "ready"}, "error": None}
+        if action == "factory_runs":
+            return {"success": True, "data": {"runs": []}, "error": None}
+        if action == "promotion_reviews":
+            return {"success": True, "data": {"reviews": []}, "error": None}
+        return {"success": True, "data": {"action": action, "params": params}, "error": None}
+
+    import types
+
+    fake_module = types.ModuleType("akshare_mcp.tools.managers.strategy_manager")
+    fake_module.strategy_manager = fake_strategy_manager
+    monkeypatch.setitem(sys.modules, "akshare_mcp.tools.managers.strategy_manager", fake_module)
+
+    async def empty_formal_diagnostics(arguments: dict | None = None) -> dict:
+        return {
+            "success": True,
+            "data": {
+                "object": "aiask.factory_formal_diagnostics",
+                "ok": True,
+                "formal_count": 0,
+                "observe_count": 0,
+                "incubating_count": 0,
+                "signal_id_coverage": None,
+                "orders_total": 0,
+                "orders_with_signal_id": 0,
+                "trades_total": 0,
+                "signals_total": 0,
+                "evidence_gaps": [],
+                "top_blockers": [],
+                "hard_gate_histogram": {
+                    "missing": 0,
+                    "bootstrap_pending": 0,
+                    "insufficient_samples": 0,
+                    "failed_metrics": 0,
+                    "bootstrap_ready": 0,
+                    "passed": 0,
+                    "unknown": 0,
+                },
+                "exit_funnel": {
+                    "open_positions": 0,
+                    "with_exit_signal": 0,
+                    "with_exit_order": 0,
+                    "closed": 0,
+                    "exit_order_conversion": None,
+                },
+                "next_actions": [],
+            },
+            "error": None,
+        }
+
+    from aiask_agent.adapters import strategy_factory as strategy_factory_adapter
+
+    monkeypatch.setattr(strategy_factory_adapter, "factory_formal_diagnostics", empty_formal_diagnostics)
+
+    runtime = AgentRuntime(
+        model_client=MockModelClient(),
+        session_store=AgentSessionStore(tmp_path / "state.sqlite3"),
+        max_iterations=2,
+    )
+    tool = runtime.tool_registry.get("agent_factory_formal_diagnostics")
+    assert tool is not None
+    runtime.tool_registry._tools["agent_factory_formal_diagnostics"] = type(tool)(
+        name=tool.name,
+        description=tool.description,
+        parameters=tool.parameters,
+        handler=empty_formal_diagnostics,
+        metadata=tool.metadata,
+    )
+    client = TestClient(create_app(runtime=runtime))
+    response = client.get("/v1/financial-system/readiness")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["production_ready"] is False
+    gates = {item["name"]: item for item in payload["required_gates"]}
+    assert gates["ai_model"]["status"] == "degraded"
+    assert gates["formal_pipeline"]["status"] == "degraded"
+    assert gates["signal_lineage_coverage"]["status"] == "degraded"
+    assert gates["exit_continuity"]["status"] == "degraded"
+    assert payload["factory_diagnostics"]["formal_count"] == 0

@@ -77,6 +77,19 @@ describe("AiaskApi", () => {
     expect(JSON.stringify(result)).toContain("agent_market_temperature_snapshot");
   });
 
+  it("exposes controlled factory surfaces in mock mode", async () => {
+    const api = new AiaskApi(settings);
+    const tools = await api.tools();
+    expect(JSON.stringify(tools)).toContain("agent_factory_status");
+    expect(JSON.stringify(tools)).toContain("agent_incubation_factory_status");
+
+    await expect(api.strategyFactoryStatus()).resolves.toMatchObject({ success: true });
+    await expect(api.factorFactoryStatus()).resolves.toMatchObject({ object: "aiask.desktop.factor_factory_status", status: "ready" });
+    await expect(api.incubationFactoryStatus()).resolves.toMatchObject({ success: true });
+    await expect(api.factoryEventList({ limit: 5 })).resolves.toMatchObject({ success: true });
+    await expect(api.tradePredictionStatus({ limit: 10 })).resolves.toMatchObject({ success: true });
+  });
+
   it("redacts sensitive values recursively", () => {
     const redacted = redactSecrets({
       api_key: "secret",

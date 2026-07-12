@@ -5,6 +5,7 @@ import shutil
 import time
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
 
 from .financial_skill_templates import FINANCIAL_SKILL_TEMPLATES
 from .native_utils import _limit, _safe_slug
@@ -135,6 +136,15 @@ class SkillStore:
         self._update_metadata(skill_name, **metadata)
         return {"name": skill_name, "pinned": bool(pinned)}
 
+    def set_enabled(self, name: str, enabled: bool) -> dict[str, Any]:
+        skill_name = _safe_slug(name)
+        if not self._active_skill_path(skill_name).exists():
+            raise FileNotFoundError(f"skill not found: {skill_name}")
+        metadata = self._metadata_for(skill_name)
+        metadata["state"] = "active" if enabled else "disabled"
+        self._update_metadata(skill_name, **metadata)
+        return {"name": skill_name, "enabled": bool(enabled), "state": metadata["state"]}
+
     def archive(self, name: str, *, reason: str | None = None) -> dict[str, Any]:
         skill_name = _safe_slug(name)
         metadata = self._metadata_for(skill_name)
@@ -251,4 +261,3 @@ class SkillStore:
                 continue
             installed.append(self.save(name, spec["content"], description=spec.get("description")))
         return {"installed": installed, "skipped": skipped, "count": len(installed)}
-

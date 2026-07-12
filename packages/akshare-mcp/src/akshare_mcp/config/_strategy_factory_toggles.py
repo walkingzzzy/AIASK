@@ -155,10 +155,17 @@ def execution_audit_native_evidence_backfill_batch_limit() -> int:
 
 
 def stale_paper_position_closure_enabled() -> bool:
+    """P0-B4: Phase 3d stale paper position closure.
+
+    Default ON so open positions beyond max_holding / grace do not starve
+    realized samples forever. Quality/debug sessions may set
+    INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED=0 temporarily.
+    """
     return _env_bool("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_ENABLED", default=True)
 
 
 def stale_paper_position_closure_batch_limit() -> int:
+    """Max strategies processed per Phase 3d batch (default 40, clamp 1..200)."""
     raw = os.getenv("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_BATCH_LIMIT", "40")
     try:
         value = int(str(raw).strip())
@@ -168,6 +175,13 @@ def stale_paper_position_closure_batch_limit() -> int:
 
 
 def stale_paper_position_closure_grace_days() -> int:
+    """Extra holding days beyond strategy max_holding before forced close.
+
+    Default 0 = close as soon as max_holding / exit_policy time-stop is exceeded.
+    Production can raise grace (0..30) to avoid noisy early closes; quality
+    sessions typically keep 0 for faster round-trips.
+    Env: INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_GRACE_DAYS
+    """
     raw = os.getenv("INCUBATION_FACTORY_STALE_PAPER_POSITION_CLOSURE_GRACE_DAYS", "0")
     try:
         value = int(str(raw).strip())
@@ -175,6 +189,15 @@ def stale_paper_position_closure_grace_days() -> int:
         value = 0
     return max(0, min(value, 30))
 
+
+
+
+def fail_closed_signal_id_enabled() -> bool:
+    """P0-A: reject paper orders / fills that lack strategy/signal/position lineage.
+
+    Default ON. Emergency rollback: INCUBATION_FAIL_CLOSED_SIGNAL_ID=0 (must alarm).
+    """
+    return _env_bool("INCUBATION_FAIL_CLOSED_SIGNAL_ID", default=True)
 
 def gate3_record_only_intake_enabled() -> bool:
     return _env_bool("INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED", default=False)
@@ -214,6 +237,7 @@ __all__ = [
     "stale_paper_position_closure_enabled",
     "stale_paper_position_closure_batch_limit",
     "stale_paper_position_closure_grace_days",
+    "fail_closed_signal_id_enabled",
     "gate3_record_only_intake_enabled",
     "gate3_record_only_intake_batch_limit",
     "gate3_record_only_intake_min_grade",

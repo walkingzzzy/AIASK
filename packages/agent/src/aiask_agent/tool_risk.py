@@ -27,6 +27,7 @@ READ_ONLY_STRATEGY_ACTIONS = frozenset(
         "lifecycle_scan",
         "incubation_overview",
         "closure_review",
+        "factory_formal_diagnostics",
         "factory_status",
         "factory_dispatch_status",
         "factory_runs",

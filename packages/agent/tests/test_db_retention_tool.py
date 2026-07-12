@@ -77,7 +77,8 @@ def test_apply_honours_window_and_min_keep(tmp_db: Path, tmp_path: Path) -> None
     backup_dir = tmp_path / "bk"
     rc = tool.main([
         "--db", str(tmp_db), "--table", "strategy_task_runs",
-        "--days", "30", "--min-keep", "5", "--apply", "--backup-dir", str(backup_dir),
+        "--days", "30", "--min-keep", "5", "--partition-keep", "0",
+        "--apply", "--backup-dir", str(backup_dir),
     ])
     assert rc == 0
     conn = sqlite3.connect(str(tmp_db))
@@ -100,13 +101,52 @@ def test_min_keep_prevents_emptying(tmp_path: Path) -> None:
     _make_db(db, fresh=0, old=50)  # all old
     rc = tool.main([
         "--db", str(db), "--table", "strategy_task_runs",
-        "--days", "30", "--min-keep", "20", "--apply", "--no-backup",
+        "--days", "30", "--min-keep", "20", "--partition-keep", "0",
+        "--apply", "--no-backup",
     ])
     assert rc == 0
     conn = sqlite3.connect(str(db))
     remaining = conn.execute("SELECT COUNT(*) FROM strategy_task_runs").fetchone()[0]
     conn.close()
     assert remaining == 20, f"min_keep floor must be honoured even when all rows are old, got {remaining}"
+
+
+def test_partition_keep_preserves_latest_per_strategy(tmp_path: Path) -> None:
+    tool = _load_tool()
+    db = tmp_path / "partition.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE strategy_task_runs (id INTEGER PRIMARY KEY, strategy_id TEXT, "
+        "task_name TEXT, status TEXT, payload TEXT, result TEXT, started_at TEXT, completed_at TEXT)"
+    )
+    now = datetime.utcnow()
+    old_ts = (now - timedelta(days=400)).strftime("%Y-%m-%d %H:%M:%S")
+    rows = [
+        ("same", "t", "done", "{}", "{}", old_ts, old_ts),
+        ("same", "t", "done", "{}", "{}", old_ts, old_ts),
+        ("same", "t", "done", "{}", "{}", old_ts, old_ts),
+        ("single", "t", "done", "{}", "{}", old_ts, old_ts),
+    ]
+    conn.executemany(
+        "INSERT INTO strategy_task_runs (strategy_id, task_name, status, payload, result, started_at, completed_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        rows,
+    )
+    conn.commit()
+    conn.close()
+
+    rc = tool.main([
+        "--db", str(db), "--table", "strategy_task_runs",
+        "--days", "30", "--min-keep", "0", "--partition-keep", "1",
+        "--apply", "--no-backup",
+    ])
+    assert rc == 0
+    conn = sqlite3.connect(str(db))
+    remaining = conn.execute(
+        "SELECT strategy_id, COUNT(*) FROM strategy_task_runs GROUP BY strategy_id ORDER BY strategy_id"
+    ).fetchall()
+    conn.close()
+    assert remaining == [("same", 1), ("single", 1)]
 
 
 def test_protected_table_is_refused(tmp_db: Path) -> None:

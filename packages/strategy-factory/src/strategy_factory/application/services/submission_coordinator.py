@@ -59,6 +59,11 @@ class StrategyUpsertService:
         )
         await self._submitter._persist_metrics(strategy_id, metrics, validation_report, risk_report, db)
         if not refresh_existing:
+            strategy_explanation = dict(
+                (data.get("params") or {}).get("strategy_explanation")
+                or candidate.get("strategy_explanation")
+                or {}
+            )
             await self._submitter._update_strategy_status(
                 db,
                 strategy_id,
@@ -71,6 +76,9 @@ class StrategyUpsertService:
                 ),
                 metadata={
                     "spawn_reason": candidate.get("spawn_reason"),
+                    "strategy_explanation": strategy_explanation,
+                    "strategy_explanation_summary": strategy_explanation.get("summary"),
+                    "strategy_explanation_labels": list(strategy_explanation.get("labels") or []),
                     "dedup_result": candidate.get("dedup_result") or {},
                     "incubation_budget": dict(candidate.get("incubation_budget") or {}),
                     "diagnostic_observation": bool(candidate.get("diagnostic_observation")),

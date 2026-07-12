@@ -12,6 +12,26 @@ from ..contracts.execution_universe import (
     ExecutionUniverseQuery,
     ExecutionUniverseStrategy,
 )
+from ..contracts.evidence_gaps import (
+    evaluate_evidence_gap_summary,
+    evaluate_signal_id_coverage,
+)
+from ..contracts.hard_gate import (
+    EXECUTION_CONVERSION_EFFICIENCY_MIN,
+    HARD_GATE_STATUSES,
+    PNL_CONVERSION_EFFICIENCY_MIN_EXCLUSIVE,
+    PRODUCTION_TRADE_FLOOR_DEFAULT,
+    TRADE_EXPECTANCY_MIN_EXCLUSIVE,
+    evaluate_execution_audit_gate,
+)
+from ..contracts.promotion_ready import (
+    PROMOTION_COVERAGE_RATIO_MIN,
+    PROMOTION_PRIMARY_EFFECTIVE_N_MIN,
+    PROMOTION_SECONDARY_EFFECTIVE_N_MIN,
+    PROMOTION_STABILITY_GAP_MAX,
+    evaluate_promotion_ready,
+    evaluate_promotion_ready_from_signal_quality,
+)
 
 
 JSONDict = dict[str, Any]
@@ -706,10 +726,19 @@ class RiskGateway(Protocol):
 
 __all__ = [
     "AutonomyGateway",
+    "EXECUTION_CONVERSION_EFFICIENCY_MIN",
     "ExecutableStrategy",
     "ExecutionUniverseContract",
     "ExecutionUniverseQuery",
     "ExecutionUniverseStrategy",
+    "HARD_GATE_STATUSES",
+    "PNL_CONVERSION_EFFICIENCY_MIN_EXCLUSIVE",
+    "PRODUCTION_TRADE_FLOOR_DEFAULT",
+    "PROMOTION_COVERAGE_RATIO_MIN",
+    "PROMOTION_PRIMARY_EFFECTIVE_N_MIN",
+    "PROMOTION_SECONDARY_EFFECTIVE_N_MIN",
+    "PROMOTION_STABILITY_GAP_MAX",
+    "TRADE_EXPECTANCY_MIN_EXCLUSIVE",
     "FactorPoolGateway",
     "FactorResearchGateway",
     "FactoryBacktestAssumptions",
@@ -726,6 +755,11 @@ __all__ = [
     "ValidationGateway",
     "VectorSearchGateway",
     "normalize_execution_assumptions",
+    "evaluate_evidence_gap_summary",
+    "evaluate_execution_audit_gate",
+    "evaluate_promotion_ready",
+    "evaluate_promotion_ready_from_signal_quality",
+    "evaluate_signal_id_coverage",
     "normalize_strategy_preferences",
     "resolve_refresh_existing_contract",
 ]

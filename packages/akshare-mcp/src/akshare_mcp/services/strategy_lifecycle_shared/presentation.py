@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from aiask_quant_core.strategy_explanation import build_strategy_explanation
+
 
 def _string(value: Any) -> str:
     return str(value or "").strip()
@@ -115,6 +117,15 @@ def build_strategy_presentation(
     execution_audit_acceptance: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     payload = dict(strategy or {})
+    params = dict(payload.get("params") or {})
+    strategy_explanation = dict(
+        payload.get("strategy_explanation")
+        or params.get("strategy_explanation")
+        or {}
+    ) or build_strategy_explanation(
+        payload,
+        source="strategy_lifecycle_presentation",
+    )
     owner = dict(owner_state or {})
     favorite = dict(favorite_state or {})
     paper_state = dict(paper_session_state or {})
@@ -176,6 +187,10 @@ def build_strategy_presentation(
     return {
         "stage_label": stage_label,
         "stage_summary": stage_summary,
+        "strategy_explanation": strategy_explanation,
+        "strategy_summary": strategy_explanation.get("summary"),
+        "strategy_labels": list(strategy_explanation.get("labels") or []),
+        "why_generated": strategy_explanation.get("why_generated"),
         "why_watch": why_watch,
         "current_risks": current_risks,
         "recommended_action": recommended_action,

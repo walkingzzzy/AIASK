@@ -116,6 +116,18 @@ class FactorySpec:
     log_name: str
 
 
+SUPERVISED_FACTORY_NAMES: tuple[str, ...] = (
+    "strategy_factory",
+    "factor_mining_factory",
+    "incubation_factory",
+    "market_event_ingest",
+)
+FACTORY_RUNTIME_PROFILE_ENV = "AIASK_FACTORY_RUNTIME_PROFILE"
+FACTORY_PAPER_OWNER_ENV = "AIASK_FACTORY_PAPER_OWNER"
+PRODUCTION_RUNTIME_PROFILE = "production_supervisor"
+INCUBATION_PAPER_OWNER = "incubation_factory"
+
+
 @dataclass
 class FactoryState:
     name: str
@@ -205,10 +217,18 @@ def _child_env() -> dict[str, str]:
     _load_dotenv(env)
     env.setdefault("PYTHONIOENCODING", "utf-8")
     env.setdefault("PYTHONUNBUFFERED", "1")
-    env.setdefault("FACTOR_MINING_FACTORY_ENABLED", "1")
-    env.setdefault("STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED", "1")
-    env.setdefault("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
-    env.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
+    # The production supervisor owns these topology decisions. Do not let a
+    # stale parent shell silently change which runtime owns paper execution.
+    env[FACTORY_RUNTIME_PROFILE_ENV] = PRODUCTION_RUNTIME_PROFILE
+    env[FACTORY_PAPER_OWNER_ENV] = INCUBATION_PAPER_OWNER
+    env["AIASK_STRATEGY_FACTORY_RUNTIME_CONFIGURATOR"] = (
+        "akshare_mcp.adapters.strategy_factory_runtime:"
+        "configure_strategy_factory_runtime_services"
+    )
+    env["FACTOR_MINING_FACTORY_ENABLED"] = "1"
+    env["STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED"] = "1"
+    env["INCUBATION_FACTORY_OWNS_PAPER_TRADING"] = "true"
+    env["INCUBATION_FACTORY_PAPER_INTAKE_ENABLED"] = "1"
     # 1500/轮:observe 积压上万时加速收敛(每策略孵化 ~0.05s,串行远低于 600s 上限)。
     env["INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT"] = "1500"
     env["INCUBATION_FACTORY_GATE3_RECORD_ONLY_INTAKE_ENABLED"] = "0"
@@ -350,6 +370,36 @@ def _build_specs(args: argparse.Namespace, env: dict[str, str]) -> list[FactoryS
     return specs
 
 
+def _build_topology_contract(
+    args: argparse.Namespace,
+    env: dict[str, str],
+    specs: list[FactorySpec],
+) -> dict[str, object]:
+    selected = [spec.name for spec in specs]
+    disabled: list[dict[str, str]] = []
+    disabled_flags = {
+        "strategy_factory": bool(args.no_strategy),
+        "factor_mining_factory": bool(args.no_factor),
+        "incubation_factory": bool(args.no_incubation),
+        "market_event_ingest": bool(args.no_event_ingest),
+    }
+    for name in SUPERVISED_FACTORY_NAMES:
+        if name in selected:
+            continue
+        reason = "cli_disabled" if disabled_flags[name] else "environment_disabled"
+        disabled.append({"name": name, "reason": reason})
+    return {
+        "contract_version": "aiask.factory_topology.v1",
+        "runtime_profile": env.get(FACTORY_RUNTIME_PROFILE_ENV),
+        "expected_factories": list(SUPERVISED_FACTORY_NAMES),
+        "selected_factories": selected,
+        "disabled_factories": disabled,
+        "complete": selected == list(SUPERVISED_FACTORY_NAMES),
+        "paper_trading_owner": env.get(FACTORY_PAPER_OWNER_ENV),
+        "paper_trading_enabled": env.get(FACTORY_PAPER_OWNER_ENV) == INCUBATION_PAPER_OWNER,
+    }
+
+
 def _should_run_incubation_catchup(args: argparse.Namespace) -> bool:
     return not (
         args.no_incubation
@@ -397,6 +447,7 @@ def _write_startup_manifest(
         and not _env_disabled(env.get("MARKET_EVENT_INGEST_ENABLED")),
         "mcp_service_expected": False,
         "mcp_service_command": None,
+        "topology": _build_topology_contract(args, env, specs),
         "incubation_catchup": _command_text(_build_incubation_catchup_command(args))
         if _should_run_incubation_catchup(args)
         else None,
@@ -768,6 +819,16 @@ async def _run(args: argparse.Namespace) -> int:
         f"BROKER_ALLOW_WRITE={env.get('BROKER_ALLOW_WRITE')}"
     )
     print(f"{_timestamp()} factories:")
+    topology = _build_topology_contract(args, env, specs)
+    print(
+        f"{_timestamp()} topology: complete={topology['complete']} "
+        f"profile={topology['runtime_profile']} paper_owner={topology['paper_trading_owner']}"
+    )
+    for disabled in topology["disabled_factories"]:
+        print(
+            f"{_timestamp()}   - disabled {disabled['name']}: {disabled['reason']}",
+            file=sys.stderr,
+        )
     for spec in specs:
         print(f"{_timestamp()}   - {spec.name}: {_command_text(spec.command)}")
     if _should_run_incubation_catchup(args):

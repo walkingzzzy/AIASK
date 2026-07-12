@@ -155,6 +155,58 @@ def test_low_freq_does_not_relax_skill_significance():
     assert metrics["required_trade_count"] == 20
 
 
+def test_graduation_ready_fails_closed_when_stability_gap_is_missing():
+    """Align incubation stage with promotion_ready: missing stability_gap cannot graduate."""
+    passed_audit = {
+        "audit_grade": True,
+        "realized_trade_count": 28,
+        "trade_expectancy": 0.03,
+        "pnl_conversion_efficiency": 0.02,
+        "execution_conversion_efficiency": 0.42,
+    }
+    quality = {
+        "primary_effective_n": 72,
+        "secondary_effective_n": 36,
+        "primary_skill_lcb": 0.04,
+        "secondary_skill_lcb": 0.02,
+        "recent_primary_skill_lcb": 0.01,
+        "coverage_ratio": 0.85,
+        "stability_gap": None,
+    }
+    stage = resolve_incubation_pipeline_stage(quality, audit_summary=passed_audit)
+    assert stage != "graduation_ready"
+
+    quality["stability_gap"] = 0.03
+    assert resolve_incubation_pipeline_stage(quality, audit_summary=passed_audit) == "graduation_ready"
+
+
+def test_signal_quality_snapshot_fails_closed_when_stability_gap_is_missing():
+    from akshare_mcp.services.strategy_lifecycle_shared.execution_quality import (
+        _build_signal_quality_snapshot,
+    )
+
+    missing = _build_signal_quality_snapshot(
+        {
+            "primary_effective_n": 72,
+            "coverage_ratio": 0.85,
+            "primary_skill_lcb": 0.04,
+            "recent_primary_skill_lcb": 0.01,
+            "stability_gap": None,
+        }
+    )
+    present = _build_signal_quality_snapshot(
+        {
+            "primary_effective_n": 72,
+            "coverage_ratio": 0.85,
+            "primary_skill_lcb": 0.04,
+            "recent_primary_skill_lcb": 0.01,
+            "stability_gap": 0.03,
+        }
+    )
+    assert missing["status"] == "candidate"
+    assert present["status"] == "strong"
+
+
 def test_execution_quality_snapshot_keeps_bootstrap_ready_as_sample_gap_evidence():
     snapshot = _build_execution_quality_snapshot(
         {

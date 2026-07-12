@@ -15,7 +15,7 @@ from .runtime_boundary import (
 )
 
 
-CYCLE_PIPELINE_CONTRACT_VERSION = "strategy_factory.cycle_pipeline.v1"
+CYCLE_PIPELINE_CONTRACT_VERSION = "strategy_factory.cycle_pipeline.v2"
 CYCLE_PIPELINE_STAGE_ORDER: tuple[str, ...] = (
     "warmup",
     "collect",
@@ -35,7 +35,7 @@ CYCLE_PIPELINE_STAGE_ALIASES: dict[str, tuple[str, ...]] = {
     "readiness": ("readiness",),
     "research_generation": ("spawn", "autonomy"),
     "evidence_scoring": ("evidence_scoring", "quality_gate", "backtest"),
-    "observe_intake": ("observe_intake", "deduplicate", "submit"),
+    "observe_intake": ("observe_intake", "deduplicate"),
     "promotion_review": ("promotion_review", "submit"),
     "elimination": ("elimination",),
     "finalize": ("finalize",),

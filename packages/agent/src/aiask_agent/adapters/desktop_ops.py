@@ -817,6 +817,61 @@ async def _execute_financial_manager(action: str, params: dict[str, Any]) -> dic
     return _financial_scope_blocked(action, params)
 
 
+
+
+def _repo_root() -> Path:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "scripts" / "ops" / "db_soak.py").exists():
+            return parent
+    return Path(__file__).resolve().parents[4]
+
+
+def _load_db_soak_module():
+    """Load scripts/ops/db_soak.py without installing scripts as a package."""
+    import importlib.util
+    import sys
+
+    path = _repo_root() / "scripts" / "ops" / "db_soak.py"
+    if not path.exists():
+        raise ModuleNotFoundError(f"db_soak harness missing: {path}")
+    mod_name = "aiask_ops_db_soak"
+    if mod_name in sys.modules:
+        return sys.modules[mod_name]
+    spec = importlib.util.spec_from_file_location(mod_name, path)
+    if spec is None or spec.loader is None:
+        raise ModuleNotFoundError(f"cannot load db_soak from {path}")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[mod_name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+async def _execute_ops(action: str, params: dict[str, Any]) -> dict[str, Any]:
+    """P2 ops intents: read-only soak check (product path for scripts/ops/db_soak.py)."""
+    normalized = str(action or "").strip()
+    if normalized not in {"db_soak", "soak_check"}:
+        return {
+            "success": False,
+            "data": {"action": normalized},
+            "error": f"unsupported ops action: {normalized}",
+            "error_code": "UNSUPPORTED_OPS_ACTION",
+        }
+    try:
+        soak = _load_db_soak_module()
+        # Always product-safe defaults: single sample unless params override (capped).
+        payload = dict(params or {})
+        if payload.get("duration_min") is None:
+            payload["duration_min"] = 0.0
+        result = await asyncio.to_thread(soak.run_soak_from_params, payload)
+        if isinstance(result, dict):
+            return result
+        return {"success": True, "data": result, "error": None}
+    except ModuleNotFoundError as exc:
+        return _dependency_missing(exc, dependency="ops_db_soak")
+    except Exception as exc:
+        return _execution_failed(exc, action=normalized, dependency="ops_db_soak")
+
+
 async def execute_confirmed_action(
     target_tool: str,
     action: str,
@@ -843,6 +898,8 @@ async def execute_confirmed_action(
         return await _execute_webhook(normalized_action, payload)
     if normalized_tool == "financial_manager":
         return await _execute_financial_manager(normalized_action, payload)
+    if normalized_tool == "ops":
+        return await _execute_ops(normalized_action, payload)
     return {
         "success": False,
         "data": {

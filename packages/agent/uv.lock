@@ -68,6 +68,12 @@ tui = [
     { name = "textual" },
 ]
 
+[package.dev-dependencies]
+dev = [
+    { name = "pytest" },
+    { name = "pytest-asyncio" },
+]
+
 [package.metadata]
 requires-dist = [
     { name = "akshare-mcp", editable = "../akshare-mcp" },
@@ -106,6 +112,12 @@ requires-dist = [
     { name = "wandb", marker = "extra == 'rl-atropos'", specifier = ">=0.16.0" },
 ]
 provides-extras = ["test", "browser", "tui", "terminal-backends", "gateway-platforms", "rl-atropos", "full-hermes-native"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.0" },
+]
 
 [[package]]
 name = "aiask-quant-core"
@@ -323,6 +335,12 @@ requires-dist = [
     { name = "tushare", specifier = ">=1.4.0" },
 ]
 provides-extras = ["parallel", "legacy", "experiment-tracking", "calibration", "production"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.0" },
+]
 
 [[package]]
 name = "altair"
@@ -3532,6 +3550,12 @@ requires-dist = [
     { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.25.0" },
 ]
 provides-extras = ["test"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "pytest", specifier = ">=8.0.0" },
+    { name = "pytest-asyncio", specifier = ">=0.25.0" },
+]
 
 [[package]]
 name = "sympy"

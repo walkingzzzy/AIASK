@@ -97,3 +97,80 @@ def test_deny_on_expired_intent_is_graceful(tmp_path) -> None:
     assert result["success"] is False
     assert result["error_code"] == "INVALID_STATUS"
     assert store.get(intent["intent_id"])["status"] == "expired"
+
+
+def test_incubation_factory_actions_are_allowed(tmp_path) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    for action in (
+        "incubation_factory.dry_run",
+        "incubation_factory.run_once",
+        "incubation_factory.maintenance",
+        "factor_factory.run_once",
+    ):
+        intent = store.create(action=action, params={"source": "test", "dry_run": action != "incubation_factory.run_once"})
+        assert intent["status"] == "awaiting_confirmation"
+        assert intent["target_tool"] in {"incubation_factory", "factor_factory"}
+        assert intent["action"] == action
+
+
+def test_confirm_incubation_dry_run_executes_once(tmp_path, monkeypatch) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    executor = IntentExecutor(store)
+    intent = store.create(
+        action="incubation_factory.dry_run",
+        params={"source": "test", "dry_run": True},
+    )
+    calls: list[dict] = []
+
+    async def fake_execute(target_tool: str, action: str, params: dict | None = None) -> dict:
+        calls.append({"tool": target_tool, "action": action, "params": dict(params or {})})
+        return {"success": True, "data": {"status": "dry_run_ok"}, "error": None}
+
+    from aiask_agent.adapters import desktop_ops
+
+    monkeypatch.setattr(desktop_ops, "execute_confirmed_action", fake_execute)
+
+    confirmed = asyncio.run(executor.confirm(intent["intent_id"]))
+    assert confirmed["success"] is True
+    assert calls == [{"tool": "incubation_factory", "action": "dry_run", "params": {"source": "test", "dry_run": True}}]
+    assert store.get(intent["intent_id"])["status"] == "succeeded"
+
+
+def test_ops_db_soak_intent_is_allowed(tmp_path) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    for action in ("ops.db_soak", "factory.soak_check"):
+        intent = store.create(action=action, params={"duration_min": 0})
+        assert intent["status"] == "awaiting_confirmation"
+        assert intent["target_tool"] == "ops"
+        assert intent["target_action"] == "db_soak"
+
+
+def test_confirm_ops_db_soak_executes_once(tmp_path, monkeypatch) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    executor = IntentExecutor(store)
+    intent = store.create(action="ops.db_soak", params={"duration_min": 0, "db": "x.sqlite3"})
+    calls: list[dict] = []
+
+    async def fake_execute(target_tool: str, action: str, params: dict | None = None) -> dict:
+        calls.append({"tool": target_tool, "action": action, "params": dict(params or {})})
+        return {
+            "success": True,
+            "data": {"passed": True, "sample_count": 1, "side_effect": "read_only"},
+            "error": None,
+        }
+
+    from aiask_agent.adapters import desktop_ops
+
+    monkeypatch.setattr(desktop_ops, "execute_confirmed_action", fake_execute)
+
+    confirmed = asyncio.run(executor.confirm(intent["intent_id"]))
+    assert confirmed["success"] is True
+    assert calls == [
+        {
+            "tool": "ops",
+            "action": "db_soak",
+            "params": {"duration_min": 0, "db": "x.sqlite3"},
+        }
+    ]
+    assert store.get(intent["intent_id"])["status"] == "succeeded"
+

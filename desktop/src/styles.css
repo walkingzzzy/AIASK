@@ -894,6 +894,67 @@ a {
   border-radius: var(--radius);
 }
 
+.mobile-record-list {
+  display: none;
+}
+
+.mobile-record-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.mobile-record-card-title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.mobile-record-card-title strong,
+.mobile-record-card-subtitle,
+.mobile-record-detail dd {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.mobile-record-card-subtitle {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 13px;
+}
+
+.mobile-record-details {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+}
+
+.mobile-record-detail {
+  display: grid;
+  grid-template-columns: minmax(58px, 0.35fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: start;
+  font-size: 13px;
+}
+
+.mobile-record-detail dt {
+  color: var(--text-muted);
+}
+
+.mobile-record-detail dd {
+  margin: 0;
+}
+
+.mobile-record-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 /* 批量操作栏 + 拖拽表格 */
 .batch-actions-bar {
   display: flex;
@@ -1030,6 +1091,42 @@ tr:last-child td {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 12px;
+}
+
+.factory-summary-grid {
+  align-items: stretch;
+}
+
+.factory-summary-field {
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-muted);
+}
+
+.factory-summary-field strong {
+  overflow-wrap: anywhere;
+}
+
+.muted-value {
+  color: var(--text-muted);
+}
+
+.table-link-button {
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--primary);
+  cursor: pointer;
+  font-weight: 700;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.table-link-button:hover {
+  text-decoration: underline;
 }
 
 .field {
@@ -1776,6 +1873,15 @@ tr:last-child td {
 
   .table-wrap {
     overflow-x: auto;
+  }
+
+  .table-wrap.has-mobile-cards {
+    display: none;
+  }
+
+  .mobile-record-list {
+    display: grid;
+    gap: 10px;
   }
 }
 

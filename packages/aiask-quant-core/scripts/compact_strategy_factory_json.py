@@ -27,6 +27,7 @@ try:
     from aiask_quant_core.storage.sqlite.strategy_factory_json_budget import (
         bounded_json_text,
         full_market_score_retention_runs,
+        high_freq_snapshot_max_bytes,
         stable_json_hash,
     )
 except Exception:  # pragma: no cover - standalone fallback for unusual packaging
@@ -57,9 +58,13 @@ except Exception:  # pragma: no cover - standalone fallback for unusual packagin
     def full_market_score_retention_runs() -> int:
         return 1
 
+    def high_freq_snapshot_max_bytes() -> int:
+        return 8 * 1024
+
 
 JSON_LIMIT = 64 * 1024
 PARAMS_LIMIT = 32 * 1024
+SNAPSHOT_LIMIT = high_freq_snapshot_max_bytes()
 STAGES_LIMIT = 128 * 1024
 
 FIELD_LIMITS: dict[tuple[str, str], int] = {
@@ -80,6 +85,19 @@ FIELD_LIMITS: dict[tuple[str, str], int] = {
     ("strategy_quality_reports", "dedup_report"): JSON_LIMIT,
     ("strategy_quality_reports", "backtest_metrics"): JSON_LIMIT,
     ("strategy_quality_reports", "snapshot"): JSON_LIMIT,
+    ("strategy_incubation_pipeline_snapshots", "blockers"): SNAPSHOT_LIMIT,
+    ("strategy_incubation_pipeline_snapshots", "risk_flags"): SNAPSHOT_LIMIT,
+    ("strategy_incubation_pipeline_snapshots", "summary"): SNAPSHOT_LIMIT,
+    ("strategy_incubation_pipeline_snapshots", "metadata"): SNAPSHOT_LIMIT,
+    ("governance_report_snapshots", "issues"): SNAPSHOT_LIMIT,
+    ("governance_report_snapshots", "payload_jsonb"): SNAPSHOT_LIMIT,
+    ("strategy_runtime_risk_snapshots", "blockers"): SNAPSHOT_LIMIT,
+    ("strategy_runtime_risk_snapshots", "summary"): SNAPSHOT_LIMIT,
+    ("strategy_runtime_risk_snapshots", "metadata"): SNAPSHOT_LIMIT,
+    ("strategy_projection_snapshots", "projection"): SNAPSHOT_LIMIT,
+    ("strategy_projection_snapshots", "metadata"): SNAPSHOT_LIMIT,
+    ("strategy_closure_snapshots", "snapshot"): SNAPSHOT_LIMIT,
+    ("strategy_closure_snapshots", "metadata"): SNAPSHOT_LIMIT,
     ("strategy_factory_run_artifacts", "payload_json"): JSON_LIMIT,
     ("strategy_factory_runs", "summary"): JSON_LIMIT,
     ("strategy_factory_runs", "stages"): STAGES_LIMIT,
@@ -104,6 +122,11 @@ FORCE_COMPACT_FIELDS = {
     ("strategy_factory_runs", "summary"),
     ("strategy_factory_runs", "stages"),
     ("strategy_factory_runs", "snapshot_summary"),
+    ("strategy_incubation_pipeline_snapshots", "metadata"),
+    ("strategy_projection_snapshots", "projection"),
+    ("strategy_projection_snapshots", "metadata"),
+    ("strategy_closure_snapshots", "snapshot"),
+    ("strategy_closure_snapshots", "metadata"),
 }
 
 COMPACT_STORAGE_MODES = {
@@ -201,7 +224,13 @@ def encode_bounded_cell(
     return json.dumps(fallback, ensure_ascii=False, default=str)
 
 
-def compact_connection(conn: sqlite3.Connection, *, apply: bool) -> dict[str, Any]:
+def compact_connection(
+    conn: sqlite3.Connection,
+    *,
+    apply: bool,
+    table_filter: str | None = None,
+    column_filter: str | None = None,
+) -> dict[str, Any]:
     report: dict[str, Any] = {
         "mode": "apply" if apply else "dry_run",
         "fields": [],
@@ -209,7 +238,15 @@ def compact_connection(conn: sqlite3.Connection, *, apply: bool) -> dict[str, An
         "original_bytes": 0,
         "compacted_bytes": 0,
     }
+    if table_filter:
+        report["table_filter"] = table_filter
+    if column_filter:
+        report["column_filter"] = column_filter
     for (table, column), limit in FIELD_LIMITS.items():
+        if table_filter and table != table_filter:
+            continue
+        if column_filter and column != column_filter:
+            continue
         if not table_exists(conn, table) or not column_exists(conn, table, column):
             continue
         force_scan = (table, column) in FORCE_COMPACT_FIELDS
@@ -288,7 +325,11 @@ def compact_connection(conn: sqlite3.Connection, *, apply: bool) -> dict[str, An
             report["original_bytes"] += field_report["original_bytes"]
             report["compacted_bytes"] += field_report["compacted_bytes"]
 
-    retention_report = apply_full_market_retention(conn, apply=apply)
+    should_apply_score_retention = (
+        table_filter is None
+        or table_filter == "strategy_factory_full_market_scores"
+    ) and column_filter is None
+    retention_report = apply_full_market_retention(conn, apply=apply) if should_apply_score_retention else None
     if retention_report:
         report["full_market_retention"] = retention_report
 
@@ -308,6 +349,105 @@ def compact_connection(conn: sqlite3.Connection, *, apply: bool) -> dict[str, An
     )[:10]
     if apply:
         conn.commit()
+    return report
+
+
+def estimate_connection(
+    conn: sqlite3.Connection,
+    *,
+    table_filter: str | None = None,
+    column_filter: str | None = None,
+) -> dict[str, Any]:
+    report: dict[str, Any] = {
+        "mode": "estimate_only",
+        "estimated": True,
+        "fields": [],
+        "updated_cells": 0,
+        "original_bytes": 0,
+        "compacted_bytes": None,
+    }
+    if table_filter:
+        report["table_filter"] = table_filter
+    if column_filter:
+        report["column_filter"] = column_filter
+    for (table, column), limit in FIELD_LIMITS.items():
+        if table_filter and table != table_filter:
+            continue
+        if column_filter and column != column_filter:
+            continue
+        if not table_exists(conn, table) or not column_exists(conn, table, column):
+            continue
+        table_q = quote_identifier(table)
+        column_q = quote_identifier(column)
+        size_expr = f"COALESCE(LENGTH(CAST({column_q} AS BLOB)), 0)"
+        total_rows, non_empty_rows, total_bytes, oversized_rows, oversized_bytes = conn.execute(
+            f"""
+            SELECT
+                COUNT(*),
+                SUM(CASE WHEN {size_expr} > 0 THEN 1 ELSE 0 END),
+                COALESCE(SUM({size_expr}), 0),
+                SUM(CASE WHEN {size_expr} > ? THEN 1 ELSE 0 END),
+                COALESCE(SUM(CASE WHEN {size_expr} > ? THEN {size_expr} ELSE 0 END), 0)
+            FROM {table_q}
+            """,
+            (limit, limit),
+        ).fetchone()
+        oversized_rows = int(oversized_rows or 0)
+        total_bytes = int(total_bytes or 0)
+        oversized_bytes = int(oversized_bytes or 0)
+        if oversized_rows <= 0 and total_bytes <= 0:
+            continue
+        top_offenders = [
+            {"rowid": int(rowid), "original_size_bytes": int(size_bytes or 0)}
+            for rowid, size_bytes in conn.execute(
+                f"""
+                SELECT rowid, {size_expr} AS size_bytes
+                FROM {table_q}
+                WHERE {size_expr} > ?
+                ORDER BY size_bytes DESC
+                LIMIT 5
+                """,
+                (limit,),
+            )
+        ]
+        field_report = {
+            "table": table,
+            "column": column,
+            "limit_bytes": limit,
+            "scanned_rows": int(total_rows or 0),
+            "non_empty_rows": int(non_empty_rows or 0),
+            "changed_rows": oversized_rows,
+            "estimated_oversized_rows": oversized_rows,
+            "original_bytes": oversized_bytes,
+            "estimated_total_bytes": total_bytes,
+            "compacted_bytes": None,
+            "top_offenders": top_offenders,
+        }
+        report["fields"].append(field_report)
+        report["updated_cells"] += oversized_rows
+        report["original_bytes"] += oversized_bytes
+
+    should_apply_score_retention = (
+        table_filter is None
+        or table_filter == "strategy_factory_full_market_scores"
+    ) and column_filter is None
+    retention_report = apply_full_market_retention(conn, apply=False) if should_apply_score_retention else None
+    if retention_report:
+        report["full_market_retention"] = retention_report
+    report["top_offending_fields"] = sorted(
+        [
+            {
+                "table": item["table"],
+                "column": item["column"],
+                "changed_rows": item["changed_rows"],
+                "original_bytes": item["original_bytes"],
+                "estimated_total_bytes": item["estimated_total_bytes"],
+            }
+            for item in report["fields"]
+        ],
+        key=lambda item: int(item["original_bytes"]),
+        reverse=True,
+    )[:10]
     return report
 
 
@@ -425,16 +565,41 @@ def compact_database(
     output: Path | None = None,
     force: bool = False,
     replace: bool = False,
+    table_filter: str | None = None,
+    column_filter: str | None = None,
+    estimate_only: bool = False,
 ) -> dict[str, Any]:
     source = source.resolve()
     if not source.exists():
         raise FileNotFoundError(source)
+    if estimate_only and apply:
+        raise ValueError("--estimate-only cannot be combined with --apply")
 
     source_size = source.stat().st_size
+    if estimate_only:
+        conn = sqlite3.connect(source)
+        try:
+            report = estimate_connection(
+                conn,
+                table_filter=table_filter,
+                column_filter=column_filter,
+            )
+        finally:
+            conn.close()
+        report["source"] = str(source)
+        report["output"] = None
+        report["source_size_bytes"] = source_size
+        return report
+
     if not apply:
         conn = sqlite3.connect(source)
         try:
-            report = compact_connection(conn, apply=False)
+            report = compact_connection(
+                conn,
+                apply=False,
+                table_filter=table_filter,
+                column_filter=column_filter,
+            )
         finally:
             conn.close()
         report["source"] = str(source)
@@ -464,7 +629,12 @@ def compact_database(
         conn.close()
     conn = sqlite3.connect(work)
     try:
-        report = compact_connection(conn, apply=True)
+        report = compact_connection(
+            conn,
+            apply=True,
+            table_filter=table_filter,
+            column_filter=column_filter,
+        )
         after_counts = row_counts(conn)
         validate_row_counts(before_counts, after_counts, report)
         ok = str(conn.execute("PRAGMA integrity_check").fetchone()[0])
@@ -530,6 +700,9 @@ def cleanup_backups(directory: Path, *, keep_one_compressed: bool, force: bool) 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("db_path", type=Path, help="SQLite database to inspect or compact")
+    parser.add_argument("--table", help="only inspect/compact one allowlisted table")
+    parser.add_argument("--column", help="only inspect/compact one allowlisted column")
+    parser.add_argument("--estimate-only", action="store_true", help="estimate oversized fields with SQL length aggregates only")
     parser.add_argument("--apply", action="store_true", help="write a compacted copy")
     parser.add_argument("--output", type=Path, help="output compacted SQLite path")
     parser.add_argument("--force", action="store_true", help="overwrite existing output/work files")
@@ -547,6 +720,9 @@ def main() -> int:
         output=args.output,
         force=bool(args.force),
         replace=bool(args.replace),
+        table_filter=args.table,
+        column_filter=args.column,
+        estimate_only=bool(args.estimate_only),
     )
     if args.cleanup_backups:
         if not args.apply:

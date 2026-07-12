@@ -15,6 +15,7 @@ from typing import Any
 
 DEFAULT_JSON_FIELD_MAX_BYTES = 64 * 1024
 DEFAULT_STRATEGY_PARAMS_MAX_BYTES = 32 * 1024
+DEFAULT_HIGH_FREQ_SNAPSHOT_MAX_BYTES = 8 * 1024
 DEFAULT_FULL_MARKET_RETENTION_RUNS = 1
 DEFAULT_FULL_MARKET_TOPN = 200
 
@@ -261,6 +262,15 @@ def strategy_params_max_bytes() -> int:
     )
 
 
+def high_freq_snapshot_max_bytes() -> int:
+    return _env_int(
+        "STRATEGY_FACTORY_HIGH_FREQ_SNAPSHOT_MAX_BYTES",
+        DEFAULT_HIGH_FREQ_SNAPSHOT_MAX_BYTES,
+        minimum=2048,
+        maximum=64 * 1024,
+    )
+
+
 def full_market_score_retention_runs() -> int:
     return _env_int(
         "STRATEGY_FACTORY_FULL_MARKET_SCORE_RETENTION_RUNS",
@@ -280,6 +290,7 @@ def full_market_score_topn() -> int:
 
 
 def strategy_factory_sql_json_field_limits() -> dict[tuple[str, str], int]:
+    snapshot_limit = high_freq_snapshot_max_bytes()
     return {
         ("daily_snapshot_history", "factor_research"): strategy_json_field_max_bytes(),
         ("strategies", "params"): strategy_params_max_bytes(),
@@ -299,6 +310,19 @@ def strategy_factory_sql_json_field_limits() -> dict[tuple[str, str], int]:
         ("strategy_quality_reports", "dedup_report"): strategy_json_field_max_bytes(),
         ("strategy_quality_reports", "backtest_metrics"): strategy_json_field_max_bytes(),
         ("strategy_quality_reports", "snapshot"): strategy_json_field_max_bytes(),
+        ("strategy_incubation_pipeline_snapshots", "blockers"): snapshot_limit,
+        ("strategy_incubation_pipeline_snapshots", "risk_flags"): snapshot_limit,
+        ("strategy_incubation_pipeline_snapshots", "summary"): snapshot_limit,
+        ("strategy_incubation_pipeline_snapshots", "metadata"): snapshot_limit,
+        ("governance_report_snapshots", "issues"): snapshot_limit,
+        ("governance_report_snapshots", "payload_jsonb"): snapshot_limit,
+        ("strategy_runtime_risk_snapshots", "blockers"): snapshot_limit,
+        ("strategy_runtime_risk_snapshots", "summary"): snapshot_limit,
+        ("strategy_runtime_risk_snapshots", "metadata"): snapshot_limit,
+        ("strategy_projection_snapshots", "projection"): snapshot_limit,
+        ("strategy_projection_snapshots", "metadata"): snapshot_limit,
+        ("strategy_closure_snapshots", "snapshot"): snapshot_limit,
+        ("strategy_closure_snapshots", "metadata"): snapshot_limit,
         ("strategy_factory_run_artifacts", "payload_json"): strategy_json_field_max_bytes(),
         ("strategy_factory_scheduler_state", "payload_json"): strategy_json_field_max_bytes(),
         ("strategy_factory_runs", "summary"): strategy_json_field_max_bytes(),

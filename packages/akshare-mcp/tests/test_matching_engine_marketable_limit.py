@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import pytest
 
 from akshare_mcp.services.matching_engine import MatchingEngine
@@ -32,8 +33,11 @@ class _Db:
         return _Acquire(self._conn)
 
 
-@pytest.mark.asyncio
-async def test_marketable_limit_order_fills_at_current_quote(monkeypatch):
+def test_marketable_limit_order_fills_at_current_quote(monkeypatch):
+    asyncio.run(_async_test_marketable_limit_order_fills_at_current_quote(monkeypatch))
+
+
+async def _async_test_marketable_limit_order_fills_at_current_quote(monkeypatch):
     conn = _Conn()
     engine = MatchingEngine()
 

@@ -197,6 +197,28 @@ def register_paper_trading_manager(mcp):
                         return fail(price_limit_error)
 
                     order_id = str(uuid.uuid4())[:8]
+                    try:
+                        from ...services.incubation import (
+                            _require_order_lineage,
+                            order_requires_signal_lineage,
+                        )
+                        pending_lineage = {
+                            "strategy_id": kwargs.get("strategy_id"),
+                            "signal_id": kwargs.get("signal_id"),
+                            "position_id": kwargs.get("position_id"),
+                            "source": kwargs.get("source", "manual"),
+                        }
+                        if order_requires_signal_lineage(pending_lineage):
+                            lineage_gap = _require_order_lineage(
+                                strategy_id=pending_lineage.get("strategy_id"),
+                                signal_id=pending_lineage.get("signal_id"),
+                                position_id=pending_lineage.get("position_id"),
+                                context=f"place_order:{order_type}:{code}",
+                            )
+                            if lineage_gap:
+                                return fail(f"证据链不完整: {lineage_gap}")
+                    except Exception:
+                        pass
                     async with db.acquire() as conn:
                         if trade_type == 'sell':
                             reject = await _validate_sell_request(conn, account_id, code, shares)

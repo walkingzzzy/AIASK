@@ -6,30 +6,30 @@ import { act } from "react";
 import { App } from "./App";
 
 describe("App", () => {
-  it("renders the V1 workbench without deferred product entries", async () => {
+  it("renders the V1 workbench with factory entries kept out of primary rail", async () => {
     await act(async () => {
       render(
-        <MemoryRouter initialEntries={["/"]}>
+        <MemoryRouter initialEntries={["/"]} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
           <App />
         </MemoryRouter>
       );
     });
 
     expect(await screen.findByRole("heading", { level: 1, name: "AI 任务工作台" })).toBeInTheDocument();
-    expect(screen.queryByText(/策略工厂|四工厂|Strategy Factory|Factor Factory|Factory Events|Incubation/i)).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: /策略工厂/ })).not.toBeInTheDocument();
     cleanup();
   });
 
-  it("redirects old deferred paths to finance lab", async () => {
+  it("opens factory paths as controlled finance pages", async () => {
     await act(async () => {
       render(
-        <MemoryRouter initialEntries={["/strategy-factory"]}>
+        <MemoryRouter initialEntries={["/strategy-factory"]} future={{ v7_relativeSplatPath: true, v7_startTransition: true }}>
           <App />
         </MemoryRouter>
       );
     });
 
-    expect(await screen.findByRole("heading", { level: 1, name: "Finance Lab" })).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { level: 1, name: "策略工厂" })).toBeInTheDocument();
     cleanup();
   });
 });

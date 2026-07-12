@@ -50,7 +50,7 @@ function normalizeNews(newsPayload: unknown) {
   const items = firstArray(envelope, ["items", "news", "sources"]);
   return items.slice(0, 5).map((item, index) => ({
     id: String(item.id || item.news_id || `news_${index}`),
-    title: valueOf(item, ["title", "headline", "summary"], "Untitled"),
+    title: valueOf(item, ["title", "headline", "summary"], "未命名资讯"),
     source: valueOf(item, ["source", "provider", "publisher"], "-"),
     publishedAt: valueOf(item, ["published_at", "datetime", "time"], "-"),
     url: valueOf(item, ["url", "link"], "")
@@ -68,7 +68,7 @@ function buildHeatmapData(snapshotPayload: unknown): HeatmapData[] {
     const stocks = Number(item.stock_count ?? item.stocks ?? item.breadth_count ?? 0);
     const breadth = Number(item.ma20_breadth ?? item.breadth ?? 0);
     return {
-      industry: valueOf(item, ["name", "industry", "code"], `Industry ${index + 1}`),
+      industry: valueOf(item, ["name", "industry", "code"], `行业 ${index + 1}`),
       temperature: Number(item.temperature ?? 0),
       stocks: stocks > 0 ? stocks : Math.max(1, Math.round(breadth * 20)),
       avgChange: Number(item.change ?? item.avg_change ?? (breadth - 0.5) * 10)
@@ -107,23 +107,23 @@ export function FinanceContextBody({
   return (
     <div className="rail-stack">
       <section className="rail-card">
-        <span className="rail-card-title">Realtime link</span>
-        <strong>{realtimeConnected ? "Event stream active" : "Snapshot mode"}</strong>
-        <p>{realtimeConnected ? "Run events are streaming through the Agent SSE channel." : "Using on-demand refresh for market context."}</p>
+        <span className="rail-card-title">实时连接</span>
+        <strong>{realtimeConnected ? "事件流已连接" : "快照模式"}</strong>
+        <p>{realtimeConnected ? "运行事件正在通过 Agent SSE 通道更新。" : "市场上下文将按需刷新。"}</p>
         <div className="page-actions" style={{ marginTop: 10 }}>
           <StatusBadge tone={realtimeConnected ? "success" : "warning"}>
             <Zap size={14} />
-            {realtimeConnected ? "Live updates" : "Manual refresh"}
+            {realtimeConnected ? "实时更新" : "手动刷新"}
           </StatusBadge>
           <Button icon={<RefreshCw size={16} />} onClick={onRefresh} busy={loading}>
-            Refresh
+            刷新
           </Button>
         </div>
         {error ? <p>{error.detail || error.title}</p> : null}
       </section>
 
       <section className="rail-card">
-        <span className="rail-card-title">Mentioned stocks</span>
+        <span className="rail-card-title">提到的股票</span>
         {mentionedStocks.length ? (
           <div className="tool-chips">
             {mentionedStocks.map((stock) => (
@@ -133,12 +133,12 @@ export function FinanceContextBody({
             ))}
           </div>
         ) : (
-          <p>No stock entities detected in the current thread yet.</p>
+          <p>当前会话还没有识别到股票实体。</p>
         )}
       </section>
 
       <section className="rail-card">
-        <span className="rail-card-title">Quote focus</span>
+        <span className="rail-card-title">行情焦点</span>
         {hasQuote ? (
           <div className="financial-context">
             <div className="financial-context-header">
@@ -147,7 +147,7 @@ export function FinanceContextBody({
                 <span className="stock-code">{quote.code}</span>
               </div>
               <div className="financial-context-price">
-                <strong>{Number.isFinite(quote.price) ? quote.price.toFixed(2) : "N/A"}</strong>
+                <strong>{Number.isFinite(quote.price) ? quote.price.toFixed(2) : "暂无"}</strong>
                 <StatusBadge tone={!Number.isFinite(quote.changePct) || quote.changePct >= 0 ? "success" : "danger"}>
                   <TrendingUp size={14} />
                   {Number.isFinite(quote.changePct) && quote.changePct >= 0 ? "+" : ""}
@@ -157,38 +157,38 @@ export function FinanceContextBody({
             </div>
             <div className="financial-context-metrics">
               <div className="metric-item">
-                <span>Change</span>
+                <span>涨跌额</span>
                 <strong>
                   {Number.isFinite(quote.change) && quote.change >= 0 ? "+" : ""}
                   {Number.isFinite(quote.change) ? quote.change.toFixed(2) : "0.00"}
                 </strong>
               </div>
               <div className="metric-item">
-                <span>Volume</span>
-                <strong>{quote.volume ? quote.volume.toLocaleString("en-US") : "-"}</strong>
+                <span>成交量</span>
+                <strong>{quote.volume ? quote.volume.toLocaleString("zh-CN") : "-"}</strong>
               </div>
               <div className="metric-item">
-                <span>Provider</span>
+                <span>数据来源</span>
                 <strong>{quote.provider}</strong>
               </div>
               <div className="metric-item">
-                <span>Timestamp</span>
+                <span>时间</span>
                 <strong>{quote.timestamp}</strong>
               </div>
             </div>
           </div>
         ) : (
-          <EmptyState title="No quote focus" detail="Mention a stock in the thread to load a linked quote card." />
+          <EmptyState title="暂无行情焦点" detail="在会话中提到股票后，这里会加载对应行情卡片。" />
         )}
       </section>
 
       <section className="rail-card">
-        <span className="rail-card-title">Market heat</span>
-        {heatmapData.length ? <MarketHeatmap data={heatmapData.slice(0, 8)} /> : <p>Market temperature snapshot is not available yet.</p>}
+        <span className="rail-card-title">市场热度</span>
+        {heatmapData.length ? <MarketHeatmap data={heatmapData.slice(0, 8)} /> : <p>市场温度快照暂不可用。</p>}
       </section>
 
       <section className="rail-card">
-        <span className="rail-card-title">Related news</span>
+        <span className="rail-card-title">相关新闻</span>
         {news.length ? (
           <div className="financial-context">
             {news.map((item) => (
@@ -205,12 +205,12 @@ export function FinanceContextBody({
             ))}
           </div>
         ) : (
-          <p>No related market headlines are available for the current focus.</p>
+          <p>当前焦点暂无相关新闻。</p>
         )}
       </section>
 
       <JsonPanel
-        title="Finance context evidence"
+        title="金融上下文证据"
         data={{
           current_run: currentRun,
           mentioned_stocks: mentionedStocks,
@@ -245,10 +245,10 @@ export function FinanceContextPanel({
   onRefresh: () => void;
 }) {
   return (
-    <aside className="right-rail page-context-drawer" data-testid="finance-context-panel" aria-label="Finance context panel">
+    <aside className="right-rail page-context-drawer" data-testid="finance-context-panel" aria-label="金融上下文面板">
       <div className="rail-header">
-        <h3>Finance Context</h3>
-        <p>Thread-linked market context and stock intelligence</p>
+        <h3>金融上下文</h3>
+        <p>当前会话关联的市场信息和股票线索</p>
       </div>
       <FinanceContextBody
         workbench={workbench}

@@ -38,7 +38,7 @@
 
 - 正式”四工厂”运行主管口径为：`Strategy Factory`、`Factor Mining Factory`、`Incubation Factory`、`Market Event Ingest`。
 - `SignalTracker` 是策略孵化闭环必需的 sidecar，不再混称为 supervisor 管理的第四工厂。
-- `scripts/factories/run_three_factories.py` 是当前四运行体 supervisor（**注意：文件名是历史遗留命名，实际启动四个运行体**）；`scripts/factories/run_all_factories.py` 是兼容入口。
+- `scripts/factories/run_three_factories.py` 是当前四运行体 supervisor（**注意：文件名是历史遗留命名；默认最多拉起四个运行体，可被 CLI/环境变量裁剪**）；`scripts/factories/run_all_factories.py` 是兼容入口。
 - `scripts/factories/run_strategy_factory_quality_session.py` 是验证会话（脚本级验证工具，不是包内领域类），不是生产 supervisor，也不应该承担生产补偿逻辑。
 - 生命周期必须分成物理状态和业务覆盖层：`strategies.status`、`strategy_incubation_accounts.stage/status` 是实际存储（实际数据库中 stage 只有 `warmup`、`diagnostic`、`failed`，无 `paper`/`observe`/`candidate` 等值）；`generated -> ... -> promotion_ready` 是证据派生诊断状态。
 - production hard gate 只认 `execution_audit_gate_status='passed'`；`bootstrap_pending/bootstrap_ready` 只能作为诊断或样本债状态。

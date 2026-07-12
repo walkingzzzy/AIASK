@@ -215,6 +215,31 @@ async def test_evidence_chain_completeness():
             "缺少 exit 路径: 所有持仓都是 open（可能原因: stale close 未启用、exit signal 未生成）"
         )
 
+
+    # P0-A: signal_id coverage on strategy-linked paper orders
+    print("\n[P0-A] Checking paper_orders.signal_id coverage...")
+    try:
+        cursor = db.connection.execute(
+            """
+            SELECT
+              COUNT(1) AS orders,
+              SUM(CASE WHEN signal_id IS NULL OR TRIM(CAST(signal_id AS TEXT)) = '' THEN 1 ELSE 0 END) AS missing_sid
+            FROM paper_orders
+            WHERE strategy_id IS NOT NULL AND TRIM(CAST(strategy_id AS TEXT)) != ''
+            """
+        )
+        row = cursor.fetchone()
+        orders = int(row[0] or 0) if row else 0
+        missing_sid = int(row[1] or 0) if row else 0
+        coverage = (1.0 - (missing_sid / orders)) if orders else 1.0
+        print(f"   strategy-linked orders: {orders}, missing signal_id: {missing_sid}, coverage: {coverage:.2%}")
+        if orders > 0 and missing_sid > 0:
+            print("   [WARN] historical missing signal_id present; new path should be fail-closed (INCUBATION_FAIL_CLOSED_SIGNAL_ID)")
+        else:
+            print("   [OK] strategy-linked paper_orders have complete signal_id coverage")
+    except Exception as exc:
+        print(f"   [WARN] signal_id coverage query failed: {exc}")
+
     if issues:
         print("[WARN] 发现以下证据链路问题:\n")
         for i, issue in enumerate(issues, 1):

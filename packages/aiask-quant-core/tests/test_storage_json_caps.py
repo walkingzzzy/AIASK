@@ -11,6 +11,7 @@ from aiask_quant_core.storage import close_db, get_db
 
 JSON_LIMIT = 64 * 1024
 PARAMS_LIMIT = 32 * 1024
+SNAPSHOT_LIMIT = 8 * 1024
 
 
 def _large_payload() -> dict:
@@ -580,6 +581,7 @@ def test_compact_strategy_factory_json_script_dry_run_and_apply(tmp_path):
         conn.execute("CREATE TABLE strategy_status_events (id INTEGER PRIMARY KEY, metadata TEXT)")
         conn.execute("CREATE TABLE strategy_domain_events (id INTEGER PRIMARY KEY, payload TEXT)")
         conn.execute("CREATE TABLE strategy_task_runs (id INTEGER PRIMARY KEY, payload TEXT, result TEXT)")
+        conn.execute("CREATE TABLE strategy_incubation_pipeline_snapshots (id INTEGER PRIMARY KEY, metadata TEXT)")
         conn.execute("CREATE TABLE strategy_generation_experiments (id INTEGER PRIMARY KEY, result TEXT)")
         conn.execute("CREATE TABLE strategy_factory_task_evidence (id INTEGER PRIMARY KEY, evidence_payload TEXT)")
         conn.execute("CREATE TABLE strategy_factory_full_market_scores (id INTEGER PRIMARY KEY, run_id TEXT, as_of_date TEXT, created_at TEXT)")
@@ -615,6 +617,10 @@ def test_compact_strategy_factory_json_script_dry_run_and_apply(tmp_path):
                 json.dumps({"payload": large}, ensure_ascii=False),
                 json.dumps({"result": large}, ensure_ascii=False),
             ),
+        )
+        conn.execute(
+            "INSERT INTO strategy_incubation_pipeline_snapshots (metadata) VALUES (?)",
+            (json.dumps({"metadata": large, "raw_notes": "x" * 50000}, ensure_ascii=False),),
         )
         byte_large_result = json.dumps({"notes": "广" * 22000}, ensure_ascii=False)
         assert len(byte_large_result) < JSON_LIMIT
@@ -657,6 +663,27 @@ def test_compact_strategy_factory_json_script_dry_run_and_apply(tmp_path):
     assert dry_run["updated_cells"] >= 1
     assert dry_run["output"] is None
     assert dry_run["full_market_retention"]["deleted_rows"] == 3
+    targeted_dry_run = module.compact_database(
+        db_path,
+        apply=False,
+        table_filter="strategy_incubation_pipeline_snapshots",
+        column_filter="metadata",
+    )
+    assert targeted_dry_run["updated_cells"] == 1
+    assert targeted_dry_run["fields"][0]["table"] == "strategy_incubation_pipeline_snapshots"
+    assert targeted_dry_run["fields"][0]["column"] == "metadata"
+    assert "full_market_retention" not in targeted_dry_run
+    targeted_estimate = module.compact_database(
+        db_path,
+        estimate_only=True,
+        table_filter="strategy_incubation_pipeline_snapshots",
+        column_filter="metadata",
+    )
+    assert targeted_estimate["mode"] == "estimate_only"
+    assert targeted_estimate["updated_cells"] == 1
+    assert targeted_estimate["fields"][0]["estimated_total_bytes"] > SNAPSHOT_LIMIT
+    assert targeted_estimate["fields"][0]["compacted_bytes"] is None
+    assert "full_market_retention" not in targeted_estimate
 
     applied = module.compact_database(db_path, apply=True, output=output_path)
     assert applied["integrity_check"] == "ok"
@@ -678,6 +705,11 @@ def test_compact_strategy_factory_json_script_dry_run_and_apply(tmp_path):
         assert "resolved_candidate_envelope" not in params
         task_payload = json.loads(conn.execute("SELECT payload_json FROM factory_tasks").fetchone()[0])
         assert _json_len(task_payload) < JSON_LIMIT
+        incubation_metadata = json.loads(
+            conn.execute("SELECT metadata FROM strategy_incubation_pipeline_snapshots").fetchone()[0]
+        )
+        assert _json_len(incubation_metadata) < SNAPSHOT_LIMIT
+        assert incubation_metadata["storage_mode"] in {"compact_json", "dropped_large_payload"}
         attempt_result = json.loads(conn.execute("SELECT result_json FROM factory_task_attempts").fetchone()[0])
         assert _json_len(attempt_result) < JSON_LIMIT
         experiment_result = json.loads(conn.execute("SELECT result FROM strategy_generation_experiments").fetchone()[0])

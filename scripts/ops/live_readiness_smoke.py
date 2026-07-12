@@ -38,6 +38,7 @@ SMOKE_CHECKS: tuple[dict[str, Any], ...] = (
     {"name": "financial_manager_query", "method": "POST", "path": "/v1/desktop/financial-manager/query"},
     {"name": "data_status", "method": "GET", "path": "/v1/desktop/data/status?codes=600519,000001&max_stale_days=5"},
     {"name": "factory_status", "method": "POST", "path": "/v1/tools/agent_factory_status", "observes": ["success", "runtime_enabled", "event_runtime_mode", "daily_run_count", "cycle_count"]},
+    {"name": "factory_formal_diagnostics", "method": "POST", "path": "/v1/tools/agent_factory_formal_diagnostics", "observes": ["formal_count", "observe_count", "signal_id_coverage", "hard_gate_histogram", "exit_funnel", "top_blockers"]},
     {"name": "market_temperature_cache", "method": "POST", "path": "/v1/tools/agent_market_temperature_cache_readiness", "observes": ["ready", "status", "blockers", "warnings"]},
     {"name": "market_temperature_forward_validation", "method": "POST", "path": "/v1/tools/agent_market_temperature_forward_validation", "observes": ["benchmark_status", "quality_status", "warnings", "sample_count"]},
     {"name": "quant_research", "method": "POST", "path": "/v1/desktop/quant/research-runs"},
@@ -351,6 +352,48 @@ def run_smoke(
             },
         )
 
+
+    def factory_formal_diagnostics() -> CheckResult:
+        _, payload = request_json(
+            "POST",
+            "/v1/tools/agent_factory_formal_diagnostics",
+            api_token,
+            {"top_n": 10, "_timeout_seconds": 8},
+            timeout,
+        )
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
+        side_effect = _safe_get(payload, ("meta", "side_effect", "level"))
+        success = payload.get("success") is not False
+        formal_count = data.get("formal_count")
+        observe_count = data.get("observe_count")
+        coverage = data.get("signal_id_coverage")
+        hard_hist = data.get("hard_gate_histogram") if isinstance(data.get("hard_gate_histogram"), dict) else {}
+        exit_funnel = data.get("exit_funnel") if isinstance(data.get("exit_funnel"), dict) else {}
+        top_blockers = list(data.get("top_blockers") or [])
+        ok = success and side_effect in {None, "read_only"} and data.get("object") in {None, "aiask.factory_formal_diagnostics"}
+        status = "ready" if ok else str(payload.get("error_code") or "failed")
+        if data.get("ok") is False:
+            status = "degraded"
+            ok = success and side_effect in {None, "read_only"}
+        return CheckResult(
+            "factory_formal_diagnostics",
+            ok,
+            status,
+            f"formal={formal_count} observe={observe_count} signal_id_coverage={coverage}",
+            {
+                "success": payload.get("success"),
+                "formal_count": formal_count,
+                "observe_count": observe_count,
+                "signal_id_coverage": coverage,
+                "hard_gate_histogram": hard_hist,
+                "exit_funnel": exit_funnel,
+                "top_blockers": top_blockers[:5],
+                "side_effect": side_effect,
+                "error_code": payload.get("error_code"),
+                "ok": data.get("ok"),
+            },
+        )
+
     def market_temperature_cache() -> CheckResult:
         _, payload = request_json(
             "POST",
@@ -461,6 +504,7 @@ def run_smoke(
         financial_manager_query,
         data_status,
         factory_status,
+        factory_formal_diagnostics,
         market_temperature_cache,
         market_temperature_forward_validation,
         quant_research,

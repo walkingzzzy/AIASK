@@ -81,6 +81,26 @@ def test_desktop_workbench_summary_contract_includes_session_run_flags(tmp_path,
     assert run["has_errors"] is True
 
 
+def test_desktop_personal_assets_gets_degrade_to_empty_lists(tmp_path, monkeypatch) -> None:
+    client, _store, _intent_store = _client_with_state(tmp_path, monkeypatch)
+
+    def fake_json_request(method: str, url: str, payload: dict | None = None, *, timeout: float = 20.0) -> dict:
+        assert method == "GET"
+        return {"ok": False, "status_code": 404, "body": {"detail": "not initialized"}}
+
+    monkeypatch.setattr("aiask_agent.app_route_callbacks._json_request", fake_json_request)
+
+    strategies = client.get("/v1/desktop/users/local-user/strategies")
+    stock_pools = client.get("/v1/desktop/users/local-user/stock-pools")
+
+    assert strategies.status_code == 200
+    assert stock_pools.status_code == 200
+    assert strategies.json()["data"] == []
+    assert stock_pools.json()["data"] == []
+    assert strategies.json()["meta"]["degraded"] is True
+    assert stock_pools.json()["meta"]["resource"] == "stock_pools"
+
+
 def test_responses_contract_accepts_model_and_attachment_context(tmp_path, monkeypatch) -> None:
     client, store, _intent_store = _client_with_state(tmp_path, monkeypatch)
 

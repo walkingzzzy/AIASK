@@ -12,33 +12,16 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
-# 交易时间段（CST）
-_MORNING_OPEN = time(9, 30)
-_MORNING_CLOSE = time(11, 30)
-_AFTERNOON_OPEN = time(13, 0)
-_AFTERNOON_CLOSE = time(15, 0)
-
-SCAN_INTERVAL_SECONDS = 30
-
-
-def _is_trading_time(now: datetime) -> bool:
-    """判断当前是否在 A 股交易时间内（工作日 9:30-11:30, 13:00-15:00）"""
-    if now.weekday() >= 5:
-        return False
-    t = now.time()
-    return (_MORNING_OPEN <= t <= _MORNING_CLOSE) or (_AFTERNOON_OPEN <= t <= _AFTERNOON_CLOSE)
-
-
-def _get_limit_ratio(code: str) -> float:
-    """涨跌停幅度：创业板/科创板 20%，其余 10%"""
-    c = str(code).strip()
-    for prefix in ("sh", "sz", "bj", "SH", "SZ", "BJ"):
-        if c.startswith(prefix):
-            c = c[len(prefix):]
-            break
-    if c.startswith("300") or c.startswith("301") or c.startswith("688"):
-        return 0.20
-    return 0.10
+# 交易时段 / 涨跌停规则 ownership: strategy_factory.infrastructure.matching.rules
+from strategy_factory.infrastructure.matching.rules import (
+    AFTERNOON_CLOSE as _AFTERNOON_CLOSE,
+    AFTERNOON_OPEN as _AFTERNOON_OPEN,
+    MORNING_CLOSE as _MORNING_CLOSE,
+    MORNING_OPEN as _MORNING_OPEN,
+    SCAN_INTERVAL_SECONDS,
+    get_limit_ratio as _get_limit_ratio,
+    is_trading_time as _is_trading_time,
+)
 
 
 class MatchingEngine:
@@ -202,6 +185,72 @@ class MatchingEngine:
 
         if not should_fill:
             return
+
+        # P0-A: strategy-linked orders must carry signal/position lineage before fill.
+        try:
+            from .incubation import (
+                _normalize_lineage_token,
+                _require_order_lineage,
+                fail_closed_signal_id_enabled,
+                order_requires_signal_lineage,
+            )
+        except Exception:
+            _normalize_lineage_token = lambda value: str(value or "").strip()  # noqa: E731
+            _require_order_lineage = None
+            fail_closed_signal_id_enabled = lambda: True  # noqa: E731
+            order_requires_signal_lineage = lambda order: bool(  # noqa: E731
+                str((order or {}).get("strategy_id") or "").strip()
+            )
+
+        if order_requires_signal_lineage(order):
+            if _require_order_lineage is not None:
+                lineage_gap = _require_order_lineage(
+                    strategy_id=order.get("strategy_id"),
+                    signal_id=order.get("signal_id"),
+                    position_id=order.get("position_id"),
+                    context=f"matching_engine:{order_id}",
+                )
+            else:
+                gaps = []
+                if not _normalize_lineage_token(order.get("strategy_id")):
+                    gaps.append("missing_strategy_id")
+                if not _normalize_lineage_token(order.get("signal_id")):
+                    gaps.append("missing_signal_id")
+                if not _normalize_lineage_token(order.get("position_id")):
+                    gaps.append("missing_position_id")
+                lineage_gap = gaps[0] if gaps else None
+            if lineage_gap:
+                reason = "missing_signal_lineage"
+                from ..tools.managers.paper_trading_manager import _record_order_event
+                async with db.acquire() as conn:
+                    await conn.execute(
+                        "UPDATE paper_orders SET status='rejected', reason=$1, updated_at=CURRENT_TIMESTAMP WHERE id=$2",
+                        reason,
+                        order_id,
+                    )
+                    await _record_order_event(
+                        conn,
+                        str(order_id),
+                        "rejected_by_engine",
+                        account_id=account_id,
+                        code=code,
+                        payload={
+                            "direction": direction,
+                            "shares": shares,
+                            "reason": reason,
+                            "lineage_gap": lineage_gap,
+                            "signal_id": order.get("signal_id"),
+                            "position_id": order.get("position_id"),
+                            "strategy_id": order.get("strategy_id"),
+                        },
+                    )
+                logger.warning(
+                    "[MatchingEngine] reject order %s missing_signal_lineage gap=%s strategy_id=%s",
+                    order_id,
+                    lineage_gap,
+                    order.get("strategy_id"),
+                )
+                return
 
         # 滑点调整：买入价上移，卖出价下移
         slippage_model = FixedSlippageModel(slippage_rate=0.0005)

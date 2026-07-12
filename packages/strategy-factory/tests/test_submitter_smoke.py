@@ -75,6 +75,56 @@ def test_submitter_candidate_provenance_reassembles_params_fields():
     assert provenance["validation_score"] == 77.0
 
 
+def test_submitter_build_strategy_data_persists_explanation_contract():
+    from strategy_factory.application.submitter import StrategySubmitter
+
+    data = StrategySubmitter._build_strategy_data(
+        "strategy-explained",
+        "explained momentum",
+        {
+            "id": "candidate-explained",
+            "name": "explained momentum",
+            "description": "Momentum continuation after sector strength.",
+            "strategy_type": "momentum",
+            "target_symbols": ["600000"],
+            "tags": ["external_llm"],
+            "params": {
+                "lookback": 20,
+                "threshold": 0.02,
+            },
+            "generation_reason": {
+                "source": "external_llm",
+                "provider": "openai",
+                "model": "test-model",
+                "rationale": "Relative strength and liquidity support a continuation setup.",
+            },
+            "research_task": {
+                "task_id": "task-submit-explain",
+                "theme": "relative strength",
+                "opportunity_type": "sector_breakout",
+                "candidate_family": "momentum",
+            },
+            "trade_plan": {
+                "entry_bias": "momentum_confirmation",
+                "exit_bias": "momentum_decay",
+            },
+            "risk_rules": {"stop_loss_pct": 0.08},
+        },
+        metrics={"sharpe_ratio": 1.4, "total_return": 0.12, "max_drawdown": -0.05},
+    )
+
+    explanation = data["params"]["strategy_explanation"]
+    assert explanation["version"] == "strategy_explanation.v1"
+    assert explanation["summary"] == "Momentum continuation after sector strength."
+    assert "source=external_llm" in explanation["why_generated"]
+    assert explanation["target_scope"]["symbols"] == ["600000"]
+    assert "Why:" in data["description"]
+    assert "Targets: 600000" in data["description"]
+    assert "Backtest:" in data["description"]
+    assert "strategy_explained" in data["tags"]
+    assert "type:momentum" in data["tags"]
+
+
 def test_submitter_birth_regime_includes_compact_market_temperature_context():
     from strategy_factory.application.submitter import StrategySubmitter
 

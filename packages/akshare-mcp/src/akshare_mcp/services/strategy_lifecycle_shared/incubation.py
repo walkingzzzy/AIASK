@@ -38,6 +38,7 @@ def resolve_incubation_pipeline_stage(
     # 在合理时间内积累不到短线所需样本量,会被不公平地长期卡在 warmup。
     # 这里仅缩放"样本量"门槛,skill_lcb>0 / coverage / stability 等统计显著性条件保持不变——
     # 不放水,只是承认低频策略每个样本承载更长持有期信息。skill_lcb 本身已含小样本惩罚。
+    # stability_gap 与 promotion_ready 对齐：缺失值 fail-closed，不得靠 None 进入 graduation_ready。
     bucket = str(holding_bucket or "").strip().lower()
     if bucket in {"long", "long_term"}:
         warmup_min_n, grad_primary_n, grad_secondary_n = 12, 30, 15
@@ -59,7 +60,8 @@ def resolve_incubation_pipeline_stage(
         and (secondary_skill_lcb or 0.0) > 0.0
         and (recent_primary_skill_lcb or 0.0) > 0.0
         and coverage_ratio >= 0.75
-        and (stability_gap is None or stability_gap <= 0.05)
+        and stability_gap is not None
+        and stability_gap <= 0.05
         and open_risk_count == 0
     ):
         signal_stage_without_execution_gate = "graduation_ready"

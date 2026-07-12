@@ -171,7 +171,22 @@ def test_cycle_pipeline_maps_legacy_stage_fragments_to_canonical_stages():
     assert canonical["observe_intake"]["status"] == "completed"
     assert canonical["observe_intake"]["observed_stage_names"] == [
         "deduplicate",
-        "submit",
     ]
     assert canonical["promotion_review"]["status"] == "completed"
     assert canonical["promotion_review"]["observed_stage_names"] == ["submit"]
+
+
+def test_legacy_stage_aliases_are_owned_by_only_one_canonical_stage():
+    from strategy_factory.application.cycle_pipeline import (
+        CYCLE_PIPELINE_CONTRACT_VERSION,
+        CYCLE_PIPELINE_STAGE_ALIASES,
+    )
+
+    owners: dict[str, list[str]] = {}
+    for canonical, aliases in CYCLE_PIPELINE_STAGE_ALIASES.items():
+        for alias in aliases:
+            owners.setdefault(alias, []).append(canonical)
+
+    assert CYCLE_PIPELINE_CONTRACT_VERSION == "strategy_factory.cycle_pipeline.v2"
+    assert {alias: stages for alias, stages in owners.items() if len(stages) > 1} == {}
+    assert owners["submit"] == ["promotion_review"]

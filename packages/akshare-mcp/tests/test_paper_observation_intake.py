@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from akshare_mcp.config._strategy_factory_toggles import paper_intake_batch_limit
 from akshare_mcp.services.incubation_factory.intake import IncubationIntake
 
 
@@ -38,7 +39,7 @@ async def test_paper_intake_enabled_by_default(intake):
     ])
     result = await intake._list_paper_observation_strategies(db)
     assert result == [{"id": "s1", "strategy_type": "volatility_breakout"}]
-    db.list_paper_observation_strategies.assert_called_once_with(limit=50)
+    db.list_paper_observation_strategies.assert_called_once_with(limit=paper_intake_batch_limit())
 
 
 @pytest.mark.asyncio
@@ -63,7 +64,7 @@ async def test_paper_intake_enabled_returns_candidates(intake, monkeypatch):
     ])
     result = await intake._list_paper_observation_strategies(db)
     assert len(result) == 2
-    db.list_paper_observation_strategies.assert_called_once_with(limit=50)
+    db.list_paper_observation_strategies.assert_called_once_with(limit=paper_intake_batch_limit())
 
 
 @pytest.mark.asyncio
@@ -111,6 +112,38 @@ async def test_record_paper_intake_event_writes_domain_event(intake):
     assert payload["aggregate_type"] == "incubation_factory"
     assert payload["source"] == "incubation_factory_intake_paper"
     assert payload["payload"]["stage"] == "paper"
+    assert payload["payload"]["strategy_explanation"]["version"] == "strategy_explanation.v1"
+    assert payload["payload"]["strategy_explanation_summary"]
+    assert "strategy_explained" in payload["payload"]["strategy_explanation_labels"]
+
+
+@pytest.mark.asyncio
+async def test_record_acceptance_event_writes_strategy_explanation(intake):
+    db = MagicMock()
+    db.save_strategy_domain_event = AsyncMock()
+    strategy = {
+        "id": "s_accept",
+        "name": "accepted_momentum",
+        "description": "Accepted strategy with explanation.",
+        "strategy_type": "momentum",
+        "target_symbols": ["600000"],
+        "params": {
+            "generation_reason": {
+                "source": "external_llm",
+                "rationale": "Momentum and liquidity confirmation.",
+            },
+            "research_task": {"candidate_family": "momentum"},
+        },
+    }
+
+    await intake._record_acceptance_event(db, strategy, {"account_id": "acct-1"})
+
+    db.save_strategy_domain_event.assert_called_once()
+    payload = db.save_strategy_domain_event.call_args[0][0]
+    assert payload["event_type"] == "incubation_factory.strategy_accepted"
+    assert payload["payload"]["strategy_explanation"]["version"] == "strategy_explanation.v1"
+    assert payload["payload"]["strategy_explanation_summary"] == "Accepted strategy with explanation."
+    assert "type:momentum" in payload["payload"]["strategy_explanation_labels"]
 
 
 @pytest.mark.asyncio
@@ -180,6 +213,9 @@ async def test_record_diagnostic_intake_event_writes_domain_event(intake):
     assert payload["source"] == "incubation_factory_intake_diagnostic"
     assert payload["payload"]["stage"] == "diagnostic"
     assert payload["payload"]["diagnostic_observation"] is True
+    assert payload["payload"]["strategy_explanation"]["version"] == "strategy_explanation.v1"
+    assert payload["payload"]["strategy_explanation_summary"]
+    assert "strategy_explained" in payload["payload"]["strategy_explanation_labels"]
 
 
 @pytest.mark.asyncio
@@ -305,6 +341,9 @@ async def test_gate3_record_only_audit_recognizes_without_strategy_actions(intak
     assert event["payload"]["record_only"] is True
     assert event["payload"]["action_boundary"] == "no_strategy_or_account_created"
     assert event["payload"]["validation_grade"] == "SS"
+    assert event["payload"]["strategy_explanation"]["version"] == "strategy_explanation.v1"
+    assert event["payload"]["strategy_explanation_summary"]
+    assert "strategy_explained" in event["payload"]["strategy_explanation_labels"]
     db.list_strategy_domain_events.assert_called_once_with(
         aggregate_type="incubation_factory",
         aggregate_id="candidate-ss",

@@ -1,5 +1,5 @@
 import { Archive, Play, Save, Send } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { ApprovalQueue, DryRunPreview, GatedActionButton, type ActionIntent } from "../components/IntentComponents";
 import { DraggableDataTable } from "../components/DraggableDataTable";
@@ -23,7 +23,6 @@ import {
   StatusBadge
 } from "../components/ui";
 import { useAsyncResource } from "../hooks/useAsyncResource";
-import { useWebSocket } from "../hooks/useWebSocket";
 import { mockMessages } from "../mock/mockData";
 import type { UnknownRecord, WorkbenchMessage } from "../types";
 import { dataObject, firstArray, list, metric, type PageProps, statusTone, valueOf } from "./pageUtils";
@@ -290,7 +289,7 @@ function WorkbenchPage({
     <PageShell
       title="AI 任务工作台"
       description="以线程为中心组织消息、运行事件、产物、审批和复核入口。主流程支持新建会话、上传文件、发送任务与查看证据。"
-      badge={<StatusBadge tone={settings?.mode === "mock" ? "warning" : "success"}>{settings?.mode === "mock" ? "Mock 模式" : "Live Agent"}</StatusBadge>}
+      badge={<StatusBadge tone={settings?.mode === "mock" ? "warning" : "success"}>{settings?.mode === "mock" ? "演示模式" : "真实 Agent"}</StatusBadge>}
       actions={
         <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
           <ModelSelector
@@ -347,7 +346,7 @@ function WorkbenchPage({
             </div>
           </Panel>
 
-          <Panel title="Composer" action={<GatedNotice controlAvailable={controlAvailable} action="发送任务" />}>
+          <Panel title="任务输入" action={<GatedNotice controlAvailable={controlAvailable} action="发送任务" />}>
             <div
               className={`composer ${dragActive ? "drag-active" : ""}`}
               onDragEnter={(event) => {
@@ -474,9 +473,9 @@ function WorkbenchPage({
                   <DataTable
                     items={[item]}
                     columns={[
-                      { key: "provider", header: "Provider" },
-                      { key: "model", header: "Model" },
-                      { key: "source_mode", header: "Mode" }
+                      { key: "provider", header: "供应方" },
+                      { key: "model", header: "模型" },
+                      { key: "source_mode", header: "来源模式" }
                     ]}
                   />
                 </div>
@@ -544,9 +543,17 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
   const [busy, setBusy] = useState(false);
 
   const statusItem = dataObject(status.data, {});
-  const configItem = dataObject(config.data, {});
+  const configRecord = dataObject(config.data, {});
+  const configItem = dataObject(configRecord.current, configRecord);
   const modelRows = list(models.data);
-  const currentModelStatus = inferStatusFromData(statusItem.configured ? statusItem : configItem);
+  const modelConfigured = Boolean(statusItem.configured || configItem.configured);
+  const currentModelStatus = inferStatusFromData(modelConfigured ? { ...configItem, ...statusItem, configured: modelConfigured } : configItem);
+  const smokeResult = dataObject(result, {});
+  const hasSmokeResult = String(smokeResult.object || "") === "aiask.ai_smoke";
+  const smokeFailed = hasSmokeResult && smokeResult.success === false;
+  const smokeSucceeded = hasSmokeResult && smokeResult.success === true;
+  const visibleModelStatus = smokeFailed ? "disconnected" : currentModelStatus;
+  const visibleModelLabel = smokeFailed ? valueOf(smokeResult, ["error_code"], "Smoke failed") : modelConfigured ? "模型可用" : "需要配置";
 
   useEffect(() => {
     setForm((current) => {
@@ -610,7 +617,7 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
     <PageShell
       title="模型配置与 Readiness"
       description="统一展示 provider、model、base URL、密钥配置状态，并提供快速模型切换、保存与 smoke 测试。"
-      badge={<StatusLight status={currentModelStatus} label={statusItem.configured ? "模型可用" : "需要配置"} />}
+      badge={<StatusLight status={visibleModelStatus} label={visibleModelLabel} />}
       actions={
         <ModelSelector
           current={{ provider: String(statusItem.provider || ""), model: String(statusItem.model || "") }}
@@ -626,12 +633,17 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
         />
       }
       metrics={[
-        metric("Provider", statusItem.provider || configItem.provider, "info"),
-        metric("Model", statusItem.model || configItem.model, "success"),
+        metric("供应方", statusItem.provider || configItem.provider, "info"),
+        metric("模型", statusItem.model || configItem.model, "success"),
         metric(
-          "API Key",
+          "API 密钥",
           statusItem.api_key_configured || configItem.api_key_configured ? "已配置" : "缺失",
           statusItem.api_key_configured || configItem.api_key_configured ? "success" : "warning"
+        ),
+        metric(
+          "Smoke",
+          smokeFailed ? valueOf(smokeResult, ["error_code"], "failed") : smokeSucceeded ? "通过" : "未测试",
+          smokeFailed ? "danger" : smokeSucceeded ? "success" : "neutral"
         ),
         metric("模型列表", modelRows.length, modelRows.length ? "success" : "warning")
       ]}
@@ -640,15 +652,15 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
         <Panel title="配置表单" action={<GatedNotice controlAvailable={controlAvailable} action="保存配置" />}>
           <div className="form-grid">
             <label className="field">
-              <span>Provider</span>
+              <span>供应方</span>
               <input data-testid="model-provider" value={form.provider} onChange={(event) => setForm({ ...form, provider: event.target.value })} />
             </label>
             <label className="field">
-              <span>Model</span>
+              <span>模型</span>
               <input data-testid="model-name" value={form.model} onChange={(event) => setForm({ ...form, model: event.target.value })} />
             </label>
             <label className="field">
-              <span>Base URL</span>
+              <span>服务地址</span>
               <input
                 data-testid="model-base-url"
                 value={form.base_url}
@@ -657,7 +669,7 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
               />
             </label>
             <label className="field">
-              <span>API Key</span>
+              <span>API 密钥</span>
               <input
                 type="password"
                 value={form.api_key}
@@ -675,6 +687,14 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
               LLM 测试
             </Button>
           </div>
+          {smokeFailed ? (
+            <div className="state state-error" role="alert">
+              <strong>LLM 测试失败</strong>
+              <p>
+                {valueOf(smokeResult, ["error_code"], "AUTH_FAILED")}：{valueOf(smokeResult, ["error"], "请检查模型供应方、模型名或 API 密钥配置。")}
+              </p>
+            </div>
+          ) : null}
         </Panel>
 
         <Panel title="模型可用性">
@@ -683,11 +703,27 @@ function ModelsPage({ api, controlAvailable }: PageProps) {
             items={modelRows}
             columns={[
               { key: "id", header: "模型" },
-              { key: "provider", header: "Provider" },
+              { key: "provider", header: "供应方" },
               {
                 key: "status",
                 header: "状态",
-                render: (item) => <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />
+                render: (item) => {
+                  const itemModel = String(item.id || item.model || "");
+                  const itemProvider = String(item.provider || "");
+                  const resultModel = String(smokeResult.model || "");
+                  const resultProvider = String(smokeResult.provider || "");
+                  const smokeApplies =
+                    hasSmokeResult &&
+                    (!resultModel || resultModel === itemModel) &&
+                    (!resultProvider || resultProvider === itemProvider);
+                  if (smokeApplies && smokeFailed) {
+                    return <StatusLight status="disconnected" label={valueOf(smokeResult, ["error_code"], "failed")} />;
+                  }
+                  if (smokeApplies && smokeSucceeded) {
+                    return <StatusLight status="connected" label="smoke ok" />;
+                  }
+                  return <StatusLight status={inferStatusFromData(item)} label={valueOf(item, ["status"])} />;
+                }
               }
             ]}
           />
@@ -753,7 +789,8 @@ function SessionsRunsPage({
   workbench,
   setSelectedThreadId,
   setSelectedRunId,
-  reloadWorkbench
+  reloadWorkbench,
+  realtimeConnected
 }: PageProps) {
   const [controlResult, setControlResult] = useState<unknown>(null);
   const [showPreview, setShowPreview] = useState<null | "cancel" | "stop" | "steer">(null);
@@ -762,9 +799,8 @@ function SessionsRunsPage({
   const [statusFilter, setStatusFilter] = useState("all");
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
   const [batchArchiving, setBatchArchiving] = useState(false);
-  const [wsConnected, setWsConnected] = useState(false);
   const [orderVersion, setOrderVersion] = useState(0);
-  const lastWsReloadRef = useRef(0);
+  const eventsConnected = Boolean(realtimeConnected);
 
   const selectedRunId = workbench?.selectedRunId || "";
   const allSessionRows = (workbench?.availableThreads || []).map((thread) => ({
@@ -806,28 +842,6 @@ function SessionsRunsPage({
       statusFilter === "all" ||
       (statusFilter === "archived" ? session.archived : String(session.status || "").toLowerCase() === statusFilter);
     return matchKeyword && matchStatus;
-  });
-
-  // WebSocket:实时订阅当前 run 事件,收到后节流触发 reloadWorkbench
-  const wsUrl =
-    settings?.mode === "live" && settings?.baseUrl && selectedRunId
-      ? `${settings.baseUrl.replace(/^http/, "ws").replace(/\/+$/, "")}/ws?run_id=${encodeURIComponent(selectedRunId)}&token=${encodeURIComponent(settings.apiToken || "")}`
-      : "";
-  const handleWsMessage = useCallback(() => {
-    const now = Date.now();
-    // 500ms 节流,避免高频事件触发过多 reload
-    if (now - lastWsReloadRef.current < 500) return;
-    lastWsReloadRef.current = now;
-    void reloadWorkbench?.();
-  }, [reloadWorkbench]);
-  useWebSocket({
-    url: wsUrl,
-    enabled: Boolean(wsUrl),
-    onMessage: (msg) => {
-      if (msg.type === "run_event") handleWsMessage();
-    },
-    onConnect: () => setWsConnected(true),
-    onDisconnect: () => setWsConnected(false)
   });
 
   const runRows = workbench?.availableRuns || [];
@@ -898,7 +912,7 @@ function SessionsRunsPage({
     >
       <div className="grid-2">
         <Panel
-          title={`会话列表${wsConnected ? "  ●" : ""}`}
+          title={`会话列表${eventsConnected ? "  ●" : ""}`}
           action={
             <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
               <SearchBar value={searchKeyword} onChange={setSearchKeyword} placeholder="搜索会话..." />
@@ -1038,21 +1052,21 @@ function SessionsRunsPage({
             columns={[
               { key: "source_type", header: "来源/工具" },
               { key: "title", header: "标题" },
-              { key: "uri", header: "URI / Name" }
+              { key: "uri", header: "URI / 名称" }
             ]}
             empty="暂无来源或工具调用"
           />
         </Panel>
       </div>
 
-      <Panel title="Run Control">
+      <Panel title="运行控制">
         <div className="form-grid">
           <label className="field">
-            <span>Run ID</span>
+            <span>运行 ID</span>
             <input data-testid="run-id-input" value={selectedRunId} onChange={(event) => setSelectedRunId?.(event.target.value)} />
           </label>
           <label className="field">
-            <span>Steer instruction</span>
+            <span>续跑说明</span>
             <input
               data-testid="run-steer-instruction"
               value={steerInstruction}
@@ -1063,22 +1077,22 @@ function SessionsRunsPage({
 
         <div className="page-actions">
           <Button data-testid="run-steer" disabled={!controlAvailable || !selectedRunId} onClick={() => setShowPreview("steer")}>
-            Steer
+            续跑
           </Button>
           <Button data-testid="run-stop" disabled={!controlAvailable || !selectedRunId} onClick={() => setShowPreview("stop")}>
-            Stop
+            停止
           </Button>
           <Button data-testid="run-cancel" disabled={!controlAvailable || !selectedRunId} onClick={() => setShowPreview("cancel")}>
-            Cancel
+            取消
           </Button>
         </div>
 
         {showPreview ? (
           <DryRunPreview
-            title="确认 Run Control 动作"
+            title="确认运行控制动作"
             changes={[
-              { label: "Run ID", after: selectedRunId || "-" },
-              { label: "动作", after: showPreview },
+              { label: "运行 ID", after: selectedRunId || "-" },
+              { label: "动作", after: showPreview === "steer" ? "续跑" : showPreview === "stop" ? "停止" : "取消" },
               { label: "说明", after: showPreview === "steer" ? steerInstruction : "将请求后端执行受控动作" }
             ]}
             onCancel={() => setShowPreview(null)}
@@ -1086,7 +1100,7 @@ function SessionsRunsPage({
           />
         ) : null}
 
-        {controlResult ? <JsonPanel data={controlResult} title="Run control result" /> : null}
+        {controlResult ? <JsonPanel data={controlResult} title="运行控制结果" /> : null}
       </Panel>
     </PageShell>
   );
@@ -1110,7 +1124,7 @@ function ToolsApprovalsPage({
     () =>
       list(tools.data).filter((tool) => {
         const name = String(tool.name || "");
-        return name.startsWith("agent_") && !/(strategy_factory|factor_factory|incubation|factory_event)/i.test(name);
+        return name.startsWith("agent_");
       }),
     [tools.data]
   );
@@ -1201,7 +1215,7 @@ function ToolsApprovalsPage({
           />
         </Panel>
 
-        <Panel title="Pending Intents">
+        <Panel title="待审批意图">
           <ApprovalQueue
             intents={normalizedIntents}
             onApprove={async (id) => {
@@ -1253,28 +1267,28 @@ function ToolsApprovalsPage({
             disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)}
             onClick={() => void decideFirstIntent("confirm")}
           >
-            Confirm first intent
+            确认第一个意图
           </Button>
           <Button
             data-testid="intent-deny-first"
             disabled={!controlAvailable || (!pendingIntentId && !intentRows.length)}
             onClick={() => void decideFirstIntent("deny")}
           >
-            Deny first intent
+            拒绝第一个意图
           </Button>
           <Button
             data-testid="approval-approve-first"
             disabled={!controlAvailable || !approvalRows.length}
             onClick={() => void decideFirstApproval("approve")}
           >
-            Approve first approval
+            批准第一条审批
           </Button>
           <Button
             data-testid="approval-deny-first"
             disabled={!controlAvailable || !approvalRows.length}
             onClick={() => void decideFirstApproval("deny")}
           >
-            Deny first approval
+            拒绝第一条审批
           </Button>
         </div>
 
@@ -1287,7 +1301,7 @@ function ToolsApprovalsPage({
           />
         ) : null}
 
-        {actionResult ? <JsonPanel data={actionResult} title="Decision result" /> : null}
+        {actionResult ? <JsonPanel data={actionResult} title="决策结果" /> : null}
       </Panel>
 
       <JsonPanel data={{ tools: tools.data, intents: intents.data, approvals: approvals.data }} title="工具与审批证据" />

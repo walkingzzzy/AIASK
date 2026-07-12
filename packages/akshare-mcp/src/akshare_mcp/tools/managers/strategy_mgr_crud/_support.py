@@ -7,6 +7,8 @@ import time
 from datetime import datetime, timezone
 from uuid import uuid4
 
+from aiask_quant_core.strategy_explanation import build_strategy_explanation
+
 from ....storage import get_db
 from ....utils import fail, ok
 from ....services.strategy_lifecycle_shared.presentation import (
@@ -471,11 +473,23 @@ def _build_strategy_market_summary(
     metrics: dict | None = None,
     incubation_surface: dict | None = None,
 ) -> dict:
+    params = dict(strategy.get("params") or {})
+    strategy_explanation = dict(
+        strategy.get("strategy_explanation")
+        or params.get("strategy_explanation")
+        or {}
+    ) or build_strategy_explanation(
+        strategy,
+        metrics=metrics,
+        source="strategy_market_summary",
+    )
     summary = {
         "id": strategy.get("id"),
         "name": strategy.get("name"),
         "strategy_type": strategy.get("strategy_type"),
         "description": strategy.get("description"),
+        "strategy_explanation_summary": strategy_explanation.get("summary"),
+        "strategy_explanation_labels": list(strategy_explanation.get("labels") or []),
         "status": strategy.get("status"),
         "subscriber_count": strategy.get("subscriber_count"),
         "avg_rating": strategy.get("avg_rating"),

@@ -103,6 +103,42 @@ async def test_diagnostic_candidate_save_payload_honors_status_rollback(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_status_update_metadata_includes_strategy_explanation() -> None:
+    db = _DB()
+    submitter = _Submitter()
+
+    explanation = {
+        "version": "strategy_explanation.v1",
+        "summary": "Explained strategy summary",
+        "labels": ["strategy_explained", "type:momentum"],
+        "why_generated": "source=external_llm; rationale=relative strength",
+    }
+
+    persisted = await StrategyUpsertService(submitter).persist_candidate(
+        strategy_id="explained-1",
+        candidate={"id": "candidate-explained", "strategy_explanation": explanation},
+        data={
+            "id": "explained-1",
+            "status": "draft",
+            "params": {"strategy_explanation": explanation},
+        },
+        metrics={},
+        validation_report=None,
+        risk_report=None,
+        gate={"passed": True},
+        db=db,
+        refresh_existing=False,
+        read_only=False,
+    )
+
+    assert persisted is True
+    metadata = submitter.status_updates[0]["metadata"]
+    assert metadata["strategy_explanation"] == explanation
+    assert metadata["strategy_explanation_summary"] == "Explained strategy summary"
+    assert metadata["strategy_explanation_labels"] == ["strategy_explained", "type:momentum"]
+
+
+@pytest.mark.asyncio
 async def test_ready_trade_prediction_is_persisted_after_strategy_save() -> None:
     db = _DB()
     submitter = _Submitter()

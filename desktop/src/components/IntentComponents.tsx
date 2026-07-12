@@ -16,6 +16,15 @@ export interface ActionIntent {
   reason?: string;
 }
 
+function riskLabel(riskLevel: "low" | "medium" | "high") {
+  const labels = {
+    low: "低风险",
+    medium: "中等风险",
+    high: "高风险"
+  };
+  return labels[riskLevel];
+}
+
 export function GatedActionButton({
   action,
   payload,
@@ -73,24 +82,24 @@ export function GatedActionButton({
       <div className="intent-preview" data-testid="intent-preview">
         <div className="intent-preview-header">
           <ShieldCheck size={20} />
-          <strong>Confirm controlled action</strong>
+          <strong>确认受控操作</strong>
         </div>
         <div className="intent-preview-body">
-          <p>Action: {action}</p>
-          <StatusBadge tone={riskTone[riskLevel]}>Risk: {riskLevel}</StatusBadge>
+          <p>操作：{action}</p>
+          <StatusBadge tone={riskTone[riskLevel]}>风险：{riskLabel(riskLevel)}</StatusBadge>
           {payload ? (
             <details>
-              <summary>Payload preview</summary>
+              <summary>请求内容预览</summary>
               <pre>{JSON.stringify(payload, null, 2)}</pre>
             </details>
           ) : null}
         </div>
         <div className="intent-preview-actions">
           <Button data-testid="intent-preview-cancel" onClick={() => setShowPreview(false)}>
-            Cancel
+            取消
           </Button>
           <Button data-testid="intent-preview-confirm" tone="warning" busy={busy} onClick={() => void confirmIntent()}>
-            Confirm and create intent
+            确认并创建审批
           </Button>
         </div>
       </div>
@@ -104,7 +113,7 @@ export function GatedActionButton({
       disabled={!controlAvailable || busy}
       busy={busy}
       onClick={() => void handleClick()}
-      title={!controlAvailable ? "Requires control token" : ""}
+      title={!controlAvailable ? "需要控制权限" : ""}
     >
       {children}
     </Button>
@@ -113,11 +122,11 @@ export function GatedActionButton({
 
 export function IntentStatusBadge({ status }: { status: ActionIntent["status"] }) {
   const statusConfig: Record<ActionIntent["status"], { tone: Tone; label: string; icon: ReactNode }> = {
-    pending: { tone: "warning", label: "Pending", icon: <Loader2 size={14} className="spin" /> },
-    approved: { tone: "success", label: "Approved", icon: <CheckCircle2 size={14} /> },
-    denied: { tone: "danger", label: "Denied", icon: <XCircle size={14} /> },
-    completed: { tone: "success", label: "Completed", icon: <CheckCircle2 size={14} /> },
-    failed: { tone: "danger", label: "Failed", icon: <AlertCircle size={14} /> }
+    pending: { tone: "warning", label: "待审批", icon: <Loader2 size={14} className="spin" /> },
+    approved: { tone: "success", label: "已批准", icon: <CheckCircle2 size={14} /> },
+    denied: { tone: "danger", label: "已拒绝", icon: <XCircle size={14} /> },
+    completed: { tone: "success", label: "已完成", icon: <CheckCircle2 size={14} /> },
+    failed: { tone: "danger", label: "失败", icon: <AlertCircle size={14} /> }
   };
 
   const config = statusConfig[status];
@@ -176,22 +185,22 @@ export function IntentCard({
         <details className="intent-payload">
           <summary>
             <FileText size={14} />
-            Payload details
+            请求详情
           </summary>
           <pre>{JSON.stringify(intent.payload, null, 2)}</pre>
         </details>
       ) : null}
 
-      {intent.side_effect ? <p className="intent-side-effect">Side effect: {intent.side_effect}</p> : null}
-      {intent.reason ? <p className="intent-reason">Reason: {intent.reason}</p> : null}
+      {intent.side_effect ? <p className="intent-side-effect">影响范围：{intent.side_effect}</p> : null}
+      {intent.reason ? <p className="intent-reason">原因：{intent.reason}</p> : null}
 
       {intent.status === "pending" && canManage && onApprove && onDeny ? (
         <div className="intent-card-actions">
           <Button tone="danger" busy={busy} onClick={() => void handleDeny()}>
-            Deny
+            拒绝
           </Button>
           <Button tone="success" busy={busy} onClick={() => void handleApprove()}>
-            Approve
+            批准
           </Button>
         </div>
       ) : null}
@@ -216,8 +225,8 @@ export function ApprovalQueue({
     return (
       <div className="state">
         <CheckCircle2 size={24} />
-        <strong>No pending intents</strong>
-        <p>There are no actions waiting for review right now.</p>
+        <strong>没有待审批操作</strong>
+        <p>当前没有需要复核的操作。</p>
       </div>
     );
   }
@@ -225,8 +234,8 @@ export function ApprovalQueue({
   return (
     <div className="approval-queue">
       <div className="approval-queue-header">
-        <strong>Pending queue ({pending.length})</strong>
-        {!canManage ? <StatusBadge tone="gated">Approval permissions required</StatusBadge> : null}
+        <strong>待审批队列（{pending.length}）</strong>
+        {!canManage ? <StatusBadge tone="gated">需要审批权限</StatusBadge> : null}
       </div>
       <div className="intent-list">
         {pending.map((intent) => (
@@ -274,10 +283,10 @@ export function DryRunPreview({
       </div>
       <div className="dry-run-actions">
         <Button data-testid="dry-run-cancel" onClick={onCancel} disabled={busy}>
-          Cancel
+          取消
         </Button>
         <Button data-testid="dry-run-confirm" tone="warning" busy={busy} onClick={onConfirm}>
-          Confirm action
+          确认操作
         </Button>
       </div>
     </div>

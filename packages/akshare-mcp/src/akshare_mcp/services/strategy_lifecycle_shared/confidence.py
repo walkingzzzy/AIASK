@@ -1,12 +1,47 @@
-"""Confidence and execution-audit gates."""
+"""Confidence and execution-audit gates.
+
+Execution hard-gate ownership lives in strategy_factory.contracts.hard_gate.
+This module re-exports evaluate_execution_audit_gate for host call sites.
+"""
 
 from __future__ import annotations
 
 from typing import Any, Optional
 
-from strategy_factory.api.constants import BACKTEST_TYPE_THRESHOLDS, PROVISIONAL_PASS_THRESHOLDS
+from strategy_factory.contracts.hard_gate import (
+    EXECUTION_CONVERSION_EFFICIENCY_MIN,
+    HARD_GATE_STATUSES,
+    PNL_CONVERSION_EFFICIENCY_MIN_EXCLUSIVE,
+    PRODUCTION_TRADE_FLOOR_DEFAULT,
+    TRADE_EXPECTANCY_MIN_EXCLUSIVE,
+    evaluate_execution_audit_gate,
+)
 
 from .common import _contract_version_stable, _safe_float, _safe_int, _string
+
+# Re-export hard-gate symbols so existing imports keep working.
+__all__ = [
+    "EVALUATE_EXECUTION_AUDIT_GATE_OWNER",
+    "EXECUTION_CONVERSION_EFFICIENCY_MIN",
+    "EXECUTION_FILLED_ORDER_STRONG",
+    "EXECUTION_FILLED_ORDER_WEAK",
+    "EXECUTION_NAV_CONVERSION_STRONG",
+    "EXECUTION_NAV_CONVERSION_WEAK",
+    "EXECUTION_NAV_RETURN_STRONG",
+    "EXECUTION_SIGNAL_TO_FILL_STRONG",
+    "EXECUTION_SIGNAL_TO_FILL_WEAK",
+    "EXPECTED_FORWARD_DAYS",
+    "HARD_GATE_STATUSES",
+    "PNL_CONVERSION_EFFICIENCY_MIN_EXCLUSIVE",
+    "PRODUCTION_TRADE_FLOOR_DEFAULT",
+    "SIGNAL_QUALITY_OVERLAP_FACTORS",
+    "SIGNAL_QUALITY_PRIMARY_DEFAULT",
+    "TRADE_EXPECTANCY_MIN_EXCLUSIVE",
+    "evaluate_confidence_contract",
+    "evaluate_execution_audit_gate",
+]
+
+EVALUATE_EXECUTION_AUDIT_GATE_OWNER = "strategy_factory.contracts.hard_gate"
 
 def evaluate_confidence_contract(
     confidence_contract: Optional[dict[str, Any]],
@@ -110,101 +145,6 @@ def evaluate_confidence_contract(
         status = "diagnostic_ready"
     diagnostics["status"] = status
     return status, diagnostics
-
-
-def evaluate_execution_audit_gate(
-    audit_summary: Optional[dict[str, Any]],
-    *,
-    strategy_type: Optional[str] = None,
-    bootstrap_trade_floor: Optional[int] = None,
-    production_trade_floor: int = 20,
-) -> tuple[str, list[str], dict[str, bool], dict[str, float | int | None]]:
-    summary = dict(audit_summary or {})
-    normalized_strategy_type = _string(
-        summary.get("strategy_type") or strategy_type
-    ).lower()
-    resolved_bootstrap_trade_floor = max(
-        1,
-        _safe_int(
-            bootstrap_trade_floor,
-            max(
-                _safe_int(PROVISIONAL_PASS_THRESHOLDS.get("trades_min"), 2),
-                _safe_int(
-                    dict(BACKTEST_TYPE_THRESHOLDS.get(normalized_strategy_type) or {}).get("trades_min"),
-                    0,
-                ),
-            ),
-        ),
-    )
-    resolved_production_trade_floor = max(int(production_trade_floor or 20), resolved_bootstrap_trade_floor)
-    realized_trade_count = _safe_int(summary.get("realized_trade_count"))
-    mapped_position_count = _safe_int(summary.get("mapped_position_count"))
-    incomplete_position_count = _safe_int(summary.get("incomplete_position_count"))
-    order_count = _safe_int(summary.get("order_count"))
-    filled_order_count = _safe_int(summary.get("filled_order_count"))
-    trade_count = _safe_int(summary.get("trade_count"))
-    nav_observation_days = _safe_int(summary.get("nav_observation_days"))
-    evidence_status = _string(summary.get("evidence_status")) or None
-    runtime_evidence_present = bool(
-        mapped_position_count > 0
-        or incomplete_position_count > 0
-        or order_count > 0
-        or filled_order_count > 0
-        or trade_count > 0
-        or nav_observation_days > 0
-        or evidence_status in {"ready", "empty", "bootstrap_pending"}
-        or _string(summary.get("account_id"))
-        or _string(summary.get("paper_account_id"))
-    )
-    trade_expectancy = _safe_float(summary.get("trade_expectancy"))
-    pnl_conversion_efficiency = _safe_float(summary.get("pnl_conversion_efficiency"))
-    execution_conversion_efficiency = _safe_float(summary.get("execution_conversion_efficiency"))
-    hard_gate_metrics = {
-        "realized_trade_count": realized_trade_count,
-        "trade_expectancy": trade_expectancy,
-        "pnl_conversion_efficiency": pnl_conversion_efficiency,
-        "execution_conversion_efficiency": execution_conversion_efficiency,
-        "bootstrap_trade_floor": resolved_bootstrap_trade_floor,
-        "required_trade_count": resolved_production_trade_floor,
-    }
-    hard_gate_metric_passes = {
-        "bootstrap_trade_count": realized_trade_count >= resolved_bootstrap_trade_floor,
-        "realized_trade_count": realized_trade_count >= resolved_production_trade_floor,
-        "trade_expectancy": trade_expectancy is not None and trade_expectancy > 0.0,
-        "pnl_conversion_efficiency": (
-            pnl_conversion_efficiency is not None and pnl_conversion_efficiency > 0.0
-        ),
-        "execution_conversion_efficiency": (
-            execution_conversion_efficiency is not None
-            and execution_conversion_efficiency >= 0.20
-        ),
-    }
-    reasons: list[str] = []
-    if not summary or (realized_trade_count <= 0 and not runtime_evidence_present):
-        status = "missing"
-        reasons.append("execution_audit_missing")
-    elif realized_trade_count <= 0:
-        status = "bootstrap_pending"
-        reasons.append("execution_audit_bootstrap_pending")
-    elif realized_trade_count < resolved_bootstrap_trade_floor:
-        status = "insufficient_samples"
-        reasons.append(f"realized_trade_count<{resolved_bootstrap_trade_floor}")
-    else:
-        if not hard_gate_metric_passes["trade_expectancy"]:
-            reasons.append("trade_expectancy<=0")
-        if not hard_gate_metric_passes["pnl_conversion_efficiency"]:
-            reasons.append("pnl_conversion_efficiency<=0")
-        if not hard_gate_metric_passes["execution_conversion_efficiency"]:
-            reasons.append("execution_conversion_efficiency<0.20")
-        if reasons:
-            status = "failed_metrics"
-        elif realized_trade_count < resolved_production_trade_floor:
-            status = "bootstrap_ready"
-            reasons.append(f"realized_trade_count<{resolved_production_trade_floor}")
-        else:
-            status = "passed"
-    return status, reasons, hard_gate_metric_passes, hard_gate_metrics
-
 
 EXPECTED_FORWARD_DAYS = (1, 5, 10, 20)
 SIGNAL_QUALITY_PRIMARY_DEFAULT = (5, 10)

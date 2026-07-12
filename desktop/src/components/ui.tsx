@@ -14,6 +14,18 @@ import { Link } from "react-router-dom";
 import { redactSecrets, toList } from "../services/api/core";
 import type { ApiProblem, Metric, TableColumn, Tone, UnknownRecord } from "../types";
 
+type MobileRecordDetail = {
+  label: string;
+  value: ReactNode;
+};
+
+type MobileRecordCard = {
+  title: ReactNode;
+  subtitle?: ReactNode;
+  details?: MobileRecordDetail[];
+  actions?: ReactNode;
+};
+
 const toneClass: Record<Tone, string> = {
   neutral: "tone-neutral",
   success: "tone-success",
@@ -132,7 +144,7 @@ export function Panel({
   );
 }
 
-export function LoadingState({ label = "Loading" }: { label?: string }) {
+export function LoadingState({ label = "加载中" }: { label?: string }) {
   return (
     <div className="state state-loading">
       <Loader2 className="spin" size={18} />
@@ -157,11 +169,11 @@ export function ErrorState({ error, onRetry }: { error: ApiProblem; onRetry?: ()
     <div className="state state-error" role="alert">
       <XCircle size={18} />
       <strong>{error.title}</strong>
-      <p>{error.detail || "The request failed. Check the Agent HTTP connection or token settings."}</p>
+      <p>{error.detail || "请求失败，请检查 Agent HTTP 连接或权限设置。"}</p>
       {error.code ? <code>{error.code}</code> : null}
       {onRetry ? (
         <Button icon={<RefreshCw size={16} />} onClick={onRetry}>
-          Retry
+          重试
         </Button>
       ) : null}
     </div>
@@ -171,42 +183,82 @@ export function ErrorState({ error, onRetry }: { error: ApiProblem; onRetry?: ()
 export function DataTable<T extends UnknownRecord>({
   items,
   columns,
-  empty = "No data"
+  empty = "暂无数据",
+  mobileCard
 }: {
   items: T[];
   columns: TableColumn<T>[];
   empty?: string;
+  mobileCard?: (item: T, index: number) => MobileRecordCard;
 }) {
-  if (!items.length) return <EmptyState title={empty} detail="There are no records for the current state." />;
+  const rowKey = (item: T, index: number) => {
+    for (const field of ["id", "key", "name", "symbol", "code", "title"]) {
+      const value = item[field as keyof T];
+      if (typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+        return `${field}-${String(value)}-${index}`;
+      }
+    }
+    return `row-${index}`;
+  };
+
+  if (!items.length) return <EmptyState title={empty} detail="当前状态下没有记录。" />;
   return (
-    <div className="table-wrap">
-      <table>
-        <thead>
-          <tr>
-            {columns.map((column) => (
-              <th key={String(column.key)} style={column.width ? { width: column.width } : undefined}>
-                {column.header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item, index) => (
-            <tr key={String(item.id || item.name || item.symbol || index)}>
+    <>
+      <div className={`table-wrap${mobileCard ? " has-mobile-cards" : ""}`}>
+        <table>
+          <thead>
+            <tr>
               {columns.map((column) => (
-                <td key={String(column.key)}>
-                  {column.render ? column.render(item) : String(item[column.key as keyof T] ?? "")}
-                </td>
+                <th key={String(column.key)} style={column.width ? { width: column.width } : undefined}>
+                  {column.header}
+                </th>
               ))}
             </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
+          </thead>
+          <tbody>
+            {items.map((item, index) => (
+              <tr key={rowKey(item, index)}>
+                {columns.map((column) => (
+                  <td key={String(column.key)}>
+                    {column.render ? column.render(item) : String(item[column.key as keyof T] ?? "")}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {mobileCard ? (
+        <div className="mobile-record-list">
+          {items.map((item, index) => {
+            const card = mobileCard(item, index);
+            return (
+              <article className="mobile-record-card" key={`mobile-${rowKey(item, index)}`}>
+                <div className="mobile-record-card-title">
+                  <strong>{card.title}</strong>
+                </div>
+                {card.subtitle ? <p className="mobile-record-card-subtitle">{card.subtitle}</p> : null}
+                {card.details?.length ? (
+                  <dl className="mobile-record-details">
+                    {card.details.map((detail) => (
+                      <div className="mobile-record-detail" key={detail.label}>
+                        <dt>{detail.label}</dt>
+                        <dd>{detail.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : null}
+                {card.actions ? <div className="mobile-record-actions">{card.actions}</div> : null}
+              </article>
+            );
+          })}
+        </div>
+      ) : null}
+    </>
   );
 }
 
-export function JsonPanel({ data, title = "Evidence JSON" }: { data: unknown; title?: string }) {
+export function JsonPanel({ data, title = "证据 JSON" }: { data: unknown; title?: string }) {
   return (
     <details className="json-panel" data-testid="json-panel">
       <summary>{title}</summary>
@@ -229,7 +281,7 @@ export function ResourcePanel<T>({
       title={title}
       action={
         <Button icon={<RefreshCw size={16} />} onClick={() => void resource.reload()}>
-          Refresh
+          刷新
         </Button>
       }
     >
@@ -267,9 +319,9 @@ export function LinkCard({
 
 export function GatedNotice({ controlAvailable, action }: { controlAvailable: boolean; action: string }) {
   if (controlAvailable) {
-    return <StatusBadge tone="success">Control token available</StatusBadge>;
+    return <StatusBadge tone="success">控制权限已就绪</StatusBadge>;
   }
-  return <StatusBadge tone="gated">{action} requires a control token</StatusBadge>;
+  return <StatusBadge tone="gated">{action}需要控制权限</StatusBadge>;
 }
 
 export function listFromPayload<T extends UnknownRecord = UnknownRecord>(payload: unknown): T[] {

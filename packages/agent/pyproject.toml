@@ -35,6 +35,12 @@ full-hermes-native = [
     "atroposlib>=0.1.0",
 ]
 
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.25.0",
+]
+
 [project.scripts]
 aiask = "aiask_agent.cli:main"
 aiask-agent = "aiask_agent.server:main"

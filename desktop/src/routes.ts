@@ -1,11 +1,6 @@
 import type { DeferredViewId, ViewId } from "./types";
 
-export const V1_DEFERRED_VIEWS: readonly DeferredViewId[] = [
-  "strategy-factory",
-  "factor-factory",
-  "incubation",
-  "factory-events"
-] as const;
+export const V1_DEFERRED_VIEWS: readonly DeferredViewId[] = [] as const;
 
 export const V1_ROUTES: Record<ViewId, string> = {
   workbench: "/",
@@ -24,6 +19,10 @@ export const V1_ROUTES: Record<ViewId, string> = {
   "stock-radar": "/stock-radar",
   "market-temperature": "/market-temperature",
   "quant-research": "/quant-research",
+  "strategy-factory": "/strategy-factory",
+  "factor-factory": "/factor-factory",
+  incubation: "/incubation",
+  "factory-events": "/factory-events",
   "financial-manager": "/financial-manager",
   "my-strategy": "/personal/my-strategy",
   "my-stocks": "/personal/my-stocks",
@@ -46,14 +45,10 @@ export const DEFERRED_ROUTE_ALIASES: Record<string, ViewId> = {
   "/finance-lab": "finance-lab",
   "/user": "local-user-memory",
   "/profile": "user-profile",
-  "/strategy-factory": "finance-lab",
-  "/factor-factory": "finance-lab",
-  "/incubation": "finance-lab",
-  "/factory-events": "finance-lab",
-  "/finance/strategy": "finance-lab",
-  "/finance/factor": "finance-lab",
-  "/finance/incubation": "finance-lab",
-  "/finance/events": "finance-lab"
+  "/finance/strategy": "strategy-factory",
+  "/finance/factor": "factor-factory",
+  "/finance/incubation": "incubation",
+  "/finance/events": "factory-events"
 };
 
 const VIEW_BY_ROUTE = Object.entries(V1_ROUTES).reduce<Record<string, ViewId>>(

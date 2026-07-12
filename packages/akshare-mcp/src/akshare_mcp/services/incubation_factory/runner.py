@@ -42,23 +42,23 @@ from .feedback_writer import FeedbackWriter
 from .trade_prediction_verifier import TradePredictionDailyVerifier
 from .accelerator import IncubationAccelerator
 from .alert_monitor import AlertMonitor
+from .exit_evidence import ExitEvidenceService
 
 logger = logging.getLogger(__name__)
 
 # 默认运行时间：18:30（A 股 15:00 收盘 + 数据同步 ~2h + 缓冲）
 DEFAULT_RUN_TIME = dt_time(18, 30)
 
-# 单策略处理超时（秒）
-STRATEGY_TIMEOUT_SEC = 30
-
-# 批量处理超时（秒）
-BATCH_TIMEOUT_SEC = 600
-
-# 错误后等待时间（秒）
-ERROR_BACKOFF_SEC = 300
-
-# 健康检查间隔（秒）
-HEARTBEAT_INTERVAL_SEC = 3600
+# Phase order / timeouts owned by strategy_factory.runtime.incubation_phases
+from strategy_factory.runtime.incubation_phases import (
+    BATCH_TIMEOUT_SEC,
+    ERROR_BACKOFF_SEC,
+    HEARTBEAT_INTERVAL_SEC,
+    INCUBATION_ONCE_PHASES,
+    STRATEGY_TIMEOUT_SEC,
+    get_phase_timeout,
+    incubation_phase_names,
+)
 
 
 def _as_bool(value: Optional[str]) -> bool:
@@ -91,9 +91,32 @@ class IncubationFactoryRunner:
         # 孵化工厂是否拥有 paper-trading runtime (MatchingEngine + NavEngine)。
         # 默认从 ENV 读 INCUBATION_FACTORY_OWNS_PAPER_TRADING (默认开),
         # dry_run 模式下强制关闭避免误撮合。
+        paper_owner = str(os.getenv("AIASK_FACTORY_PAPER_OWNER") or "").strip().lower()
+        if paper_owner and paper_owner not in {"incubation_factory", "disabled"}:
+            raise ValueError(
+                "AIASK_FACTORY_PAPER_OWNER must be incubation_factory or disabled"
+            )
+        legacy_owner_value = os.getenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING")
+        legacy_owns_paper = _as_bool(
+            legacy_owner_value if legacy_owner_value is not None else "true"
+        )
+        if (
+            paper_owner
+            and legacy_owner_value is not None
+            and legacy_owns_paper != (paper_owner == "incubation_factory")
+        ):
+            raise ValueError(
+                "paper ownership conflict between AIASK_FACTORY_PAPER_OWNER "
+                "and INCUBATION_FACTORY_OWNS_PAPER_TRADING"
+            )
         if owns_paper_trading is None:
-            owns_paper_trading = _as_bool(
-                os.getenv("INCUBATION_FACTORY_OWNS_PAPER_TRADING", "true")
+            owns_paper_trading = (
+                paper_owner == "incubation_factory" if paper_owner else legacy_owns_paper
+            )
+        if paper_owner and bool(owns_paper_trading) != (paper_owner == "incubation_factory"):
+            raise ValueError(
+                "paper ownership conflict between AIASK_FACTORY_PAPER_OWNER "
+                "and INCUBATION_FACTORY_OWNS_PAPER_TRADING/runtime argument"
             )
         self.owns_paper_trading = bool(owns_paper_trading) and not dry_run
 
@@ -248,7 +271,7 @@ class IncubationFactoryRunner:
             logger.info("IncubationFactory [%s] Phase 1: Intake", run_id)
             intake_result = await _run_phase(
                 "intake", lambda: self._intake.scan_and_accept(db),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("intake"),
             ) or {}
 
             # Phase 1.5: observe 池趋势策略重编译 remediation + observe->formal 转正。
@@ -256,7 +279,7 @@ class IncubationFactoryRunner:
             remediation_result = await _run_phase(
                 "recompile_remediation",
                 lambda: self._run_recompile_remediation(db),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("recompile_remediation"),
             ) or {}
 
             # Phase 2: 加载所有孵化中的策略 (cheap, no timeout)
@@ -391,7 +414,7 @@ class IncubationFactoryRunner:
                     sync_intraday_before_replay=True,
                     persist=not self.dry_run,
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("trade_prediction_outcomes"),
             ) or {}
 
             logger.info("IncubationFactory [%s] Phase 3c: Signal-only paper execution backlog", run_id)
@@ -401,7 +424,7 @@ class IncubationFactoryRunner:
                     db,
                     strategies=list(incubating) + list(paper_observation),
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("paper_execution_backlog"),
             ) or {}
 
             logger.info("IncubationFactory [%s] Phase 3c2: Exit signal paper execution", run_id)
@@ -412,7 +435,7 @@ class IncubationFactoryRunner:
                     strategies=all_strategies,
                     as_of=as_of,
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("exit_signal_paper_execution"),
             ) or {}
 
             logger.info("IncubationFactory [%s] Phase 3d: Stale paper position closure", run_id)
@@ -422,7 +445,7 @@ class IncubationFactoryRunner:
                     db,
                     strategies=all_strategies,
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("stale_paper_position_closure"),
             ) or {}
 
             logger.info("IncubationFactory [%s] Phase 3e: Native execution evidence backfill", run_id)
@@ -432,7 +455,7 @@ class IncubationFactoryRunner:
                     db,
                     strategies=list(incubating) + list(paper_observation),
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("native_execution_evidence_backfill"),
             ) or {}
 
             # Phase 3f: execution audit acceptance snapshots/backfill
@@ -443,7 +466,7 @@ class IncubationFactoryRunner:
                     db,
                     strategies=list(incubating) + list(paper_observation),
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("execution_audit_acceptance"),
             ) or {}
 
             # Phase 4: 孵化流水线评估（复用已有实现）
@@ -456,7 +479,7 @@ class IncubationFactoryRunner:
                     strategies=list(incubating) + list(paper_observation),
                     acceptance_result=execution_audit_acceptance_result,
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("execution_audit_remediation"),
             ) or {}
 
             pipeline_result = await _run_phase(
@@ -465,7 +488,7 @@ class IncubationFactoryRunner:
                     db,
                     strategies=list(incubating) + list(paper_observation),
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("pipeline"),
             ) or {}
 
             # Phase 5: 命中率报告
@@ -479,7 +502,7 @@ class IncubationFactoryRunner:
                     pipeline_result,
                     trade_prediction_result=trade_prediction_result,
                 ),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("hit_rate_report"),
             ) or {}
 
             # Phase 6: 反馈写入
@@ -489,7 +512,7 @@ class IncubationFactoryRunner:
                 feedback_result = await _run_phase(
                     "feedback_write",
                     lambda: self._feedback_writer.write(db, report),
-                    timeout=BATCH_TIMEOUT_SEC,
+                    timeout=get_phase_timeout("feedback_write"),
                 ) or {}
 
             # Phase 7: 加速孵化评估
@@ -497,7 +520,7 @@ class IncubationFactoryRunner:
             acceleration_result = await _run_phase(
                 "acceleration",
                 lambda: self._accelerator.evaluate_batch(db, incubating, verifications),
-                timeout=BATCH_TIMEOUT_SEC,
+                timeout=get_phase_timeout("acceleration"),
             ) or {}
 
             # Phase 8: 异常告警检查
@@ -510,14 +533,14 @@ class IncubationFactoryRunner:
                         "errors": verification_errors,
                     },
                 }),
-                timeout=STRATEGY_TIMEOUT_SEC,
+                timeout=get_phase_timeout("alert_check"),
             ) or {}
 
             # Phase 9: 健康检查心跳
             await _run_phase(
                 "heartbeat",
                 lambda: self._heartbeat(db, run_id),
-                timeout=STRATEGY_TIMEOUT_SEC,
+                timeout=get_phase_timeout("heartbeat"),
             )
 
             # 汇总结果
@@ -774,6 +797,16 @@ class IncubationFactoryRunner:
             if days > 0:
                 return min(days, 365)
         return 0
+
+    def _get_exit_evidence_service(self) -> ExitEvidenceService:
+        service = getattr(self, "_exit_evidence_service", None)
+        if service is None:
+            service = ExitEvidenceService(
+                decode_mapping=self._decode_mapping,
+                max_holding_days=self._strategy_max_holding_days,
+            )
+            self._exit_evidence_service = service
+        return service
 
     @staticmethod
     def _position_opened_date(position: dict[str, Any]) -> Optional[date]:
@@ -1062,6 +1095,68 @@ class IncubationFactoryRunner:
             "error_items": errors[:20],
         }
 
+
+    def _strategy_has_exit_policy(self, strategy: dict[str, Any]) -> bool:
+        return self._get_exit_evidence_service().strategy_has_exit_policy(strategy)
+
+    @staticmethod
+    def _is_open_position_status(status: Any) -> bool:
+        return ExitEvidenceService.is_open_position_status(status)
+
+    @staticmethod
+    def _is_exit_order_direction(direction: Any) -> bool:
+        return ExitEvidenceService.is_exit_order_direction(direction)
+
+    @staticmethod
+    def _is_open_exit_order_status(status: Any) -> bool:
+        return ExitEvidenceService.is_open_exit_order_status(status)
+
+    async def _list_open_trade_positions_for_exit(
+        self,
+        db: Any,
+        *,
+        strategy_id: str,
+    ) -> list[dict[str, Any]]:
+        return await self._get_exit_evidence_service().list_open_positions(
+            db, strategy_id=strategy_id
+        )
+
+    async def _list_exit_related_orders(
+        self,
+        db: Any,
+        *,
+        strategy_id: str,
+    ) -> list[dict[str, Any]]:
+        return await self._get_exit_evidence_service().list_exit_orders(
+            db, strategy_id=strategy_id
+        )
+
+    async def _count_exit_signals_for_strategy(
+        self,
+        db: Any,
+        *,
+        strategy_id: str,
+        codes: Optional[set[str]] = None,
+    ) -> int:
+        return await self._get_exit_evidence_service().count_exit_signals(
+            db, strategy_id=strategy_id, codes=codes
+        )
+
+    def _exit_funnel_snapshot(
+        self,
+        *,
+        open_positions: list[dict[str, Any]],
+        exit_signal_count: int,
+        has_exit_policy: bool,
+        exit_orders: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        return self._get_exit_evidence_service().funnel_snapshot(
+            open_positions=open_positions,
+            exit_signal_count=exit_signal_count,
+            has_exit_policy=has_exit_policy,
+            exit_orders=exit_orders,
+        )
+
     async def _select_exit_signal_candidates(
         self,
         db: Any,
@@ -1069,61 +1164,18 @@ class IncubationFactoryRunner:
         strategies: Optional[list[dict[str, Any]]] = None,
         limit: int = 200,
     ) -> tuple[list[dict[str, Any]], int]:
-        """Select strategies with exit signal + open positions but no exit orders."""
-        candidates: list[dict[str, Any]] = []
+        """Select strategies eligible for exit order creation.
 
-        unique: list[dict[str, Any]] = []
-        seen: set[str] = set()
-        for strategy in list(strategies or []):
-            sid = str((strategy or {}).get("id") or "").strip()
-            if not sid or sid in seen:
-                continue
-            seen.add(sid)
-            unique.append(dict(strategy or {}))
-
-        for strategy in unique:
-            sid = str(strategy.get("id") or "").strip()
-            if not sid:
-                continue
-
-            try:
-                # Check for exit signals
-                cursor = db.connection.execute(
-                    "SELECT COUNT(*) FROM strategy_signals WHERE strategy_id = ? AND signal = -1",
-                    (sid,)
-                )
-                exit_signal_count = cursor.fetchone()[0] if cursor else 0
-
-                if exit_signal_count == 0:
-                    continue
-
-                # Check for open positions
-                cursor = db.connection.execute(
-                    "SELECT id, code FROM strategy_trade_positions WHERE strategy_id = ? AND status = 'open'",
-                    (sid,)
-                )
-                open_positions = [{"id": row[0], "code": row[1]} for row in cursor.fetchall()] if cursor else []
-
-                if not open_positions:
-                    continue
-
-                # Check if already has exit orders
-                cursor = db.connection.execute(
-                    "SELECT COUNT(*) FROM paper_orders WHERE strategy_id = ? AND direction IN ('sell', 'exit', 'short')",
-                    (sid,)
-                )
-                exit_order_count = cursor.fetchone()[0] if cursor else 0
-
-                if exit_order_count > 0:
-                    continue
-
-                strategy["_exit_signal_count"] = exit_signal_count
-                strategy["_open_positions"] = open_positions
-                candidates.append(strategy)
-            except Exception:  # noqa: BLE001
-                continue
-
-        return candidates[:limit], len(candidates)
+        Eligibility (P0-B):
+        - has open positions
+        - has exit signal OR exit_policy / time-stop policy
+        - has at least one open code without a pending/open exit order
+        """
+        candidates, total, funnel = await self._get_exit_evidence_service().select_candidates(
+            db, strategies=strategies, limit=limit
+        )
+        self._last_exit_selection_funnel = dict(funnel)
+        return candidates, total
 
     async def _run_exit_signal_paper_execution(
         self,
@@ -1196,11 +1248,20 @@ class IncubationFactoryRunner:
             sid = str(strategy.get("id") or "").strip()
             open_positions = list(strategy.get("_open_positions") or [])
             exit_signal_count = int(strategy.get("_exit_signal_count") or 0)
+            has_exit_policy = bool(strategy.get("_has_exit_policy"))
+            preferred_codes = [
+                str(code).strip()
+                for code in list(strategy.get("_exit_codes") or [])
+                if str(code).strip()
+            ]
 
             if not open_positions:
                 continue
 
-            codes = [str(p.get("code") or "").strip() for p in open_positions if p.get("code")]
+            codes = preferred_codes or [
+                str(p.get("code") or "").strip() for p in open_positions if p.get("code")
+            ]
+            codes = [code for code in codes if code]
             if not codes:
                 continue
 
@@ -1209,14 +1270,42 @@ class IncubationFactoryRunner:
                     db,
                     strategy,
                     as_of_date,
-                    reason="exit_signal_driven_close",
+                    reason=(
+                        "exit_signal_driven_close"
+                        if exit_signal_count > 0
+                        else "exit_policy_driven_close"
+                    ),
                     source="incubation_factory_exit_signal",
                     codes=codes,
                 )
 
-                orders_created = int((close_result or {}).get("orders_created") or 0)
-                orders_filled = int((close_result or {}).get("orders_filled") or 0)
-                closed_count = int((close_result or {}).get("positions_closed") or 0)
+                # force_close returns created_count/skipped_count (not orders_created)
+                orders_created = int(
+                    (close_result or {}).get("created_count")
+                    or (close_result or {}).get("orders_created")
+                    or 0
+                )
+                orders_filled = 0
+                closed_count = 0
+                settlement: dict[str, Any] = {}
+                if orders_created > 0:
+                    settle_orders = getattr(incubation_service, "settle_orders", None)
+                    if callable(settle_orders):
+                        try:
+                            settlement = dict(await settle_orders(db, strategy, as_of_date) or {})
+                            orders_filled = int(settlement.get("filled_count") or 0)
+                            closed_count = int(
+                                settlement.get("positions_closed")
+                                or settlement.get("closed_count")
+                                or 0
+                            )
+                        except Exception as settle_exc:  # noqa: BLE001
+                            errors.append({
+                                "strategy_id": sid,
+                                "phase": "settle_orders",
+                                "error_type": type(settle_exc).__name__,
+                                "error": str(settle_exc),
+                            })
 
                 exit_orders_created += orders_created
                 exit_orders_filled += orders_filled
@@ -1225,11 +1314,15 @@ class IncubationFactoryRunner:
                 items.append({
                     "strategy_id": sid,
                     "exit_signal_count": exit_signal_count,
+                    "has_exit_policy": has_exit_policy,
                     "open_position_count": len(open_positions),
                     "codes": codes,
                     "orders_created": orders_created,
                     "orders_filled": orders_filled,
                     "positions_closed": closed_count,
+                    "skipped_count": int((close_result or {}).get("skipped_count") or 0),
+                    "skip_reason_counts": dict((close_result or {}).get("skip_reason_counts") or {}),
+                    "exit_funnel": dict(strategy.get("_exit_funnel") or {}),
                 })
             except Exception as exc:  # noqa: BLE001
                 errors.append({
@@ -1244,6 +1337,21 @@ class IncubationFactoryRunner:
         if not items and errors:
             result_status = "error"
 
+        funnel = dict(getattr(self, "_last_exit_selection_funnel", {}) or {})
+        if selected:
+            funnel = dict(selected[0].get("_exit_selection_funnel_totals") or funnel)
+        eligible = int(
+            funnel.get("eligible_exit_code_count")
+            or funnel.get("eligible_open_with_exit")
+            or total_count
+            or 0
+        )
+        overcreated = max(0, int(exit_orders_created) - eligible)
+        conversion = (
+            min(1.0, float(exit_orders_created) / float(eligible))
+            if eligible > 0
+            else None
+        )
         return {
             "status": result_status,
             "exit_signal_backlog_count": total_count,
@@ -1254,6 +1362,9 @@ class IncubationFactoryRunner:
             "exit_orders_created": exit_orders_created,
             "exit_orders_filled": exit_orders_filled,
             "positions_closed": positions_closed,
+            "exit_order_conversion": conversion,
+            "exit_order_overcreation_count": overcreated,
+            "exit_funnel": funnel,
             "items": items[:50],
             "error_items": errors[:20],
         }

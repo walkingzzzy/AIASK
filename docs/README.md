@@ -1,4 +1,4 @@
-# Docs 导航
+﻿# Docs 导航
 
 ## 文档分层
 
@@ -32,6 +32,15 @@
 位置：`docs/factory-architecture/appendix/reports/`
 
 - `策略工厂24小时运行与质量追踪-2026-06-22.md`
+
+
+## 生产闭环开发方案
+
+位置：`docs/specs/`
+
+- `五大生产缺陷闭环开发方案-2026-07-11.md`
+  - 针对晋级闭环、akshare 宿主过重、Mock≠Live、退出连续性、运维脚本化的统一可执行方案。
+  - P0 证据/退出/诊断/readiness 优先；P1 运维产品化与 MCP 瘦身衔接。
 
 ## 整理规则
 

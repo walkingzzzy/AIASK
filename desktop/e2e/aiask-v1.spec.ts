@@ -54,6 +54,10 @@ const pages = [
   "/stock-radar",
   "/market-temperature",
   "/quant-research",
+  "/strategy-factory",
+  "/factor-factory",
+  "/incubation",
+  "/factory-events",
   "/financial-manager",
   "/automation",
   "/workflows",
@@ -113,11 +117,12 @@ for (const path of pages) {
   });
 }
 
-test("old deferred factory route redirects to V1 finance workspace", async ({ page }) => {
-  test.skip(isLive, "deferred route matrix runs in mock mode");
+test("factory route opens controlled finance workspace", async ({ page }) => {
+  test.skip(isLive, "factory route matrix runs in mock mode");
   await page.goto("/strategy-factory");
-  await expect(page).toHaveURL(/\/finance$/);
+  await expect(page).toHaveURL(/\/strategy-factory$/);
   await expect(page.getByTestId("page-shell")).toBeVisible();
+  await expect(page.getByRole("heading", { name: "策略工厂" })).toBeVisible();
   await expect(page.getByText(/Strategy Factory|Factor Factory|Factory Events|Incubation/i)).toHaveCount(0);
 });
 

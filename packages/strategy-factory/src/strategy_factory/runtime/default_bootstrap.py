@@ -8,6 +8,7 @@ providers through a dynamic configurator hook.
 from __future__ import annotations
 
 from importlib import import_module
+from importlib.metadata import entry_points
 import os
 from typing import Any
 
@@ -18,10 +19,8 @@ from ..infrastructure.runtime_services import (
 )
 
 
-DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR = (
-    "akshare_mcp.adapters.strategy_factory_runtime:"
-    "configure_strategy_factory_runtime_services"
-)
+DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR: str | None = None
+RUNTIME_PROVIDER_ENTRY_POINT_GROUP = "aiask.strategy_factory.runtime"
 
 DEFAULT_REQUIRED_RUNTIME_PROVIDERS: tuple[str, ...] = (
     "db_provider",
@@ -48,13 +47,14 @@ DEFAULT_REQUIRED_RUNTIME_PROVIDERS: tuple[str, ...] = (
 RUNTIME_PROVIDER_CONFIGURATOR_ENV_KEY = "AIASK_STRATEGY_FACTORY_RUNTIME_CONFIGURATOR"
 
 
-def _resolve_configurator_path(configurator_path: str | None = None) -> str:
-    path = str(
+def _resolve_configurator_path(configurator_path: str | None = None) -> str | None:
+    raw_path = (
         configurator_path
         or os.getenv(RUNTIME_PROVIDER_CONFIGURATOR_ENV_KEY)
         or DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR
-    ).strip()
-    if ":" not in path:
+    )
+    path = str(raw_path).strip() if raw_path else ""
+    if path and ":" not in path:
         raise ValueError(
             "runtime configurator must use 'module.submodule:callable_name' format"
         )
@@ -63,9 +63,21 @@ def _resolve_configurator_path(configurator_path: str | None = None) -> str:
 
 def _load_configurator(configurator_path: str | None = None):
     path = _resolve_configurator_path(configurator_path)
-    module_name, _, attr_name = path.partition(":")
-    module = import_module(module_name)
-    configurator = getattr(module, attr_name)
+    if path:
+        module_name, _, attr_name = path.partition(":")
+        module = import_module(module_name)
+        configurator = getattr(module, attr_name)
+    else:
+        discovered = list(entry_points().select(group=RUNTIME_PROVIDER_ENTRY_POINT_GROUP))
+        if len(discovered) != 1:
+            names = sorted(item.name for item in discovered)
+            raise RuntimeError(
+                "strategy-factory runtime host is not uniquely configured; "
+                f"entry_point_group={RUNTIME_PROVIDER_ENTRY_POINT_GROUP} discovered={names}; "
+                f"set {RUNTIME_PROVIDER_CONFIGURATOR_ENV_KEY}=module:callable"
+            )
+        configurator = discovered[0].load()
+        path = f"entrypoint:{discovered[0].name}"
     if not callable(configurator):
         raise TypeError(f"runtime configurator is not callable: {path}")
     return configurator
@@ -119,6 +131,7 @@ def build_default_scheduler_kwargs(db: Any | None = None) -> dict[str, Any]:
 __all__ = [
     "DEFAULT_REQUIRED_RUNTIME_PROVIDERS",
     "DEFAULT_RUNTIME_PROVIDER_CONFIGURATOR",
+    "RUNTIME_PROVIDER_ENTRY_POINT_GROUP",
     "RUNTIME_PROVIDER_CONFIGURATOR_ENV_KEY",
     "build_default_runtime_adapters",
     "build_default_scheduler_kwargs",

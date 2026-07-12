@@ -32,8 +32,8 @@ export function McpAddDialog({ onAdd, onClose }: McpAddDialogProps) {
       });
       onClose();
     } catch (error) {
-      console.error("添加MCP服务失败:", error);
-      alert(`添加失败: ${error}`);
+      console.error("添加 MCP 服务失败:", error);
+      alert(`添加失败：${error}`);
     } finally {
       setBusy(false);
     }
@@ -137,7 +137,7 @@ export function McpAddDialog({ onAdd, onClose }: McpAddDialogProps) {
 
             <label className="field">
               <span style={{ fontSize: "0.875rem", fontWeight: 500, marginBottom: "0.25rem", display: "block" }}>
-                参数（逗号分隔，可选）
+                参数（用逗号分隔，可选）
               </span>
               <input
                 data-testid="mcp-args"
@@ -151,7 +151,7 @@ export function McpAddDialog({ onAdd, onClose }: McpAddDialogProps) {
                   borderRadius: "0.375rem"
                 }}
               />
-              <small style={{ fontSize: "0.75rem", color: "#6b7280" }}>用逗号分隔多个参数</small>
+              <small style={{ fontSize: "0.75rem", color: "#6b7280" }}>多个参数请用逗号分隔。</small>
             </label>
 
             <label className="field">
@@ -173,7 +173,7 @@ export function McpAddDialog({ onAdd, onClose }: McpAddDialogProps) {
                   fontFamily: "monospace"
                 }}
               />
-              <small style={{ fontSize: "0.75rem", color: "#6b7280" }}>JSON 格式的键值对</small>
+              <small style={{ fontSize: "0.75rem", color: "#6b7280" }}>请填写 JSON 格式的键值对，敏感信息会在页面中隐藏。</small>
             </label>
           </div>
         </div>

@@ -5,19 +5,21 @@ Profiling the live ``akshare_mcp.sqlite3`` (2026-05-29) showed the DB is
 ~3.27 GB, but the bulk is legitimate market data (``kline_1d`` ~8.7M rows).
 The *compactable* growth is unbounded operational/experiment JSON logs:
 
-    strategy_task_runs              ~308 MB  (result JSON per run)
-    strategy_generation_experiments ~281 MB  (evaluation/strategy_spec/result)
-    strategy_domain_events          ~ 87 MB  (event payloads)
+    strategy_incubation_pipeline_snapshots.metadata  ~14 GB
+    strategy_task_runs.result                         ~4.8 GB
+    strategy_quality_reports                          ~1.2 GB
+    strategy_domain_events.payload                    ~0.8 GB
 
-freelist is only ~3 MB, so a full VACUUM reclaims almost nothing -- the fix
-is *retention* (age-based pruning of old operational rows) plus incremental
-vacuum to return freed pages to the OS. Market-data tables are NEVER touched.
+freelist is tiny, so a full VACUUM without first pruning/compacting reclaims
+almost nothing. The fix is *retention* (age-based pruning of old operational
+rows, while keeping newest rows per strategy/scope) plus vacuum/compaction.
+Market-data tables are NEVER touched.
 
 Design / safety:
   * DRY-RUN BY DEFAULT. Nothing is deleted unless ``--apply`` is passed.
   * Each retention rule keeps rows newer than N days (per table ``created_at``
-    / ``started_at``), and additionally always keeps the most recent
-    ``--min-keep`` rows so a quiet period never empties a table.
+    / ``started_at``), always keeps the most recent ``--min-keep`` rows, and
+    can also keep the newest N rows per strategy/scope partition.
   * Before any delete with ``--apply`` it writes a gzip JSON backup of the
     rows to be removed under ``data/backups/`` (override with ``--backup-dir``;
     ``--no-backup`` to skip).
@@ -30,6 +32,7 @@ Usage:
     python scripts/ops/db_retention.py                 # dry-run report
     python scripts/ops/db_retention.py --apply          # prune + incremental vacuum
     python scripts/ops/db_retention.py --table strategy_task_runs --days 30 --apply
+    python scripts/ops/db_retention.py --table strategy_task_runs --partition-keep 0
 """
 
 from __future__ import annotations
@@ -49,7 +52,48 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 # Only operational / experiment / event-log tables are eligible. Market-data
 # and reference tables are intentionally absent and therefore protected.
 RETENTION_RULES: dict[str, dict[str, Any]] = {
-    "strategy_task_runs": {"ts_col": "started_at", "days": 45, "min_keep": 2000},
+    "strategy_incubation_pipeline_snapshots": {
+        "ts_col": "created_at",
+        "days": 14,
+        "min_keep": 5000,
+        "partition_cols": ("strategy_id",),
+        "partition_keep": 2,
+    },
+    "governance_report_snapshots": {
+        "ts_col": "created_at",
+        "days": 14,
+        "min_keep": 5000,
+        "partition_cols": ("scope_type", "scope_id"),
+        "partition_keep": 2,
+    },
+    "strategy_runtime_risk_snapshots": {
+        "ts_col": "created_at",
+        "days": 14,
+        "min_keep": 5000,
+        "partition_cols": ("strategy_id",),
+        "partition_keep": 2,
+    },
+    "strategy_projection_snapshots": {
+        "ts_col": "created_at",
+        "days": 14,
+        "min_keep": 5000,
+        "partition_cols": ("strategy_id", "projection_type"),
+        "partition_keep": 2,
+    },
+    "strategy_task_runs": {
+        "ts_col": "started_at",
+        "days": 14,
+        "min_keep": 5000,
+        "partition_cols": ("strategy_id",),
+        "partition_keep": 1,
+    },
+    "strategy_quality_reports": {
+        "ts_col": "created_at",
+        "days": 30,
+        "min_keep": 5000,
+        "partition_cols": ("strategy_id",),
+        "partition_keep": 2,
+    },
     "strategy_generation_experiments": {"ts_col": "created_at", "days": 60, "min_keep": 2000},
     "strategy_domain_events": {"ts_col": "created_at", "days": 60, "min_keep": 5000},
 }
@@ -60,6 +104,10 @@ PROTECTED_TABLES = {
     "block_stocks", "tdx_relation", "tdx_gpjy_daily", "tdx_bkjy_daily",
     "tdx_consensus", "tdx_stock_extra", "strategies", "strategy_artifacts",
 }
+
+
+def _quote_identifier(name: str) -> str:
+    return '"' + str(name).replace('"', '""') + '"'
 
 
 def _now() -> str:
@@ -85,7 +133,38 @@ def _table_exists(conn: sqlite3.Connection, table: str) -> bool:
     return row is not None
 
 
-def _cutoff_id(conn: sqlite3.Connection, table: str, ts_col: str, days: int, min_keep: int) -> tuple[int, int]:
+def _candidate_predicate(
+    *,
+    table: str,
+    ts_col: str,
+    days: int,
+    keep_floor: int,
+    partition_cols: tuple[str, ...] = (),
+    partition_keep: int = 0,
+) -> tuple[str, tuple[Any, ...]]:
+    table_q = _quote_identifier(table)
+    ts_q = _quote_identifier(ts_col)
+    clauses = [
+        f"datetime({ts_q}) < datetime('now', '-{int(days)} days')",
+        "rowid <= ?",
+    ]
+    params: list[Any] = [keep_floor]
+    if partition_cols and partition_keep > 0:
+        partition_expr = ", ".join(_quote_identifier(col) for col in partition_cols)
+        clauses.append(
+            "rowid IN ("
+            "SELECT rowid FROM ("
+            f"SELECT rowid, ROW_NUMBER() OVER (PARTITION BY {partition_expr} "
+            f"ORDER BY datetime({ts_q}) DESC, rowid DESC) AS _retention_rank "
+            f"FROM {table_q}"
+            ") WHERE _retention_rank > ?"
+            ")"
+        )
+        params.append(int(partition_keep))
+    return " AND ".join(clauses), tuple(params)
+
+
+def _cutoff_id(conn: sqlite3.Connection, table: str, rule: dict[str, Any]) -> tuple[int, int]:
     """Return (delete_count, total_count) for rows older than `days` while
     always keeping the newest `min_keep` rows.
 
@@ -93,66 +172,102 @@ def _cutoff_id(conn: sqlite3.Connection, table: str, ts_col: str, days: int, min
     candidates for deletion only if (a) older than cutoff AND (b) not within
     the newest min_keep rows.
     """
-    total = conn.execute(f'SELECT COUNT(*) FROM "{table}"').fetchone()[0]
+    ts_col = str(rule["ts_col"])
+    days = int(rule["days"])
+    min_keep = int(rule["min_keep"])
+    total = conn.execute(f"SELECT COUNT(*) FROM {_quote_identifier(table)}").fetchone()[0]
     if total == 0:
         return 0, 0
-    cutoff = f"datetime('now', '-{int(days)} days')"
-    # Rows older than cutoff:
-    older = conn.execute(
-        f'SELECT COUNT(*) FROM "{table}" WHERE "{ts_col}" < {cutoff}'
+    keep_floor_row = conn.execute(
+        f"SELECT rowid FROM {_quote_identifier(table)} ORDER BY rowid DESC LIMIT 1 OFFSET ?",
+        (min_keep,),
+    ).fetchone()
+    if keep_floor_row is None:
+        return 0, total
+    where_sql, params = _candidate_predicate(
+        table=table,
+        ts_col=ts_col,
+        days=days,
+        keep_floor=int(keep_floor_row[0]),
+        partition_cols=tuple(rule.get("partition_cols") or ()),
+        partition_keep=int(rule.get("partition_keep") or 0),
+    )
+    deletable = conn.execute(
+        f"SELECT COUNT(*) FROM {_quote_identifier(table)} WHERE {where_sql}",
+        params,
     ).fetchone()[0]
-    # Of those, we must still keep the newest min_keep overall. Deletable =
-    # older rows beyond the min_keep most-recent rows.
-    deletable = max(0, min(older, total - min_keep))
     return deletable, total
 
 
 def _delete_old(
     conn: sqlite3.Connection,
     table: str,
-    ts_col: str,
-    days: int,
-    min_keep: int,
+    rule: dict[str, Any],
     *,
     backup_path: Path | None,
 ) -> int:
     """Delete old rows. Returns number deleted. Writes backup first if asked."""
-    cutoff = f"datetime('now', '-{int(days)} days')"
-    # Identify deletable ids: older than cutoff, excluding the newest min_keep
-    # rows by rowid (rowid is monotonic with insert order for these tables).
+    ts_col = str(rule["ts_col"])
+    days = int(rule["days"])
+    min_keep = int(rule["min_keep"])
     keep_floor_row = conn.execute(
-        f'SELECT rowid FROM "{table}" ORDER BY rowid DESC LIMIT 1 OFFSET ?',
+        f"SELECT rowid FROM {_quote_identifier(table)} ORDER BY rowid DESC LIMIT 1 OFFSET ?",
         (min_keep,),
     ).fetchone()
     if keep_floor_row is None:
         return 0  # fewer than min_keep rows: keep all
-    keep_floor = keep_floor_row[0]
-    select_sql = (
-        f'SELECT rowid, * FROM "{table}" '
-        f'WHERE "{ts_col}" < {cutoff} AND rowid <= ?'
+    where_sql, params = _candidate_predicate(
+        table=table,
+        ts_col=ts_col,
+        days=days,
+        keep_floor=int(keep_floor_row[0]),
+        partition_cols=tuple(rule.get("partition_cols") or ()),
+        partition_keep=int(rule.get("partition_keep") or 0),
     )
-    rows = conn.execute(select_sql, (keep_floor,)).fetchall()
-    if not rows:
+    count = conn.execute(
+        f"SELECT COUNT(*) FROM {_quote_identifier(table)} WHERE {where_sql}",
+        params,
+    ).fetchone()[0]
+    if count <= 0:
         return 0
 
     if backup_path is not None:
-        cols = [d[0] for d in conn.execute(f'SELECT * FROM "{table}" LIMIT 0').description]
-        payload = {
-            "table": table,
-            "exported_at": _now(),
-            "row_count": len(rows),
-            "columns": ["rowid", *cols],
-            "rows": [list(r) for r in rows],
-        }
+        cols = [d[0] for d in conn.execute(f"SELECT * FROM {_quote_identifier(table)} LIMIT 0").description]
+        select_sql = f"SELECT rowid, * FROM {_quote_identifier(table)} WHERE {where_sql}"
         backup_path.parent.mkdir(parents=True, exist_ok=True)
         with gzip.open(backup_path, "wt", encoding="utf-8") as fh:
-            json.dump(payload, fh, ensure_ascii=False, default=str)
+            fh.write("{")
+            json.dump("table", fh)
+            fh.write(":")
+            json.dump(table, fh, ensure_ascii=False)
+            fh.write(",")
+            json.dump("exported_at", fh)
+            fh.write(":")
+            json.dump(_now(), fh)
+            fh.write(",")
+            json.dump("row_count", fh)
+            fh.write(":")
+            json.dump(int(count), fh)
+            fh.write(",")
+            json.dump("columns", fh)
+            fh.write(":")
+            json.dump(["rowid", *cols], fh, ensure_ascii=False)
+            fh.write(",")
+            json.dump("rows", fh)
+            fh.write(":[")
+            first = True
+            for row in conn.execute(select_sql, params):
+                if not first:
+                    fh.write(",")
+                json.dump(list(row), fh, ensure_ascii=False, default=str)
+                first = False
+            fh.write("]}")
 
     conn.execute(
-        f'DELETE FROM "{table}" WHERE "{ts_col}" < {cutoff} AND rowid <= ?',
-        (keep_floor,),
+        f"DELETE FROM {_quote_identifier(table)} WHERE {where_sql}",
+        params,
     )
-    return len(rows)
+    return int(count)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -161,6 +276,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--table", default=None, help="Limit to one table (must be in the retention allowlist)")
     parser.add_argument("--days", type=int, default=None, help="Override retention window for --table")
     parser.add_argument("--min-keep", type=int, default=None, help="Override min rows kept for --table")
+    parser.add_argument(
+        "--partition-keep",
+        type=int,
+        default=None,
+        help="Override newest rows kept per strategy/scope partition; 0 disables partition retention",
+    )
     parser.add_argument("--apply", action="store_true", help="Actually delete (default: dry-run)")
     parser.add_argument("--no-backup", action="store_true", help="Skip gzip backup before delete")
     parser.add_argument("--backup-dir", default=None, help="Backup directory (default: data/backups)")
@@ -170,6 +291,9 @@ def main(argv: list[str] | None = None) -> int:
     db_path = _resolve_db_path(args.db)
     if not db_path.exists():
         print(f"ERROR: DB not found: {db_path}")
+        return 1
+    if args.partition_keep is not None and args.partition_keep < 0:
+        print("ERROR: --partition-keep must be >= 0")
         return 1
 
     rules = dict(RETENTION_RULES)
@@ -182,7 +306,14 @@ def main(argv: list[str] | None = None) -> int:
             rule["days"] = args.days
         if args.min_keep is not None:
             rule["min_keep"] = args.min_keep
+        if args.partition_keep is not None:
+            rule["partition_keep"] = args.partition_keep
         rules = {args.table: rule}
+    elif args.partition_keep is not None:
+        rules = {
+            table: {**rule, "partition_keep": args.partition_keep}
+            for table, rule in RETENTION_RULES.items()
+        }
 
     backup_dir = Path(args.backup_dir).resolve() if args.backup_dir else (REPO_ROOT / "data" / "backups")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -201,15 +332,21 @@ def main(argv: list[str] | None = None) -> int:
             if not _table_exists(conn, table):
                 print(f"  SKIP missing table {table}")
                 continue
-            deletable, total = _cutoff_id(conn, table, rule["ts_col"], rule["days"], rule["min_keep"])
+            deletable, total = _cutoff_id(conn, table, rule)
+            partition = ""
+            if rule.get("partition_cols") and int(rule.get("partition_keep") or 0) > 0:
+                partition = (
+                    f", keep newest {int(rule.get('partition_keep') or 0):,} per "
+                    f"{'/'.join(str(col) for col in rule.get('partition_cols') or ())}"
+                )
             print(
                 f"  {table}: total={total:,} deletable={deletable:,} "
-                f"(keep newest {rule['min_keep']:,} & < {rule['days']}d via {rule['ts_col']})"
+                f"(keep newest {rule['min_keep']:,}{partition} & < {rule['days']}d via {rule['ts_col']})"
             )
             if args.apply and deletable > 0:
                 backup_path = None if args.no_backup else backup_dir / f"{table}_retention_{stamp}.json.gz"
                 deleted = _delete_old(
-                    conn, table, rule["ts_col"], rule["days"], rule["min_keep"],
+                    conn, table, rule,
                     backup_path=backup_path,
                 )
                 conn.commit()

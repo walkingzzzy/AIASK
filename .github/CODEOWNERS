@@ -1,0 +1,35 @@
+# AIASK CODEOWNERS — P1-B / S1 freeze + package ownership
+# Docs: docs/specs/P1-B-S1-akshare-factory-services-freeze.md
+# New business features in frozen paths require "S1 freeze impact" in PR description.
+
+# ---------------------------------------------------------------------------
+# P1-B S1: freeze host factory services (no new promotion/matching state machines)
+# ---------------------------------------------------------------------------
+/packages/akshare-mcp/src/akshare_mcp/services/*factory* @walking
+/packages/akshare-mcp/src/akshare_mcp/services/strategy_lifecycle_shared/ @walking
+/packages/akshare-mcp/src/akshare_mcp/services/matching_engine.py @walking
+/packages/akshare-mcp/src/akshare_mcp/services/promotion_pipeline.py @walking
+/packages/akshare-mcp/src/akshare_mcp/services/incubation_factory/ @walking
+
+# Allowed thin adapters / diagnostics still review-sensitive
+/packages/akshare-mcp/src/akshare_mcp/services/factory_diagnostics.py @walking
+/packages/akshare-mcp/src/akshare_mcp/adapters/strategy_factory_runtime.py @walking
+
+# ---------------------------------------------------------------------------
+# Strategy Factory contracts (hard gate / promotion / evidence schema owners)
+# ---------------------------------------------------------------------------
+/packages/strategy-factory/src/strategy_factory/contracts/ @walking
+/packages/strategy-factory/src/strategy_factory/api/contracts.py @walking
+/packages/strategy-factory/src/strategy_factory/domain/constants.py @walking
+
+# ---------------------------------------------------------------------------
+# Specs governing production defects / MCP slim-down
+# ---------------------------------------------------------------------------
+/docs/specs/五大生产缺陷闭环开发方案-2026-07-11.md @walking
+/docs/specs/P1-B-S1-akshare-factory-services-freeze.md @walking
+/docs/specs/四工厂独立化与MCP瘦身拆分开发方案-2026-06-23.md @walking
+
+# P1-B S3 ownership (promotion / matching / phases)
+/packages/strategy-factory/src/strategy_factory/infrastructure/promotion/ @walking
+/packages/strategy-factory/src/strategy_factory/infrastructure/matching/ @walking
+/packages/strategy-factory/src/strategy_factory/runtime/incubation_phases.py @walking

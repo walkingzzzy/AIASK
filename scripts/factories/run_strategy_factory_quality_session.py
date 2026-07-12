@@ -219,9 +219,15 @@ def _apply_base_session_env(sqlite_path: Path) -> None:
     os.environ.setdefault("AKSHARE_MCP_SQLITE_PATH", str(sqlite_path))
     os.environ.setdefault("AIASK_SQLITE_PATH", str(sqlite_path))
 
-    os.environ.setdefault("FACTOR_MINING_FACTORY_ENABLED", "1")
-    os.environ.setdefault("STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED", "1")
-    os.environ.setdefault("INCUBATION_FACTORY_PAPER_INTAKE_ENABLED", "1")
+    os.environ["AIASK_FACTORY_RUNTIME_PROFILE"] = "quality_session"
+    os.environ["AIASK_FACTORY_PAPER_OWNER"] = "disabled"
+    os.environ["AIASK_STRATEGY_FACTORY_RUNTIME_CONFIGURATOR"] = (
+        "akshare_mcp.adapters.strategy_factory_runtime:"
+        "configure_strategy_factory_runtime_services"
+    )
+    os.environ["FACTOR_MINING_FACTORY_ENABLED"] = "1"
+    os.environ["STRATEGY_FACTORY_FACTOR_CATALOG_ENABLED"] = "1"
+    os.environ["INCUBATION_FACTORY_PAPER_INTAKE_ENABLED"] = "1"
     # 1500/轮:observe(stage=paper)积压上万时加速收敛(实测每策略孵化 ~0.05s,
     # incubating200+paper1500 串行约 85s,远低于 BATCH_TIMEOUT_SEC=600)。
     os.environ["INCUBATION_FACTORY_PAPER_INTAKE_BATCH_LIMIT"] = "1500"

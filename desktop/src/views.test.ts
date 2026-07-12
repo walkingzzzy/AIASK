@@ -9,15 +9,20 @@ describe("V1 view registry", () => {
     expect(new Set(V1_VIEWS.map((view) => view.route)).size).toBe(V1_VIEWS.length);
   });
 
-  it("does not include deferred product entries", () => {
+  it("includes factory control surfaces", () => {
     const ids = V1_VIEWS.map((view) => view.id);
-    for (const deferred of V1_DEFERRED_VIEWS) {
-      expect(ids).not.toContain(deferred);
+    expect(V1_DEFERRED_VIEWS).toEqual([]);
+    for (const factory of ["strategy-factory", "factor-factory", "incubation", "factory-events"]) {
+      expect(ids).toContain(factory);
     }
   });
 
-  it("keeps navigation labels clean", () => {
+  it("keeps factory navigation labels Chinese-first and controlled", () => {
     const visibleText = V1_VIEWS.flatMap((view) => [view.label, view.shortLabel, view.description]).join("\n");
-    expect(visibleText).not.toMatch(/策略工厂|四工厂|Strategy Factory|Factor Factory|Factory Events|Incubation/i);
+    expect(visibleText).toContain("策略工厂");
+    expect(visibleText).toContain("因子工厂");
+    expect(visibleText).toContain("孵化工厂");
+    expect(visibleText).toContain("工厂事件");
+    expect(visibleText).not.toMatch(/Strategy Factory|Factor Factory|Factory Events|Incubation/i);
   });
 });

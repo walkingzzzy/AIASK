@@ -37,19 +37,36 @@ def create_plugins_skills_router(
             rows.append(row)
         return {
             "object": "list",
-            "data": rows,
+            "data": {"skills": rows, "root": snapshot.get("root"), "count": len(rows)},
             "meta": {"root": snapshot.get("root"), "count": len(rows)},
         }
 
     @router.post("/v1/skills")
     async def skill_create(request: Request) -> dict[str, Any]:
         payload = await request.json()
-        return await full_tool_call(request, "agent_skill_manage", {"action": "install", **dict(payload or {})})
+        data = dict(payload or {})
+        name = str(data.get("name") or "").strip()
+        if "content" not in data:
+            description = str(data.get("description") or f"Runtime skill registered from {data.get('path') or 'Agent API'}.").strip()
+            data["description"] = description
+            data["content"] = f"---\ndescription: {description}\n---\n\n# {name or 'Runtime Skill'}\n"
+        return await full_tool_call(request, "agent_skill_manage", {"action": "install", **data})
 
     @router.patch("/v1/skills/{name}")
     async def skill_update(request: Request, name: str) -> dict[str, Any]:
         payload = await request.json()
-        return await full_tool_call(request, "agent_skill_manage", {"action": "update", "name": name, **dict(payload or {})})
+        data = dict(payload or {})
+        if "enabled" in data and "content" not in data:
+            return await full_tool_call(
+                request,
+                "agent_skill_manage",
+                {"action": "set_enabled", "name": name, "enabled": bool(data.get("enabled", True))},
+            )
+        if "content" not in data:
+            description = str(data.get("description") or f"Runtime skill registered from {data.get('path') or 'Agent API'}.").strip()
+            data["description"] = description
+            data["content"] = f"---\ndescription: {description}\n---\n\n# {name}\n"
+        return await full_tool_call(request, "agent_skill_manage", {"action": "update", "name": name, **data})
 
     @router.delete("/v1/skills/{name}")
     async def skill_delete(request: Request, name: str) -> dict[str, Any]:

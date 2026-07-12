@@ -220,8 +220,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
     try {
       const es = new EventSource(url);
+      let opened = false;
 
       es.onopen = () => {
+        opened = true;
         console.log("[SSE] Connected:", url);
         setConnected(true);
         setError(null);
@@ -239,10 +241,15 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       };
 
       es.onerror = (event) => {
-        console.error("[SSE] Error:", event);
+        const gracefulClose = opened || es.readyState === EventSource.CLOSED;
+        if (!gracefulClose) {
+          console.error("[SSE] Error:", event);
+        }
         setConnected(false);
-        setError("SSE 连接错误");
-        onError?.(event);
+        setError(gracefulClose ? null : "SSE 连接错误");
+        if (!gracefulClose) {
+          onError?.(event);
+        }
         es.close();
         eventSourceRef.current = null;
       };

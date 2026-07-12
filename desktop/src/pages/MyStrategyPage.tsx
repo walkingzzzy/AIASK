@@ -8,6 +8,26 @@ import { useAsyncResource } from "../hooks/useAsyncResource";
 import { list, metric, valueOf } from "./pageUtils";
 import type { PageProps } from "./pageUtils";
 
+function strategyTypeLabel(value: string) {
+  const labels: Record<string, string> = {
+    momentum: "动量",
+    value: "价值",
+    growth: "成长",
+    dividend: "红利",
+    custom: "自定义"
+  };
+  return labels[value] || value;
+}
+
+function strategyStatusLabel(value: string) {
+  const labels: Record<string, string> = {
+    active: "启用中",
+    disabled: "已停用",
+    archived: "已归档"
+  };
+  return labels[value] || value;
+}
+
 export function MyStrategyPage({ api, controlAvailable }: PageProps) {
   const strategies = useAsyncResource(() => api.userStrategies(), [api]);
   const [showForm, setShowForm] = useState(false);
@@ -34,7 +54,7 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
     const performance = item.performance as { return?: number; sharpe?: number } | undefined;
     return {
       id: String(item.id || ""),
-      name: valueOf(item, ["name"], "Untitled strategy"),
+      name: valueOf(item, ["name"], "未命名策略"),
       type: valueOf(item, ["type"], "custom"),
       stocks_count: Array.isArray(item.stocks) ? item.stocks.length : 0,
       return: performance?.return ? `${(performance.return * 100).toFixed(2)}%` : "-",
@@ -81,7 +101,7 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
   }
 
   async function handleDelete(id: string) {
-    if (!window.confirm("Delete this strategy?")) return;
+    if (!window.confirm("确认删除这个策略？")) return;
     try {
       await api.strategyDelete(id);
       await strategies.reload();
@@ -106,8 +126,8 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
 
   return (
     <PageShell
-      title="My Strategy"
-      description="Manage personal investment strategies and holdings."
+      title="我的策略"
+      description="管理个人投资策略、关联股票和跟踪表现。"
       actions={
         <Button
           data-testid="new-strategy-button"
@@ -116,37 +136,37 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
           icon={<Plus size={16} />}
           disabled={!controlAvailable}
         >
-          {showForm ? "Cancel" : "New Strategy"}
+          {showForm ? "取消" : "新建策略"}
         </Button>
       }
       metrics={[
-        metric("Strategies", strategyRows.length, "info"),
-        metric("Active", strategyRows.filter((row) => row.status === "active").length, "success"),
-        metric("Average Return", strategyRows.length ? "Tracked" : "-", "neutral"),
-        metric("Sharpe", strategyRows.length ? "Tracked" : "-", "neutral")
+        metric("策略", strategyRows.length, "info"),
+        metric("启用中", strategyRows.filter((row) => row.status === "active").length, "success"),
+        metric("平均收益", strategyRows.length ? "已跟踪" : "-", "neutral"),
+        metric("夏普", strategyRows.length ? "已跟踪" : "-", "neutral")
       ]}
     >
       {showForm ? (
-        <Panel title={editingId ? "Edit Strategy" : "Create Strategy"}>
+        <Panel title={editingId ? "编辑策略" : "创建策略"}>
           <div className="form-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
             <label className="field">
-              <span>Name *</span>
-              <input data-testid="strategy-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="Value Portfolio" />
+              <span>名称 *</span>
+              <input data-testid="strategy-name" value={form.name} onChange={(event) => setForm({ ...form, name: event.target.value })} placeholder="价值组合" />
             </label>
 
             <label className="field">
-              <span>Type</span>
+              <span>类型</span>
               <select data-testid="strategy-type" value={form.type} onChange={(event) => setForm({ ...form, type: event.target.value })}>
-                <option value="momentum">momentum</option>
-                <option value="value">value</option>
-                <option value="growth">growth</option>
-                <option value="dividend">dividend</option>
-                <option value="custom">custom</option>
+                <option value="momentum">动量</option>
+                <option value="value">价值</option>
+                <option value="growth">成长</option>
+                <option value="dividend">红利</option>
+                <option value="custom">自定义</option>
               </select>
             </label>
 
             <label className="field" style={{ gridColumn: "1 / -1" }}>
-              <span>Stocks</span>
+              <span>股票</span>
               <input
                 data-testid="strategy-stocks"
                 value={form.stocks}
@@ -156,20 +176,20 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
             </label>
 
             <label className="field" style={{ gridColumn: "1 / -1" }}>
-              <span>Description</span>
+              <span>说明</span>
               <textarea
                 data-testid="strategy-description"
                 value={form.description}
                 onChange={(event) => setForm({ ...form, description: event.target.value })}
                 rows={3}
-                placeholder="Strategy thesis and rules"
+                placeholder="策略逻辑和执行规则"
               />
             </label>
           </div>
 
           <div style={{ marginTop: "1rem", display: "flex", gap: "0.5rem" }}>
             <Button data-testid="strategy-submit" onClick={() => void handleSubmit()} tone="success" disabled={!form.name.trim() || !controlAvailable}>
-              {editingId ? "Update" : "Create"}
+              {editingId ? "更新" : "创建"}
             </Button>
             <Button
               onClick={() => {
@@ -179,15 +199,15 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
               }}
               tone="neutral"
             >
-              Cancel
+              取消
             </Button>
           </div>
         </Panel>
       ) : null}
 
-      <Panel title="Strategy List">
+      <Panel title="策略列表">
         {strategyRows.length === 0 ? (
-          <EmptyState title="No strategies yet" detail="Create your first strategy from the top-right action." />
+          <EmptyState title="暂无策略" detail="点击右上角操作创建第一个策略。" />
         ) : (
           <DraggableDataTable
             items={strategyRows}
@@ -195,26 +215,26 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
             onReorder={handleReorder}
             dragEnabled={controlAvailable}
             columns={[
-              { key: "name", header: "Name" },
-              { key: "type", header: "Type" },
-              { key: "stocks_count", header: "Stocks" },
-              { key: "return", header: "Return" },
+              { key: "name", header: "名称" },
+              { key: "type", header: "类型", render: (item) => strategyTypeLabel(String(item.type || "")) },
+              { key: "stocks_count", header: "股票数" },
+              { key: "return", header: "收益" },
               { key: "sharpe", header: "Sharpe" },
               {
                 key: "status",
-                header: "Status",
-                render: (item) => <StatusLight status={item.status === "active" ? "connected" : "disconnected"} label={item.status} />
+                header: "状态",
+                render: (item) => <StatusLight status={item.status === "active" ? "connected" : "disconnected"} label={strategyStatusLabel(String(item.status || ""))} />
               },
               {
                 key: "id",
-                header: "Actions",
+                header: "操作",
                 render: (item) => (
                   <div style={{ display: "flex", gap: "0.5rem" }}>
                     <Button onClick={() => startEdit(item.id)} tone="neutral" icon={<Edit2 size={14} />} disabled={!controlAvailable}>
-                      Edit
+                      编辑
                     </Button>
                     <Button onClick={() => void handleDelete(item.id)} tone="danger" icon={<Trash2 size={14} />} disabled={!controlAvailable}>
-                      Delete
+                      删除
                     </Button>
                   </div>
                 )

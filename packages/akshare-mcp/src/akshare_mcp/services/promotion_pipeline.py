@@ -7,6 +7,11 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+from strategy_factory.infrastructure.promotion.review_outcome import (
+    evaluate_promotion_review_outcome,
+    score_promotion_review,
+)
+
 
 class StrategyPromotionPipelineService:
     @staticmethod
@@ -69,129 +74,12 @@ class StrategyPromotionPipelineService:
 
     @classmethod
     def _resolve_review_outcome(cls, overview: dict) -> tuple[str, str, list[str]]:
-        objective_profile = cls._objective_profile(overview)
-        signal_status = cls._signal_snapshot_status(overview)
-        execution_status = cls._execution_snapshot_status(overview)
-        hard_gate_reasons = cls._hard_gate_reasons(overview)
-        critical_trace_gaps = cls._primary_trace_gap_codes(overview)
-        position_cycle_evidence = cls._position_cycle_evidence(overview)
-        position_cycle_status = cls._normalized_status(position_cycle_evidence.get('status'))
-        precision_readiness = cls._precision_readiness(overview)
-        cost_robustness_summary = dict(overview.get('cost_robustness_summary') or {})
-        trade_density_summary = dict(overview.get('trade_density_summary') or {})
-        event_prefilter_summary = cls._event_prefilter_summary(overview)
-        blockers: list[str] = []
-        blockers.extend(hard_gate_reasons)
-        blockers.extend(code for code in critical_trace_gaps if code not in blockers)
-        if signal_status and signal_status != 'strong' and 'signal_quality_snapshot_not_strong' not in blockers:
-            blockers.append('signal_quality_snapshot_not_strong')
-        if execution_status in {'weak', 'insufficient_evidence', 'missing'} and (
-            f'execution_quality_snapshot:{execution_status}' not in blockers
-        ):
-            blockers.append(f'execution_quality_snapshot:{execution_status}')
-        if objective_profile == 'high_precision':
-            if precision_readiness not in {'candidate', 'strong'}:
-                blockers.append(f'high_precision_precision_readiness:{precision_readiness or "missing"}')
-            if position_cycle_status in {'', 'weak', 'insufficient_evidence', 'observe'}:
-                blockers.append(
-                    f'high_precision_cycle_evidence:{position_cycle_status or "missing"}'
-                )
-            if trade_density_summary and not bool(trade_density_summary.get('passed')):
-                blockers.append('high_precision_trade_density_not_ready')
-            if cost_robustness_summary.get('required') and not bool(cost_robustness_summary.get('passed')):
-                blockers.append('high_precision_cost_fragility')
-            if event_prefilter_summary.get('required') and not bool(event_prefilter_summary.get('passed')):
-                blockers.append('high_precision_event_prefilter_not_ready')
-            if overview.get('adverse_regime_avoidance') is False:
-                blockers.append('high_precision_adverse_regime_not_avoided')
-        if overview.get('deprecation_risk'):
-            return 'rejected', 'deprecate', blockers
-        if (
-            bool(overview.get('promotion_ready'))
-            and signal_status == 'strong'
-            and execution_status in {'strong', 'passed'}
-            and not blockers
-        ):
-            return 'approved', 'promote', blockers
-        return 'watch', 'observe', blockers
+        # Pure outcome ownership: strategy_factory.infrastructure.promotion.review_outcome
+        return evaluate_promotion_review_outcome(overview)
 
     @classmethod
     def _score(cls, overview: dict, metric: Optional[dict]) -> float:
-        objective_profile = cls._objective_profile(overview)
-        signal_status = cls._signal_snapshot_status(overview)
-        execution_status = cls._execution_snapshot_status(overview)
-        hard_gate_reasons = cls._hard_gate_reasons(overview)
-        trace_gap_codes = cls._trace_evidence_gap_codes(overview)
-        precision_readiness = cls._precision_readiness(overview)
-        position_cycle_evidence = cls._position_cycle_evidence(overview)
-        position_cycle_status = cls._normalized_status(position_cycle_evidence.get('status'))
-        event_prefilter_summary = cls._event_prefilter_summary(overview)
-        score = 0.2
-        if signal_status == 'strong':
-            score += 0.24
-        elif signal_status == 'candidate':
-            score += 0.10
-        elif signal_status == 'weak':
-            score -= 0.18
-        elif signal_status == 'insufficient_evidence':
-            score -= 0.14
-        if execution_status in {'strong', 'passed'}:
-            score += 0.24
-        elif execution_status == 'candidate':
-            score += 0.08
-        elif execution_status == 'weak':
-            score -= 0.22
-        elif execution_status == 'insufficient_evidence':
-            score -= 0.18
-        if overview.get('promotion_ready'):
-            score += 0.12
-        if overview.get('execution_hard_gate_passed'):
-            score += 0.08
-        elif str(overview.get('execution_audit_gate_status') or '') == 'failed_metrics':
-            score -= 0.18
-        if overview.get('deprecation_risk'):
-            score -= 0.35
-        score -= min(len(hard_gate_reasons), 5) * 0.08
-        score -= min(len(trace_gap_codes), 5) * 0.05
-        if objective_profile == 'high_precision':
-            if precision_readiness == 'strong':
-                score += 0.12
-            elif precision_readiness == 'candidate':
-                score += 0.06
-            else:
-                score -= 0.08
-            if position_cycle_status == 'strong':
-                score += 0.10
-            elif position_cycle_status == 'candidate':
-                score += 0.05
-            else:
-                score -= 0.08
-            regime_consistency = float(position_cycle_evidence.get('regime_consistency') or 0)
-            cost_robustness = float(position_cycle_evidence.get('cost_robustness') or 0)
-            score += max(min(regime_consistency, 1.0), 0.0) * 0.06
-            score += max(min(cost_robustness, 1.0), 0.0) * 0.05
-            if dict(overview.get('trade_density_summary') or {}) and not bool(
-                dict(overview.get('trade_density_summary') or {}).get('passed')
-            ):
-                score -= 0.10
-            if dict(overview.get('cost_robustness_summary') or {}).get('required') and not bool(
-                dict(overview.get('cost_robustness_summary') or {}).get('passed')
-            ):
-                score -= 0.12
-            if event_prefilter_summary.get('required') and not bool(event_prefilter_summary.get('passed')):
-                score -= 0.10
-            if overview.get('adverse_regime_avoidance') is False:
-                score -= 0.08
-        if metric:
-            sharpe = float(metric.get('sharpe_ratio') or 0)
-            hit_rate = float(metric.get('hit_rate_5d') or 0)
-            forward_sharpe = float(metric.get('forward_sharpe_5d') or 0)
-            score += min(max(sharpe, -1.0), 2.0) * 0.08
-            score += hit_rate * 0.12
-            score += max(forward_sharpe, -1.0) * 0.08
-        score -= min(len(overview.get('blockers') or []), 5) * 0.05
-        score -= min(len(overview.get('risk_flags') or []), 5) * 0.05
-        return round(max(0.0, min(score, 1.0)), 4)
+        return score_promotion_review(overview, metric)
 
     async def review(
         self,

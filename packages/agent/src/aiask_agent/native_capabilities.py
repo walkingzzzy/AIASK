@@ -143,9 +143,14 @@ def build_native_capability_handlers(
                 data = {"skills": [item for item in skills.list() if not query or query in json.dumps(item, ensure_ascii=False).lower()]}
                 level = "read_only"
             elif action in {"install", "update"}:
+                content = str(arguments.get("content") or "").strip()
+                if not content:
+                    name = str(arguments.get("name") or "skill").strip() or "skill"
+                    description = str(arguments.get("description") or f"Runtime skill registered from {arguments.get('path') or 'Agent API'}.").strip()
+                    content = f"---\ndescription: {description}\n---\n\n# {name}\n"
                 item = skills.save(
                     str(arguments.get("name") or ""),
-                    str(arguments.get("content") or ""),
+                    content,
                     description=arguments.get("description"),
                 )
                 data = {"skill": item}
@@ -169,6 +174,9 @@ def build_native_capability_handlers(
                 level = "stateful"
             elif action == "unpin":
                 data = {"skill": skills.pin(str(arguments.get("name") or ""), False)}
+                level = "stateful"
+            elif action == "set_enabled":
+                data = {"skill": skills.set_enabled(str(arguments.get("name") or ""), bool(arguments.get("enabled", True)))}
                 level = "stateful"
             elif action == "archive":
                 data = {"skill": skills.archive(str(arguments.get("name") or ""), reason=arguments.get("reason"))}
