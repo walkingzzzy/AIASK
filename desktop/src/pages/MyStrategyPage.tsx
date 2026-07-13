@@ -52,14 +52,24 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
 
   const strategyRows = orderedStrategies.map((item) => {
     const performance = item.performance as { return?: number; sharpe?: number } | undefined;
+    const explanation =
+      (item.strategy_explanation as Record<string, unknown> | undefined) ||
+      ((item.params as Record<string, unknown> | undefined)?.strategy_explanation as
+        | Record<string, unknown>
+        | undefined) ||
+      {};
+    const whyGenerated = String(
+      item.why_generated || explanation.why_generated || item.description || "-"
+    ).slice(0, 120);
     return {
       id: String(item.id || ""),
       name: valueOf(item, ["name"], "未命名策略"),
-      type: valueOf(item, ["type"], "custom"),
+      type: valueOf(item, ["type", "strategy_type"], "custom"),
       stocks_count: Array.isArray(item.stocks) ? item.stocks.length : 0,
       return: performance?.return ? `${(performance.return * 100).toFixed(2)}%` : "-",
       sharpe: performance?.sharpe ? performance.sharpe.toFixed(2) : "-",
-      status: valueOf(item, ["status"], "active")
+      status: valueOf(item, ["status"], "active"),
+      why_generated: whyGenerated
     };
   });
 
@@ -220,6 +230,11 @@ export function MyStrategyPage({ api, controlAvailable }: PageProps) {
               { key: "stocks_count", header: "股票数" },
               { key: "return", header: "收益" },
               { key: "sharpe", header: "Sharpe" },
+              {
+                key: "why_generated",
+                header: "为什么生成",
+                render: (item) => String(item.why_generated || "-")
+              },
               {
                 key: "status",
                 header: "状态",

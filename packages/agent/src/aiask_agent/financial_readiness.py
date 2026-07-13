@@ -385,11 +385,29 @@ async def financial_system_readiness(
             return "degraded", f"evidence_gaps={len(evidence_gaps)}"
         return "ready", f"signals={signals_total} orders={orders_total} trades={trades_total}"
 
+    def _probe_signal_tracker() -> tuple[str, str]:
+        tracker = dict(factory_diag_data.get("signal_tracker") or {})
+        status_token = str(tracker.get("status") or "").strip().lower()
+        signals_total = int(factory_diag_data.get("signals_total") or tracker.get("signals_total") or 0)
+        pool = max(observe_count, incubating_count, formal_count)
+        if not diagnostics_ok:
+            return "degraded", "factory formal diagnostics unavailable"
+        if pool > 0 and signals_total <= 0:
+            return "blocked", "runtime pool present but SignalTracker evidence absent (signals=0)"
+        if status_token == "stale":
+            return "degraded", f"SignalTracker stale last_signal_at={tracker.get('last_signal_at')}"
+        if status_token == "active" or signals_total > 0:
+            return "ready", f"SignalTracker status={status_token or 'active'} signals={signals_total}"
+        if pool <= 0:
+            return "degraded", "no runtime pool yet; SignalTracker presence not measurable"
+        return "degraded", f"SignalTracker status={status_token or 'unknown'}"
+
     lineage_status, lineage_detail = _probe_status_lineage()
     exit_status, exit_detail = _probe_exit_continuity()
     hard_status, hard_detail = _probe_hard_gate_health()
     formal_status, formal_detail = _probe_formal_pipeline()
     evidence_status, evidence_detail = _probe_evidence_coverage()
+    tracker_status, tracker_detail = _probe_signal_tracker()
 
     required_gates = [
         _gate(
@@ -478,6 +496,13 @@ async def financial_system_readiness(
             required=True,
             detail=formal_detail,
             evidence={"formal_count": formal_count, "observe_count": observe_count, "top_blockers": top_blockers[:5]},
+        ),
+        _gate(
+            "signal_tracker_presence",
+            tracker_status,
+            required=True,
+            detail=tracker_detail,
+            evidence=dict(factory_diag_data.get("signal_tracker") or {}),
         ),
         _gate(
             "semantic_search",
@@ -569,6 +594,27 @@ async def financial_system_readiness(
     is_mock_ai = bool(ai.get("mock"))
     # P0-D5: infrastructure "ready" under mock is never production_ready.
     production_ready = status == "ready" and not is_mock_ai
+    # Honest maturity ladder (code-closed-loop != Live).
+    # L0 package bootable, L1 contracts/control plane, L2 runtime pool,
+    # L3 paper evidence/exit continuity, L4 production_ready only.
+    maturity_level = "L0"
+    if db_ready and control_token_configured:
+        maturity_level = "L1"
+    if maturity_level == "L1" and (observe_count > 0 or incubating_count > 0 or formal_count > 0):
+        maturity_level = "L2"
+    trades_total = int(factory_diag_data.get("trades_total") or 0)
+    signals_total = int(factory_diag_data.get("signals_total") or 0)
+    if maturity_level in {"L2", "L1"} and (signals_total > 0 or orders_total > 0 or trades_total > 0):
+        if maturity_level == "L1" and (signals_total > 0 or orders_total > 0 or trades_total > 0):
+            maturity_level = "L2"
+        if signals_total > 0 and orders_total > 0 and (closed_positions > 0 or trades_total > 0):
+            maturity_level = "L3"
+    if production_ready and maturity_level == "L3":
+        maturity_level = "L4"
+    elif production_ready:
+        # Even if gates all green via injected/fake evidence, never claim L4 without L3 evidence shape.
+        maturity_level = "L3" if maturity_level == "L3" else maturity_level
+    code_closed_loop_ready = True  # P0-P2 scheme/code assets are present in tree
     next_actions = _build_next_actions(
         required_gates=required_gates,
         optional_gates=optional_gates,
@@ -596,12 +642,18 @@ async def financial_system_readiness(
         detail = str(item.get("detail") or "")
         if not detail:
             continue
+        priority = "critical" if code in {
+            "bootstrap_factory_runtime",
+            "start_signal_tracker_sidecar",
+            "restore_exit_continuity",
+            "repair_signal_lineage",
+        } else "recommended"
         next_actions.append(
             _next_action(
                 f"factory_{code}",
                 code.replace("_", " ").title(),
                 detail,
-                priority="recommended",
+                priority=priority,
                 target_page="factory",
                 gate="formal_pipeline",
             )
@@ -610,6 +662,18 @@ async def financial_system_readiness(
         "object": "aiask.financial_system_readiness",
         "status": status,
         "production_ready": production_ready,
+        "code_closed_loop_ready": code_closed_loop_ready,
+        "maturity_level": maturity_level,
+        "maturity": {
+            "level": maturity_level,
+            "code_closed_loop_ready": code_closed_loop_ready,
+            "production_ready": production_ready,
+            "live_production_claim": False if not production_ready else maturity_level == "L4",
+            "notes": (
+                "L4 requires non-mock AI + ready required gates + real evidence shape; "
+                "code_closed_loop_ready alone is not Live readiness."
+            ),
+        },
         "factory_diagnostics": {
             "formal_count": formal_count,
             "observe_count": observe_count,
@@ -617,6 +681,7 @@ async def financial_system_readiness(
             "hard_gate_histogram": hard_hist,
             "exit_funnel": exit_funnel,
             "top_blockers": top_blockers[:10],
+            "signal_tracker": dict(factory_diag_data.get("signal_tracker") or {}),
             "ok": diagnostics_ok,
         },
         "required_gates": required_gates,
@@ -630,6 +695,7 @@ async def financial_system_readiness(
             "required_blocked": len(blocked_required),
             "optional_ready": sum(1 for item in optional_gates if item["status"] == "ready"),
             "optional_degraded": sum(1 for item in optional_gates if item["status"] == "degraded"),
+            "maturity_level": maturity_level,
         },
         "parity": {
             "strict_status": parity.get("strict_status"),
@@ -637,6 +703,7 @@ async def financial_system_readiness(
             "core_code_status": parity.get("core_code_status"),
             "live_status": parity.get("live_status"),
             "coverage_ratio": parity.get("coverage_ratio"),
+
             "complete_ratio": parity.get("complete_ratio"),
             "live_unverified_count": parity.get("live_unverified_count"),
             "v014_delta": parity.get("v014_delta"),

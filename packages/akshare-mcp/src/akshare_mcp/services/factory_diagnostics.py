@@ -13,6 +13,12 @@ from collections import Counter
 from datetime import datetime, timezone
 from typing import Any, Optional
 
+try:
+    from aiask_quant_core.strategy_explanation import explain_reason_code
+except Exception:  # pragma: no cover - optional import path
+    def explain_reason_code(code: Any) -> str:  # type: ignore[misc]
+        return f"原因码：{code}"
+
 logger = logging.getLogger(__name__)
 
 HARD_GATE_BUCKETS = (
@@ -147,6 +153,13 @@ class FactoryDiagnosticsService:
                 "recommendations": [],
             },
             "hard_gate_histogram": {k: 0 for k in HARD_GATE_BUCKETS},
+            "signal_tracker": {
+                "present": False,
+                "signals_total": 0,
+                "last_signal_at": None,
+                "stale": True,
+                "status": "absent",
+            },
             "next_actions": [],
             "ok": error is None,
         }
@@ -226,14 +239,17 @@ class FactoryDiagnosticsService:
         exit_funnel = self._exit_funnel(conn)
         exit_gap = self._exit_signal_gap(conn, sample_limit=min(10, max(3, top_n // 2)))
         hard_gate_histogram = self._hard_gate_histogram(conn)
+        signal_tracker = self._signal_tracker_presence(conn, evidence=evidence)
         next_actions = self._next_actions(
             formal_count=formal_count,
             observe_count=observe_count,
+            incubating_count=incubating_count,
             evidence=evidence,
             exit_funnel=exit_funnel,
             hard_gate_histogram=hard_gate_histogram,
             top_blockers=top_blockers,
             exit_gap=exit_gap,
+            signal_tracker=signal_tracker,
         )
 
         return {
@@ -254,6 +270,7 @@ class FactoryDiagnosticsService:
             "exit_funnel": exit_funnel,
             "exit_gap": exit_gap,
             "hard_gate_histogram": hard_gate_histogram,
+            "signal_tracker": signal_tracker,
             "next_actions": next_actions,
             "ok": True,
         }
@@ -307,7 +324,14 @@ class FactoryDiagnosticsService:
                 elif isinstance(gate, str) and gate.strip():
                     counter[f"execution_audit_gate:{gate.strip()}"] += 1
 
-        return [{"code": code, "count": count} for code, count in counter.most_common(top_n)]
+        return [
+            {
+                "code": code,
+                "count": count,
+                "detail_zh": explain_reason_code(code),
+            }
+            for code, count in counter.most_common(top_n)
+        ]
 
     def _evidence_coverage(self, conn: Any) -> dict[str, Any]:
         signals_total = 0
@@ -699,18 +723,117 @@ class FactoryDiagnosticsService:
             hist[status] = hist.get(status, 0) + 1
         return hist
 
+    def _signal_tracker_presence(
+        self,
+        conn: Any,
+        *,
+        evidence: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Infer SignalTracker evidence-loop presence from DB (read-only).
+
+        SignalTracker is intentionally a non-supervised sidecar. Empty signal
+        tables with an incubating/observe pool usually mean the sidecar is
+        absent or stale, not that hard gates are "healthy empty".
+        """
+        evidence = dict(evidence or {})
+        signals_total = _safe_int(evidence.get("signals_total"))
+        if signals_total <= 0 and self._table_exists(conn, "strategy_signals"):
+            signals_total = self._scalar(conn, "SELECT COUNT(*) FROM strategy_signals")
+
+        last_signal_at: str | None = None
+        if self._table_exists(conn, "strategy_signals") and signals_total > 0:
+            for col in ("created_at", "signal_date", "as_of", "updated_at", "ts"):
+                try:
+                    row = conn.execute(
+                        f"SELECT {col} FROM strategy_signals "
+                        f"WHERE {col} IS NOT NULL ORDER BY {col} DESC LIMIT 1"
+                    ).fetchone()
+                except Exception:
+                    continue
+                if row and row[0] is not None:
+                    last_signal_at = str(row[0])
+                    break
+
+        present = signals_total > 0
+        stale = not present
+        if present and last_signal_at:
+            # Best-effort freshness: if we can parse ISO/date, flag >3d as stale.
+            try:
+                token = last_signal_at.replace("Z", "+00:00")
+                parsed = datetime.fromisoformat(token[:32])
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                age_hours = (datetime.now(timezone.utc) - parsed).total_seconds() / 3600.0
+                stale = age_hours > 72.0
+            except Exception:
+                stale = False
+
+        if not present:
+            status = "absent"
+        elif stale:
+            status = "stale"
+        else:
+            status = "active"
+        return {
+            "present": present,
+            "signals_total": signals_total,
+            "last_signal_at": last_signal_at,
+            "stale": stale,
+            "status": status,
+        }
+
     def _next_actions(
         self,
         *,
         formal_count: int,
         observe_count: int,
+        incubating_count: int = 0,
         evidence: dict[str, Any],
         exit_funnel: dict[str, Any],
         hard_gate_histogram: dict[str, int],
         top_blockers: list[dict[str, Any]],
         exit_gap: dict[str, Any] | None = None,
+        signal_tracker: dict[str, Any] | None = None,
     ) -> list[dict[str, str]]:
         actions: list[dict[str, str]] = []
+        signals_total = _safe_int(evidence.get("signals_total"))
+        orders_total = _safe_int(evidence.get("orders_total"))
+        trades_total = _safe_int(evidence.get("trades_total"))
+        pool = max(observe_count, incubating_count, formal_count)
+        tracker = dict(signal_tracker or {})
+        tracker_status = str(tracker.get("status") or "").strip().lower()
+
+        if pool <= 0 and signals_total <= 0 and orders_total <= 0 and trades_total <= 0:
+            actions.append(
+                {
+                    "code": "bootstrap_factory_runtime",
+                    "detail": (
+                        "strategies/signals/orders/trades all empty; start run_three_factories "
+                        "+ scripts/factories/run_signal_tracker.py and verify AIASK_SQLITE_PATH"
+                    ),
+                }
+            )
+        if (pool > 0 or incubating_count > 0) and signals_total <= 0:
+            actions.append(
+                {
+                    "code": "start_signal_tracker_sidecar",
+                    "detail": (
+                        "runtime pool present but strategy_signals=0; SignalTracker is not in "
+                        "supervisor — run scripts/factories/run_signal_tracker.py --once/--daemon"
+                    ),
+                }
+            )
+        elif tracker_status == "stale":
+            actions.append(
+                {
+                    "code": "refresh_signal_tracker_sidecar",
+                    "detail": (
+                        f"SignalTracker evidence looks stale (last_signal_at="
+                        f"{tracker.get('last_signal_at')}); re-run sidecar cycle"
+                    ),
+                }
+            )
+
         coverage = evidence.get("signal_id_coverage")
         if coverage is not None and coverage < 0.95:
             actions.append(
@@ -756,10 +879,25 @@ class FactoryDiagnosticsService:
             )
         if formal_count == 0 and top_blockers:
             top = top_blockers[0]
+            top_code = top.get("code")
             actions.append(
                 {
                     "code": "explain_formal_blockers",
-                    "detail": f"formal=0; top blocker={top.get('code')} count={top.get('count')}",
+                    "detail": (
+                        f"formal=0; top blocker={top_code} count={top.get('count')}; "
+                        f"{explain_reason_code(top_code)}"
+                    ),
+                    "detail_zh": explain_reason_code(top_code),
+                }
+            )
+        elif formal_count == 0 and observe_count > 0 and not top_blockers:
+            actions.append(
+                {
+                    "code": "explain_empty_formal_pool",
+                    "detail": (
+                        "formal=0 with observe pool but no blockers exposed; inspect hard_gate "
+                        "histogram and execution audit snapshots"
+                    ),
                 }
             )
         if not actions:

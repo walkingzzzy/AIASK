@@ -344,7 +344,7 @@
                 stored_params["selection_logic"] = list(candidate.get("selection_logic") or existing_params.get("selection_logic") or [])
             if candidate.get("incubation_budget"):
                 stored_params["incubation_budget"] = dict(candidate.get("incubation_budget") or {})
-            strategy_explanation = build_strategy_explanation(
+            strategy_explanation = ensure_strategy_explanation(
                 {
                     **existing,
                     **dict(candidate or {}),
@@ -366,7 +366,6 @@
                     ),
                 },
                 metrics=metrics,
-                existing=existing,
                 source="strategy_factory_submit",
             )
             if strategy_explanation:

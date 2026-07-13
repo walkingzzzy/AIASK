@@ -203,12 +203,16 @@ async def _execute_incubation_factory(action: str, params: dict[str, Any]) -> di
     try:
         ensure_default_runtime_services()
         timeout = bounded_float(params.get("_timeout_seconds"), default=600.0, minimum=1.0, maximum=3600.0)
+        # Safety default: run_once is dry-run unless explicitly dry_run=false.
+        dry_run_requested = _bool_param(params.get("dry_run"), default=True)
         if action == "dry_run":
-            runtime = build_incubation_runtime(dry_run=True)
-            result = await asyncio.wait_for(runtime.run_once(), timeout=timeout)
+            runtime = build_incubation_runtime()
+            result = await asyncio.wait_for(runtime.run_once(dry_run=True), timeout=timeout)
         elif action == "run_once":
             runtime = build_incubation_runtime()
-            result = await asyncio.wait_for(runtime.run_once(), timeout=timeout)
+            result = await asyncio.wait_for(runtime.run_once(dry_run=dry_run_requested), timeout=timeout)
+            if isinstance(result, dict):
+                result = {**result, "dry_run": dry_run_requested}
         elif action == "maintenance":
             runtime = build_incubation_runtime()
             result = {

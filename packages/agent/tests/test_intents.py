@@ -17,6 +17,19 @@ def test_intent_create_get_deny_and_unauthorized_action(tmp_path) -> None:
         store.create(action="strategy_manager.not_allowed", params={})
 
 
+def test_external_runner_strategy_action_rejected_at_create(tmp_path) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    with pytest.raises(ValueError) as exc:
+        store.create(action="strategy_manager.publish", params={"strategy_id": "s1"})
+    assert "STRATEGY_FACTORY_EXTERNAL_RUNNER_REQUIRED" in str(exc.value)
+
+
+def test_incubation_run_once_defaults_to_dry_run(tmp_path) -> None:
+    store = ActionIntentStore(tmp_path / "intents.sqlite3")
+    intent = store.create(action="incubation_factory.run_once", params={})
+    assert intent["params"].get("dry_run") is True
+
+
 def test_confirm_executes_allowed_action_once_and_rejects_repeat(tmp_path, monkeypatch) -> None:
     store = ActionIntentStore(tmp_path / "intents.sqlite3")
     executor = IntentExecutor(store)
@@ -44,7 +57,7 @@ def test_confirm_executes_allowed_action_once_and_rejects_repeat(tmp_path, monke
 def test_deny_rejects_repeat_confirm(tmp_path) -> None:
     store = ActionIntentStore(tmp_path / "intents.sqlite3")
     executor = IntentExecutor(store)
-    intent = store.create(action="runtime_alert_ack", params={"alert_id": "a1"})
+    intent = store.create(action="strategy_manager.factory_run_once", params={"execution_mode": "dry_run"})
 
     denied = asyncio.run(executor.deny(intent["intent_id"], reason="not now"))
     assert denied["success"] is True

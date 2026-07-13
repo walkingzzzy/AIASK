@@ -10,7 +10,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from aiask_quant_core.strategy_explanation import build_strategy_explanation
+from aiask_quant_core.strategy_explanation import ensure_strategy_explanation
 
 logger = logging.getLogger(__name__)
 
@@ -96,7 +96,7 @@ class IncubationIntake:
         metrics: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         try:
-            return build_strategy_explanation(
+            return ensure_strategy_explanation(
                 payload,
                 metrics=metrics,
                 source=source,

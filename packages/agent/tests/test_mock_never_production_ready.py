@@ -71,6 +71,9 @@ def test_mock_provider_blocks_production_ready(tmp_path, monkeypatch) -> None:
         )
     )
     assert result["production_ready"] is False
+    assert result.get("code_closed_loop_ready") is True
+    assert result.get("maturity_level") in {"L0", "L1", "L2", "L3", "L4"}
+    assert result.get("maturity_level") != "L4"
     action_ids = [str(a.get("action_id") or "") for a in result.get("next_actions") or []]
     assert "replace_mock_model" in action_ids
     assert result.get("factory_diagnostics", {}).get("formal_count") == 5

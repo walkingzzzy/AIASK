@@ -12,10 +12,11 @@
 > - `../12-四工厂真实流程与MCP依赖审计.md`
 > - `../13-四工厂-MCP能力占用台账.md`
 >
-> 本轮正式 target-state 主方案见仓库根目录：
-> - `../../../四工厂独立化与MCP瘦身拆分开发方案-2026-06-23.md`
+> 本轮正式 target-state 主方案见：
+> - `../../specs/四工厂独立化与MCP瘦身拆分开发方案-2026-06-23.md`
 >
-> 已确认与当前代码不符、不能再当作现状路径引用的典型目标态路径包括：
+> 注意：下列路径可能已随实现演进，target 文档不等于现状；以 `../01`/`../12` 与源码为准。
+> 已确认与早期草稿不符、不能再当作固定现状路径引用的典型目标态路径包括：
 > - `packages/strategy-factory/src/strategy_factory/application/incubation/`
 > - `packages/strategy-factory/src/strategy_factory/application/market_event_ingest/`
 > - `packages/strategy-factory/src/strategy_factory/application/factor_mining/`
@@ -25,14 +26,14 @@
 **创建日期**: 2026-06-21  
 **基于**: [深度架构审查报告](../09-深度架构审查报告.md) 和 [生命周期规范](../02-策略工厂全链路生命周期规范.md)
 
-## 当前状态同步（截至 2026-06-23）
+## 当前状态同步（阅读提示）
 
-- `Phase 1` 已完成：canonical naming、`RuntimeAdapters`、`ExecutionUniverseContract` owner、canonical bootstrap owner 都已有代码与守门测试证明。
-- `Phase 2` 已完成：四个 runtime 与 root runner 主路径已收口到 `strategy_factory.api.runtime` / `strategy_factory.runtime.*`。
-- `Phase 3` 已完成当前轮验收要求：`server.py` 已退回 thin host 语义，manager/services ownership 守门测试已补齐，current-state 文档已同步。
-- 仍保留少量 compat/shim：`akshare_mcp.runtime.strategy_factory_bootstrap`、`akshare_mcp.adapters.strategy_factory_runtime.build_strategy_factory_scheduler_kwargs()`、AKShare package runners 与部分 fallback/query adapter。
-- 上述 compat 层的剩余计划是“保留公开名字，持续移除仓库内主动消费点”，而不是回退 canonical owner。
+本目录是 **target-state 规格**。实现进度以 `../01`、`../12`、`../../specs/五大生产缺陷*` 与源码/测试为准，不要把下文任何“阶段完成”措辞当作 Live/证据链完成证明。
 
+- `strategy_factory.runtime.*` facade、contracts、bootstrap owner 在代码中已有落地痕迹。  
+- 宿主侧 runner I/O、样本证据链、SignalTracker 共启、Live 宣称仍可能未完成；见 `../../CURRENT.md`。  
+- `akshare-mcp` 仍保留 host provider / compat 消费点是预期现状，不是回归。  
+- target 目录中的 planned 路径可能与当前文件树不一致；以源码为准。
 ## 目录归类说明
 
 - 本目录只写 target-state、planned 目录、标准化契约和未来迁移目标。

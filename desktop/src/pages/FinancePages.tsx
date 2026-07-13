@@ -868,7 +868,12 @@ function StrategyFactoryPage({ api }: PageProps) {
   const exitFunnel = dataObject(formalDiag.exit_funnel, {});
   const exitGap = dataObject(formalDiag.exit_gap, {});
   const blockerRows = Array.isArray(formalDiag.top_blockers)
-    ? formalDiag.top_blockers.map((item: any, index: number) => ({ id: `fb-${index}`, code: item?.code, count: item?.count }))
+    ? formalDiag.top_blockers.map((item: any, index: number) => ({
+        id: `fb-${index}`,
+        code: item?.code,
+        count: item?.count,
+        detail_zh: item?.detail_zh || item?.detail || "-"
+      }))
     : [];
   const evidenceGapRows = Array.isArray(formalDiag.evidence_gaps)
     ? formalDiag.evidence_gaps.map((item: any, index: number) => ({
@@ -891,11 +896,42 @@ function StrategyFactoryPage({ api }: PageProps) {
     ? formalDiag.next_actions.map((item: any, index: number) => ({
         id: `na-${index}`,
         code: item?.code,
-        detail: item?.detail
+        detail: item?.detail,
+        detail_zh: item?.detail_zh || item?.detail || "-"
       }))
     : [];
   const runRows = rowsFrom(runData, ["runs", "items", "data"]);
   const eventRows = rowsFrom(eventData, ["events", "items", "data"]);
+  // Domain events that carry generation/incubation explanation payloads.
+  const explanationEventRows = eventRows
+    .map((item: any, index: number) => {
+      const payload = (item?.payload && typeof item.payload === "object" ? item.payload : item) || {};
+      const explanation =
+        payload.strategy_explanation ||
+        payload.strategy_case_file?.generation ||
+        item?.strategy_explanation ||
+        null;
+      const why =
+        payload.why_generated ||
+        explanation?.why_generated ||
+        payload.strategy_explanation_summary ||
+        "";
+      const whyInc =
+        payload.why_incubating ||
+        payload.incubation_explanation?.why_incubating ||
+        payload.strategy_case_file?.why_incubating ||
+        "";
+      if (!why && !whyInc && !explanation) return null;
+      return {
+        id: `exp-${index}-${String(item?.id || item?.event_id || index)}`,
+        strategy_id: String(payload.strategy_id || item?.strategy_id || item?.entity_id || "").slice(0, 14) || "-",
+        event_type: String(item?.event_type || item?.type || payload.stage || "-"),
+        why_generated: String(why || "-").slice(0, 180),
+        why_incubating: String(whyInc || "-").slice(0, 180),
+        completeness: explanation?.completeness?.quality || payload.explanation_completeness?.quality || "-"
+      };
+    })
+    .filter(Boolean) as Array<Record<string, unknown>>;
   const outcomeRows = rowsFrom(outcomeData, ["outcomes", "items", "data"]);
   const matrixRows = rowsFrom(matrixData, ["rows", "matrix", "items", "data"]);
 
@@ -978,7 +1014,21 @@ function StrategyFactoryPage({ api }: PageProps) {
           items={blockerRows}
           columns={[
             { key: "code", header: "blocker" },
-            { key: "count", header: "count" }
+            { key: "count", header: "count" },
+            { key: "detail_zh", header: "说明" }
+          ]}
+        />
+      </Panel>
+
+      <Panel title="为什么生成 / 为什么孵化（来自领域事件）">
+        <DataTable
+          items={explanationEventRows}
+          columns={[
+            { key: "strategy_id", header: "strategy" },
+            { key: "event_type", header: "event" },
+            { key: "why_generated", header: "为什么生成" },
+            { key: "why_incubating", header: "为什么孵化/卡住" },
+            { key: "completeness", header: "说明完整度" }
           ]}
         />
       </Panel>

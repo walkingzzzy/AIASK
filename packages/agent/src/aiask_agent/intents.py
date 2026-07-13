@@ -10,7 +10,12 @@ from typing import Any
 from uuid import uuid4
 
 from .paths import default_intent_db_path
-from .tool_risk import CONFIRM_REQUIRED_STRATEGY_ACTIONS
+from .tool_risk import (
+    AGENT_EXECUTABLE_STRATEGY_ACTIONS,
+    CONFIRM_REQUIRED_STRATEGY_ACTIONS,
+    STATEFUL_INTENT_ACTIONS_REQUIRING_EXPLICIT_DRY_RUN,
+    classify_strategy_manager_action,
+)
 
 
 INTENT_STATUSES = (
@@ -98,6 +103,42 @@ def normalize_action(action: str) -> tuple[str, dict[str, str]]:
     raise ValueError(f"action is not allowed for confirmation execution: {token}")
 
 
+def _strategy_action_name(action_key: str, target_action: str) -> str:
+    if action_key.startswith("strategy_manager."):
+        return action_key.split(".", 1)[1]
+    return str(target_action or "").strip()
+
+
+def assert_intent_executable(action_key: str, target: dict[str, str]) -> None:
+    """Fail closed before creating intents that cannot be confirmed usefully."""
+    tool = str(target.get("tool") or "").strip()
+    target_action = str(target.get("action") or "").strip()
+    if tool == "strategy_manager":
+        strategy_action = _strategy_action_name(action_key, target_action)
+        classification = classify_strategy_manager_action(strategy_action)
+        if classification.get("confirmation_required") and not classification.get("agent_executable", True):
+            raise ValueError(
+                "STRATEGY_FACTORY_EXTERNAL_RUNNER_REQUIRED: "
+                f"{action_key} is confirm-policy-listed but owned by external runner; "
+                f"executable_actions={sorted(AGENT_EXECUTABLE_STRATEGY_ACTIONS)}"
+            )
+
+
+def apply_intent_safety_defaults(action_key: str, params: dict[str, Any] | None) -> dict[str, Any]:
+    """Default high-side-effect intents to dry_run unless explicitly overridden."""
+    payload = dict(params or {})
+    if action_key in STATEFUL_INTENT_ACTIONS_REQUIRING_EXPLICIT_DRY_RUN:
+        if "dry_run" not in payload:
+            payload["dry_run"] = True
+    if action_key == "incubation_factory.run_once" and "dry_run" not in payload:
+        payload["dry_run"] = True
+    if action_key in {"paper_trading_manager.submit_order", "execution_manager.create_plan"}:
+        payload["dry_run"] = True
+    if action_key == "stock_radar.push_digest" and "dry_run" not in payload:
+        payload["dry_run"] = True
+    return payload
+
+
 @dataclass(frozen=True)
 class IntentTransition:
     changed: bool
@@ -164,6 +205,8 @@ class ActionIntentStore:
         ttl_seconds: int = 24 * 60 * 60,
     ) -> dict[str, Any]:
         action_key, target = normalize_action(action)
+        assert_intent_executable(action_key, target)
+        safe_params = apply_intent_safety_defaults(action_key, params)
         ts = now_utc()
         intent_id = f"intent_{ts.strftime('%Y%m%dT%H%M%S')}_{uuid4().hex[:10]}"
         expires_at = ts + timedelta(seconds=max(60, int(ttl_seconds or 86400)))
@@ -180,7 +223,7 @@ class ActionIntentStore:
                     action_key,
                     target["tool"],
                     target["action"],
-                    _dumps(dict(params or {})),
+                    _dumps(safe_params),
                     "awaiting_confirmation",
                     user_id,
                     rationale,

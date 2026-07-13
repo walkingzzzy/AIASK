@@ -119,6 +119,40 @@ CONFIRM_REQUIRED_STRATEGY_ACTIONS = frozenset(
     }
 )
 
+# Actions that IntentExecutor can actually run after confirmation.
+# Everything else in CONFIRM_REQUIRED_STRATEGY_ACTIONS is allowlisted for
+# dual-person review policy, but currently owned by external factory runners.
+AGENT_EXECUTABLE_STRATEGY_ACTIONS = frozenset(
+    {
+        "factory_run_once",
+        "factory_dispatch_run",
+        "factory_event_create",
+        "factory_event_update",
+        "factory_event_approve",
+        "factory_event_record_outcome",
+        "factory_event_bootstrap",
+        "factory_theme_exposure_refresh",
+        "factory_event_outbox_drain",
+        "factory_theme_regression_run",
+    }
+)
+
+# Intent targets that mutate state unless explicitly dry-run.
+STATEFUL_INTENT_ACTIONS_REQUIRING_EXPLICIT_DRY_RUN = frozenset(
+    {
+        "incubation_factory.run_once",
+        "factor_factory.run_once",
+        "data_sync.sync",
+        "data_sync.maintenance",
+        "data_sync.run_due_schedules",
+        "stock_radar.run_once",
+        "stock_radar.schedule_update",
+        "gateway.send_message",
+        "gateway.direct_deliver",
+        "webhook.trigger",
+    }
+)
+
 MCP_CONTRACT_METADATA_FIELDS = (
     "input_schema",
     "output_schema",
@@ -161,14 +195,36 @@ STRATEGY_ACTION_SIDE_EFFECTS: dict[str, dict[str, Any]] = {
 def classify_strategy_manager_action(action: str | None) -> dict[str, Any]:
     normalized = str(action or "").strip()
     if normalized in STRATEGY_ACTION_SIDE_EFFECTS:
-        return dict(STRATEGY_ACTION_SIDE_EFFECTS[normalized])
-    return {
-        "level": "stateful",
-        "target": f"strategy_manager.{normalized or 'unknown'}",
-        "confirmation_required": True,
-        "idempotent": False,
-        "unknown_action": True,
-    }
+        payload = dict(STRATEGY_ACTION_SIDE_EFFECTS[normalized])
+    else:
+        payload = {
+            "level": "stateful",
+            "target": f"strategy_manager.{normalized or 'unknown'}",
+            "confirmation_required": True,
+            "idempotent": False,
+            "unknown_action": True,
+        }
+    if payload.get("confirmation_required"):
+        executable = normalized in AGENT_EXECUTABLE_STRATEGY_ACTIONS
+        payload["agent_executable"] = executable
+        payload["execution_owner"] = "agent" if executable else "external_service"
+        if not executable:
+            payload["error_code"] = "STRATEGY_FACTORY_EXTERNAL_RUNNER_REQUIRED"
+            payload["detail"] = (
+                "Action requires confirmation policy but is owned by an external "
+                "factory runner; Agent will not create a confirmable intent."
+            )
+    else:
+        payload["agent_executable"] = True
+        payload["execution_owner"] = "agent"
+    return payload
+
+
+def is_agent_executable_strategy_action(action: str | None) -> bool:
+    normalized = str(action or "").strip()
+    if normalized.startswith("strategy_manager."):
+        normalized = normalized.split(".", 1)[1]
+    return normalized in AGENT_EXECUTABLE_STRATEGY_ACTIONS or normalized in READ_ONLY_STRATEGY_ACTIONS
 
 
 def normalize_side_effect(value: Any, *, target: str = "tool") -> dict[str, Any]:

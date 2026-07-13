@@ -848,6 +848,12 @@ class RuleStrategyGenerator:
                 'factor_research': factor_summary,
                 'template_generation_profile': template_contract.get('template_generation_profile'),
                 'rule_template_contract': dict(template_contract.get('rule_template_contract') or {}),
+                'category': strategy_type,
+                'rationale': (
+                    f"规则模板 {template.get('name') or strategy_type}："
+                    f"{template.get('description') or '基于恐惧贪婪与因子研究偏好生成候选。'} "
+                    f"regime={regime}, fear_greed={fg}."
+                ),
             },
         }
         for key in (

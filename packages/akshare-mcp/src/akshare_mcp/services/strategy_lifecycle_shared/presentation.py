@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from aiask_quant_core.strategy_explanation import build_strategy_explanation
+from aiask_quant_core.strategy_explanation import (
+    build_incubation_explanation,
+    build_strategy_case_file,
+    ensure_strategy_explanation,
+    explain_reason_code,
+)
 
 
 def _string(value: Any) -> str:
@@ -122,8 +127,26 @@ def build_strategy_presentation(
         payload.get("strategy_explanation")
         or params.get("strategy_explanation")
         or {}
-    ) or build_strategy_explanation(
+    ) or ensure_strategy_explanation(
         payload,
+        source="strategy_lifecycle_presentation",
+    )
+    incubation_explanation = dict(
+        payload.get("incubation_explanation")
+        or params.get("incubation_explanation")
+        or dict(overview or {}).get("incubation_explanation")
+        or {}
+    )
+    if not incubation_explanation and overview:
+        incubation_explanation = build_incubation_explanation(
+            strategy=payload,
+            overview=overview,
+            source="strategy_lifecycle_presentation",
+        )
+    case_file = build_strategy_case_file(
+        strategy=payload,
+        strategy_explanation=strategy_explanation,
+        incubation_explanation=incubation_explanation or None,
         source="strategy_lifecycle_presentation",
     )
     owner = dict(owner_state or {})
@@ -134,7 +157,7 @@ def build_strategy_presentation(
     report_summary = dict(report_payload.get("summary") or {})
     runtime = dict(runtime_control or {})
     acceptance = dict(execution_audit_acceptance or {})
-    blockers = list(acceptance.get("blockers") or [])
+    blockers = list(acceptance.get("blockers") or overview_payload.get("blockers") or [])
     risk_count = len(list(risk_events or []))
     status = _string(payload.get("status")) or "unknown"
     quality_grade = _string(report_summary.get("validation_grade")) or None
@@ -167,7 +190,9 @@ def build_strategy_presentation(
     if risk_count > 0:
         current_risks.append(f"当前存在 {risk_count} 条开放风险事件。")
     if blockers:
-        current_risks.append(f"执行审计仍有 {len(blockers)} 个阻塞项。")
+        top = blockers[0]
+        code = top.get("code") if isinstance(top, dict) else top
+        current_risks.append(f"执行/晋级阻塞：{explain_reason_code(code)}")
     if runtime.get("control_mode"):
         current_risks.append(f"运行控制模式为 {runtime.get('control_mode')}。")
     if not current_risks:
@@ -188,9 +213,15 @@ def build_strategy_presentation(
         "stage_label": stage_label,
         "stage_summary": stage_summary,
         "strategy_explanation": strategy_explanation,
+        "incubation_explanation": incubation_explanation or None,
+        "strategy_case_file": case_file,
         "strategy_summary": strategy_explanation.get("summary"),
         "strategy_labels": list(strategy_explanation.get("labels") or []),
         "why_generated": strategy_explanation.get("why_generated"),
+        "why_incubating": (incubation_explanation or {}).get("why_incubating"),
+        "why_blocked": (incubation_explanation or {}).get("why_blocked"),
+        "next_evidence_needed": list((incubation_explanation or {}).get("next_evidence_needed") or []),
+        "explanation_completeness": strategy_explanation.get("completeness"),
         "why_watch": why_watch,
         "current_risks": current_risks,
         "recommended_action": recommended_action,

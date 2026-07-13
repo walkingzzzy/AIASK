@@ -1,49 +1,58 @@
-﻿# Docs 导航
+# Docs 导航（代码对标现行树）
 
-## 文档分层
+> 更新：2026-07-13  
+> 原则：**活跃树只放与当前代码一致的 SoT；历史快照进 archive；target-state 必须标明不是现状。**
 
-当前仓库文档按以下口径整理：
+## 分层
 
-- 根目录只保留少量长期入口和被明确要求放在根目录的权威主方案。
-- `docs/factory-architecture/` 放四工厂 current-state 文档、运行规范、审计台账和附录报告。
-- `docs/frontend-v1/` 放 V1 前端专题流程、阶段性开发方案和完成度报告。
-- `frontend-screenshots/AIASK标准化功能规范-2026-06-20/` 继续放前端专项功能规范与细分文档。
+| 层 | 路径 | 用途 |
+| --- | --- | --- |
+| 代码对标一页纸 | [`CURRENT.md`](CURRENT.md) | 包角色、拓扑、契约常量、控制面、成熟度 |
+| Current-state 规范 | [`factory-architecture/`](factory-architecture/) | `00`–`13` 强制规范 |
+| 方案 / ownership | [`specs/`](specs/) | 2026-07 闭环、冻结边界、瘦身 target |
+| 前端工作流 | [`frontend-v1/`](frontend-v1/) | 现行流程 only |
+| 运维 | `../scripts/factories/`、`../scripts/ops/` | 共启、日报、诊断 |
+| 历史 | [`archive/historical/`](archive/historical/) | 过期进度/里程碑/一次性报告 |
 
-## 根目录保留文档
+## 必读顺序
 
-- `AGENT.md`
-  - 仓库长期协作约定与开发规范。
-- `AIASK项目开发技术规范-V1前端产品化-2026-06-21.md`
-  - 当前仍被多处前端规范文档引用，继续作为根目录权威主规范保留。
-- `四工厂独立化与MCP瘦身拆分开发方案-2026-06-23.md`
-  - 按当前决策继续作为根目录 target-state 主方案保留。
+1. [CURRENT.md](CURRENT.md) — **先读**  
+2. [factory-architecture/01-当前实际架构.md](factory-architecture/01-当前实际架构.md)  
+3. [factory-architecture/00-术语与四工厂口径裁决.md](factory-architecture/00-术语与四工厂口径裁决.md)  
+4. [factory-architecture/11-禁止的修复方式与正确路径.md](factory-architecture/11-禁止的修复方式与正确路径.md)  
+5. [specs/五大生产缺陷闭环开发方案-2026-07-11.md](specs/五大生产缺陷闭环开发方案-2026-07-11.md)  
+6. [specs/五大生产缺陷-剩余闭环修改计划-2026-07-11.md](specs/五大生产缺陷-剩余闭环修改计划-2026-07-11.md)  
+7. [../scripts/factories/COSTART_EVIDENCE_LOOP.md](../scripts/factories/COSTART_EVIDENCE_LOOP.md)
 
-## 前端专题文档
+## 源码核验捷径
 
-位置：`docs/frontend-v1/`
+| 问题 | 先打开 |
+| --- | --- |
+| supervisor 管谁 | `scripts/factories/run_three_factories.py` |
+| bootstrap 必需几项 | `strategy_factory/runtime/default_bootstrap.py` |
+| hard gate 阈值 | `strategy_factory/contracts/hard_gate.py` |
+| incubation 必选 phase | `strategy_factory/runtime/incubation_phases.py` |
+| Desktop 默认连哪 | `desktop/src/hooks/useConnectionSettings.ts` |
+| production_ready | `aiask_agent/financial_readiness.py` |
+| Intent 谁能执行 | `aiask_agent/tool_risk.py` `AGENT_EXECUTABLE_*` |
+| 诊断 next_actions | `akshare_mcp/services/factory_diagnostics.py` |
 
-- `README.md`
-- `FRONTEND_WORKFLOW.md`
-- `AIASK V1前端从零重建详细开发方案-2026-06-21.md`
-- `AIASK_V1前端功能完成度报告-2026-06-22.md`
+## 协作 / 前端主规范
 
-## 四工厂附录报告
+- `specs/AGENT.md`  
+- `specs/AIASK项目开发技术规范-V1前端产品化-2026-06-21.md`  
+- 前端工作流：`frontend-v1/FRONTEND_WORKFLOW.md`
 
-位置：`docs/factory-architecture/appendix/reports/`
+## 明确不是 SoT
 
-- `策略工厂24小时运行与质量追踪-2026-06-22.md`
-
-
-## 生产闭环开发方案
-
-位置：`docs/specs/`
-
-- `五大生产缺陷闭环开发方案-2026-07-11.md`
-  - 针对晋级闭环、akshare 宿主过重、Mock≠Live、退出连续性、运维脚本化的统一可执行方案。
-  - P0 证据/退出/诊断/readiness 优先；P1 运维产品化与 MCP 瘦身衔接。
+- `archive/historical/**`  
+- 任何 STARTUP_CONFIRMED / MILESTONE / P2_PROGRESS / 日期完成报告  
+- `strategy-factory-spec/` 内 planned 路径（target only）  
+- Graphify 2026-05 数字（参考 blast radius，非最终拓扑证明）
 
 ## 整理规则
 
-- 如果文档是长期协作约定、全仓入口规范，保留在根目录。
-- 如果文档是某一专题的实施细则、阶段性方案、完成度报告或运行报告，优先放进对应 `docs/` 子目录。
-- 如果文档已经被现状文档明确声明“必须在根目录保留”，后续移动前必须先同步修正所有引用口径。
+1. **现状行为** → `CURRENT` + `factory-architecture/00-13`  
+2. **分期方案/冻结** → `specs/`  
+3. **某日运行/进度** → `archive/historical/`  
+4. 文档与代码冲突 → 当天修文档或修代码，禁止活跃树双真相  

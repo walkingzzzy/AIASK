@@ -46,6 +46,8 @@ packages/akshare-mcp/cache/dead_letters/
 
 # Scratch files
 .tmp_*
+_tmp*
+tmp/
 _index_sync_out.txt
 
 # Runtime data and generated outputs

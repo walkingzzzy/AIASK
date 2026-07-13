@@ -14,15 +14,28 @@ SignalTracker 是策略工厂到孵化晋级之间的闭环 sidecar。它不属�
 
 ## 运行入口
 
-标准入口是 `scripts/factories/run_signal_tracker.py`。它是仓库根 wrapper，实际目标位于 `packages/akshare-mcp/scripts/run_signal_tracker.py`。
+标准入口是仓库根 wrapper：
+
+```text
+scripts/factories/run_signal_tracker.py
+```
+
+它在 monorepo 内把 `packages/*/src` 加入 path，并调用 strategy-factory runtime / host provider 实现（**不是** supervisor 子进程）。
 
 SignalTracker 可以：
 
-- 按 daemon 方式定时运行。
-- 以 `--once` 单次运行。
-- 被 quality session 显式调用，用于短验证。
+- 按 daemon 方式定时运行。  
+- 以 `--once` 单次运行。  
+- 被 quality session 显式调用，用于短验证。  
 
 不得假设 MCP server 或四工厂 supervisor 已经隐式启动 SignalTracker。
+
+**产品化可观测（代码）**：
+
+- `FactoryDiagnosticsService` 输出 `signal_tracker`：`present/stale/absent` + `signals_total` / `last_signal_at`  
+- 有运行池但 `signals=0` → next_action `start_signal_tracker_sidecar`  
+- Agent readiness 必选 gate：`signal_tracker_presence`  
+- 日报：`uv run python scripts/ops/runtime_formal_daily.py`
 
 ## 当前实现与缺口
 

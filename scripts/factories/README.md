@@ -1,63 +1,57 @@
-# 工厂运行脚本
+# 工厂运行脚本（代码对标）
 
-本目录包含策略工厂的运行脚本。
+> 更新：2026-07-13  
+> 与 `scripts/factories/run_three_factories.py` 源码一致。旧 “Signal Factory 第四工厂 / Phase 完成” 叙述已废弃。
 
-## 🏭 脚本列表
+## Supervisor
 
-### 主运行脚本
+**主入口**：`run_three_factories.py`  
+（文件名历史遗留；`SUPERVISED_FACTORY_NAMES` / `REQUIRED_SCRIPTS` 默认 **最多 4** 运行体，可 CLI/环境裁剪）
 
-1. **run_strategy_factory.py**
-   - 运行策略工厂
-   - 支持指定工厂类型
-   - 使用: `python scripts/factories/run_strategy_factory.py`
+| 名称 | 脚本 |
+| --- | --- |
+| Strategy Factory | `run_strategy_factory.py` |
+| Factor Mining Factory | `run_factor_mining_factory.py` |
+| Incubation Factory | `run_incubation_factory.py` |
+| Market Event Ingest | `run_market_event_ingest.py` |
 
-2. **run_all_factories.py**
-   - 批量运行所有工厂
-   - 顺序执行各工厂
-   - 汇总运行结果
-   - 使用: `python scripts/factories/run_all_factories.py`
+兼容：`run_all_factories.py` → 委托 supervisor。
 
-## 📝 使用说明
+生产子环境关键强制（见 supervisor 源码）：
 
-### 四个工厂类型
+- `AIASK_FACTORY_RUNTIME_PROFILE=production_supervisor`  
+- `AIASK_FACTORY_PAPER_OWNER=incubation_factory`  
+- runtime configurator → host `configure_strategy_factory_runtime_services`  
 
-1. **Signal Factory** (信号工厂)
-   - 生成交易信号
-   - 因子组合
+## SignalTracker（sidecar）
 
-2. **Incubation Factory** (孵化工厂)
-   - 策略孵化
-   - 质量验证
-   - 晋升管理
+- **不在** `SUPERVISED_FACTORY_NAMES`  
+- 入口：`run_signal_tracker.py`（`--once` / daemon）  
+- 缺席时：diagnostics `signal_tracker.status=absent`，readiness `signal_tracker_presence` 降级/阻塞  
 
-3. **Candidate Factory** (候选工厂)
-   - 因子挖掘
-   - 候选因子评估
+共启：`COSTART_EVIDENCE_LOOP.md`
 
-4. **Market Event Factory** (市场事件工厂)
-   - 事件监控
-   - 事件驱动策略
+## Quality session（非生产）
 
-### 运行模式
+- `run_strategy_factory_quality_session.py`  
+- 只验证/暴露；**禁止**补偿生产 formal  
+
+## 诊断
 
 ```bash
-# 单个工厂 (交互模式)
-python scripts/factories/run_strategy_factory.py
-
-# 全部工厂 (自动模式)
-python scripts/factories/run_all_factories.py
-
-# 孵化工厂 (直接调用)
-python packages/akshare-mcp/scripts/run_incubation_factory.py
+uv run python scripts/ops/runtime_formal_daily.py
+uv run python scripts/factories/diagnose_formal_blockers.py
+python scripts/factories/check_factory_doc_banned_phrases.py
 ```
 
-### 日志和报告
+## 文档
 
-- 运行日志: `logs/factories/`
-- 运行报告: 控制台输出
-- 数据持久化: SQLite 数据库
+- 现状一页：`docs/CURRENT.md`  
+- 架构：`docs/factory-architecture/01-当前实际架构.md`  
+- 运维手册：`docs/factory-architecture/06-运行与诊断手册.md`  
 
----
+## 禁止宣称
 
-**最后更新**: 2026-06-24  
-**当前状态**: Phase 2B/2D/3 完成，独立运行就绪
+- Live / formal 已通（除非 readiness L4 + 非空证据）  
+- bootstrap_ready = hard gate 通过  
+- supervisor 已含 SignalTracker  

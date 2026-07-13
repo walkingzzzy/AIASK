@@ -134,7 +134,72 @@ def test_collect_basic_counts(tmp_path):
     assert "exit_gap" in payload
     assert payload["exit_gap"]["exit_signals"] >= 1
     assert isinstance(payload["exit_gap"].get("likely_causes"), list)
+    assert "signal_tracker" in payload
+    assert payload["signal_tracker"]["present"] is True
+    assert payload["signal_tracker"]["signals_total"] >= 1
     db.connection.close()
+
+
+def test_empty_pool_next_action_bootstrap(tmp_path):
+    path = tmp_path / "empty_pool.sqlite3"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE strategies (
+            id TEXT PRIMARY KEY,
+            status TEXT,
+            incubating TEXT,
+            params TEXT,
+            formal_readiness_blockers TEXT
+        );
+        CREATE TABLE strategy_signals (
+            id TEXT PRIMARY KEY,
+            strategy_id TEXT,
+            signal INTEGER,
+            event_action TEXT,
+            code TEXT
+        );
+        """
+    )
+    conn.commit()
+    payload = FactoryDiagnosticsService().collect(_Db(conn), top_n=5)
+    codes = [a.get("code") for a in payload.get("next_actions") or []]
+    assert "bootstrap_factory_runtime" in codes
+    assert payload["signal_tracker"]["status"] == "absent"
+    conn.close()
+
+
+def test_pool_without_signals_requests_sidecar(tmp_path):
+    path = tmp_path / "pool_no_sig.sqlite3"
+    conn = sqlite3.connect(str(path))
+    conn.executescript(
+        """
+        CREATE TABLE strategies (
+            id TEXT PRIMARY KEY,
+            status TEXT,
+            incubating TEXT,
+            params TEXT,
+            formal_readiness_blockers TEXT
+        );
+        CREATE TABLE strategy_signals (
+            id TEXT PRIMARY KEY,
+            strategy_id TEXT,
+            signal INTEGER,
+            event_action TEXT,
+            code TEXT
+        );
+        """
+    )
+    conn.execute(
+        "INSERT INTO strategies VALUES (?,?,?,?,?)",
+        ("s1", "incubating", "observe_incubation", "{}", None),
+    )
+    conn.commit()
+    payload = FactoryDiagnosticsService().collect(_Db(conn), top_n=5)
+    codes = [a.get("code") for a in payload.get("next_actions") or []]
+    assert "start_signal_tracker_sidecar" in codes
+    assert payload["signal_tracker"]["present"] is False
+    conn.close()
 
 
 def test_handle_envelope(tmp_path):

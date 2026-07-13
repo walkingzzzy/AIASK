@@ -14,7 +14,10 @@ from collections import Counter
 from typing import TYPE_CHECKING, Any, List, Optional
 from uuid import uuid4
 
-from aiask_quant_core.strategy_explanation import build_strategy_explanation, render_strategy_description
+from aiask_quant_core.strategy_explanation import (
+    ensure_strategy_explanation,
+    render_strategy_description,
+)
 
 from ..candidate_contract import (
     apply_resolved_candidate_envelope,
